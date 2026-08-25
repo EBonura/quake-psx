@@ -1,0 +1,22 @@
+[package]
+name = "quake-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Platform-independent Rust simulation primitives for Quake PSX"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+quake-formats = { path = "../quake-formats" }
+# Hydrated from the repository-level PSoXide pin. Until convergence commit
+# 359537cfc72604d78127913366b9bfd46675b0a6 is pushed, build with the explicit
+# `--psoxide /path/to/that/checkout` development override.
+psx-bsp = { path = "../../.psoxide/engine/crates/psx-bsp" }
+psx-engine = { path = "../../.psoxide/engine/crates/psx-engine" }
+psx-math = { path = "../../.psoxide/sdk/crates/psx-math" }
+psx-gte = { path = "../../.psoxide/sdk/crates/psx-gte" }
+
+[dev-dependencies]
+psx-gpu = { path = "../../.psoxide/sdk/crates/psx-gpu" }

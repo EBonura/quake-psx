@@ -1,0 +1,27 @@
+[package]
+name = "quake-psx-build"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "End-to-end shareware demo builder and PSoXide regression runner for quake-psx"
+
+[[bin]]
+name = "quake-psx-build"
+path = "host/quake-build/main.rs"
+
+[dependencies]
+# The hydration helper and the guest SDK resolve from the same published
+# revision. The build verifies this lockfile source before copying any SDK
+# inputs into the content-addressed guest stage.
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "f894437986e1c0148ad39eaa38134ab09185312d" }
+quake-cook = { path = "crates/quake-cook" }
+quake-core = { path = "crates/quake-core" }
+quake-formats = { path = "crates/quake-formats" }
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

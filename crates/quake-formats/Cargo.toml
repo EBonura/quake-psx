@@ -1,0 +1,12 @@
+[package]
+name = "quake-formats"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Rust definitions and checked readers for Quake PSX cooked assets"
+
+[dependencies]
+psx-bsp = { path = "../../.psoxide/engine/crates/psx-bsp" }
+
+[lib]
+path = "src/lib.rs"

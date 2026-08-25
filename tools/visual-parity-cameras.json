@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "coordinate_notes": "Positions are Quake Q20.12 integers; angles use 4096 units per turn.",
+  "cameras": [
+    {
+      "id": "owner-e1m1-2026-08-13",
+      "map": "E1M1",
+      "origin_q12": [888798, 3824884, -728959],
+      "origin_units_approx": [216.9917, 933.8096, -177.9685],
+      "angles": [43, 1088, 0],
+      "angles_degrees_approx": [3.7793, 95.625, 0.0],
+      "source_savestate_sha256": "7560b02c353f7ba177cb310822d990da66ff280e65f490c37a340b96768f9849",
+      "restored_frame_sha256": "296961e7c6e39d49d7bd8ed63f437dd58d90175e19179529e4cae55d8c14d2cd",
+      "world_region": [0, 0, 320, 184],
+      "hud_region": [0, 184, 320, 56],
+      "expected_context": {
+        "health": 92,
+        "armor": 0,
+        "weapon": "shotgun"
+      },
+      "purpose": [
+        "close_oblique_affine_error",
+        "near_surface_coverage",
+        "water_and_sky",
+        "viewmodel",
+        "graphical_hud"
+      ]
+    },
+    {
+      "id": "owner-e1m1-sky-2026-08-14",
+      "map": "E1M1",
+      "origin_q12": [1771228, 1327548, 188545],
+      "origin_units_approx": [432.4287, 324.1084, 46.0315],
+      "angles": [-524, 852, 0],
+      "angles_degrees_approx": [-46.0547, 74.8828, 0.0],
+      "source_savestate_sha256": "dfc263c711c73cdf42ba52c6f5e24fb6b4c1f7941b878df6c090af1d7e87d9",
+      "restored_frame_sha256": "58dc3a79786ed75eae0e5e1e7ac73b3bb8396fe64754b92d0a16a48f6a776854",
+      "expected_context": {
+        "health": 100,
+        "armor": 0,
+        "weapon": "shotgun"
+      },
+      "purpose": [
+        "view_ray_sky_translation_invariance",
+        "near_sky_aperture",
+        "layered_sky_affine_error"
+      ]
+    }
+  ]
+}

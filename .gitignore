@@ -1,0 +1,40 @@
+# Host and console build output
+/target/
+**/target/
+/build/
+/build-*/
+/dist/
+/captures/
+/.quakepsx/
+/.psoxide/
+/graphify-out/
+
+# Original and cooked Quake data. The shareware licence permits distribution
+# of the original archive, not a repository of repacked or converted assets.
+id1psx/*
+!id1psx/.empty
+!id1psx/maps/
+id1psx/maps/*
+!id1psx/maps/.empty
+tools/tmp/
+*.pak
+*.zip
+*.psb
+*.bsp
+*.dat
+*.bin
+*.cue
+
+# Intermediate executables and objects
+*.o
+*.elf
+*.exe
+*.iso
+*.map
+*.dSYM/
+compile_flags.txt
+compile_commands.json
+
+# Local editor and OS files
+.vscode/
+.DS_Store

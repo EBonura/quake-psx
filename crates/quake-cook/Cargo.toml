@@ -1,0 +1,14 @@
+[package]
+name = "quake-cook"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Rust host-side asset cooker for quake-psx"
+
+[dependencies]
+# Resolved from the hydrated pin so the cooker and the game share one
+# PSoXide source contract instead of a second remote revision.
+psx-sfx = { path = "../../.psoxide/sdk/crates/psx-sfx" }
+psx-render-contract = { path = "../../.psoxide/engine/crates/psx-render-contract" }
+psxed-audio = { path = "../../.psoxide/editor/crates/psxed-audio" }
+quake-formats = { path = "../quake-formats" }

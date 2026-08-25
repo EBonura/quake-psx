@@ -1,0 +1,218 @@
+name: Build and publish quake-psx
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example 0.1.0-rc.1)"
+        required: true
+        type: string
+      deploy:
+        description: "Upload the verified build to the private itch.io project"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quake-psx-itch-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Standalone PS1 disc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: quake
+    env:
+      ITCH_TARGET: bonnie-studios/quake-psx:psx
+
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          path: quake
+          persist-credentials: false
+
+      - name: Check out the pinned PSoXide SDK
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: EBonura/PSoXide
+          ref: f894437986e1c0148ad39eaa38134ab09185312d
+          fetch-depth: 1
+          path: psoxide
+          persist-credentials: false
+
+      - name: Resolve and validate the release version
+        id: release
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+          MANUAL_DEPLOY: ${{ inputs.deploy }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            deploy=true
+          else
+            version="${MANUAL_VERSION#v}"
+            deploy="$MANUAL_DEPLOY"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Release version must be SemVer-like: 0.1.0 or 0.1.0-rc.1" >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Release tags must be exactly v<version>; got $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "artifact=quake-psx-$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the deployment contract
+        if: steps.release.outputs.deploy == 'true'
+        shell: bash
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ "$ITCH_TARGET" != "bonnie-studios/quake-psx:psx" ]]; then
+            echo "Refusing unexpected itch.io target: $ITCH_TARGET" >&2
+            exit 1
+          fi
+          if [[ -z "$BUTLER_API_KEY" ]]; then
+            echo "Repository secret BUTLER_API_KEY is required for deployment" >&2
+            exit 1
+          fi
+
+      - name: Require a commit contained by main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/EBonura/quake-psx.git \
+            main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Refusing to release a commit that is not contained by main" >&2
+            exit 1
+          fi
+
+      - name: Install host build requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes 7zip unzip
+          toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal \
+            --component rust-src \
+            --component llvm-tools \
+            --component rustfmt \
+            --component clippy
+          cargo --version
+
+      - name: Hydrate the pinned SDK path dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked \
+            --manifest-path ../psoxide/tools/psoxide-link/Cargo.toml -- \
+            --from ../psoxide \
+            --into .psoxide
+
+      - name: Build the provenance-grade standalone disc
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo run --locked --release -- build --psoxide ../psoxide
+
+      - name: Verify and stage the flat release
+        id: package
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          provenance="dist/quake-psx.provenance.json"
+          jq --exit-status --arg revision "$GITHUB_SHA" '
+            .schema == 1 and
+            .quake_source.revision == $revision and
+            .quake_source.tree_clean == true and
+            .psoxide.tree_clean == true and
+            .artifacts.cue.file == "quake-psx.cue" and
+            .artifacts.bin.file == "quake-psx.bin" and
+            .artifacts.exe.file == "quake-psx.exe"
+          ' "$provenance" >/dev/null
+
+          release_dir="$RUNNER_TEMP/quake-psx-$RELEASE_VERSION"
+          install -d "$release_dir"
+          install -m 0644 \
+            dist/quake-psx.bin \
+            dist/quake-psx.cue \
+            dist/quake-psx.exe \
+            dist/quake-psx.provenance.json \
+            release/README.txt \
+            LICENSE \
+            THIRD_PARTY_NOTICES.md \
+            "$release_dir/"
+          printf '%s\n' "$RELEASE_VERSION" > "$release_dir/VERSION.txt"
+
+          test "$(find "$release_dir" -maxdepth 1 -type f | wc -l)" -eq 8
+          echo "directory=$release_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the versioned disc as a workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.release.outputs.artifact }}
+          path: ${{ steps.package.outputs.directory }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Install official itch.io butler
+        if: steps.release.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          butler_dir="$RUNNER_TEMP/butler"
+          install -d "$butler_dir"
+          curl --fail --location --show-error --retry 5 \
+            https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default \
+            --output "$RUNNER_TEMP/butler.zip"
+          unzip -q "$RUNNER_TEMP/butler.zip" -d "$butler_dir"
+          chmod +x "$butler_dir/butler"
+          echo "$butler_dir" >> "$GITHUB_PATH"
+          "$butler_dir/butler" version
+
+      - name: Verify itch.io project access
+        if: steps.release.outputs.deploy == 'true'
+        shell: bash
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: butler status "${ITCH_TARGET%:*}"
+
+      - name: Publish the versioned build to itch.io
+        if: steps.release.outputs.deploy == 'true'
+        shell: bash
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_DIRECTORY: ${{ steps.package.outputs.directory }}
+        run: |
+          set -euo pipefail
+          butler push "$RELEASE_DIRECTORY" "$ITCH_TARGET" \
+            --userversion "$RELEASE_VERSION"

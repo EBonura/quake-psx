@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "oracle": {
+    "source": "id Software Quake 1.09",
+    "source_commit": "bf4ac424ce754894ac8f1dae6a3981954bc9852d",
+    "renderer_files": {
+      "WinQuake/r_sky.c_sha256": "2c3d745122a6ff6c55cda7721f4b375d3211965cf49ecb75ac47fb040d63d4e7",
+      "WinQuake/d_sky.c_sha256": "7267d7454e04b999e15c56e7b802c8721ec28daa07f247427d79cc169fe19b3e"
+    },
+    "native_harness": "Chocolate Quake, native macOS arm64",
+    "native_harness_commit": "08cab612296a4b3441f812048495124a3b342656",
+    "resolution": [320, 240],
+    "map": "e1m1",
+    "origin": [80.0, 720.0, 46.0],
+    "angles_degrees": [-30.0, 90.0, 0.0],
+    "capture_t0_ppm_sha256": "677c7dfbf7f1c1305550aced4a9884bc11dbd618bc09dfe7d7382d266fd289cd",
+    "capture_t1_ppm_sha256": "4e1f4ab7b0dadb708f1d5c46205c2961a30afb7ada998e4a1c9c735661b0bd13"
+  },
+  "algorithm": {
+    "screen_projection": 160,
+    "vertical_ray_scale": 3,
+    "directional_uv_scale": 378,
+    "foreground_scroll_texels_per_second": 16,
+    "background_scroll_texels_per_second": 8,
+    "masked_foreground_half": "left",
+    "solid_background_half": "right"
+  },
+  "psx_reference": {
+    "foreground_grid": [10, 12],
+    "background_grid": [10, 12],
+    "native_camera_png_sha256": "afa09c4ebcf07e62bc15ecc87efee0d3bb36790baefb42732841cd5370c20c5a",
+    "native_oracle_camera_psx_ppm_sha256": "60bfddeadb0eb3cfe57d52cca14f05660dc96978f4baaa3fe4a8180397ed1060"
+  }
+}
