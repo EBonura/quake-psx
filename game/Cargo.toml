@@ -1,0 +1,64 @@
+cargo-features = ["trim-paths"]
+
+[package]
+name = "quake-psx"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "quake-psx"
+path = "src/main.rs"
+
+[profile.release]
+trim-paths = "all"
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[features]
+default = []
+episode1-regression = ["emulator-telemetry"]
+episode1-route-regression = ["emulator-telemetry"]
+ambient-regression = []
+audio-residency-regression = ["emulator-telemetry"]
+combat-regression = ["emulator-telemetry"]
+arsenal-regression = ["emulator-telemetry"]
+monster-regression = ["emulator-telemetry"]
+monsterjump-regression = ["emulator-telemetry"]
+bestiary-regression = ["emulator-telemetry"]
+start-route-regression = ["emulator-telemetry"]
+e1m1-chain-regression = ["emulator-telemetry"]
+e1m2-e1m3-route-regression = ["emulator-telemetry"]
+systems-regression = ["emulator-telemetry"]
+survival-regression = ["emulator-telemetry"]
+visual-parity-regression = ["emulator-telemetry"]
+# Benchmark companion for a route regression: advance the simulation by a
+# fixed three ticks per rendered frame so the scripted route takes the same
+# path on builds of differing speed and only the frame cost changes.
+perf-fixed-ticks = []
+emulator-telemetry = ["psx-telemetry/emit"]
+hardware-performance = []
+hardware-regression = ["hardware-performance"]
+
+[dependencies]
+quake-formats = { path = "../crates/quake-formats" }
+quake-core = { path = "../crates/quake-core" }
+psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
+psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc"] }
+psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
+psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
+psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
+psx-font = { path = "../.psoxide/sdk/crates/psx-font" }
+psx-gte = { path = "../.psoxide/sdk/crates/psx-gte" }
+psx-math = { path = "../.psoxide/sdk/crates/psx-math" }
+psx-pad = { path = "../.psoxide/sdk/crates/psx-pad" }
+psx-spu = { path = "../.psoxide/sdk/crates/psx-spu" }
+psx-sfx = { path = "../.psoxide/sdk/crates/psx-sfx" }
+psx-pack = { path = "../.psoxide/sdk/crates/psx-pack" }
+psx-telemetry = { path = "../.psoxide/sdk/crates/psx-telemetry" }
+psx-engine = { path = "../.psoxide/engine/crates/psx-engine" }
+psx-render-contract = { path = "../.psoxide/engine/crates/psx-render-contract" }

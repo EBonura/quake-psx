@@ -1,0 +1,5 @@
+[toolchain]
+# PSoXide's PS1 target, build-std support and MIPS inline assembly require
+# nightly. Keep this aligned with the pinned PSoXide revision above.
+channel = "nightly-2026-03-25"
+components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]

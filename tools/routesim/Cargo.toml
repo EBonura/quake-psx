@@ -1,0 +1,23 @@
+[package]
+name = "quake-routesim"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Host route-authoring aid: runs the guest's own movement and collision over a cooked PSB"
+publish = false
+
+# Its own workspace, like `game`: this is a developer aid, not part of the
+# shipping builder's package, lockfile, or guest recipe.
+[workspace]
+
+[[bin]]
+name = "quake-routesim"
+path = "src/main.rs"
+
+[dependencies]
+psx-math = { path = "../../.psoxide/sdk/crates/psx-math" }
+quake-core = { path = "../../crates/quake-core" }
+quake-formats = { path = "../../crates/quake-formats" }
+
+[profile.release]
+opt-level = 2
