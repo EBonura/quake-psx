@@ -28,7 +28,7 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Keep this in sync with the psoxide-link revision in Cargo.lock.
-const PSOXIDE_REV: &str = "f894437986e1c0148ad39eaa38134ab09185312d";
+const PSOXIDE_REV: &str = "5048fbde0ea650c8f728f1fb271a9529a447a90b";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -60,6 +60,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     ".psoxide/sdk/crates/psx-pack",
     ".psoxide/sdk/crates/psx-pad",
     ".psoxide/sdk/crates/psx-rt",
+    ".psoxide/sdk/crates/psx-settings",
     ".psoxide/sdk/crates/psx-sfx",
     ".psoxide/sdk/crates/psx-spu",
     ".psoxide/sdk/crates/psx-telemetry",
@@ -103,6 +104,7 @@ members = [
     "crates/psx-vram",
     "crates/psx-font",
     "crates/psx-math",
+    "crates/psx-settings",
     "crates/psx-spu",
     "crates/psx-sfx",
     "crates/psx-telemetry",
@@ -137,6 +139,8 @@ psx-pad = { path = "crates/psx-pad" }
 psx-vram = { path = "crates/psx-vram" }
 psx-font = { path = "crates/psx-font" }
 psx-math = { path = "crates/psx-math" }
+psx-mc = "0.1.0"
+psx-settings = { path = "crates/psx-settings" }
 psx-spu = { path = "crates/psx-spu" }
 psx-asset = { path = "crates/psx-asset" }
 psx-pack = { path = "crates/psx-pack" }
@@ -3477,6 +3481,7 @@ fn print_help() {
            e1m1-gpu-polygon-window-runs-bench  Coalesce final GPU-order liquid window state runs\n  \
            e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
            e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
+           e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
            e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \

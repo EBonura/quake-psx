@@ -47,7 +47,7 @@ locally.
 | World | Doors, lifts, buttons, trains, teleporters, secrets and scripted targets |
 | Presentation | Minimal and Classic HUDs, menus, sprites, sky, water, screen blends and positional audio |
 | Target | Original PlayStation at 320x240 |
-| Performance | 30 fps goal; canonical fixed-step E1M1 route currently measures 21.857 fps in PSoXide |
+| Performance | 30 fps goal; feature-gated Quake II transfer stack measures 23.432 fps on the canonical fixed-step E1M1 route in PSoXide |
 | Hardware | Emulator-tested; the final physical-console pass is still pending |
 
 See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
@@ -65,14 +65,14 @@ See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
 The current PSoXide revision is:
 
 ```text
-f894437986e1c0148ad39eaa38134ab09185312d
+5048fbde0ea650c8f728f1fb271a9529a447a90b
 ```
 
 Create a worktree for that revision:
 
 ```sh
 git -C /path/to/PSoXide worktree add ../PSoXide-quake \
-  f894437986e1c0148ad39eaa38134ab09185312d
+  5048fbde0ea650c8f728f1fb271a9529a447a90b
 ```
 
 The Quake crates use local paths into an ignored `.psoxide/` directory. Hydrate
