@@ -237,8 +237,14 @@ enum Action {
     E1m1GpuPolygonWindowRangeBench,
     E1m1GpuPolygonCellStreamBench,
     E1m1GpuPolygonCellPolicyBench,
+    E1m1GpuPolygonGteNearBench,
+    E1m1GpuPolygonCellLiquidBench,
+    E1m1GpuPolygonBlockClipFlagsBench,
+    E1m1GpuPolygonBakedMaterializeBench,
     GpuPolygonCellPolicyDisc,
+    GpuPolygonLeaderDisc,
     E1m1GpuPolygonQuakeKernelBench,
+    E1m1GpuPolygonLeaderBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
     E1m1GpuPolygonColdLevel2Bench,
@@ -270,6 +276,7 @@ enum Action {
     E1m1GpuCensus,
     E1m1GpuPolygonCensus,
     E1m2E1m3RouteRegress,
+    E1m2E1m3LeaderRouteRegress,
     SurvivalRegress,
     VisualParityRegress,
     SystemsRegress,
@@ -1124,6 +1131,89 @@ fn real_main() -> Result<()> {
                 "e1m1-gpu-polygon-cell-policy-bench",
             )?;
         }
+        Action::E1m1GpuPolygonGteNearBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-gte-near-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-gte-near-classification",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gpu-polygon-gte-near-bench")?;
+        }
+        Action::E1m1GpuPolygonCellLiquidBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-cell-liquid-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-cell-liquid-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonBlockClipFlagsBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-block-clip-flags-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-block-clip-flags,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-block-clip-flags-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonBakedMaterializeBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-baked-materialize-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-baked-materialize-bench",
+            )?;
+        }
         Action::GpuPolygonCellPolicyDisc => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1136,6 +1226,24 @@ fn real_main() -> Result<()> {
                 &build,
                 Some(
                     "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_ship_boot(&root, &frontend, &build, &map)?;
+        }
+        Action::GpuPolygonLeaderDisc => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-gpu-polygon-leader-playable");
+            fs::create_dir_all(&build)?;
+            let map = build.join("quake-psx.map");
+            request_guest_link_map(map.clone())?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
                 ),
                 false,
             )?;
@@ -1163,6 +1271,23 @@ fn real_main() -> Result<()> {
                 &build,
                 "e1m1-gpu-polygon-quake-kernel-bench",
             )?;
+        }
+        Action::E1m1GpuPolygonLeaderBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-leader-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gpu-polygon-leader-bench")?;
         }
         Action::E1m1GpuPolygonLevel0RunBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -1632,6 +1757,21 @@ fn real_main() -> Result<()> {
             cook_assets(&root, &pak, false)?;
             let build = root.join("build-psoxide-e1m2-e1m3-route-regression");
             build_disc(&root, &build, Some("e1m2-e1m3-route-regression"), false)?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m2_e1m3_route_regression(&root, &frontend, &build)?;
+        }
+        Action::E1m2E1m3LeaderRouteRegress => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m2-e1m3-leader-route-regression");
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
+                ),
+                false,
+            )?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m2_e1m3_route_regression(&root, &frontend, &build)?;
         }
@@ -3250,8 +3390,14 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-window-range-bench"
             | "e1m1-gpu-polygon-cell-stream-bench"
             | "e1m1-gpu-polygon-cell-policy-bench"
+            | "e1m1-gpu-polygon-gte-near-bench"
+            | "e1m1-gpu-polygon-cell-liquid-bench"
+            | "e1m1-gpu-polygon-block-clip-flags-bench"
+            | "e1m1-gpu-polygon-baked-materialize-bench"
             | "gpu-polygon-cell-policy-disc"
+            | "gpu-polygon-leader-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
+            | "e1m1-gpu-polygon-leader-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
             | "e1m1-gpu-polygon-cold-level2-bench"
@@ -3283,6 +3429,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-census"
             | "e1m1-gpu-polygon-census"
             | "e1m2-e1m3-route-regress"
+            | "e1m2-e1m3-leader-route-regress"
             | "survival-regress"
             | "systems-regress"
             | "combat-regress"
@@ -3348,8 +3495,18 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-window-range-bench" => Action::E1m1GpuPolygonWindowRangeBench,
                     "e1m1-gpu-polygon-cell-stream-bench" => Action::E1m1GpuPolygonCellStreamBench,
                     "e1m1-gpu-polygon-cell-policy-bench" => Action::E1m1GpuPolygonCellPolicyBench,
+                    "e1m1-gpu-polygon-gte-near-bench" => Action::E1m1GpuPolygonGteNearBench,
+                    "e1m1-gpu-polygon-cell-liquid-bench" => Action::E1m1GpuPolygonCellLiquidBench,
+                    "e1m1-gpu-polygon-block-clip-flags-bench" => {
+                        Action::E1m1GpuPolygonBlockClipFlagsBench
+                    }
+                    "e1m1-gpu-polygon-baked-materialize-bench" => {
+                        Action::E1m1GpuPolygonBakedMaterializeBench
+                    }
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
+                    "gpu-polygon-leader-disc" => Action::GpuPolygonLeaderDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
+                    "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
                     "e1m1-gpu-polygon-cold-adaptive-bench" => {
                         Action::E1m1GpuPolygonColdAdaptiveBench
@@ -3403,6 +3560,7 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-census" => Action::E1m1GpuCensus,
                     "e1m1-gpu-polygon-census" => Action::E1m1GpuPolygonCensus,
                     "e1m2-e1m3-route-regress" => Action::E1m2E1m3RouteRegress,
+                    "e1m2-e1m3-leader-route-regress" => Action::E1m2E1m3LeaderRouteRegress,
                     "survival-regress" => Action::SurvivalRegress,
                     "systems-regress" => Action::SystemsRegress,
                     "combat-regress" => Action::CombatRegress,
@@ -3482,7 +3640,13 @@ fn print_help() {
            e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
            e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
            e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
+           e1m1-gpu-polygon-gte-near-bench  A/B classify selected near faces in a live GTE row\n  \
+           e1m1-gpu-polygon-cell-liquid-bench  A/B remove hot selector texture lookups\n  \
+           e1m1-gpu-polygon-block-clip-flags-bench  A/B propagate exact block clip flags\n  \
+           e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
+           e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.651 renderer stack\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
+           gpu-polygon-leader-disc  Build and boot-test the playable 23.651 renderer feature stack\n  \
            e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
            e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \
            e1m1-hoisted-indexed-world-bench  A/B decode PSB5 indexed view once per world frame\n  \
@@ -3511,6 +3675,7 @@ fn print_help() {
            e1m1-gpu-census  Capture GP0 work for the accepted selector on the fixed route\n  \
            e1m1-gpu-polygon-census  Capture GP0 work for the GPU-clipped candidate\n  \
            e1m2-e1m3-route-regress  Walk E1M2 and E1M3's authored progression into E1M4 headlessly\n  \
+           e1m2-e1m3-leader-route-regress  Repeat E1M2/E1M3 with the 23.651 renderer stack\n  \
            survival-regress  Walk E1M1's authored hazards: burn, fall, drown, die, respawn\n  \
            systems-regress  Prove Start's authored lava spouts headlessly\n  \
            combat-regress  Prove shotgun damage and death against cooked E1M1\n  \
@@ -9280,8 +9445,22 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-window-range-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-stream-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-policy-bench"
+            | "build-psoxide-e1m1-gpu-polygon-gte-near-bench"
+            | "build-psoxide-e1m1-gpu-polygon-cell-liquid-bench"
+            | "build-psoxide-e1m1-gpu-polygon-block-clip-flags-bench"
+            | "build-psoxide-e1m1-gpu-polygon-baked-materialize-bench"
+            | "build-psoxide-e1m1-gpu-polygon-baked-materialize-v2-bench"
             | "build-psoxide-gpu-polygon-cell-policy-playable"
+            | "build-psoxide-gpu-polygon-leader-playable"
             | "build-psoxide-e1m1-gpu-polygon-quake-kernel-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-quake-kernel-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-liquid-scan-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-fused-near-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-v2-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-v3-bench"
+            | "build-psoxide-e1m1-gpu-polygon-leader-bench"
+            | "build-psoxide-e1m2-e1m3-leader-route-regression"
             | "build-psoxide-e1m1-gpu-polygon-level0-run-bench"
             | "build-psoxide-e1m1-gpu-polygon-cold-adaptive-bench"
             | "build-psoxide-e1m1-gpu-polygon-cold-level2-bench"
