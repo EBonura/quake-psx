@@ -2,6 +2,8 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(all(feature = "renderer-mips-selection-kernel", target_arch = "mips"))]
+use core::arch::asm;
 use core::mem::MaybeUninit;
 use core::ptr::{self, addr_of_mut};
 
@@ -763,6 +765,54 @@ struct VisibleFaceBlock {
 
 #[cfg(feature = "renderer-block-frustum")]
 const _: [(); 12] = [(); core::mem::size_of::<VisibleFaceBlock>()];
+
+#[cfg(feature = "renderer-mips-selection-kernel")]
+const _: () = assert!(
+    core::mem::offset_of!(VisibleFaceBlock, maxs)
+        - core::mem::offset_of!(VisibleFaceBlock, mins)
+        == 6
+);
+
+#[cfg(feature = "renderer-mips-selection-kernel")]
+const _: () = assert!(
+    core::mem::offset_of!(RetainedSurfaceBounds, maxs)
+        - core::mem::offset_of!(RetainedSurfaceBounds, mins)
+        == 6
+);
+
+/// Per-plane support-point byte offsets consumed by the fixed MIPS selector.
+/// Built once per selection pass instead of reloading and branching on the
+/// frustum sign masks for every block and face AABB.
+#[cfg(feature = "renderer-mips-selection-kernel")]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct MipsAabbSupport {
+    xyz_offsets: [u8; 3],
+    _padding: u8,
+    distance: i32,
+}
+
+#[cfg(feature = "renderer-mips-selection-kernel")]
+impl MipsAabbSupport {
+    #[inline(always)]
+    const fn new(plane: AabbClipPlane) -> Self {
+        Self {
+            xyz_offsets: [
+                if plane.signbits & 1 != 0 { 0 } else { 6 },
+                if plane.signbits & 2 != 0 { 2 } else { 8 },
+                if plane.signbits & 4 != 0 { 4 } else { 10 },
+            ],
+            _padding: 0,
+            distance: plane.distance,
+        }
+    }
+}
+
+#[cfg(feature = "renderer-mips-selection-kernel")]
+const _: [(); 8] = [(); core::mem::size_of::<MipsAabbSupport>()];
+
+#[cfg(feature = "renderer-mips-selection-kernel")]
+const _: () = assert!(core::mem::offset_of!(MipsAabbSupport, distance) == 4);
 
 /// Diagnostic-only counters for renderer structure experiments. The feature
 /// that enables these records adds several full passes and a debug write per
@@ -7492,6 +7542,151 @@ fn select_frame_faces_preselected(
 /// Exact selector with one conservative union-frustum test before each 16
 /// consecutive PVS faces. Rejected blocks cannot contain a selected face;
 /// accepted blocks retain the authoritative per-face policy and output order.
+///
+/// The MIPS kernel consumes `mins` followed immediately by `maxs`, as pinned
+/// by the layout assertions above. Its four GTE operations are the same outer
+/// support tests as `scene::aabb_outside_clip4`; only LLVM's repeated support
+/// selection and spills are replaced.
+#[cfg(feature = "renderer-mips-selection-kernel")]
+#[inline(always)]
+unsafe fn aabb_outside_clip4_mips_selection(
+    mins: *const i16,
+    supports: &[MipsAabbSupport; 4],
+    #[cfg(not(target_arch = "mips"))] frustum: &[AabbClipPlane; 4],
+) -> bool {
+    #[cfg(target_arch = "mips")]
+    {
+        let outside: u32;
+        unsafe {
+            asm!(
+                ".set push",
+                ".set noreorder",
+                // Plane zero: preselected support -> rotation row zero/MAC1.
+                "lbu $11, 0($5)",
+                "lbu $13, 1($5)",
+                "addu $11, $4, $11",
+                "lh $8, 0($11)",
+                "addu $13, $4, $13",
+                "lh $9, 0($13)",
+                "lbu $11, 2($5)",
+                "lw $12, 4($5)",
+                "addu $11, $4, $11",
+                "lh $10, 0($11)",
+                "andi $8, $8, 0xffff",
+                "sll $9, $9, 16",
+                "or $8, $8, $9",
+                ".word 0x48880000",
+                ".word 0x488a0800",
+                ".word 0",
+                ".word 0",
+                ".word 0x4a006012",
+                ".word 0x480ec800",
+                ".word 0",
+                "slt $13, $14, $12",
+                "bne $13, $0, 90f",
+                "nop",
+                // Plane one: preselected support -> rotation row one/MAC2.
+                "lbu $11, 8($5)",
+                "lbu $13, 9($5)",
+                "addu $11, $4, $11",
+                "lh $8, 0($11)",
+                "addu $13, $4, $13",
+                "lh $9, 0($13)",
+                "lbu $11, 10($5)",
+                "lw $12, 12($5)",
+                "addu $11, $4, $11",
+                "lh $10, 0($11)",
+                "andi $8, $8, 0xffff",
+                "sll $9, $9, 16",
+                "or $8, $8, $9",
+                ".word 0x48880000",
+                ".word 0x488a0800",
+                ".word 0",
+                ".word 0",
+                ".word 0x4a006012",
+                ".word 0x480ed000",
+                ".word 0",
+                "slt $13, $14, $12",
+                "bne $13, $0, 90f",
+                "nop",
+                // Plane two: preselected support -> rotation row two/MAC3.
+                "lbu $11, 16($5)",
+                "lbu $13, 17($5)",
+                "addu $11, $4, $11",
+                "lh $8, 0($11)",
+                "addu $13, $4, $13",
+                "lh $9, 0($13)",
+                "lbu $11, 18($5)",
+                "lw $12, 20($5)",
+                "addu $11, $4, $11",
+                "lh $10, 0($11)",
+                "andi $8, $8, 0xffff",
+                "sll $9, $9, 16",
+                "or $8, $8, $9",
+                ".word 0x48880000",
+                ".word 0x488a0800",
+                ".word 0",
+                ".word 0",
+                ".word 0x4a006012",
+                ".word 0x480ed800",
+                ".word 0",
+                "slt $13, $14, $12",
+                "bne $13, $0, 90f",
+                "nop",
+                // Plane three: preselected support -> light row zero/MAC1.
+                "lbu $11, 24($5)",
+                "lbu $13, 25($5)",
+                "addu $11, $4, $11",
+                "lh $8, 0($11)",
+                "addu $13, $4, $13",
+                "lh $9, 0($13)",
+                "lbu $11, 26($5)",
+                "lw $12, 28($5)",
+                "addu $11, $4, $11",
+                "lh $10, 0($11)",
+                "andi $8, $8, 0xffff",
+                "sll $9, $9, 16",
+                "or $8, $8, $9",
+                ".word 0x48880000",
+                ".word 0x488a0800",
+                ".word 0",
+                ".word 0",
+                ".word 0x4a026012",
+                ".word 0x480ec800",
+                ".word 0",
+                "slt $13, $14, $12",
+                "bne $13, $0, 90f",
+                "nop",
+                "or $2, $0, $0",
+                "b 91f",
+                "nop",
+                "90:",
+                "addiu $2, $0, 1",
+                "91:",
+                ".set pop",
+                in("$4") mins,
+                in("$5") supports.as_ptr(),
+                lateout("$2") outside,
+                out("$8") _,
+                out("$9") _,
+                out("$10") _,
+                out("$11") _,
+                out("$12") _,
+                out("$13") _,
+                out("$14") _,
+                options(nostack, readonly),
+            );
+        }
+        outside != 0
+    }
+    #[cfg(not(target_arch = "mips"))]
+    {
+        let mins_array = unsafe { [*mins, *mins.add(1), *mins.add(2)] };
+        let maxs_array = unsafe { [*mins.add(3), *mins.add(4), *mins.add(5)] };
+        scene::aabb_outside_clip4(mins_array, maxs_array, frustum, 0x0f)
+    }
+}
+
 #[cfg(all(not(feature = "renderer-census"), feature = "renderer-block-frustum"))]
 #[inline(never)]
 fn select_frame_faces_blocked(
@@ -7516,12 +7711,31 @@ fn select_frame_faces_blocked(
     let mut count = 0usize;
     #[cfg(feature = "renderer-plane-run-cache")]
     let mut plane_cache = FrontFacingCache::EMPTY;
+    #[cfg(feature = "renderer-mips-selection-kernel")]
+    let mips_supports = [
+        MipsAabbSupport::new(frustum[0]),
+        MipsAabbSupport::new(frustum[1]),
+        MipsAabbSupport::new(frustum[2]),
+        MipsAabbSupport::new(frustum[3]),
+    ];
     let mut block_index = 0usize;
     let mut first = 0usize;
     while first < visible_faces.len() {
         let block = unsafe { visible_blocks.get_unchecked(block_index) };
         let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
-        if !scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
+        #[cfg(feature = "renderer-mips-selection-kernel")]
+        let block_outside = unsafe {
+            aabb_outside_clip4_mips_selection(
+                block.mins.as_ptr(),
+                &mips_supports,
+                #[cfg(not(target_arch = "mips"))]
+                frustum,
+            )
+        };
+        #[cfg(not(feature = "renderer-mips-selection-kernel"))]
+        let block_outside =
+            scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f);
+        if !block_outside {
             let mut visible_index = first;
             while visible_index < end {
                 let visible = unsafe { visible_faces.get_unchecked(visible_index) };
@@ -7584,12 +7798,28 @@ fn select_frame_faces_blocked(
                             )
                         }
                     })
-                    && !scene::aabb_outside_clip4(
-                        visible.bounds.mins,
-                        visible.bounds.maxs,
-                        frustum,
-                        0x0f,
-                    )
+                    && !{
+                        #[cfg(feature = "renderer-mips-selection-kernel")]
+                        {
+                            unsafe {
+                                aabb_outside_clip4_mips_selection(
+                                    visible.bounds.mins.as_ptr(),
+                                    &mips_supports,
+                                    #[cfg(not(target_arch = "mips"))]
+                                    frustum,
+                                )
+                            }
+                        }
+                        #[cfg(not(feature = "renderer-mips-selection-kernel"))]
+                        {
+                            scene::aabb_outside_clip4(
+                                visible.bounds.mins,
+                                visible.bounds.maxs,
+                                frustum,
+                                0x0f,
+                            )
+                        }
+                    }
                 {
                     let entry =
                         visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
