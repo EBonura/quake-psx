@@ -49,6 +49,60 @@ pub fn directional_texel(mut direction: [i32; 3], layer_width: u8) -> [i32; 2] {
     [project(direction[0]), project(direction[1])]
 }
 
+/// The same sky projection using one shared hardware divide for both axes.
+///
+/// `ceil(2^32 / denominator)` turns each remaining quotient into a multiply-
+/// high plus at most one downward correction. The correction makes this
+/// byte-exact with Rust's signed division while halving R3000A DIV traffic.
+/// The sky caller supplies bounded directions, but this retains the same
+/// defensive scaling and saturation policy as [`directional_texel`].
+pub fn directional_texel_shared_divisor(
+    mut direction: [i32; 3],
+    layer_width: u8,
+) -> [i32; 2] {
+    direction[2] = direction[2].saturating_mul(3);
+    while direction[0]
+        .unsigned_abs()
+        .max(direction[1].unsigned_abs())
+        .max(direction[2].unsigned_abs())
+        > 16_000
+    {
+        direction[0] >>= 1;
+        direction[1] >>= 1;
+        direction[2] >>= 1;
+    }
+
+    let length_squared = direction[0]
+        .saturating_mul(direction[0])
+        .saturating_add(direction[1].saturating_mul(direction[1]))
+        .saturating_add(direction[2].saturating_mul(direction[2]));
+    let length = isqrt_i32(length_squared).max(1);
+    let denominator = (length as u32) * 128;
+    // denominator is at least 128, so the rounded-up reciprocal fits u32.
+    let reciprocal = u32::MAX / denominator + 1;
+    let scale = 378 * i32::from(layer_width);
+
+    #[inline(always)]
+    fn project(component: i32, scale: i32, denominator: u32, reciprocal: u32) -> i32 {
+        let numerator = component * scale;
+        let magnitude = numerator.unsigned_abs();
+        let mut quotient = ((u64::from(magnitude) * u64::from(reciprocal)) >> 32) as u32;
+        if u64::from(quotient) * u64::from(denominator) > u64::from(magnitude) {
+            quotient -= 1;
+        }
+        if numerator < 0 {
+            -(quotient as i32)
+        } else {
+            quotient as i32
+        }
+    }
+
+    [
+        project(direction[0], scale, denominator, reciprocal),
+        project(direction[1], scale, denominator, reciprocal),
+    ]
+}
+
 /// Recover a world-space viewing ray from one screen coordinate.
 ///
 /// `world_to_view_q12` is the rotation already loaded for the frame. Its
@@ -154,7 +208,32 @@ pub fn directional_uv(
 
 #[cfg(test)]
 mod tests {
-    use super::{directional_texel, directional_uv, packet_quad_uv, screen_view_ray};
+    use super::{
+        directional_texel, directional_texel_shared_divisor, directional_uv, packet_quad_uv,
+        screen_view_ray,
+    };
+
+    #[test]
+    fn shared_divisor_projection_matches_two_exact_divides() {
+        let mut state = 0x6a09_e667_f3bc_c909u64;
+        for _ in 0..200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let direction = [
+                state as i32,
+                (state >> 21) as i32,
+                state.rotate_left(29) as i32,
+            ];
+            for width in [8, 16, 32, 64, 128] {
+                assert_eq!(
+                    directional_texel_shared_divisor(direction, width),
+                    directional_texel(direction, width),
+                    "{direction:?} width={width}",
+                );
+            }
+        }
+    }
 
     #[test]
     fn i32_projection_matches_i64() {

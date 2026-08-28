@@ -6,6 +6,7 @@ use quake_formats::{
     LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, LIQUID_DOUBLE_BUFFER_MARKER,
 };
 
+use super::portal::cook_portal_graph;
 use super::{psx_tpage, Bsp, BspLump, CookError, MipTexture};
 
 const TEXTURE_SPECIAL: u8 = 1;
@@ -1146,14 +1147,17 @@ fn serialize_mark_surfaces(marks: &[u16]) -> Vec<u8> {
 /// prefix; the fixed footer makes the optional sidecar discoverable without
 /// changing the shared PSB5 leaf record.
 fn serialize_visibility(bsp: &Bsp<'_>, leaves: &[CookLeaf]) -> Result<Vec<u8>, CookError> {
+    let (portal_graph, _portal_stats) = cook_portal_graph(bsp)?;
     let count = u16::try_from(leaves.len())
         .map_err(|_| CookError::new("leaf-bounds sidecar exceeds u16"))?;
     let mut output = Vec::with_capacity(
         bsp.lump(BspLump::Visibility).len()
+            + portal_graph.len()
             + leaves.len() * LEAF_BOUNDS_RECORD_BYTES
             + LEAF_BOUNDS_FOOTER_BYTES,
     );
     output.extend_from_slice(bsp.lump(BspLump::Visibility));
+    output.extend_from_slice(&portal_graph);
     for leaf in leaves {
         output.extend(leaf.mins.map(encode_leaf_bound_min).map(|value| value as u8));
         output.extend(leaf.maxs.map(encode_leaf_bound_max).map(|value| value as u8));

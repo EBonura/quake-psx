@@ -21,6 +21,14 @@ pub use sound::*;
 pub const LEAF_BOUNDS_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"QLB1");
 pub const LEAF_BOUNDS_RECORD_BYTES: usize = 6;
 pub const LEAF_BOUNDS_FOOTER_BYTES: usize = 8;
+/// Footer magic for the optional conservative leaf-portal graph stored
+/// immediately before the leaf-bounds table (`QPG1`). Keeping both sidecars
+/// ahead of the existing `QLB1` footer preserves every source PVS offset.
+pub const PORTAL_GRAPH_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"QPG1");
+pub const PORTAL_GRAPH_LEAF_RECORD_BYTES: usize = 2;
+pub const PORTAL_GRAPH_AREA_RECORD_BYTES: usize = 4;
+pub const PORTAL_GRAPH_EDGE_RECORD_BYTES: usize = 8;
+pub const PORTAL_GRAPH_FOOTER_BYTES: usize = 12;
 /// World units represented by one signed leaf-bound code.
 pub const LEAF_BOUNDS_GRID: i16 = 32;
 const LEAF_BOUNDS_GRID_SHIFT: u32 = LEAF_BOUNDS_GRID.trailing_zeros();
@@ -63,6 +71,153 @@ pub const fn decode_leaf_bound_max(code: i8) -> i16 {
 pub struct LeafBounds {
     pub mins: [i16; 3],
     pub maxs: [i16; 3],
+}
+
+/// One conservative directed doorway between two non-solid BSP leaves.
+///
+/// Bounds are outward-quantized exactly like leaf bounds. Projecting this box
+/// can admit more geometry than the original portal polygon, but can never
+/// make a doorway smaller merely because of wire quantization.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct LeafPortal {
+    pub neighbor: u16,
+    pub bounds: LeafBounds,
+}
+
+/// Checked borrowed view of the optional portal graph in a visibility lump.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct LeafPortalGraph<'a> {
+    leaves: &'a [u8],
+    areas: &'a [u8],
+    edges: &'a [u8],
+}
+
+impl LeafPortalGraph<'_> {
+    #[inline]
+    pub const fn leaf_count(self) -> usize {
+        self.leaves.len() / PORTAL_GRAPH_LEAF_RECORD_BYTES
+    }
+
+    #[inline]
+    pub const fn edge_count(self) -> usize {
+        self.edges.len() / PORTAL_GRAPH_EDGE_RECORD_BYTES
+    }
+
+    #[inline]
+    pub const fn area_count(self) -> usize {
+        self.areas.len() / PORTAL_GRAPH_AREA_RECORD_BYTES
+    }
+
+    /// Resolve one source BSP leaf to its cooked portal area. Solid or
+    /// unreachable leaves use `u16::MAX` and therefore return `None`.
+    #[inline]
+    pub fn leaf_area(self, leaf_index: usize) -> Option<usize> {
+        let start = leaf_index.checked_mul(PORTAL_GRAPH_LEAF_RECORD_BYTES)?;
+        let record = self
+            .leaves
+            .get(start..start + PORTAL_GRAPH_LEAF_RECORD_BYTES)?;
+        let area = u16::from_le_bytes(record.try_into().ok()?);
+        (area != u16::MAX && (area as usize) < self.area_count()).then_some(area as usize)
+    }
+
+    /// Return the directed edge range belonging to one cooked area.
+    #[inline]
+    pub fn area_range(self, area_index: usize) -> Option<(usize, usize)> {
+        let start = area_index.checked_mul(PORTAL_GRAPH_AREA_RECORD_BYTES)?;
+        let record = self
+            .areas
+            .get(start..start + PORTAL_GRAPH_AREA_RECORD_BYTES)?;
+        let first = u16::from_le_bytes(record[0..2].try_into().ok()?) as usize;
+        let count = u16::from_le_bytes(record[2..4].try_into().ok()?) as usize;
+        let end = first.checked_add(count)?;
+        (end <= self.edge_count()).then_some((first, end))
+    }
+
+    /// Decode one directed portal edge.
+    #[inline]
+    pub fn edge(self, edge_index: usize) -> Option<LeafPortal> {
+        let start = edge_index.checked_mul(PORTAL_GRAPH_EDGE_RECORD_BYTES)?;
+        let record = self
+            .edges
+            .get(start..start + PORTAL_GRAPH_EDGE_RECORD_BYTES)?;
+        Some(LeafPortal {
+            neighbor: u16::from_le_bytes(record[0..2].try_into().ok()?),
+            bounds: LeafBounds {
+                mins: [
+                    decode_leaf_bound_min(record[2] as i8),
+                    decode_leaf_bound_min(record[3] as i8),
+                    decode_leaf_bound_min(record[4] as i8),
+                ],
+                maxs: [
+                    decode_leaf_bound_max(record[5] as i8),
+                    decode_leaf_bound_max(record[6] as i8),
+                    decode_leaf_bound_max(record[7] as i8),
+                ],
+            },
+        })
+    }
+}
+
+/// Locate the beginning of the leaf-bounds table which terminates the
+/// visibility lump. Portal data, when present, ends exactly at this offset.
+fn leaf_bounds_table_start(visibility: &[u8]) -> Option<usize> {
+    let footer = visibility.get(visibility.len().checked_sub(LEAF_BOUNDS_FOOTER_BYTES)?..)?;
+    if u32::from_le_bytes(footer[0..4].try_into().ok()?) != LEAF_BOUNDS_TRAILER_MAGIC
+        || u16::from_le_bytes(footer[6..8].try_into().ok()?) as usize
+            != LEAF_BOUNDS_RECORD_BYTES
+    {
+        return None;
+    }
+    let count = u16::from_le_bytes(footer[4..6].try_into().ok()?) as usize;
+    visibility
+        .len()
+        .checked_sub(LEAF_BOUNDS_FOOTER_BYTES + count.checked_mul(LEAF_BOUNDS_RECORD_BYTES)?)
+}
+
+/// Read the optional conservative portal graph which precedes `QLB1`.
+/// Legacy maps and malformed sidecars return `None` without affecting PVS
+/// decompression or leaf-bound access.
+pub fn leaf_portal_graph(visibility: &[u8]) -> Option<LeafPortalGraph<'_>> {
+    let bounds_start = leaf_bounds_table_start(visibility)?;
+    let footer_start = bounds_start.checked_sub(PORTAL_GRAPH_FOOTER_BYTES)?;
+    let footer = visibility.get(footer_start..bounds_start)?;
+    if u32::from_le_bytes(footer[0..4].try_into().ok()?) != PORTAL_GRAPH_TRAILER_MAGIC
+        || u16::from_le_bytes(footer[10..12].try_into().ok()?) != 1
+    {
+        return None;
+    }
+    let leaf_count = u16::from_le_bytes(footer[4..6].try_into().ok()?) as usize;
+    let area_count = u16::from_le_bytes(footer[6..8].try_into().ok()?) as usize;
+    let edge_count = u16::from_le_bytes(footer[8..10].try_into().ok()?) as usize;
+    let leaf_bytes = leaf_count.checked_mul(PORTAL_GRAPH_LEAF_RECORD_BYTES)?;
+    let area_bytes = area_count.checked_mul(PORTAL_GRAPH_AREA_RECORD_BYTES)?;
+    let edge_bytes = edge_count.checked_mul(PORTAL_GRAPH_EDGE_RECORD_BYTES)?;
+    let data_bytes = leaf_bytes.checked_add(area_bytes)?.checked_add(edge_bytes)?;
+    let data_start = footer_start.checked_sub(data_bytes)?;
+    let leaves = visibility.get(data_start..data_start + leaf_bytes)?;
+    let areas = visibility.get(data_start + leaf_bytes..data_start + leaf_bytes + area_bytes)?;
+    let edges = visibility.get(data_start + leaf_bytes + area_bytes..footer_start)?;
+    let graph = LeafPortalGraph {
+        leaves,
+        areas,
+        edges,
+    };
+    for leaf in 0..leaf_count {
+        let start = leaf.checked_mul(PORTAL_GRAPH_LEAF_RECORD_BYTES)?;
+        let area = u16::from_le_bytes(leaves.get(start..start + 2)?.try_into().ok()?);
+        if area != u16::MAX && area as usize >= area_count {
+            return None;
+        }
+    }
+    for area in 0..area_count {
+        graph.area_range(area)?;
+    }
+    for edge in 0..edge_count {
+        if graph.edge(edge)?.neighbor as usize >= area_count {
+            return None;
+        }
+    }
+    Some(graph)
 }
 
 /// Read one optional Quake leaf-bounds record from a visibility-lump suffix.
@@ -133,6 +288,51 @@ mod leaf_bounds_tests {
             decode_leaf_bound_max(encode_leaf_bound_max(i16::MAX)),
             i16::MAX
         );
+    }
+
+    #[test]
+    fn portal_graph_precedes_leaf_bounds_without_changing_legacy_lookup() {
+        let mut bytes = std::vec![0xaa, 0xbb];
+        // Two leaves map one-to-one onto two cooked areas.
+        bytes.extend_from_slice(&[0, 0, 1, 0]);
+        // Area zero owns edge zero; area one owns edge one.
+        bytes.extend_from_slice(&[0, 0, 1, 0, 1, 0, 1, 0]);
+        bytes.extend_from_slice(&[1, 0, 0xff, 0xfe, 0xfd, 1, 2, 3]);
+        bytes.extend_from_slice(&[0, 0, 0xfc, 0xfb, 0xfa, 4, 5, 6]);
+        bytes.extend_from_slice(&PORTAL_GRAPH_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0, 1, 1, 1, 0xff, 0xff, 0xff, 2, 2, 2]);
+        bytes.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+
+        let graph = leaf_portal_graph(&bytes).expect("portal graph");
+        assert_eq!(graph.leaf_count(), 2);
+        assert_eq!(graph.area_count(), 2);
+        assert_eq!(graph.edge_count(), 2);
+        assert_eq!(graph.leaf_area(0), Some(0));
+        assert_eq!(graph.leaf_area(1), Some(1));
+        assert_eq!(graph.area_range(0), Some((0, 1)));
+        assert_eq!(graph.area_range(1), Some((1, 2)));
+        assert_eq!(graph.edge(0).unwrap().neighbor, 1);
+        assert_eq!(graph.edge(0).unwrap().bounds.mins, [-32, -64, -96]);
+        assert_eq!(graph.edge(0).unwrap().bounds.maxs, [32, 64, 96]);
+        assert_eq!(leaf_bounds_at(&bytes, 1).unwrap().maxs, [64, 64, 64]);
+    }
+
+    #[test]
+    fn malformed_portal_graph_does_not_hide_valid_leaf_bounds() {
+        let mut bytes = std::vec![0xaa, 0xbb, 0xcc];
+        bytes.extend_from_slice(&[0; PORTAL_GRAPH_FOOTER_BYTES]);
+        bytes.extend_from_slice(&[0, 0, 0, 1, 1, 1]);
+        bytes.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+        assert_eq!(leaf_portal_graph(&bytes), None);
+        assert!(leaf_bounds_at(&bytes, 0).is_some());
     }
 }
 
@@ -593,9 +793,9 @@ pub const TEXTURE_LAYERED_SKY: u8 = 64;
 /// PSoXide's engine default is [`psx_bsp::resident::MAX_RESIDENT_MAP_BYTES`]
 /// (1,100,000), a generic budget for any XBSP world. The shareware Episode 1
 /// corpus is fully known at build time, so this is Quake policy instead: the
-/// largest indexed PSB5 map (`e1m3`) needs about 856 KiB after the canonical
-/// render-node expansion. A measured 24 KiB structural-growth margin frees the
-/// old PSB1 arena's unused heap
+/// largest indexed PSB5 map plus its conservative portal-area graph needs
+/// about 856 KiB after the canonical render-node expansion. A measured margin
+/// frees the old PSB1 arena's unused heap
 /// without making routine recooks brittle. `assert_cooked_maps_fit` loads every
 /// map through this exact capacity and pins the measured high-water mark.
 pub const RESIDENT_MAP_ARENA_BYTES: usize = 880_000;

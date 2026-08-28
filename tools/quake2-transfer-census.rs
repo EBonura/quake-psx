@@ -7,10 +7,11 @@
 //! can exact-visibility, shared-edge brush ranges be without admitting hidden
 //! faces, and how much source order would they disturb?
 
-use quake_cook::{Bsp, BspLump, PakArchive};
+use quake_cook::{cook_portal_graph, cook_portal_graph_with_merge_area, Bsp, BspLump, PakArchive};
 use quake_formats::resident::ResidentMap;
 use quake_formats::{
-    Plane, SliceReader, FACE_BACKSIDE, FACE_BAKED_LIGHT, FACE_BAKED_UV, RESIDENT_MAP_ARENA_BYTES,
+    leaf_portal_graph, LumpKind, Plane, SliceReader, FACE_BACKSIDE, FACE_BAKED_LIGHT,
+    FACE_BAKED_UV, LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, RESIDENT_MAP_ARENA_BYTES,
     TEXTURE_INVISIBLE, TEXTURE_LAYERED_SKY, TEXTURE_LIQUID, TEXTURE_NULL, TEXTURE_SKY,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +32,7 @@ const LEAF_BOUNDS_GRID_SHIFT: u32 = LEAF_BOUNDS_GRID.trailing_zeros();
 const GPU_ARENA_BYTES: usize = 128 * 1024;
 const GPU_ARENA_SAFETY_BYTES: usize = 8 * 1024;
 const HOT_PREFIX_KIB: [usize; 5] = [0, 16, 32, 48, 64];
+const SECTION_BUDGET_KIB: [usize; 4] = [128, 192, 256, 384];
 
 const fn encode_leaf_bound_min(value: i16) -> i8 {
     let units = (value as i32) >> LEAF_BOUNDS_GRID_SHIFT;
@@ -74,6 +76,8 @@ struct Surface {
     template_eligible: bool,
     policy_visible: bool,
     liquid: bool,
+    windowed: bool,
+    texture_bytes: usize,
     mins: [i16; 3],
     maxs: [i16; 3],
     positions: Vec<u16>,
@@ -134,6 +138,93 @@ struct MapCensus {
     views: Vec<ViewMetrics>,
     facing_pairs: usize,
     invariant_facing_pairs: usize,
+    sections: SectionCensus,
+    resident: ResidentBreakdown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ResidentBreakdown {
+    whole_map_bytes: usize,
+    streamable_world_bytes: usize,
+    retained_core_bytes: usize,
+    retained_inline_render_bytes: usize,
+}
+
+/// Conservative RAM shape of one streamed render section. The section owns
+/// the union of every retained cell stream in one reconstructed portal area.
+/// Geometry and command streams are counted once; eligible packet templates
+/// are counted twice because the retail renderer installs them in both GPU
+/// pools and only patches tag/XY fields while drawing.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RenderSectionMetrics {
+    leaves: usize,
+    faces: usize,
+    corner_references: usize,
+    unique_positions: usize,
+    unique_materials: usize,
+    windowed_materials: usize,
+    texture_bytes: usize,
+    base_packet_bytes: usize,
+    eligible_packet_bytes: usize,
+    cell_stream_bytes: usize,
+    maximum_cell_packet_bytes: usize,
+    maximum_dynamic_packet_bytes: usize,
+}
+
+impl RenderSectionMetrics {
+    fn geometry_bytes(self) -> usize {
+        // PSB5 face, indexed corner, indexed position, and material records.
+        self.faces * 10
+            + self.corner_references * 8
+            + self.unique_positions * 6
+            + self.unique_materials * 14
+    }
+
+    fn projection_bytes(self) -> usize {
+        // PSoXide ProjectedVertex is sx:i16, sy:i16, sz:i32.
+        self.unique_positions * 8
+    }
+
+    fn dual_template_bytes(self) -> usize {
+        self.eligible_packet_bytes * 2
+    }
+
+    fn resident_render_bytes(self) -> usize {
+        self.geometry_bytes()
+            + self.projection_bytes()
+            + self.dual_template_bytes()
+            + self.cell_stream_bytes
+    }
+
+    fn compact_stream_bytes(self) -> usize {
+        // CD/preload form before the active section allocates its projection
+        // cache and installs packet templates in both GPU pools.
+        self.geometry_bytes() + self.cell_stream_bytes
+    }
+
+    fn full_window_page_bytes(self) -> usize {
+        // One 256x256 4-bpp repeated material consumes 32 KiB of VRAM.
+        self.windowed_materials * 32 * 1024
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct SectionCensus {
+    sections: Vec<RenderSectionMetrics>,
+    transition_resident_bytes: Vec<usize>,
+    assigned_leaves: usize,
+    directed_edges: usize,
+    bounded: Vec<BudgetPartitionCensus>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BudgetPartitionCensus {
+    budget_bytes: usize,
+    sections: Vec<RenderSectionMetrics>,
+    transition_resident_bytes: Vec<usize>,
+    transition_compact_preload_bytes: Vec<usize>,
+    cross_edges: usize,
+    over_budget_sections: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -722,6 +813,428 @@ fn leaf_invariant_facing(plane: Plane, face_flags: u16, bounds: LeafBounds) -> O
     Some(behind == (face_flags & FACE_BACKSIDE != 0))
 }
 
+fn render_section_metrics(
+    faces: &BTreeSet<usize>,
+    leaf_views: &[usize],
+    cell_view_faces: &[Vec<usize>],
+    surfaces: &[Surface],
+) -> RenderSectionMetrics {
+    let positions = faces
+        .iter()
+        .flat_map(|&face| surfaces[face].positions.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let materials = faces
+        .iter()
+        .map(|&face| surfaces[face].material)
+        .collect::<BTreeSet<_>>();
+    let windowed_materials = faces
+        .iter()
+        .filter_map(|&face| {
+            let surface = &surfaces[face];
+            surface.windowed.then_some(surface.material)
+        })
+        .collect::<BTreeSet<_>>();
+    let texture_bytes = materials
+        .iter()
+        .filter_map(|material| {
+            faces.iter().find_map(|&face| {
+                let surface = &surfaces[face];
+                (surface.material == *material).then_some(surface.texture_bytes)
+            })
+        })
+        .sum();
+    let base_packet_bytes = faces
+        .iter()
+        .map(|&face| surface_packet_bytes(&surfaces[face]))
+        .sum::<usize>();
+    let eligible_packet_bytes = faces
+        .iter()
+        .filter(|&&face| surfaces[face].template_eligible)
+        .map(|&face| surface_packet_bytes(&surfaces[face]))
+        .sum::<usize>();
+    let maximum_cell_packet_bytes = leaf_views
+        .iter()
+        .map(|&view| {
+            cell_view_faces[view]
+                .iter()
+                .map(|&face| surface_packet_bytes(&surfaces[face]))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    let maximum_dynamic_packet_bytes = leaf_views
+        .iter()
+        .map(|&view| {
+            cell_view_faces[view]
+                .iter()
+                .filter(|&&face| !surfaces[face].template_eligible)
+                .map(|&face| surface_packet_bytes(&surfaces[face]))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+
+    RenderSectionMetrics {
+        leaves: leaf_views.len(),
+        faces: faces.len(),
+        corner_references: faces
+            .iter()
+            .map(|&face| surfaces[face].positions.len())
+            .sum(),
+        unique_positions: positions.len(),
+        unique_materials: materials.len(),
+        windowed_materials: windowed_materials.len(),
+        texture_bytes,
+        base_packet_bytes,
+        eligible_packet_bytes,
+        cell_stream_bytes: 0,
+        maximum_cell_packet_bytes,
+        maximum_dynamic_packet_bytes,
+    }
+}
+
+fn complete_section_metrics(
+    faces: &BTreeSet<usize>,
+    leaf_views: &[usize],
+    cell_view_faces: &[Vec<usize>],
+    views: &[ViewMetrics],
+    surfaces: &[Surface],
+) -> RenderSectionMetrics {
+    let mut metrics = render_section_metrics(faces, leaf_views, cell_view_faces, surfaces);
+    metrics.cell_stream_bytes = leaf_views
+        .iter()
+        .map(|&view| views[view].cell_stream_bytes)
+        .sum();
+    metrics
+}
+
+fn bounded_partition(
+    area_faces: &[BTreeSet<usize>],
+    area_views: &[Vec<usize>],
+    adjacency: &[BTreeSet<usize>],
+    budget_bytes: usize,
+    cell_view_faces: &[Vec<usize>],
+    views: &[ViewMetrics],
+    surfaces: &[Surface],
+) -> BudgetPartitionCensus {
+    let base_metrics = area_faces
+        .iter()
+        .zip(area_views)
+        .map(|(faces, leaf_views)| {
+            complete_section_metrics(faces, leaf_views, cell_view_faces, views, surfaces)
+        })
+        .collect::<Vec<_>>();
+    let mut unassigned = vec![true; area_faces.len()];
+    let mut assignment = vec![usize::MAX; area_faces.len()];
+    let mut sections = Vec::new();
+
+    while let Some(seed) = (0..area_faces.len())
+        .filter(|&area| unassigned[area])
+        .max_by_key(|&area| base_metrics[area].resident_render_bytes())
+    {
+        let mut members = BTreeSet::from([seed]);
+        let mut section_faces = area_faces[seed].clone();
+        let mut section_views = area_views[seed].clone();
+        let mut metrics = base_metrics[seed];
+        let mut frontier = adjacency[seed]
+            .iter()
+            .copied()
+            .filter(|&area| unassigned[area] && area != seed)
+            .collect::<BTreeSet<_>>();
+
+        loop {
+            let mut best: Option<(
+                usize,
+                usize,
+                RenderSectionMetrics,
+                BTreeSet<usize>,
+                Vec<usize>,
+            )> = None;
+            for &candidate in &frontier {
+                let mut merged_faces = section_faces.clone();
+                merged_faces.extend(area_faces[candidate].iter().copied());
+                let mut merged_views = section_views.clone();
+                merged_views.extend(area_views[candidate].iter().copied());
+                let merged_metrics = complete_section_metrics(
+                    &merged_faces,
+                    &merged_views,
+                    cell_view_faces,
+                    views,
+                    surfaces,
+                );
+                if merged_metrics.resident_render_bytes() > budget_bytes {
+                    continue;
+                }
+                let incremental_bytes = merged_metrics
+                    .resident_render_bytes()
+                    .saturating_sub(metrics.resident_render_bytes());
+                let replace = best
+                    .as_ref()
+                    .is_none_or(|best| (incremental_bytes, candidate) < (best.1, best.0));
+                if replace {
+                    best = Some((
+                        candidate,
+                        incremental_bytes,
+                        merged_metrics,
+                        merged_faces,
+                        merged_views,
+                    ));
+                }
+            }
+            let Some((candidate, _, merged_metrics, merged_faces, merged_views)) = best else {
+                break;
+            };
+            members.insert(candidate);
+            section_faces = merged_faces;
+            section_views = merged_views;
+            metrics = merged_metrics;
+            frontier.remove(&candidate);
+            for &neighbor in &adjacency[candidate] {
+                if unassigned[neighbor] && !members.contains(&neighbor) {
+                    frontier.insert(neighbor);
+                }
+            }
+        }
+
+        let section = sections.len();
+        for area in members {
+            unassigned[area] = false;
+            assignment[area] = section;
+        }
+        sections.push(metrics);
+    }
+
+    let mut transition_pairs = BTreeSet::new();
+    let mut cross_edges = 0usize;
+    for area in 0..adjacency.len() {
+        for &neighbor in &adjacency[area] {
+            if area >= neighbor || assignment[area] == assignment[neighbor] {
+                continue;
+            }
+            cross_edges += 1;
+            let left = assignment[area].min(assignment[neighbor]);
+            let right = assignment[area].max(assignment[neighbor]);
+            transition_pairs.insert((left, right));
+        }
+    }
+    let transition_resident_bytes = transition_pairs
+        .iter()
+        .map(|&(left, right)| {
+            sections[left].resident_render_bytes() + sections[right].resident_render_bytes()
+        })
+        .collect::<Vec<_>>();
+    let transition_compact_preload_bytes = transition_pairs
+        .iter()
+        .map(|&(left, right)| {
+            (sections[left].resident_render_bytes() + sections[right].compact_stream_bytes()).max(
+                sections[right].resident_render_bytes() + sections[left].compact_stream_bytes(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let over_budget_sections = sections
+        .iter()
+        .filter(|section| section.resident_render_bytes() > budget_bytes)
+        .count();
+    BudgetPartitionCensus {
+        budget_bytes,
+        sections,
+        transition_resident_bytes,
+        transition_compact_preload_bytes,
+        cross_edges,
+        over_budget_sections,
+    }
+}
+
+fn section_census(
+    visibility: &[u8],
+    source: &Bsp<'_>,
+    cell_view_faces: &[Vec<usize>],
+    views: &[ViewMetrics],
+    surfaces: &[Surface],
+) -> Result<SectionCensus> {
+    let graph = leaf_portal_graph(visibility)
+        .ok_or("cooked map is missing the reconstructed portal-area graph")?;
+    let mut area_views = vec![Vec::<usize>::new(); graph.area_count()];
+    let mut area_faces = vec![BTreeSet::<usize>::new(); graph.area_count()];
+    let mut assigned_leaves = 0usize;
+    for view in 0..cell_view_faces.len() {
+        let camera_leaf = view + 1;
+        let Some(area) = graph.leaf_area(camera_leaf) else {
+            continue;
+        };
+        assigned_leaves += 1;
+        area_views[area].push(view);
+        area_faces[area].extend(cell_view_faces[view].iter().copied());
+    }
+
+    let sections = area_faces
+        .iter()
+        .zip(&area_views)
+        .map(|(faces, leaf_views)| {
+            complete_section_metrics(faces, leaf_views, cell_view_faces, views, surfaces)
+        })
+        .collect::<Vec<_>>();
+    // Empty areas indicate a corrupt leaf-to-area table: every cooked area is
+    // formed from at least one non-solid source leaf.
+    if sections.iter().any(|section| section.leaves == 0) {
+        return Err("portal graph contains an unowned area".into());
+    }
+
+    let mut transition_resident_bytes = Vec::new();
+    let mut pairs = BTreeSet::new();
+    for area in 0..graph.area_count() {
+        let (start, end) = graph
+            .area_range(area)
+            .ok_or("portal graph area edge range is invalid")?;
+        for edge_index in start..end {
+            let neighbor = graph
+                .edge(edge_index)
+                .ok_or("portal graph edge is invalid")?
+                .neighbor as usize;
+            let pair = if area < neighbor {
+                (area, neighbor)
+            } else {
+                (neighbor, area)
+            };
+            if pairs.insert(pair) {
+                transition_resident_bytes.push(
+                    sections[pair.0].resident_render_bytes()
+                        + sections[pair.1].resident_render_bytes(),
+                );
+            }
+        }
+    }
+    // Recover the unmerged leaf adjacency for RAM-budgeted partitioning. A
+    // synthetic empty QLB1 suffix lets the public checked QPG1 reader validate
+    // the standalone graph exactly as it validates a cooked visibility lump.
+    let (mut leaf_graph_bytes, _) = cook_portal_graph_with_merge_area(source, f64::INFINITY)?;
+    leaf_graph_bytes.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+    leaf_graph_bytes.extend_from_slice(&0u16.to_le_bytes());
+    leaf_graph_bytes.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+    let leaf_graph = leaf_portal_graph(&leaf_graph_bytes)
+        .ok_or("standalone unmerged portal graph failed checked decoding")?;
+    let mut leaf_area_views = vec![Vec::<usize>::new(); leaf_graph.area_count()];
+    let mut leaf_area_faces = vec![BTreeSet::<usize>::new(); leaf_graph.area_count()];
+    for view in 0..cell_view_faces.len() {
+        let Some(area) = leaf_graph.leaf_area(view + 1) else {
+            continue;
+        };
+        leaf_area_views[area].push(view);
+        leaf_area_faces[area].extend(cell_view_faces[view].iter().copied());
+    }
+    if leaf_area_views.iter().any(Vec::is_empty) {
+        return Err("unmerged portal graph contains an unowned leaf area".into());
+    }
+    let mut adjacency = vec![BTreeSet::<usize>::new(); leaf_graph.area_count()];
+    for area in 0..leaf_graph.area_count() {
+        let (start, end) = leaf_graph
+            .area_range(area)
+            .ok_or("unmerged portal graph area edge range is invalid")?;
+        for edge_index in start..end {
+            let neighbor = leaf_graph
+                .edge(edge_index)
+                .ok_or("unmerged portal graph edge is invalid")?
+                .neighbor as usize;
+            adjacency[area].insert(neighbor);
+        }
+    }
+    let bounded = SECTION_BUDGET_KIB
+        .iter()
+        .map(|&budget_kib| {
+            bounded_partition(
+                &leaf_area_faces,
+                &leaf_area_views,
+                &adjacency,
+                budget_kib * 1024,
+                cell_view_faces,
+                views,
+                surfaces,
+            )
+        })
+        .collect();
+
+    Ok(SectionCensus {
+        sections,
+        transition_resident_bytes,
+        assigned_leaves,
+        directed_edges: graph.edge_count(),
+        bounded,
+    })
+}
+
+fn resident_breakdown(resident: &ResidentMap, surfaces: &[Surface]) -> Result<ResidentBreakdown> {
+    const RESIDENT_LUMPS: [LumpKind; 13] = [
+        LumpKind::ModelData,
+        LumpKind::Vertices,
+        LumpKind::Planes,
+        LumpKind::TextureInfo,
+        LumpKind::Faces,
+        LumpKind::MarkSurfaces,
+        LumpKind::Visibility,
+        LumpKind::Leaves,
+        LumpKind::Nodes,
+        LumpKind::ClipNodes,
+        LumpKind::Models,
+        LumpKind::Strings,
+        LumpKind::Entities,
+    ];
+    let mut whole_map_bytes = 0usize;
+    for kind in RESIDENT_LUMPS {
+        whole_map_bytes = (whole_map_bytes + 3) & !3;
+        let source_bytes = resident.source_lump(kind).len as usize;
+        let resident_bytes = if kind == LumpKind::Nodes {
+            // PSB5 stores six-byte splitter records; ResidentMap expands them
+            // to the 16-byte checked native render-node shape.
+            source_bytes / 6 * 16
+        } else {
+            source_bytes
+        };
+        whole_map_bytes += resident_bytes;
+    }
+
+    let world = resident
+        .brush_models()
+        .get(0)
+        .ok_or("resident map has no world brush for RAM census")?;
+    let first_world_face = world.first_face as usize;
+    let end_world_face = first_world_face + world.face_count as usize;
+    if end_world_face > surfaces.len() {
+        return Err("world brush face range is out of bounds".into());
+    }
+    let inline_faces = (0..surfaces.len())
+        .filter(|&face| face < first_world_face || face >= end_world_face)
+        .collect::<Vec<_>>();
+    let inline_corner_count = inline_faces
+        .iter()
+        .map(|&face| surfaces[face].positions.len())
+        .sum::<usize>();
+    let inline_positions = inline_faces
+        .iter()
+        .flat_map(|&face| surfaces[face].positions.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let retained_inline_vertex_bytes = if inline_faces.is_empty() {
+        0
+    } else {
+        8 + inline_corner_count * 8 + inline_positions * 6
+    };
+    let retained_inline_render_bytes = retained_inline_vertex_bytes + inline_faces.len() * 10;
+    let vertex_bytes = resident.source_lump(LumpKind::Vertices).len as usize;
+    let world_vertex_bytes = vertex_bytes.saturating_sub(retained_inline_vertex_bytes);
+    let world_face_bytes = world.face_count as usize * 10;
+    let streamable_world_bytes = world_vertex_bytes
+        + world_face_bytes
+        + resident.source_lump(LumpKind::MarkSurfaces).len as usize
+        + resident.source_lump(LumpKind::Visibility).len as usize;
+
+    Ok(ResidentBreakdown {
+        whole_map_bytes,
+        streamable_world_bytes,
+        retained_core_bytes: whole_map_bytes.saturating_sub(streamable_world_bytes),
+        retained_inline_render_bytes,
+    })
+}
+
 fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
     let bytes = fs::read(path)?;
     let mut reader = SliceReader::new(&bytes);
@@ -751,6 +1264,11 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
                     | TEXTURE_INVISIBLE
                     | TEXTURE_NULL)
                 != 0;
+            let windowed =
+                texture.flags & (TEXTURE_LIQUID | TEXTURE_SKY | TEXTURE_LAYERED_SKY) != 0;
+            let texture_bytes = usize::try_from(texture.size.x.max(0)).unwrap_or(0)
+                * usize::try_from(texture.size.y.max(0)).unwrap_or(0)
+                * 2;
             let positions = indexed.corners[first..end]
                 .iter()
                 .map(|corner| corner.position_index)
@@ -771,12 +1289,15 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
                 template_eligible: baked && !special,
                 policy_visible: texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0,
                 liquid: texture.flags & TEXTURE_LIQUID != 0,
+                windowed,
+                texture_bytes,
                 mins,
                 maxs,
                 positions,
             }
         })
         .collect::<Vec<_>>();
+    let resident_breakdown = resident_breakdown(&resident, &surfaces)?;
 
     let leaves = resident.leaves();
     let marks = resident.mark_surfaces();
@@ -851,9 +1372,11 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         .enumerate()
         .map(|(view_index, faces)| view_metrics(view_index, faces, &surfaces, &connected_batches))
         .collect::<Vec<_>>();
+    let mut cell_view_faces = vec![Vec::<usize>::new(); view_faces.len()];
     for (view_index, faces) in view_faces.iter().enumerate() {
         let bounds = source_bounds[view_index + 1];
-        let (_, cell) = cell_stream_metrics(faces, &surfaces, &planes, bounds)?;
+        let (cell_faces, cell) = cell_stream_metrics(faces, &surfaces, &planes, bounds)?;
+        cell_view_faces[view_index] = cell_faces.iter().map(|entry| entry.face as usize).collect();
         views[view_index].cell_faces = cell.cell_faces;
         views[view_index].cell_dynamic_facing = cell.cell_dynamic_facing;
         views[view_index].cell_invariant_front = cell.cell_invariant_front;
@@ -897,6 +1420,13 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         .filter(|signature| !signature_is_empty(signature))
         .collect::<BTreeSet<_>>()
         .len();
+    let sections = section_census(
+        resident.visibility(),
+        source,
+        &cell_view_faces,
+        &views,
+        &surfaces,
+    )?;
 
     Ok(MapCensus {
         map: map.to_owned(),
@@ -913,6 +1443,8 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         views,
         facing_pairs,
         invariant_facing_pairs,
+        sections,
+        resident: resident_breakdown,
     })
 }
 
@@ -1204,6 +1736,307 @@ fn print_map(census: &MapCensus) {
             .unwrap_or(0),
         cell_stream_bytes / 1024,
     );
+    let sections = &census.sections.sections;
+    println!(
+        "  {}: streamed portal-area sections={} ({} leaves, {} directed transitions): retained faces p50/p95/max={}/{}/{}, dual eligible templates={}/{}/{} KiB, geometry+projection={}/{}/{} KiB, cell streams={}/{}/{} KiB, resident render set={}/{}/{} KiB",
+        census.map,
+        sections.len(),
+        census.sections.assigned_leaves,
+        census.sections.directed_edges,
+        percentile(sections.iter().map(|section| section.faces), 50),
+        percentile(sections.iter().map(|section| section.faces), 95),
+        sections.iter().map(|section| section.faces).max().unwrap_or(0),
+        percentile(sections.iter().map(|section| section.dual_template_bytes()), 50) / 1024,
+        percentile(sections.iter().map(|section| section.dual_template_bytes()), 95) / 1024,
+        sections
+            .iter()
+            .map(|section| section.dual_template_bytes())
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.geometry_bytes() + section.projection_bytes()),
+            50,
+        ) / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.geometry_bytes() + section.projection_bytes()),
+            95,
+        ) / 1024,
+        sections
+            .iter()
+            .map(|section| section.geometry_bytes() + section.projection_bytes())
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(sections.iter().map(|section| section.cell_stream_bytes), 50) / 1024,
+        percentile(sections.iter().map(|section| section.cell_stream_bytes), 95) / 1024,
+        sections
+            .iter()
+            .map(|section| section.cell_stream_bytes)
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(sections.iter().map(|section| section.resident_render_bytes()), 50) / 1024,
+        percentile(sections.iter().map(|section| section.resident_render_bytes()), 95) / 1024,
+        sections
+            .iter()
+            .map(|section| section.resident_render_bytes())
+            .max()
+            .unwrap_or(0)
+            / 1024,
+    );
+    println!(
+        "  {}: section active cell packets p50/p95/max={}/{}/{} KiB, dynamic-fallback peak={}/{}/{} KiB; materials p50/p95/max={}/{}/{}, windowed materials={}/{}/{}, current indexed texels={}/{}/{} KiB, hypothetical full-window pages={}/{}/{} KiB; active+neighbor resident p50/p95/max={}/{}/{} KiB",
+        census.map,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.maximum_cell_packet_bytes),
+            50,
+        ) / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.maximum_cell_packet_bytes),
+            95,
+        ) / 1024,
+        sections
+            .iter()
+            .map(|section| section.maximum_cell_packet_bytes)
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.maximum_dynamic_packet_bytes),
+            50,
+        ) / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.maximum_dynamic_packet_bytes),
+            95,
+        ) / 1024,
+        sections
+            .iter()
+            .map(|section| section.maximum_dynamic_packet_bytes)
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(sections.iter().map(|section| section.unique_materials), 50),
+        percentile(sections.iter().map(|section| section.unique_materials), 95),
+        sections
+            .iter()
+            .map(|section| section.unique_materials)
+            .max()
+            .unwrap_or(0),
+        percentile(sections.iter().map(|section| section.windowed_materials), 50),
+        percentile(sections.iter().map(|section| section.windowed_materials), 95),
+        sections
+            .iter()
+            .map(|section| section.windowed_materials)
+            .max()
+            .unwrap_or(0),
+        percentile(sections.iter().map(|section| section.texture_bytes), 50) / 1024,
+        percentile(sections.iter().map(|section| section.texture_bytes), 95) / 1024,
+        sections
+            .iter()
+            .map(|section| section.texture_bytes)
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.full_window_page_bytes()),
+            50,
+        ) / 1024,
+        percentile(
+            sections
+                .iter()
+                .map(|section| section.full_window_page_bytes()),
+            95,
+        ) / 1024,
+        sections
+            .iter()
+            .map(|section| section.full_window_page_bytes())
+            .max()
+            .unwrap_or(0)
+            / 1024,
+        percentile(
+            census
+                .sections
+                .transition_resident_bytes
+                .iter()
+                .copied(),
+            50,
+        ) / 1024,
+        percentile(
+            census
+                .sections
+                .transition_resident_bytes
+                .iter()
+                .copied(),
+            95,
+        ) / 1024,
+        census
+            .sections
+            .transition_resident_bytes
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            / 1024,
+    );
+    println!(
+        "  {}: whole-map resident={} KiB; sectioning can replace {} KiB of world vertices/faces/marks/PVS, retaining {} KiB collision/game/inline core ({} KiB inline brush render payload)",
+        census.map,
+        census.resident.whole_map_bytes / 1024,
+        census.resident.streamable_world_bytes / 1024,
+        census.resident.retained_core_bytes / 1024,
+        census.resident.retained_inline_render_bytes / 1024,
+    );
+    for partition in &census.sections.bounded {
+        let bounded = &partition.sections;
+        let active_max = bounded
+            .iter()
+            .map(|section| section.resident_render_bytes())
+            .max()
+            .unwrap_or(0);
+        let transition_max = partition
+            .transition_resident_bytes
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let total_active_max = census.resident.retained_core_bytes + active_max;
+        let total_transition_max = census.resident.retained_core_bytes + transition_max;
+        println!(
+            "  {}: bounded sections {} KiB -> {} sections ({} oversize), leaves p50/p95/max={}/{}/{}, resident p50/p95/max={}/{}/{} KiB, dual templates p50/p95/max={}/{}/{} KiB, cross-leaf edges={}, active+neighbor p50/p95/max={}/{}/{} KiB; retained-core totals active/transition max={}/{} KiB (arena headroom {}/{})",
+            census.map,
+            partition.budget_bytes / 1024,
+            bounded.len(),
+            partition.over_budget_sections,
+            percentile(bounded.iter().map(|section| section.leaves), 50),
+            percentile(bounded.iter().map(|section| section.leaves), 95),
+            bounded.iter().map(|section| section.leaves).max().unwrap_or(0),
+            percentile(
+                bounded
+                    .iter()
+                    .map(|section| section.resident_render_bytes()),
+                50,
+            ) / 1024,
+            percentile(
+                bounded
+                    .iter()
+                    .map(|section| section.resident_render_bytes()),
+                95,
+            ) / 1024,
+            bounded
+                .iter()
+                .map(|section| section.resident_render_bytes())
+                .max()
+                .unwrap_or(0)
+                / 1024,
+            percentile(
+                bounded
+                    .iter()
+                    .map(|section| section.dual_template_bytes()),
+                50,
+            ) / 1024,
+            percentile(
+                bounded
+                    .iter()
+                    .map(|section| section.dual_template_bytes()),
+                95,
+            ) / 1024,
+            bounded
+                .iter()
+                .map(|section| section.dual_template_bytes())
+                .max()
+                .unwrap_or(0)
+                / 1024,
+            partition.cross_edges,
+            percentile(
+                partition.transition_resident_bytes.iter().copied(),
+                50,
+            ) / 1024,
+            percentile(
+                partition.transition_resident_bytes.iter().copied(),
+                95,
+            ) / 1024,
+            partition
+                .transition_resident_bytes
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(0)
+                / 1024,
+            total_active_max / 1024,
+            total_transition_max / 1024,
+            (RESIDENT_MAP_ARENA_BYTES as isize - total_active_max as isize) / 1024,
+            (RESIDENT_MAP_ARENA_BYTES as isize - total_transition_max as isize) / 1024,
+        );
+        let compact_preload_max = partition
+            .transition_compact_preload_bytes
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        println!(
+            "  {}: bounded sections {} KiB compact CD payload total={} KiB, section p50/p95/max={}/{}/{} KiB; active+compact-neighbor p50/p95/max={}/{}/{} KiB, retained-core transition max={} KiB (arena headroom {})",
+            census.map,
+            partition.budget_bytes / 1024,
+            bounded
+                .iter()
+                .map(|section| section.compact_stream_bytes())
+                .sum::<usize>()
+                / 1024,
+            percentile(
+                bounded
+                    .iter()
+                    .map(|section| section.compact_stream_bytes()),
+                50,
+            ) / 1024,
+            percentile(
+                bounded
+                    .iter()
+                    .map(|section| section.compact_stream_bytes()),
+                95,
+            ) / 1024,
+            bounded
+                .iter()
+                .map(|section| section.compact_stream_bytes())
+                .max()
+                .unwrap_or(0)
+                / 1024,
+            percentile(
+                partition
+                    .transition_compact_preload_bytes
+                    .iter()
+                    .copied(),
+                50,
+            ) / 1024,
+            percentile(
+                partition
+                    .transition_compact_preload_bytes
+                    .iter()
+                    .copied(),
+                95,
+            ) / 1024,
+            compact_preload_max / 1024,
+            (census.resident.retained_core_bytes + compact_preload_max) / 1024,
+            (RESIDENT_MAP_ARENA_BYTES as isize
+                - census.resident.retained_core_bytes as isize
+                - compact_preload_max as isize)
+                / 1024,
+        );
+    }
     for prefix_kib in HOT_PREFIX_KIB {
         let hot = hot_prefix_metrics(
             &census.connected_batches,
@@ -1251,6 +2084,16 @@ fn main() -> Result<()> {
     let mut censuses = Vec::new();
     for map in MAPS {
         let source = Bsp::parse(pak.require(&format!("maps/{map}.bsp"))?)?;
+        let (_, portal) = cook_portal_graph(&source)?;
+        println!(
+            "  {map}: cooked portal graph leaves={} areas={} fragments={} directed={} max-degree={} bytes={}",
+            portal.leaf_count,
+            portal.area_count,
+            portal.undirected_portal_count,
+            portal.directed_edge_count,
+            portal.maximum_leaf_degree,
+            portal.byte_len,
+        );
         let census = load_census(&maps_dir.join(format!("{map}.psb")), map, &source)?;
         print_map(&census);
         censuses.push(census);
@@ -1296,6 +2139,8 @@ mod tests {
             template_eligible: true,
             policy_visible: true,
             liquid: false,
+            windowed: false,
+            texture_bytes: 0,
             mins: [0; 3],
             maxs: [1; 3],
             positions: positions.to_vec(),
@@ -1418,6 +2263,54 @@ mod tests {
         assert_eq!(metrics.active_batches, 2);
         assert_eq!(metrics.reordered_faces, 2);
         assert_eq!(metrics.material_changes, 2);
+    }
+
+    #[test]
+    fn bounded_partition_cuts_an_open_chain_at_the_ram_ceiling() {
+        let surfaces = vec![
+            surface(0, &[0, 1, 2]),
+            surface(0, &[3, 4, 5]),
+            surface(0, &[6, 7, 8]),
+        ];
+        let area_faces = vec![
+            BTreeSet::from([0]),
+            BTreeSet::from([1]),
+            BTreeSet::from([2]),
+        ];
+        let area_views = vec![vec![0], vec![1], vec![2]];
+        let adjacency = vec![
+            BTreeSet::from([1]),
+            BTreeSet::from([0, 2]),
+            BTreeSet::from([1]),
+        ];
+        let cell_view_faces = vec![vec![0], vec![1], vec![2]];
+        let views = vec![ViewMetrics::default(); 3];
+        let partition = bounded_partition(
+            &area_faces,
+            &area_views,
+            &adjacency,
+            350,
+            &cell_view_faces,
+            &views,
+            &surfaces,
+        );
+        assert_eq!(partition.sections.len(), 2);
+        assert_eq!(partition.over_budget_sections, 0);
+        assert_eq!(partition.cross_edges, 1);
+        assert_eq!(
+            partition
+                .sections
+                .iter()
+                .map(|section| section.leaves)
+                .sum::<usize>(),
+            3,
+        );
+        assert!(
+            partition
+                .sections
+                .iter()
+                .all(|section| section.resident_render_bytes() <= 350)
+        );
     }
 
     #[test]
