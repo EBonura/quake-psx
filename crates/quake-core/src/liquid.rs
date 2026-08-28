@@ -11,6 +11,10 @@ use psx_math::SIN_TABLE;
 pub const LIQUID_TILE_SIDE: usize = 64;
 pub const LIQUID_TILE_BYTES: usize = LIQUID_TILE_SIDE * LIQUID_TILE_SIDE;
 pub const LIQUID_CYCLE: usize = 128;
+/// One phase needs exactly one 64-entry displacement window. The renderer can
+/// stage this window in the PS1 scratchpad and reuse it for every visible
+/// liquid tile in the phase.
+pub const LIQUID_PHASE_OFFSETS: usize = LIQUID_TILE_SIDE;
 
 const fn turbulence_table() -> [u8; LIQUID_CYCLE] {
     let mut output = [0; LIQUID_CYCLE];
@@ -49,6 +53,24 @@ pub const fn phase_from_tick(tick_60hz: u32) -> u8 {
     ((tick_60hz / 3) & (LIQUID_CYCLE as u32 - 1)) as u8
 }
 
+/// Materialize the 64 displacement entries used by one turbulence phase.
+///
+/// Keeping this separate from tile resampling lets the console renderer copy
+/// the tiny window to scratchpad once, avoiding one main-RAM table read for
+/// every output texel. Returns false for a partial destination.
+pub fn prepare_phase_offsets(phase: u8, destination: &mut [u8]) -> bool {
+    if destination.len() != LIQUID_PHASE_OFFSETS {
+        return false;
+    }
+    let phase = phase as usize & (LIQUID_CYCLE - 1);
+    let mut index = 0usize;
+    while index < LIQUID_PHASE_OFFSETS {
+        destination[index] = TURBULENCE_DOUBLE[phase + index];
+        index += 1;
+    }
+    true
+}
+
 /// Double-buffered liquid tiles: bit `index` set means liquid `index` is
 /// currently sampling its ALTERNATE atlas copy. The renderer must warp into
 /// the other copy and flip only once that upload has actually completed.
@@ -78,9 +100,62 @@ pub fn warp_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
     }
     #[cfg(target_arch = "mips")]
     unsafe {
+        let offsets = TURBULENCE_DOUBLE
+            .as_ptr()
+            .add(usize::from(phase & (LIQUID_CYCLE as u8 - 1)));
+        warp_tile_64_mips(source.as_ptr(), destination.as_mut_ptr(), offsets);
+        return true;
+    }
+
+    #[cfg(not(target_arch = "mips"))]
+    {
+        let phase = phase as usize & (LIQUID_CYCLE - 1);
+        warp_tile_64_host(
+            source,
+            destination,
+            &TURBULENCE_DOUBLE[phase..phase + LIQUID_PHASE_OFFSETS],
+        );
+        true
+    }
+}
+
+/// Resample through a phase window prepared by [`prepare_phase_offsets`].
+///
+/// On PlayStation the caller can keep `offsets` in the one-cycle scratchpad;
+/// source and destination remain in main RAM because the GPU upload consumes
+/// the destination after this routine returns.
+#[inline(never)]
+pub fn warp_tile_64_prepared(
+    source: &[u8],
+    destination: &mut [u8],
+    offsets: &[u8],
+) -> bool {
+    if source.len() != LIQUID_TILE_BYTES
+        || destination.len() != LIQUID_TILE_BYTES
+        || offsets.len() != LIQUID_PHASE_OFFSETS
+    {
+        return false;
+    }
+    #[cfg(target_arch = "mips")]
+    unsafe {
+        warp_tile_64_mips(source.as_ptr(), destination.as_mut_ptr(), offsets.as_ptr());
+        return true;
+    }
+
+    #[cfg(not(target_arch = "mips"))]
+    {
+        warp_tile_64_host(source, destination, offsets);
+        true
+    }
+}
+
+#[cfg(target_arch = "mips")]
+#[inline(always)]
+unsafe fn warp_tile_64_mips(source: *const u8, destination: *mut u8, offsets: *const u8) {
+    unsafe {
         core::arch::asm!(
             ".set noreorder",
-            "addu  $24, $7, $6",
+            "move  $24, $6",
             "move  $8, $zero",
             "addiu $25, $zero, 64",
             "addu  $11, $24, $8",
@@ -120,10 +195,9 @@ pub fn warp_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
             "bne   $8, $25, 2b",
             "addu  $11, $24, $8",
             ".set reorder",
-            in("$4") source.as_ptr(),
-            inout("$5") destination.as_mut_ptr() => _,
-            in("$6") u32::from(phase & (LIQUID_CYCLE as u8 - 1)),
-            in("$7") TURBULENCE_DOUBLE.as_ptr(),
+            in("$4") source,
+            inout("$5") destination => _,
+            in("$6") offsets,
             lateout("$8") _,
             lateout("$9") _,
             lateout("$10") _,
@@ -136,29 +210,27 @@ pub fn warp_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
             lateout("$25") _,
             options(nostack),
         );
-        return true;
     }
+}
 
-    #[cfg(not(target_arch = "mips"))]
-    {
-        let phase = phase as usize & (LIQUID_CYCLE - 1);
-        let mut y = 0usize;
-        while y < LIQUID_TILE_SIDE {
-            let x_offset = TURBULENCE_DOUBLE[phase + y] as usize;
-            let mut x = 0usize;
-            while x < LIQUID_TILE_SIDE {
-                let source_x = (x + x_offset) & (LIQUID_TILE_SIDE - 1);
-                let source_y = (y + TURBULENCE_DOUBLE[phase + x] as usize) & (LIQUID_TILE_SIDE - 1);
-                // Lengths and both masked coordinates were validated above.
-                unsafe {
-                    *destination.get_unchecked_mut(y * LIQUID_TILE_SIDE + x) =
-                        *source.get_unchecked(source_y * LIQUID_TILE_SIDE + source_x);
-                }
-                x += 1;
+#[cfg(not(target_arch = "mips"))]
+#[inline(always)]
+fn warp_tile_64_host(source: &[u8], destination: &mut [u8], offsets: &[u8]) {
+    let mut y = 0usize;
+    while y < LIQUID_TILE_SIDE {
+        let x_offset = offsets[y] as usize;
+        let mut x = 0usize;
+        while x < LIQUID_TILE_SIDE {
+            let source_x = (x + x_offset) & (LIQUID_TILE_SIDE - 1);
+            let source_y = (y + offsets[x] as usize) & (LIQUID_TILE_SIDE - 1);
+            // Lengths and both masked coordinates were validated above.
+            unsafe {
+                *destination.get_unchecked_mut(y * LIQUID_TILE_SIDE + x) =
+                    *source.get_unchecked(source_y * LIQUID_TILE_SIDE + source_x);
             }
-            y += 1;
+            x += 1;
         }
-        true
+        y += 1;
     }
 }
 
@@ -208,6 +280,23 @@ mod tests {
         assert_eq!(phase0, wrapped);
         assert_ne!(phase0, phase1);
         assert!(phase0.iter().zip(source).filter(|(a, b)| **a != *b).count() > 3_500);
+    }
+
+    #[test]
+    fn prepared_phase_window_matches_the_direct_resampler() {
+        let mut source = [0; LIQUID_TILE_BYTES];
+        for (index, pixel) in source.iter_mut().enumerate() {
+            *pixel = index.wrapping_mul(29) as u8;
+        }
+        for phase in [0, 1, 63, 64, 91, 127, 255] {
+            let mut offsets = [0; LIQUID_PHASE_OFFSETS];
+            let mut direct = [0; LIQUID_TILE_BYTES];
+            let mut prepared = [0; LIQUID_TILE_BYTES];
+            assert!(prepare_phase_offsets(phase, &mut offsets));
+            assert!(warp_tile_64(&source, &mut direct, phase));
+            assert!(warp_tile_64_prepared(&source, &mut prepared, &offsets));
+            assert_eq!(prepared, direct);
+        }
     }
 
     #[test]

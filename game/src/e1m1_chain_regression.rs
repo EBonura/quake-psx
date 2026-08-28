@@ -27,7 +27,8 @@ use crate::player::Player;
 #[cfg(any(
     feature = "renderer-topology-cache",
     feature = "renderer-indexed-projection",
-    feature = "renderer-subdivision-cache"
+    feature = "renderer-subdivision-cache",
+    feature = "renderer-portal-areas"
 ))]
 use crate::renderer::RenderStats;
 
@@ -434,6 +435,25 @@ pub fn observe_render(stats: RenderStats) {
                 addr_of_mut!((*probe).monster_death),
                 stats.indexed_projection_unique,
             ),
+        ] {
+            write_volatile(field, read_volatile(field).wrapping_add(value));
+        }
+    }
+}
+
+/// Accumulate portal admission work in route-unused fields so the architecture
+/// experiment can distinguish useful face rejection from fail-open traversal
+/// overhead without writing debug text during timed frames.
+#[cfg(feature = "renderer-portal-areas")]
+pub fn observe_render(stats: RenderStats) {
+    unsafe {
+        let probe = addr_of_mut!(PROBE);
+        for (field, value) in [
+            (addr_of_mut!((*probe).monster_present), stats.portal_faces_before),
+            (addr_of_mut!((*probe).monster_animated), stats.portal_faces_after),
+            (addr_of_mut!((*probe).monster_state_bounds), stats.portal_edges_tested),
+            (addr_of_mut!((*probe).monster_attack), stats.portal_queue_pushes),
+            (addr_of_mut!((*probe).monster_pain), stats.portal_fail_opens),
         ] {
             write_volatile(field, read_volatile(field).wrapping_add(value));
         }

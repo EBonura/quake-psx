@@ -161,12 +161,37 @@ const NEAR_PLANE_UNITS: i32 = 8;
 /// world scale.
 const NEAR_PLANE_VIEW: i32 = NEAR_PLANE_UNITS * 3;
 /// Largest face a near clip can grow by one vertex inside the batch scratch.
-const NEAR_CLIP_MAX_VERTICES: usize = BATCH_MAX_VERTICES;
+const NEAR_CLIP_MAX_VERTICES: usize = 39;
+#[cfg(not(any(
+    feature = "renderer-separated-subdivision-scratch",
+    feature = "renderer-split-subdivision-scratch"
+)))]
 const BATCH_MAX_VERTICES: usize = 39;
+#[cfg(feature = "renderer-separated-subdivision-scratch")]
+const BATCH_MAX_VERTICES: usize = 51;
+#[cfg(feature = "renderer-split-subdivision-scratch")]
+const BATCH_MAX_VERTICES: usize = 48;
+#[cfg(not(any(
+    feature = "renderer-separated-subdivision-scratch",
+    feature = "renderer-split-subdivision-scratch"
+)))]
 const BATCH_MAX_SURFACES: usize = 13;
+#[cfg(feature = "renderer-separated-subdivision-scratch")]
+const BATCH_MAX_SURFACES: usize = 17;
+#[cfg(feature = "renderer-split-subdivision-scratch")]
+const BATCH_MAX_SURFACES: usize = 16;
+#[cfg(not(any(
+    feature = "renderer-separated-subdivision-scratch",
+    feature = "renderer-split-subdivision-scratch"
+)))]
 const SUBDIVISION_SCRATCH_VERTICES: usize = 12;
+#[cfg(feature = "renderer-split-subdivision-scratch")]
+const SUBDIVISION_SCRATCH_VERTICES: usize = 3;
+#[cfg(not(feature = "renderer-separated-subdivision-scratch"))]
 type BatchVertexStorage =
     [MaybeUninit<ClassicAffineVertex>; BATCH_MAX_VERTICES + SUBDIVISION_SCRATCH_VERTICES];
+#[cfg(feature = "renderer-separated-subdivision-scratch")]
+type BatchVertexStorage = [MaybeUninit<ClassicAffineVertex>; BATCH_MAX_VERTICES];
 type BatchSurfaceStorage = [MaybeUninit<ClassicAffineBatchSurface>; BATCH_MAX_SURFACES];
 #[cfg(any(feature = "renderer-census", feature = "renderer-subdivision-cache"))]
 type BatchSourceSurfaceStorage = [MaybeUninit<u16>; BATCH_MAX_SURFACES];
@@ -353,6 +378,12 @@ impl ScreenTintQuad {
 
 const SCREEN_WIDTH: i16 = 320;
 const SCREEN_HEIGHT: i16 = 240;
+#[cfg(feature = "renderer-portal-areas")]
+const MAX_PORTAL_AREAS: usize = 512;
+#[cfg(feature = "renderer-portal-areas")]
+const MAX_PORTAL_QUEUE: usize = 2_048;
+#[cfg(feature = "renderer-portal-areas")]
+const PORTAL_SURFACE_INDEX_MASK: u16 = 0x3fff;
 
 static mut GPU_ARENAS: [[u32; GPU_ARENA_WORDS]; 2] = [[0; GPU_ARENA_WORDS]; 2];
 // A fixed `.bss` destination avoids constructing or growing a 16 KiB Vec on
@@ -409,6 +440,26 @@ impl NearPlane {
                 mins[axis]
             } else {
                 maxs[axis]
+            })
+        };
+        let dot = self.forward[0]
+            .wrapping_mul(corner(0))
+            .wrapping_add(self.forward[1].wrapping_mul(corner(1)))
+            .wrapping_add(self.forward[2].wrapping_mul(corner(2)));
+        dot < self.threshold
+    }
+
+    /// True when even the box's farthest support point lies behind the near
+    /// plane. Portal propagation can reject this case; a straddling doorway
+    /// instead inherits its parent rectangle conservatively.
+    #[cfg(feature = "renderer-portal-areas")]
+    #[inline(always)]
+    fn entirely_behind(&self, mins: [i16; 3], maxs: [i16; 3]) -> bool {
+        let corner = |axis: usize| {
+            i32::from(if self.forward[axis] > 0 {
+                maxs[axis]
+            } else {
+                mins[axis]
             })
         };
         let dot = self.forward[0]
@@ -742,6 +793,16 @@ pub struct RenderStats {
     pub subdivision_cache_initializations: u32,
     #[cfg(feature = "renderer-subdivision-cache")]
     pub subdivision_cache_packets: u32,
+    #[cfg(feature = "renderer-portal-areas")]
+    pub portal_faces_before: u32,
+    #[cfg(feature = "renderer-portal-areas")]
+    pub portal_faces_after: u32,
+    #[cfg(feature = "renderer-portal-areas")]
+    pub portal_edges_tested: u32,
+    #[cfg(feature = "renderer-portal-areas")]
+    pub portal_queue_pushes: u32,
+    #[cfg(feature = "renderer-portal-areas")]
+    pub portal_fail_opens: u32,
     /// Exact high-water of this frame's double-buffered world/entity packet
     /// arena. The map-route probe retains the maximum across Episode 1.
     #[cfg(feature = "episode1-regression")]
@@ -789,6 +850,94 @@ const _: [(); 24] = [(); core::mem::size_of::<VisibleFace>()];
 struct VisibleFaceBlock {
     mins: [i16; 3],
     maxs: [i16; 3],
+}
+
+/// Inclusive screen rectangle propagated through the conservative portal
+/// graph. Empty rectangles keep `min > max`; unioning alternate paths is
+/// deliberately conservative and converges without path-specific storage.
+#[cfg(feature = "renderer-portal-areas")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct PortalScreenRect {
+    min_x: i16,
+    min_y: i16,
+    max_x: i16,
+    max_y: i16,
+}
+
+#[cfg(feature = "renderer-portal-areas")]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct PortalAdmissionStats {
+    faces_before: u32,
+    faces_after: u32,
+    edges_tested: u32,
+    queue_pushes: u32,
+    fail_opens: u32,
+}
+
+#[cfg(feature = "renderer-portal-areas")]
+impl PortalScreenRect {
+    const EMPTY: Self = Self {
+        min_x: 1,
+        min_y: 1,
+        max_x: 0,
+        max_y: 0,
+    };
+    const FULL: Self = Self {
+        min_x: 0,
+        min_y: 0,
+        max_x: SCREEN_WIDTH - 1,
+        max_y: SCREEN_HEIGHT - 1,
+    };
+
+    #[inline(always)]
+    const fn is_empty(self) -> bool {
+        self.min_x > self.max_x || self.min_y > self.max_y
+    }
+
+    #[inline(always)]
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            min_x: self.min_x.max(other.min_x),
+            min_y: self.min_y.max(other.min_y),
+            max_x: self.max_x.min(other.max_x),
+            max_y: self.max_y.min(other.max_y),
+        }
+    }
+
+    #[inline(always)]
+    fn include(&mut self, other: Self) -> bool {
+        if other.is_empty() {
+            return false;
+        }
+        if self.is_empty() {
+            *self = other;
+            return true;
+        }
+        let merged = Self {
+            min_x: self.min_x.min(other.min_x),
+            min_y: self.min_y.min(other.min_y),
+            max_x: self.max_x.max(other.max_x),
+            max_y: self.max_y.max(other.max_y),
+        };
+        let changed = *self != merged;
+        *self = merged;
+        changed
+    }
+
+    #[inline(always)]
+    fn include_point(&mut self, x: i16, y: i16) {
+        if self.is_empty() {
+            self.min_x = x;
+            self.max_x = x;
+            self.min_y = y;
+            self.max_y = y;
+        } else {
+            self.min_x = self.min_x.min(x);
+            self.max_x = self.max_x.max(x);
+            self.min_y = self.min_y.min(y);
+            self.max_y = self.max_y.max(y);
+        }
+    }
 }
 
 #[cfg(feature = "renderer-block-frustum")]
@@ -1861,6 +2010,12 @@ pub struct Renderer {
     // This keeps the projection/subdivision pass single-shot while the GTE is
     // loaded with the ordinary camera transform.
     frame_face_indices: Vec<u16>,
+    #[cfg(feature = "renderer-portal-areas")]
+    portal_face_visible: Vec<u32>,
+    #[cfg(feature = "renderer-portal-areas")]
+    portal_area_rects: Vec<PortalScreenRect>,
+    #[cfg(feature = "renderer-portal-areas")]
+    portal_area_queue: Vec<u16>,
     visibility: [u8; MAX_VISIBILITY_BYTES],
     visible_leaf_count: usize,
     cached_visibility: Option<(u32, usize, u16)>,
@@ -1933,6 +2088,12 @@ impl Renderer {
             #[cfg(feature = "renderer-hierarchical-block-frustum")]
             visible_face_super_blocks: Vec::with_capacity(MAX_VISIBLE_FACE_SUPER_BLOCKS),
             frame_face_indices: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
+            #[cfg(feature = "renderer-portal-areas")]
+            portal_face_visible: vec![0; MAX_FACE_COUNT.div_ceil(32)],
+            #[cfg(feature = "renderer-portal-areas")]
+            portal_area_rects: Vec::with_capacity(MAX_PORTAL_AREAS),
+            #[cfg(feature = "renderer-portal-areas")]
+            portal_area_queue: Vec::with_capacity(MAX_PORTAL_QUEUE),
             visibility: [0; MAX_VISIBILITY_BYTES],
             visible_leaf_count: 0,
             cached_visibility: None,
@@ -2331,6 +2492,134 @@ impl Renderer {
         }
     }
 
+    /// Propagate the root viewport through the cooked conservative portal
+    /// graph, mark faces owned by admitted PVS leaves, then compact the
+    /// already-selected face list in place. The authoritative PVS/facing/
+    /// frustum selector remains the fallback: malformed data or bounded queue
+    /// pressure returns before touching `frame_face_indices`.
+    #[cfg(feature = "renderer-portal-areas")]
+    #[inline(never)]
+    fn filter_faces_through_portal_areas(
+        &mut self,
+        map: &ResidentMap,
+        camera: Camera,
+    ) -> PortalAdmissionStats {
+        let mut stats = PortalAdmissionStats {
+            faces_before: self.frame_face_indices.len() as u32,
+            ..PortalAdmissionStats::default()
+        };
+        let Some(graph) = map.leaf_portal_graph() else {
+            stats.fail_opens = 1;
+            return stats;
+        };
+        let Some((_, camera_leaf, portal_leaf)) = self.cached_visibility else {
+            stats.fail_opens = 1;
+            return stats;
+        };
+        let area_count = graph.area_count();
+        if area_count == 0
+            || area_count > MAX_PORTAL_AREAS
+            || graph.leaf_count() != map.leaves().len()
+        {
+            stats.fail_opens = 1;
+            return stats;
+        }
+        let Some(camera_area) = graph.leaf_area(camera_leaf) else {
+            stats.fail_opens = 1;
+            return stats;
+        };
+
+        self.portal_area_rects.clear();
+        self.portal_area_rects
+            .resize(area_count, PortalScreenRect::EMPTY);
+        self.portal_area_queue.clear();
+        self.portal_area_rects[camera_area] = PortalScreenRect::FULL;
+        self.portal_area_queue.push(camera_area as u16);
+        if portal_leaf != u16::MAX {
+            let Some(area) = graph.leaf_area(portal_leaf as usize) else {
+                stats.fail_opens = 1;
+                return stats;
+            };
+            if self.portal_area_rects[area] != PortalScreenRect::FULL {
+                self.portal_area_rects[area] = PortalScreenRect::FULL;
+                self.portal_area_queue.push(area as u16);
+            }
+        }
+
+        let near = NearPlane::new(camera);
+        let mut cursor = 0usize;
+        while cursor < self.portal_area_queue.len() {
+            let area = self.portal_area_queue[cursor] as usize;
+            cursor += 1;
+            let parent = self.portal_area_rects[area];
+            let Some((first, end)) = graph.area_range(area) else {
+                stats.fail_opens = 1;
+                return stats;
+            };
+            for edge_index in first..end {
+                let Some(edge) = graph.edge(edge_index) else {
+                    stats.fail_opens = 1;
+                    return stats;
+                };
+                stats.edges_tested = stats.edges_tested.wrapping_add(1);
+                let neighbor = edge.neighbor as usize;
+                let Some(rect) = project_portal_rect(edge.bounds, parent, near) else {
+                    continue;
+                };
+                if self.portal_area_rects[neighbor].include(rect) {
+                    if self.portal_area_queue.len() == self.portal_area_queue.capacity() {
+                        stats.queue_pushes = self.portal_area_queue.len() as u32;
+                        stats.fail_opens = 1;
+                        return stats;
+                    }
+                    self.portal_area_queue.push(edge.neighbor);
+                }
+            }
+        }
+        stats.queue_pushes = self.portal_area_queue.len() as u32;
+
+        self.portal_face_visible.fill(0);
+        let leaves = map.leaves();
+        let marks = map.mark_surfaces();
+        for visible_index in 0..self.visible_leaf_count {
+            if self.visibility[visible_index >> 3] & (1 << (visible_index & 7)) == 0 {
+                continue;
+            }
+            let leaf_index = visible_index + 1;
+            let Some(area) = graph.leaf_area(leaf_index) else {
+                continue;
+            };
+            if self.portal_area_rects[area].is_empty() {
+                continue;
+            }
+            let leaf = leaves.get(leaf_index).expect("validated leaf");
+            let first = leaf.first_mark_surface as usize;
+            let end = first + leaf.mark_surface_count as usize;
+            for mark_index in first..end {
+                let face = marks.get(mark_index).expect("validated mark surface") as usize;
+                self.portal_face_visible[face >> 5] |= 1 << (face & 31);
+            }
+        }
+
+        let mut write = 0usize;
+        for read in 0..self.frame_face_indices.len() {
+            let entry = self.frame_face_indices[read];
+            let visible = unsafe {
+                self.visible_faces
+                    .get_unchecked((entry & FRAME_FACE_INDEX_MASK) as usize)
+            };
+            let face = usize::from(visible.bounds.surface_index & PORTAL_SURFACE_INDEX_MASK);
+            if self.portal_face_visible[face >> 5] & (1 << (face & 31)) == 0 {
+                continue;
+            }
+            self.frame_face_indices[write] = entry;
+            write += 1;
+        }
+        self.frame_face_indices.truncate(write);
+        stats.faces_after = write as u32;
+        stats
+    }
+
     /// `R_DrawAliasModel`'s own dlight loop: every live light adds
     /// `radius - distance` to a point's `R_LightPoint` sample.
     #[inline(never)]
@@ -2380,6 +2669,18 @@ impl Renderer {
             return;
         }
 
+        #[cfg(feature = "renderer-scratchpad-liquid-phase")]
+        let phase_offsets = unsafe {
+            core::slice::from_raw_parts_mut(
+                psx_engine::scratchpad::base_ptr(),
+                quake_core::liquid::LIQUID_PHASE_OFFSETS,
+            )
+        };
+        #[cfg(feature = "renderer-scratchpad-liquid-phase")]
+        if !quake_core::liquid::prepare_phase_offsets(phase, phase_offsets) {
+            return;
+        }
+
         const EMPTY_UPLOAD: crate::platform::VramUploadRange = crate::platform::VramUploadRange {
             rect: psx_vram::VramRect::new(0, 0, 1, 1),
             start: 0,
@@ -2401,7 +2702,12 @@ impl Renderer {
                     quake_core::liquid::LIQUID_TILE_BYTES,
                 )
             };
-            if !quake_core::liquid::warp_tile_64(source, destination, phase) {
+            #[cfg(not(feature = "renderer-scratchpad-liquid-phase"))]
+            let warped = quake_core::liquid::warp_tile_64(source, destination, phase);
+            #[cfg(feature = "renderer-scratchpad-liquid-phase")]
+            let warped =
+                quake_core::liquid::warp_tile_64_prepared(source, destination, phase_offsets);
+            if !warped {
                 return;
             }
             let alternate_active = quake_core::liquid::alternate_tile_is_active(
@@ -2717,11 +3023,20 @@ impl Renderer {
                 ) = selected_fingerprints(&self.frame_face_indices);
             }
         }
-        self.update_visible_liquid_tiles(map, animation_tick_60hz);
         let view = crate::platform::load_quake_camera(
             [camera.origin.x, camera.origin.y, camera.origin.z],
             camera.angles,
         );
+        #[cfg(feature = "renderer-portal-areas")]
+        if visibility_valid && !selection_cached {
+            let portal = self.filter_faces_through_portal_areas(map, camera);
+            stats.portal_faces_before = portal.faces_before;
+            stats.portal_faces_after = portal.faces_after;
+            stats.portal_edges_tested = portal.edges_tested;
+            stats.portal_queue_pushes = portal.queue_pushes;
+            stats.portal_fail_opens = portal.fail_opens;
+        }
+        self.update_visible_liquid_tiles(map, animation_tick_60hz);
         #[cfg(feature = "renderer-static-world-reuse")]
         let static_world_key = StaticWorldKey {
             camera,
@@ -6461,6 +6776,52 @@ fn quake_frustum(camera: Camera) -> [AabbClipPlane; 4] {
     })
 }
 
+/// Project one outward-quantized doorway AABB and clip it by the rectangle
+/// inherited from the parent area. Near-straddling or saturated boxes inherit
+/// the parent rectangle unchanged; this loses rejection but cannot create a
+/// false occlusion.
+#[cfg(feature = "renderer-portal-areas")]
+#[inline(never)]
+fn project_portal_rect(
+    bounds: quake_formats::LeafBounds,
+    parent: PortalScreenRect,
+    near: NearPlane,
+) -> Option<PortalScreenRect> {
+    if near.entirely_behind(bounds.mins, bounds.maxs) {
+        return None;
+    }
+    if near.reaches_behind(bounds.mins, bounds.maxs)
+        || (0..3).any(|axis| {
+            bounds.mins[axis] == i16::MIN || bounds.maxs[axis] == i16::MAX
+        })
+    {
+        return Some(parent);
+    }
+
+    let corner = |x: usize, y: usize, z: usize| {
+        GteVec3I16::new(
+            if x == 0 { bounds.mins[0] } else { bounds.maxs[0] },
+            if y == 0 { bounds.mins[1] } else { bounds.maxs[1] },
+            if z == 0 { bounds.mins[2] } else { bounds.maxs[2] },
+        )
+    };
+    let first = scene::project_triangle(corner(0, 0, 0), corner(1, 0, 0), corner(0, 1, 0));
+    let second = scene::project_triangle(corner(1, 1, 0), corner(0, 0, 1), corner(1, 0, 1));
+    let last = [
+        scene::project_vertex(corner(0, 1, 1)),
+        scene::project_vertex(corner(1, 1, 1)),
+    ];
+    let mut rect = PortalScreenRect::EMPTY;
+    for projected in first.into_iter().chain(second).chain(last) {
+        if projected.sz < NEAR_PLANE_VIEW as u16 {
+            return Some(parent);
+        }
+        rect.include_point(projected.sx, projected.sy);
+    }
+    let clipped = rect.intersect(PortalScreenRect::FULL).intersect(parent);
+    (!clipped.is_empty()).then_some(clipped)
+}
+
 fn add_normal(left: [i16; 3], right: [i16; 3]) -> [i16; 3] {
     [
         left[0].saturating_add(right[0]),
@@ -6570,7 +6931,14 @@ unsafe fn submit_view_ray_sky_background(
                 160,
                 view.rotation.m,
             );
-            *sample = quake_core::sky::directional_texel(ray, width);
+            #[cfg(not(feature = "renderer-shared-sky-divisor"))]
+            {
+                *sample = quake_core::sky::directional_texel(ray, width);
+            }
+            #[cfg(feature = "renderer-shared-sky-divisor")]
+            {
+                *sample = quake_core::sky::directional_texel_shared_divisor(ray, width);
+            }
         }
     }
 

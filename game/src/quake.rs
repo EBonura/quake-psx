@@ -1212,7 +1212,8 @@ pub fn run() -> ! {
             any(
                 feature = "renderer-topology-cache",
                 feature = "renderer-indexed-projection",
-                feature = "renderer-subdivision-cache"
+                feature = "renderer-subdivision-cache",
+                feature = "renderer-portal-areas"
             )
         ))]
         crate::e1m1_chain_regression::observe_render(_render_stats);

@@ -113,6 +113,18 @@ renderer-gpu-surface-clip = ["psx-engine/classic-affine-gpu-surface-clip"]
 renderer-quake-specialized-kernel = [
     "psx-engine/classic-affine-quake-specialized-kernel",
 ]
+# Use all 51 scratchpad vertex slots for common projected batches and keep the
+# rare twelve-vertex adaptive workspace in the engine's slow-path frame.
+renderer-separated-subdivision-scratch = [
+    "renderer-quake-specialized-kernel",
+    "psx-engine/classic-affine-quake-separated-scratch",
+]
+# Preserve the frequent three-vertex L1 workspace in scratchpad, expand common
+# batches to 48 vertices, and spill only the rare L2 workspace to the stack.
+renderer-split-subdivision-scratch = [
+    "renderer-quake-specialized-kernel",
+    "psx-engine/classic-affine-quake-split-scratch",
+]
 # Exact common-case island: one call owns each maximal run of level-zero roots
 # and the established adaptive lattice handles the remaining L1/L2 roots.
 renderer-quake-level0-run = [
@@ -223,6 +235,14 @@ renderer-cell-policy = []
 # Extend the retained cell policy with one immutable liquid bit so the hot
 # selector no longer indexes the texture table for every PVS face.
 renderer-cell-liquid-policy = ["renderer-cell-policy"]
+# Quake II-style coarse scene admission. The cooker reconstructs conservative
+# leaf doorways, merges broad BSP splits into rooms, and the runtime propagates
+# clipped screen rectangles before admitting the existing exact face path.
+renderer-portal-areas = ["renderer-block-frustum"]
+renderer-scratchpad-liquid-phase = []
+# Replace the sky lattice's two same-denominator CPU divides with one reciprocal
+# divide and two corrected multiply-high projections.
+renderer-shared-sky-divisor = []
 # Keep the exact separate near-classification pass, but execute each retained
 # face's three-product inner-support test in the otherwise-unused second light
 # matrix row left live beside the four frustum planes.

@@ -72,11 +72,13 @@ The current renderer includes:
 - fixed packet and scratch buffers with overflow counters;
 - shared clipping and projection helpers from PSoXide.
 
-The latest accepted feature-gated selector build measured 22.587 fps on the
-complete fixed-step E1M1 route in PSoXide, up from the 22.128 fps exact-key
-selection-cache baseline and the original 21.857 fps renderer baseline.
-The goal remains 30 fps. Emulator timing is useful for comparing revisions, but
-only a real console can provide the final result.
+The latest accepted exact stack measures 23.656 fps on the complete fixed-step
+E1M1 route in PSoXide, up from the 22.128 fps exact-key selection-cache
+baseline and the original 21.857 fps renderer baseline. A scratchpad
+liquid-phase candidate measures 23.852 fps and awaits the broader route and
+shipping gates. The goal remains 30 fps. Emulator timing is useful for
+comparing CPU-side revisions, but PSoXide's modeled GPU/DMA timing and original
+hardware remain the final cadence checks.
 
 ### Measured E1M1 attribution
 
@@ -679,6 +681,109 @@ discarded after disassembly exposed a destination increment moved out of the
 branch delay slot; the accepted routine uses an explicit `.set noreorder`
 schedule. These are code-shape rejections, not visual failures: the completed
 controls retained the canonical hashes.
+
+### The missing Quake II mechanism: RAM-budgeted render sections
+
+The decompilation comparison now identifies a larger mismatch than any packet
+inner loop. Quake II PSX does not keep a PC-style whole-map render database and
+reconstruct a variable packet stream from it every frame. Its maps are cut into
+streamed sections, `InitBrush` installs invariant GT4 fields directly in both
+GPU pools, and the hot camera-cell path repeatedly selects almost the same
+section-owned command stream. The traced retail route used only eight
+`(CamSpace, SortIndx, Area)` identities across 650 presents, with the same
+identity on 98.92% of transitions. The runtime then patches links and projected
+XY values instead of re-reading and rewriting every packet field.
+
+Quake-PSX currently retains the opposite lifetime. It keeps world vertices,
+faces, leaf marks, and PVS data for the entire map, then pays face selection,
+surface materialisation, adaptive topology, and packet construction costs on
+each frame. The latest PC sample assigns 5.25% of total samples to selection,
+4.02% to materialisation, and 11.11% to the specialized world submitter. Their
+20.38% combined share is essentially the complete remaining cadence gap: the
+23.852 fps scratch-liquid candidate needs a 20.49% reduction in frame time to
+reach 30 fps. No single micro-optimization can plausibly close that gap; a
+single lifetime change can attack all three stages together.
+
+Two controls rule out easier interpretations of the retail design:
+
+- Walking a reconstructed portal graph after the existing PVS was exact but
+  reached only 14.228 fps. It tested 1,075,537 edges and rejected just 366 of
+  320,252 faces (0.114%). Quake II's cheap doorway walk works because it is the
+  primary section selector, not a second visibility system layered on a
+  whole-map Quake renderer.
+- Increasing the scratch batch to 51 vertices/17 surfaces reached 23.669 fps,
+  while a split L1/L2 scratch design reached 23.642 fps. Batch-call overhead is
+  not the missing retail advantage.
+
+The first automatic section attempt also exposed an important authoring fact.
+Merging BSP leaves across broad portals produces a geometrically sensible
+"room," but every Episode 1 map contains a giant connected component. E1M1's
+largest component owns 4,626 retained faces and projects to 1,634 KiB of render
+state. Quake II's sections therefore cannot be recovered as rooms alone: they
+must be deliberately cut through open space to an explicit RAM ceiling, with
+corridors and transition placement hiding the load.
+
+`quake2-transfer-census` now reconstructs the unmerged leaf adjacency, builds
+the exact retained cell stream for every non-solid leaf, and greedily grows
+connected sections only while their complete active representation fits a
+budget. The representation includes section-local faces, indexed corners and
+positions, an eight-byte projection cache, every cell stream, and eligible
+packet templates in both display pools. It keeps near, liquid, sky, ambiguous,
+and other non-template faces as a measured dynamic fallback rather than
+pretending the entire map has fixed topology.
+
+The 192 KiB result is the practical starting point:
+
+| Map | Sections | Oversize sections | Whole-map resident | Replaceable world render | Retained core | Compact section payload on CD | Worst retained-core + active + compact-neighbor | Arena headroom |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| start | 62 | 8 | 696 KiB | 360 KiB | 336 KiB | 3,610 KiB | 653 KiB | 205 KiB |
+| e1m1 | 69 | 0 | 712 KiB | 376 KiB | 335 KiB | 4,236 KiB | 647 KiB | 211 KiB |
+| e1m2 | 59 | 0 | 811 KiB | 361 KiB | 449 KiB | 2,642 KiB | 735 KiB | 123 KiB |
+| e1m3 | 48 | 0 | 855 KiB | 318 KiB | 536 KiB | 1,822 KiB | 827 KiB | 32 KiB |
+| e1m4 | 99 | 0 | 830 KiB | 404 KiB | 425 KiB | 3,977 KiB | 721 KiB | 138 KiB |
+| e1m5 | 46 | 0 | 748 KiB | 315 KiB | 433 KiB | 1,656 KiB | 711 KiB | 147 KiB |
+| e1m6 | 45 | 1 | 730 KiB | 228 KiB | 501 KiB | 2,023 KiB | 791 KiB | 67 KiB |
+| e1m7 | 16 | 0 | 480 KiB | 98 KiB | 381 KiB | 716 KiB | 651 KiB | 207 KiB |
+| e1m8 | 177 | 51 | 484 KiB | 210 KiB | 274 KiB | 8,552 KiB | 583 KiB | 275 KiB |
+
+An "oversize" row means one source camera cell already exceeds the requested
+192 KiB cap; it is not a memory overflow. The measured largest cells remain
+bounded, and every active-plus-compact-neighbor projection above fits the
+existing 880,000-byte resident-map arena. A uniform 256 KiB cap removes every
+oversize section, but its active-plus-preload peak exceeds the arena on E1M3
+and E1M6. The implementation should therefore use the 192 KiB target, allow a
+bounded exceptional cell, and stop installing templates when the active cap
+would otherwise be exceeded.
+
+The compact-neighbor distinction is essential. Holding two fully expanded
+sections at once wastes two projection caches and four copies of invariant
+packet fields. Instead, the current section remains active while the neighbor's
+geometry and cell streams are read into compact staging. At the boundary the
+old templates are discarded, `InitBrush`-equivalent code expands the staged
+section into the two GPU pools, and the staging allocation becomes available
+again. E1M1's compact sections are 63/100/119 KiB P50/P95/max, corresponding to
+roughly 0.21/0.33/0.40 seconds at the PlayStation CD-ROM's nominal 2x payload
+rate before seek and filesystem overhead. That explains why the retail maps
+extend or add corridors around section transitions.
+
+This evidence changes the authorized implementation boundary. The next
+performance build must replace world render residency and per-frame packet
+construction together; adding another cache inside the current renderer is no
+longer justified. Collision planes, clip nodes, render-tree nodes, leaves,
+entities, alias models, and inline brush-model geometry remain resident. World
+vertices, world faces, leaf marks, and raw PVS move to section sidecars. Each
+section owns compact per-cell command streams and static packet descriptors;
+activation allocates the projection cache and installs both packet pools.
+Dynamic near/special/adaptive faces retain the current authoritative writer.
+Only after this boundary exists is it meaningful to tune the projected-XY
+patch kernel or add topology persistence.
+
+The best exact local candidate remains the scratchpad liquid-phase build at
+3,028,704,094 cycles and 23.852 fps, a 0.196 fps/0.83% gain over the 23.656
+leader with canonical VRAM and display hashes. Computing both sky quotients
+from one exact shared divisor reached 23.843 fps and is rejected as noise-level
+slower. The liquid result is still a candidate until the Episode 1 route and
+shipping headroom gates pass; it is independent of the section rewrite.
 
 Reproduce the leader or build its non-regression playable disc using only
 PSoXide:
