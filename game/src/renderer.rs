@@ -12,6 +12,7 @@ use psx_bsp::resident::IndexedVertices;
     feature = "renderer-indexed-projection"
 ))]
 use psx_engine::submit_classic_affine_projected_batch;
+#[cfg(feature = "renderer-quake-specialized-kernel")]
 use psx_engine::{
     attributed_clip::{
         clip_convex_plane_uninit, lerp_q12_i32_rounded, AttributedClipPlane, ClipTraversal,
@@ -712,6 +713,10 @@ pub struct RenderStats {
     pub subdivision_cache_initializations: u32,
     #[cfg(feature = "renderer-subdivision-cache")]
     pub subdivision_cache_packets: u32,
+    #[cfg(feature = "renderer-scene-object-gate")]
+    pub scene_object_tests: u32,
+    #[cfg(feature = "renderer-scene-object-gate")]
+    pub scene_object_rejected_faces: u32,
     /// Exact high-water of this frame's double-buffered world/entity packet
     /// arena. The map-route probe retains the maximum across Episode 1.
     #[cfg(feature = "episode1-regression")]
@@ -751,6 +756,20 @@ struct VisibleFace {
 const _: [(); 36] = [(); core::mem::size_of::<VisibleFace>()];
 #[cfg(feature = "renderer-compact-cell-stream")]
 const _: [(); 24] = [(); core::mem::size_of::<VisibleFace>()];
+
+#[cfg(feature = "renderer-scene-object-gate")]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct VisibleSceneObject {
+    mins: [i16; 3],
+    maxs: [i16; 3],
+    face_count: u16,
+}
+
+#[cfg(feature = "renderer-scene-object-gate")]
+const _: [(); 14] = [(); core::mem::size_of::<VisibleSceneObject>()];
+#[cfg(feature = "renderer-scene-object-gate")]
+const VISIBLE_SCENE_OBJECT_MIN_FACES: u16 = 3;
 
 /// Conservative union bounds for one consecutive visible-face block.
 #[cfg(feature = "renderer-block-frustum")]
@@ -1750,6 +1769,18 @@ pub struct Renderer {
     visible_face_planes: Vec<CompactPlane>,
     #[cfg(feature = "renderer-block-frustum")]
     visible_face_blocks: Vec<VisibleFaceBlock>,
+    /// Tight connected-object AABBs rebuilt for the current PVS.
+    #[cfg(feature = "renderer-scene-object-gate")]
+    visible_scene_objects: Vec<VisibleSceneObject>,
+    /// Current-PVS object slots parallel to the unchanged hot face record.
+    #[cfg(feature = "renderer-scene-object-gate")]
+    visible_face_object_slots: Vec<u16>,
+    /// Global scene-object ID to current-PVS compact slot.
+    #[cfg(feature = "renderer-scene-object-gate")]
+    scene_object_slots: Vec<u16>,
+    /// Per-frame lazy object AABB state: 0 unknown, 1 admitted, 2 rejected.
+    #[cfg(feature = "renderer-scene-object-gate")]
+    scene_object_states: Vec<u8>,
     #[cfg(feature = "renderer-hierarchical-block-frustum")]
     visible_face_super_blocks: Vec<VisibleFaceBlock>,
     // Indexes into `visible_faces` which survive the current camera frustum.
@@ -1825,6 +1856,14 @@ impl Renderer {
             visible_face_planes: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
             #[cfg(feature = "renderer-block-frustum")]
             visible_face_blocks: Vec::with_capacity(MAX_VISIBLE_FACE_BLOCKS),
+            #[cfg(feature = "renderer-scene-object-gate")]
+            visible_scene_objects: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
+            #[cfg(feature = "renderer-scene-object-gate")]
+            visible_face_object_slots: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
+            #[cfg(feature = "renderer-scene-object-gate")]
+            scene_object_slots: Vec::new(),
+            #[cfg(feature = "renderer-scene-object-gate")]
+            scene_object_states: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
             #[cfg(feature = "renderer-hierarchical-block-frustum")]
             visible_face_super_blocks: Vec::with_capacity(MAX_VISIBLE_FACE_SUPER_BLOCKS),
             frame_face_indices: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
@@ -2485,7 +2524,8 @@ impl Renderer {
                 not(feature = "renderer-census"),
                 feature = "renderer-block-frustum",
                 not(feature = "renderer-hierarchical-block-frustum"),
-                not(feature = "renderer-plane-index-cache")
+                not(feature = "renderer-plane-index-cache"),
+                not(feature = "renderer-scene-object-gate")
             ))]
             select_frame_faces_blocked(
                 &self.visible_faces,
@@ -2502,7 +2542,33 @@ impl Renderer {
                 not(feature = "renderer-census"),
                 feature = "renderer-block-frustum",
                 not(feature = "renderer-hierarchical-block-frustum"),
-                feature = "renderer-plane-index-cache"
+                not(feature = "renderer-plane-index-cache"),
+                feature = "renderer-scene-object-gate"
+            ))]
+            {
+                let gate = select_frame_faces_blocked_objects(
+                    &self.visible_faces,
+                    #[cfg(feature = "renderer-compact-cell-stream")]
+                    &self.visible_face_planes,
+                    &self.visible_face_blocks,
+                    &self.visible_face_object_slots,
+                    &self.visible_scene_objects,
+                    &mut self.scene_object_states,
+                    &self.active_textures,
+                    camera.origin,
+                    &frustum,
+                    self.active_water_plane,
+                    &mut self.frame_face_indices,
+                );
+                stats.scene_object_tests = gate.tests;
+                stats.scene_object_rejected_faces = gate.rejected_faces;
+            }
+            #[cfg(all(
+                not(feature = "renderer-census"),
+                feature = "renderer-block-frustum",
+                not(feature = "renderer-hierarchical-block-frustum"),
+                feature = "renderer-plane-index-cache",
+                not(feature = "renderer-scene-object-gate")
             ))]
             select_frame_faces_blocked_plane_indexed(
                 &self.visible_faces,
@@ -5385,10 +5451,87 @@ impl Renderer {
             feature = "renderer-cell-policy"
         ))]
         self.retain_cell_faces(map, leaf_index);
+        #[cfg(feature = "renderer-scene-object-gate")]
+        if !self.rebuild_visible_scene_objects(map) {
+            self.visible_faces.clear();
+            self.cached_visibility = None;
+            self.visible_leaf_count = 0;
+            return false;
+        }
         #[cfg(feature = "renderer-block-frustum")]
         self.rebuild_visible_face_blocks();
         self.visible_leaf_count = visible_leaves;
         self.cached_visibility = Some((map.generation(), leaf_index, portal_key));
+        true
+    }
+
+    /// Compact map-global cooker object IDs into the current PVS and rebuild
+    /// their union AABBs from retained face bounds. Keeping the u16 slots in a
+    /// parallel stream preserves the proven 36-byte hot face record.
+    #[cfg(feature = "renderer-scene-object-gate")]
+    #[inline(never)]
+    fn rebuild_visible_scene_objects(&mut self, map: &ResidentMap) -> bool {
+        let Some(scene) = map.scene_objects() else {
+            return false;
+        };
+        if scene.face_count() != map.faces().len() {
+            return false;
+        }
+        if self.scene_object_slots.len() != scene.object_count() {
+            self.scene_object_slots.clear();
+            self.scene_object_slots
+                .resize(scene.object_count(), u16::MAX);
+        } else {
+            self.scene_object_slots.fill(u16::MAX);
+        }
+        self.visible_scene_objects.clear();
+        self.visible_face_object_slots.clear();
+        for visible in &self.visible_faces {
+            let face_index = usize::from(visible.bounds.surface_index & VISIBLE_SURFACE_INDEX_MASK);
+            let Some(object_id) = scene.object_for_face(face_index) else {
+                return false;
+            };
+            if object_id == u16::MAX {
+                self.visible_face_object_slots.push(u16::MAX);
+                continue;
+            }
+            let global_slot = usize::from(object_id);
+            let mut visible_slot = self.scene_object_slots[global_slot];
+            if visible_slot == u16::MAX {
+                if self.visible_scene_objects.len() == self.visible_scene_objects.capacity()
+                    || self.visible_face_object_slots.len()
+                        == self.visible_face_object_slots.capacity()
+                {
+                    return false;
+                }
+                visible_slot = self.visible_scene_objects.len() as u16;
+                self.scene_object_slots[global_slot] = visible_slot;
+                self.visible_scene_objects.push(VisibleSceneObject {
+                    mins: visible.bounds.mins,
+                    maxs: visible.bounds.maxs,
+                    face_count: 1,
+                });
+            } else {
+                let object = &mut self.visible_scene_objects[usize::from(visible_slot)];
+                for axis in 0..3 {
+                    object.mins[axis] = object.mins[axis].min(visible.bounds.mins[axis]);
+                    object.maxs[axis] = object.maxs[axis].max(visible.bounds.maxs[axis]);
+                }
+                object.face_count += 1;
+            }
+            self.visible_face_object_slots.push(visible_slot);
+        }
+        for slot in &mut self.visible_face_object_slots {
+            if *slot != u16::MAX
+                && self.visible_scene_objects[usize::from(*slot)].face_count
+                    < VISIBLE_SCENE_OBJECT_MIN_FACES
+            {
+                *slot = u16::MAX;
+            }
+        }
+        self.scene_object_states.clear();
+        self.scene_object_states
+            .resize(self.visible_scene_objects.len(), 0);
         true
     }
 
@@ -7603,6 +7746,162 @@ fn select_frame_faces_blocked(
         block_index += 1;
     }
     unsafe { output.set_len(count) };
+}
+
+#[cfg(all(
+    not(feature = "renderer-census"),
+    feature = "renderer-block-frustum",
+    feature = "renderer-scene-object-gate"
+))]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct SceneObjectGateStats {
+    tests: u32,
+    rejected_faces: u32,
+}
+
+/// Two-level exact selector. The existing source-order 16-face union remains
+/// the coarse gate. Inside an admitted block, each cooker object is tested at
+/// most once and a rejected tight object skips all of its member face tests.
+/// Admitted objects still take the established face policy, facing and AABB
+/// path, so source order and packet output remain authoritative.
+#[cfg(all(
+    not(feature = "renderer-census"),
+    feature = "renderer-block-frustum",
+    feature = "renderer-scene-object-gate"
+))]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn select_frame_faces_blocked_objects(
+    visible_faces: &[VisibleFace],
+    #[cfg(feature = "renderer-compact-cell-stream")] visible_planes: &[CompactPlane],
+    visible_blocks: &[VisibleFaceBlock],
+    visible_face_object_slots: &[u16],
+    visible_objects: &[VisibleSceneObject],
+    object_states: &mut [u8],
+    active_textures: &[TextureInfo],
+    origin: Vec3I32,
+    frustum: &[AabbClipPlane; 4],
+    water_plane: i16,
+    output: &mut Vec<u16>,
+) -> SceneObjectGateStats {
+    output.clear();
+    object_states.fill(0);
+    debug_assert!(output.capacity() >= visible_faces.len());
+    debug_assert_eq!(visible_face_object_slots.len(), visible_faces.len());
+    debug_assert_eq!(object_states.len(), visible_objects.len());
+    debug_assert_eq!(
+        visible_blocks.len(),
+        visible_faces.len().div_ceil(VISIBLE_FACE_BLOCK_SIZE)
+    );
+    let out = output.as_mut_ptr();
+    let mut count = 0usize;
+    let mut stats = SceneObjectGateStats::default();
+    let mut block_index = 0usize;
+    let mut first = 0usize;
+    while first < visible_faces.len() {
+        let block = unsafe { visible_blocks.get_unchecked(block_index) };
+        let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
+        if !scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
+            let mut visible_index = first;
+            while visible_index < end {
+                let visible = unsafe { visible_faces.get_unchecked(visible_index) };
+                let object_slot =
+                    unsafe { *visible_face_object_slots.get_unchecked(visible_index) };
+                if object_slot != u16::MAX {
+                    let state = unsafe {
+                        object_states.get_unchecked_mut(usize::from(object_slot))
+                    };
+                    if *state == 0 {
+                        let object = unsafe {
+                            visible_objects.get_unchecked(usize::from(object_slot))
+                        };
+                        stats.tests = stats.tests.wrapping_add(1);
+                        *state = if scene::aabb_outside_clip4(
+                            object.mins,
+                            object.maxs,
+                            frustum,
+                            0x0f,
+                        ) {
+                            2
+                        } else {
+                            1
+                        };
+                    }
+                    if *state == 2 {
+                        stats.rejected_faces = stats.rejected_faces.wrapping_add(1);
+                        visible_index += 1;
+                        continue;
+                    }
+                }
+
+                let texture =
+                    unsafe { active_textures.get_unchecked(visible.face.material as usize) };
+                let water_blend =
+                    texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
+                #[cfg(any(
+                    feature = "renderer-compact-cell-stream",
+                    feature = "renderer-cell-policy"
+                ))]
+                let policy_visible = true;
+                #[cfg(not(any(
+                    feature = "renderer-compact-cell-stream",
+                    feature = "renderer-cell-policy"
+                )))]
+                let policy_visible = texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0;
+                if policy_visible
+                    && (water_blend || {
+                        #[cfg(any(
+                            feature = "renderer-compact-cell-stream",
+                            feature = "renderer-cell-policy"
+                        ))]
+                        {
+                            visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
+                                || front_facing_compact_plane(
+                                    #[cfg(feature = "renderer-compact-cell-stream")]
+                                    unsafe {
+                                        *visible_planes.get_unchecked(visible_index)
+                                    },
+                                    #[cfg(all(
+                                        feature = "renderer-cell-policy",
+                                        not(feature = "renderer-compact-cell-stream")
+                                    ))]
+                                    visible.plane,
+                                    u16::from(visible.face.flags),
+                                    origin,
+                                )
+                        }
+                        #[cfg(not(any(
+                            feature = "renderer-compact-cell-stream",
+                            feature = "renderer-cell-policy"
+                        )))]
+                        {
+                            front_facing_compact_plane(
+                                visible.plane,
+                                u16::from(visible.face.flags),
+                                origin,
+                            )
+                        }
+                    })
+                    && !scene::aabb_outside_clip4(
+                        visible.bounds.mins,
+                        visible.bounds.maxs,
+                        frustum,
+                        0x0f,
+                    )
+                {
+                    let entry =
+                        visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
+                    unsafe { ptr::write(out.add(count), entry) };
+                    count += 1;
+                }
+                visible_index += 1;
+            }
+        }
+        first = end;
+        block_index += 1;
+    }
+    unsafe { output.set_len(count) };
+    stats
 }
 
 /// Block-frustum selector with an exact direct-index memo of the camera side

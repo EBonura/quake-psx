@@ -7,7 +7,7 @@ use quake_core::monster::{highest_frame, MonsterKind};
 use quake_core::targets::{TargetActions, TargetGraph, MAX_DELAYED_USES, MAX_TARGET_ENTITIES};
 use quake_formats::resident::{MapLoadError as ResidentMapLoadError, ResidentMap};
 use quake_formats::{
-    alias_model_is_sprite, decode_sound_bank, episode_directory_index, AliasModelTable,
+    alias_model_is_sprite, decode_sound_bank, episode_directory_index, scene_objects, AliasModelTable,
     CookedRecord, EpisodeDirectoryEncoder, Face, Leaf, LumpKind, MapEntity, PsbIndex, PsbVersion,
     RecordSlice, SliceReader, SoundBankKind, SoundEffect, TextureInfo, EPISODE_DIRECTORY_BYTES,
     RESIDENT_MAP_ARENA_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_SPU_END, TEXTURE_LAYERED_SKY,
@@ -237,6 +237,7 @@ enum Action {
     E1m1GpuPolygonWindowRangeBench,
     E1m1GpuPolygonCellStreamBench,
     E1m1GpuPolygonCellPolicyBench,
+    E1m1GpuPolygonSceneObjectBench,
     GpuPolygonCellPolicyDisc,
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLevel0RunBench,
@@ -1122,6 +1123,28 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-cell-policy-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonSceneObjectBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-scene-object-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-scene-object-gate",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-scene-object-bench",
             )?;
         }
         Action::GpuPolygonCellPolicyDisc => {
@@ -3250,6 +3273,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-window-range-bench"
             | "e1m1-gpu-polygon-cell-stream-bench"
             | "e1m1-gpu-polygon-cell-policy-bench"
+            | "e1m1-gpu-polygon-scene-object-bench"
             | "gpu-polygon-cell-policy-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
@@ -3348,6 +3372,7 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-window-range-bench" => Action::E1m1GpuPolygonWindowRangeBench,
                     "e1m1-gpu-polygon-cell-stream-bench" => Action::E1m1GpuPolygonCellStreamBench,
                     "e1m1-gpu-polygon-cell-policy-bench" => Action::E1m1GpuPolygonCellPolicyBench,
+                    "e1m1-gpu-polygon-scene-object-bench" => Action::E1m1GpuPolygonSceneObjectBench,
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
@@ -3482,6 +3507,7 @@ fn print_help() {
            e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
            e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
            e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
+           e1m1-gpu-polygon-scene-object-bench  A/B cooker-connected object AABB gates inside admitted blocks\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
            e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \
@@ -4062,6 +4088,39 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
         let leaves = resident.leaves();
         let marks = resident.mark_surfaces();
         let visibility = resident.visibility();
+        let scene = scene_objects(visibility)
+            .ok_or_else(|| format!("cooked {map} has no valid scene-object sidecar"))?;
+        if scene.face_count() != face_count {
+            return Err(format!(
+                "cooked {map} scene-object table has {} faces, expected {face_count}",
+                scene.face_count()
+            )
+            .into());
+        }
+        let mut object_faces = vec![0usize; scene.object_count()];
+        let mut unclustered_faces = 0usize;
+        for face_index in 0..face_count {
+            let object = scene
+                .object_for_face(face_index)
+                .ok_or_else(|| format!("cooked {map} omits scene object for face {face_index}"))?;
+            if object == u16::MAX {
+                unclustered_faces += 1;
+            } else {
+                object_faces[usize::from(object)] += 1;
+            }
+        }
+        let largest_object = object_faces.iter().copied().max().unwrap_or(0);
+        if scene.object_count() == 0 {
+            return Err(format!("cooked {map} has no eligible scene objects").into());
+        }
+        println!(
+            "scene objects {map}: {} clustered faces -> {} objects ({:.2} faces/object, {} unclustered faces, max {})",
+            face_count - unclustered_faces,
+            scene.object_count(),
+            (face_count - unclustered_faces) as f64 / scene.object_count() as f64,
+            unclustered_faces,
+            largest_object,
+        );
         let world = resident
             .brush_models()
             .get(0)
@@ -4167,9 +4226,9 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
         };
         largest_required = largest_required.max(required);
     }
-    if largest_required != 865_958 {
+    if largest_required != 877_098 {
         return Err(format!(
-            "indexed resident census drifted: largest map needs {largest_required} bytes, expected 865958"
+            "indexed resident census drifted: largest map needs {largest_required} bytes, expected 877098"
         )
         .into());
     }
@@ -4194,15 +4253,15 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
 /// records and persistent-sound dedup visible in every validation run.
 fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     const MAPS: [(&str, usize, usize); 9] = [
-        ("start", 1_769_840, 1_464_806),
-        ("e1m1", 1_862_013, 1_549_333),
-        ("e1m2", 2_076_988, 1_756_594),
-        ("e1m3", 2_147_866, 1_844_570),
-        ("e1m4", 2_096_303, 1_781_981),
-        ("e1m5", 2_036_505, 1_713_133),
-        ("e1m6", 1_990_529, 1_688_683),
-        ("e1m7", 1_601_558, 1_389_440),
-        ("e1m8", 1_646_042, 1_417_964),
+        ("start", 1_769_840, 1_476_314),
+        ("e1m1", 1_862_013, 1_561_121),
+        ("e1m2", 2_076_988, 1_768_226),
+        ("e1m3", 2_147_866, 1_855_710),
+        ("e1m4", 2_096_303, 1_795_217),
+        ("e1m5", 2_036_505, 1_723_687),
+        ("e1m6", 1_990_529, 1_697_507),
+        ("e1m7", 1_601_558, 1_393_008),
+        ("e1m8", 1_646_042, 1_424_858),
     ];
     let mut legacy_total = 0usize;
     let mut compact_total = 0usize;
@@ -4238,9 +4297,9 @@ fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     let global_bytes = fs::metadata(root.join("id1psx/sounds/global.qsb"))?.len() as usize;
     let persistent_total = compact_total + global_bytes;
     if legacy_total != 17_227_644
-        || compact_total != 14_606_504
+        || compact_total != 14_695_648
         || global_bytes != 159_418
-        || persistent_total != 14_765_922
+        || persistent_total != 14_855_066
     {
         return Err(format!(
             "PSB5/QSB1 episode census drifted: {legacy_total} -> {compact_total} + {global_bytes}"
@@ -6180,6 +6239,15 @@ change; a delta under this is code placement, not work)\n"
     } else {
         String::new()
     };
+    let scene_object_note = if capture_name.contains("scene-object") {
+        format!(
+            "scene_object_tests={}\n\
+             scene_object_rejected_faces={}\n",
+            probe.monster_pain, probe.monster_death,
+        )
+    } else {
+        String::new()
+    };
     let summary = format!(
         "quake-psx canonical E1M1 per-map route: PASS\n\
          deterministic_runs=2\n\
@@ -6204,6 +6272,7 @@ trigger_changelevel -> e1m2\n\
          indexed_projection_corners={}\n\
          indexed_projection_unique={}\n\
          {subdivision_cache_note}\
+         {scene_object_note}\
          {noise_note}\
          vram_fnv1a_64=0x{vram_hash:016x}\n\
          display_fnv1a_64=0x{display_hash:016x}\n",
@@ -9280,6 +9349,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-window-range-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-stream-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-policy-bench"
+            | "build-psoxide-e1m1-gpu-polygon-scene-object-bench"
             | "build-psoxide-gpu-polygon-cell-policy-playable"
             | "build-psoxide-e1m1-gpu-polygon-quake-kernel-bench"
             | "build-psoxide-e1m1-gpu-polygon-level0-run-bench"
