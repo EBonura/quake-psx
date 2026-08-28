@@ -235,6 +235,7 @@ enum Action {
     E1m1GpuPolygonWindowRunsBench,
     E1m1GpuPolygonWindowInsertBench,
     E1m1GpuPolygonWindowRangeBench,
+    E1m1GpuPolygonWindowSlotPackBench,
     E1m1GpuPolygonCellStreamBench,
     E1m1GpuPolygonCellPolicyBench,
     GpuPolygonCellPolicyDisc,
@@ -1056,6 +1057,28 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-window-range-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonWindowSlotPackBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-window-slot-pack-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-window-slot-packing",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-window-slot-pack-bench",
             )?;
         }
         Action::E1m1GpuPolygonCellStreamBench => {
@@ -3248,6 +3271,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-window-runs-bench"
             | "e1m1-gpu-polygon-window-insert-bench"
             | "e1m1-gpu-polygon-window-range-bench"
+            | "e1m1-gpu-polygon-window-slot-pack-bench"
             | "e1m1-gpu-polygon-cell-stream-bench"
             | "e1m1-gpu-polygon-cell-policy-bench"
             | "gpu-polygon-cell-policy-disc"
@@ -3346,6 +3370,9 @@ fn parse_cli() -> Result<Cli> {
                         Action::E1m1GpuPolygonWindowInsertBench
                     }
                     "e1m1-gpu-polygon-window-range-bench" => Action::E1m1GpuPolygonWindowRangeBench,
+                    "e1m1-gpu-polygon-window-slot-pack-bench" => {
+                        Action::E1m1GpuPolygonWindowSlotPackBench
+                    }
                     "e1m1-gpu-polygon-cell-stream-bench" => Action::E1m1GpuPolygonCellStreamBench,
                     "e1m1-gpu-polygon-cell-policy-bench" => Action::E1m1GpuPolygonCellPolicyBench,
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
@@ -3480,6 +3507,7 @@ fn print_help() {
            e1m1-gpu-polygon-plane-index-bench  Memoize BSP plane sides by direct cooked index\n  \
            e1m1-gpu-polygon-window-runs-bench  Coalesce final GPU-order liquid window state runs\n  \
            e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
+           e1m1-gpu-polygon-window-slot-pack-bench  Pack exact-slot liquid children before OT linking\n  \
            e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
            e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
@@ -9278,6 +9306,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-window-runs-bench"
             | "build-psoxide-e1m1-gpu-polygon-window-insert-bench"
             | "build-psoxide-e1m1-gpu-polygon-window-range-bench"
+            | "build-psoxide-e1m1-gpu-polygon-window-slot-pack-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-stream-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-policy-bench"
             | "build-psoxide-gpu-polygon-cell-policy-playable"

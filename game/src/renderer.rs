@@ -155,6 +155,11 @@ const BATCH_MAX_SURFACES: usize = 13;
 const SUBDIVISION_SCRATCH_VERTICES: usize = 12;
 type BatchVertexStorage =
     [MaybeUninit<ClassicAffineVertex>; BATCH_MAX_VERTICES + SUBDIVISION_SCRATCH_VERTICES];
+#[cfg(feature = "renderer-window-slot-packing")]
+const WINDOW_PACK_SCRATCH_WORDS: usize =
+    core::mem::size_of::<BatchVertexStorage>() / core::mem::size_of::<u32>();
+#[cfg(feature = "renderer-window-slot-packing")]
+const _: () = assert!(WINDOW_PACK_SCRATCH_WORDS == u8::MAX as usize);
 type BatchSurfaceStorage = [MaybeUninit<ClassicAffineBatchSurface>; BATCH_MAX_SURFACES];
 #[cfg(any(feature = "renderer-census", feature = "renderer-subdivision-cache"))]
 type BatchSourceSurfaceStorage = [MaybeUninit<u16>; BATCH_MAX_SURFACES];
@@ -2812,9 +2817,12 @@ impl Renderer {
                     if vertex_count < 3 {
                         continue;
                     }
-                    #[cfg(feature = "renderer-window-range-coalescing")]
+                    #[cfg(any(
+                        feature = "renderer-window-range-coalescing",
+                        feature = "renderer-window-slot-packing"
+                    ))]
                     let window_packet_start = next;
-                    let submitted = unsafe {
+                    let mut submitted = unsafe {
                         submit_classic_affine_scoped_windowed_fan(
                             batch_vertices.as_mut_ptr().cast(),
                             vertex_count,
@@ -2833,6 +2841,16 @@ impl Renderer {
                             ClassicAffineProfile::QUAKE_REFERENCE,
                         )
                     };
+                    #[cfg(feature = "renderer-window-slot-packing")]
+                    unsafe {
+                        let packed = pack_same_slot_window_packets(
+                            window_packet_start,
+                            submitted.next_packet,
+                            batch_vertices.as_mut_ptr().cast::<u32>(),
+                        );
+                        submitted.next_packet = packed.next_packet;
+                        submitted.packets = packed.packets;
+                    }
                     if water_blend {
                         // The shared fan owns the costly projection,
                         // subdivision and scoped-window packet topology. Its
@@ -6529,6 +6547,112 @@ fn special_texture_window(texture: TextureInfo) -> TextureWindow {
 
 fn texture_window_mask(size: u8) -> u8 {
     (((!(size - 1)) as u16 & 0x00ff) as u8) / 8
+}
+
+#[cfg(feature = "renderer-window-slot-packing")]
+#[derive(Copy, Clone)]
+struct PackedWindowRange {
+    next_packet: *mut u32,
+    packets: u32,
+}
+
+/// Repack consecutive physical scoped packets which target the same exact OT
+/// slot and selector into one DMA packet. The ordinary linker would reverse
+/// those packets inside the slot, so primitive payloads are copied to the
+/// scratchpad in reverse packet order. Packet boundaries and redundant E2
+/// selector/reset pairs are not GPU-visible state.
+///
+/// # Safety
+/// `start..end` must be one complete scoped-window stream emitted by the
+/// shared affine fan, and `scratch` must expose 255 writable words.
+#[cfg(feature = "renderer-window-slot-packing")]
+#[inline(never)]
+unsafe fn pack_same_slot_window_packets(
+    start: *mut u32,
+    end: *mut u32,
+    scratch: *mut u32,
+) -> PackedWindowRange {
+    const ADDRESS_MASK: u32 = 0x00ff_ffff;
+    const SLOT_MASK: u32 = 0x0000_ffff;
+    const SCOPED_MARKER: u32 = 1 << 16;
+    let mut read = start;
+    let mut write = start;
+    let mut packets = 0u32;
+    while read < end {
+        let first_tag = unsafe { ptr::read(read) };
+        let first_words = (first_tag >> 24) as usize;
+        if first_words < 3 || first_tag & SCOPED_MARKER == 0 {
+            let words = first_words + 1;
+            unsafe { ptr::copy(read, write, words) };
+            read = unsafe { read.add(words) };
+            write = unsafe { write.add(words) };
+            packets = packets.wrapping_add(1);
+            continue;
+        }
+
+        let slot = first_tag & SLOT_MASK;
+        let selector = unsafe { ptr::read(read.add(1)) };
+        let mut group_end = read;
+        let mut primitive_words = 0usize;
+        let mut group_packets = 0usize;
+        while group_end < end {
+            let tag = unsafe { ptr::read(group_end) };
+            let words = (tag >> 24) as usize;
+            if words < 3
+                || tag & SCOPED_MARKER == 0
+                || tag & SLOT_MASK != slot
+                || unsafe { ptr::read(group_end.add(1)) } != selector
+                || primitive_words + (words - 2) + 2 > WINDOW_PACK_SCRATCH_WORDS
+            {
+                break;
+            }
+            primitive_words += words - 2;
+            group_packets += 1;
+            group_end = unsafe { group_end.add(words + 1) };
+        }
+
+        if group_packets == 1 {
+            let words = first_words + 1;
+            unsafe { ptr::copy(read, write, words) };
+            write = unsafe { write.add(words) };
+        } else {
+            unsafe { ptr::write(scratch, selector) };
+            let reset = unsafe { ptr::read(read.add(first_words)) };
+            unsafe { ptr::write(scratch.add(primitive_words + 1), reset) };
+            let mut packet = read;
+            let mut destination = primitive_words + 1;
+            while packet < group_end {
+                let words = (unsafe { ptr::read(packet) } >> 24) as usize;
+                let payload_words = words - 2;
+                destination -= payload_words;
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        packet.add(2),
+                        scratch.add(destination),
+                        payload_words,
+                    )
+                };
+                packet = unsafe { packet.add(words + 1) };
+            }
+            debug_assert_eq!(destination, 1);
+            let data_words = primitive_words + 2;
+            unsafe {
+                ptr::write(
+                    write,
+                    ((data_words as u32) << 24) | (first_tag & ADDRESS_MASK),
+                );
+                ptr::copy_nonoverlapping(scratch, write.add(1), data_words);
+                write = write.add(data_words + 1);
+            }
+        }
+        read = group_end;
+        packets = packets.wrapping_add(1);
+    }
+    debug_assert_eq!(read, end);
+    PackedWindowRange {
+        next_packet: write,
+        packets,
+    }
 }
 
 #[inline]
