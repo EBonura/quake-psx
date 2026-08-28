@@ -140,6 +140,9 @@ renderer-compact-ot-256 = []
 # the same source pass. Packet topology and every adaptive decision remain
 # unchanged.
 renderer-fused-materialize-project = []
+# Quake's dominant baked-corner gather as one fixed inline MIPS schedule.
+# Dynamic light-style and UV-offset faces retain the authoritative generic path.
+renderer-quake-baked-materialize = []
 # Exact Quake II-style visibility hierarchy: test a conservative union of four
 # accepted 16-face blocks before descending to the existing block/face gates.
 renderer-hierarchical-block-frustum = ["renderer-block-frustum"]
@@ -200,6 +203,9 @@ renderer-subdivision-cache-level2-layout-control = [
 # Feature-gated exact A/B: cache one conservative union AABB per 16 adjacent
 # PVS faces and reject wholly off-frustum blocks before individual tests.
 renderer-block-frustum = []
+# Quake-style hierarchical clip flags: classify each accepted 16-face union
+# once and test its faces only against planes that still intersect the union.
+renderer-block-clip-flags = ["renderer-block-frustum"]
 # Diagnostic sizing variant for the conservative block gate.
 renderer-block-frustum-32 = ["renderer-block-frustum"]
 # Feature-gated exact A/B: remember the last tested BSP plane/side result so
@@ -214,6 +220,13 @@ renderer-plane-index-cache = ["renderer-block-frustum"]
 # whose plane can never back-face. Unlike the compact-stream experiment this
 # retains the proven single 36-byte face/plane record.
 renderer-cell-policy = []
+# Extend the retained cell policy with one immutable liquid bit so the hot
+# selector no longer indexes the texture table for every PVS face.
+renderer-cell-liquid-policy = ["renderer-cell-policy"]
+# Keep the exact separate near-classification pass, but execute each retained
+# face's three-product inner-support test in the otherwise-unused second light
+# matrix row left live beside the four frustum planes.
+renderer-gte-near-classification = ["renderer-block-frustum"]
 # Exact final-GPU-order state optimization: adjacent scoped liquid packets
 # with the same GP0(E2) selector share one selector/reset pair at run bounds.
 # Polygon bytes, OT order, and state at every non-windowed command stay fixed.

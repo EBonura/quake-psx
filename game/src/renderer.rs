@@ -8,25 +8,30 @@ use core::ptr::{self, addr_of_mut};
 #[cfg(feature = "renderer-hoisted-indexed-world")]
 use psx_bsp::resident::IndexedVertices;
 #[cfg(any(
+    not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")),
+    feature = "renderer-hoisted-indexed-world",
+    feature = "renderer-indexed-projection"
+))]
+use psx_engine::materialize_classic_affine_indexed_baked_vertices;
+#[cfg(not(feature = "renderer-quake-specialized-kernel"))]
+use psx_engine::submit_classic_affine_batch;
+#[cfg(any(
     feature = "renderer-fused-materialize-project",
     feature = "renderer-indexed-projection"
 ))]
 use psx_engine::submit_classic_affine_projected_batch;
+#[cfg(feature = "renderer-quake-specialized-kernel")]
+use psx_engine::submit_quake_classic_affine_batch;
 use psx_engine::{
     attributed_clip::{
         clip_convex_plane_uninit, lerp_q12_i32_rounded, AttributedClipPlane, ClipTraversal,
     },
-    compose_classic_alias_transform, materialize_classic_affine_indexed_baked_vertices,
-    materialize_classic_affine_indexed_vertices,
+    compose_classic_alias_transform, materialize_classic_affine_indexed_vertices,
     submit_classic_affine_scoped_windowed_fan, submit_classic_alias_model,
     submit_classic_alias_view_model, ClassicAffineBatchSurface, ClassicAffineIndexedCorner,
     ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit, ClassicAffineVertex,
     ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
 };
-#[cfg(not(feature = "renderer-quake-specialized-kernel"))]
-use psx_engine::submit_classic_affine_batch;
-#[cfg(feature = "renderer-quake-specialized-kernel")]
-use psx_engine::submit_quake_classic_affine_batch;
 #[cfg(feature = "renderer-census")]
 use psx_engine::{
     census_classic_affine_projected_batch_topology,
@@ -103,16 +108,23 @@ const MAX_FACE_COUNT: usize = 6_614;
 // pins the closed Episode 1 corpus; the guest also fails closed if a future
 // map exceeds this cache instead of growing the monotonic heap.
 const MAX_VISIBLE_FACE_COUNT: usize = 1_325;
-#[cfg(any(
-    feature = "renderer-compact-cell-stream",
-    feature = "renderer-cell-policy"
+#[cfg(all(
+    any(
+        feature = "renderer-compact-cell-stream",
+        feature = "renderer-cell-policy"
+    ),
+    not(feature = "renderer-cell-liquid-policy")
 ))]
 const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x7fff;
+#[cfg(feature = "renderer-cell-liquid-policy")]
+const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x3fff;
 #[cfg(any(
     feature = "renderer-compact-cell-stream",
     feature = "renderer-cell-policy"
 ))]
 const VISIBLE_INVARIANT_FRONT_BIT: u16 = 0x8000;
+#[cfg(feature = "renderer-cell-liquid-policy")]
+const VISIBLE_LIQUID_BIT: u16 = 0x4000;
 #[cfg(any(
     feature = "renderer-compact-cell-stream",
     feature = "renderer-cell-policy"
@@ -404,6 +416,24 @@ impl NearPlane {
             .wrapping_add(self.forward[1].wrapping_mul(corner(1)))
             .wrapping_add(self.forward[2].wrapping_mul(corner(2)));
         dot < self.threshold
+    }
+
+    #[cfg(feature = "renderer-gte-near-classification")]
+    fn as_aabb_clip_plane(self) -> AabbClipPlane {
+        let normal = [
+            self.forward[0] as i16,
+            self.forward[1] as i16,
+            self.forward[2] as i16,
+        ];
+        let signbits = u8::from(normal[0] < 0)
+            | (u8::from(normal[1] < 0) << 1)
+            | (u8::from(normal[2] < 0) << 2);
+        AabbClipPlane {
+            normal,
+            kind: 3,
+            signbits,
+            distance: self.threshold,
+        }
     }
 }
 
@@ -1732,6 +1762,81 @@ impl StaticWorldCache {
     }
 }
 
+/// Expand Quake's dominant baked indexed-corner stream without leaving the
+/// retained materialization body. The fixed MIPS schedule preserves the
+/// generic contract while avoiding a second hot-path call boundary.
+///
+/// # Safety
+/// Every corner index must address `positions`; both source ranges and the
+/// `vertex_count`-entry destination must be aligned, live, and non-overlapping.
+#[cfg(feature = "renderer-quake-baked-materialize")]
+#[inline(always)]
+unsafe fn materialize_quake_baked_inline(
+    corners: *const ClassicAffineIndexedCorner,
+    positions: *const ClassicAffinePosition,
+    position_count: usize,
+    vertex_count: usize,
+    destination: *mut ClassicAffineVertex,
+) {
+    #[cfg(target_arch = "mips")]
+    unsafe {
+        let _ = position_count;
+        core::arch::asm!(
+            ".set noreorder",
+            "beq   $6, $zero, 4f",
+            "lui   $15, 0xffff",
+            "2:",
+            "lhu   $8, 0($4)",
+            "lw    $9, 0($4)",
+            "lw    $10, 4($4)",
+            "sll   $11, $8, 1",
+            "sll   $12, $8, 2",
+            "addu  $11, $11, $12",
+            "addu  $11, $5, $11",
+            "lhu   $12, 0($11)",
+            "lhu   $13, 2($11)",
+            "lhu   $14, 4($11)",
+            "sll   $13, $13, 16",
+            "or    $12, $12, $13",
+            "and   $9, $9, $15",
+            "or    $9, $9, $14",
+            "sw    $12, 0($7)",
+            "sw    $9, 4($7)",
+            "sw    $10, 8($7)",
+            "addiu $4, $4, 8",
+            "addiu $6, $6, -1",
+            "bne   $6, $zero, 2b",
+            "addiu $7, $7, 20",
+            "4:",
+            ".set reorder",
+            inout("$4") corners => _,
+            in("$5") positions,
+            inout("$6") vertex_count => _,
+            inout("$7") destination => _,
+            lateout("$8") _,
+            lateout("$9") _,
+            lateout("$10") _,
+            lateout("$11") _,
+            lateout("$12") _,
+            lateout("$13") _,
+            lateout("$14") _,
+            lateout("$15") _,
+            options(nostack),
+        );
+    }
+
+    #[cfg(not(target_arch = "mips"))]
+    unsafe {
+        materialize_classic_affine_indexed_baked_vertices(
+            corners,
+            positions,
+            position_count,
+            vertex_count,
+            destination,
+        );
+    }
+}
+
 pub struct Renderer {
     arena: usize,
     frame: u32,
@@ -2249,7 +2354,12 @@ impl Renderer {
         let mut visible_mask = 0u8;
         for &frame_entry in &self.frame_face_indices {
             let visible_index = (frame_entry & FRAME_FACE_INDEX_MASK) as usize;
-            let texture_index = self.visible_faces[visible_index].face.material;
+            let visible = &self.visible_faces[visible_index];
+            #[cfg(feature = "renderer-cell-liquid-policy")]
+            if visible.bounds.surface_index & VISIBLE_LIQUID_BIT == 0 {
+                continue;
+            }
+            let texture_index = visible.face.material;
             for (liquid_index, liquid) in liquids.iter().enumerate() {
                 if liquid.texture_index == texture_index {
                     visible_mask |= 1 << liquid_index;
@@ -2413,7 +2523,10 @@ impl Renderer {
         let frustum = self.frustum(camera);
         // The MIPS AABB classifier consumes the four planes from the GTE
         // rotation registers; load them once before frame-face selection.
-        #[cfg(not(feature = "renderer-selection-cache"))]
+        #[cfg(all(
+            not(feature = "renderer-selection-cache"),
+            not(feature = "renderer-gte-near-classification")
+        ))]
         scene::load_aabb_clip4(&frustum);
         #[cfg(feature = "renderer-census")]
         let previous_visibility = self.cached_visibility;
@@ -2443,9 +2556,22 @@ impl Renderer {
                 == Some((camera, self.cached_visibility, self.active_water_plane));
         #[cfg(any(not(feature = "renderer-selection-cache"), feature = "renderer-census"))]
         let selection_cached = false;
+        #[cfg(feature = "renderer-gte-near-classification")]
+        let mut near_clip_plane = None;
         if !selection_cached {
-            #[cfg(feature = "renderer-selection-cache")]
+            #[cfg(all(
+                feature = "renderer-selection-cache",
+                not(feature = "renderer-gte-near-classification")
+            ))]
             scene::load_aabb_clip4(&frustum);
+            #[cfg(feature = "renderer-gte-near-classification")]
+            {
+                near_clip_plane = Some(NearPlane::new(camera).as_aabb_clip_plane());
+                scene::load_aabb_clip4_with_aux(
+                    &frustum,
+                    near_clip_plane.as_ref().expect("near plane initialized"),
+                );
+            }
             #[cfg(feature = "renderer-plane-index-cache")]
             self.prepare_plane_facing_cache(map);
             self.frame_face_indices.clear();
@@ -2492,6 +2618,7 @@ impl Renderer {
                 #[cfg(feature = "renderer-compact-cell-stream")]
                 &self.visible_face_planes,
                 &self.visible_face_blocks,
+                #[cfg(not(feature = "renderer-cell-liquid-policy"))]
                 &self.active_textures,
                 camera.origin,
                 &frustum,
@@ -2541,10 +2668,17 @@ impl Renderer {
                     &mut self.frame_face_indices,
                 );
             }
+            #[cfg(not(feature = "renderer-gte-near-classification"))]
             flag_near_faces(
                 &self.visible_faces,
                 &mut self.frame_face_indices,
                 NearPlane::new(camera),
+            );
+            #[cfg(feature = "renderer-gte-near-classification")]
+            flag_near_faces_gte(
+                &self.visible_faces,
+                &mut self.frame_face_indices,
+                near_clip_plane.as_ref().expect("near plane initialized"),
             );
         }
         #[cfg(all(feature = "renderer-selection-cache", not(feature = "renderer-census")))]
@@ -4243,7 +4377,16 @@ impl Renderer {
         let corners = &indexed.corners[first..first + output.len()];
         unsafe {
             if baked_uv && baked_light {
+                #[cfg(not(feature = "renderer-quake-baked-materialize"))]
                 materialize_classic_affine_indexed_baked_vertices(
+                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
+                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
+                    indexed.positions.len(),
+                    output.len(),
+                    output.as_mut_ptr(),
+                );
+                #[cfg(feature = "renderer-quake-baked-materialize")]
+                materialize_quake_baked_inline(
                     corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
                     indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
                     indexed.positions.len(),
@@ -5004,6 +5147,8 @@ impl Renderer {
             return None;
         }
         for (visible_index, visible) in self.visible_faces.iter().enumerate() {
+            #[cfg(not(feature = "renderer-compact-cell-stream"))]
+            let _ = visible_index;
             let Some(texture) = self.active_textures.get(visible.face.material as usize) else {
                 continue;
             };
@@ -5424,6 +5569,19 @@ impl Renderer {
                 not(feature = "renderer-compact-cell-stream")
             ))]
             let plane = visible.plane;
+            #[cfg(feature = "renderer-cell-liquid-policy")]
+            if texture.flags & TEXTURE_LIQUID != 0 {
+                visible.bounds.surface_index |= VISIBLE_LIQUID_BIT;
+            } else {
+                match leaf_invariant_facing(plane, u16::from(visible.face.flags), bounds) {
+                    Some(false) => continue,
+                    Some(true) => {
+                        visible.bounds.surface_index |= VISIBLE_INVARIANT_FRONT_BIT;
+                    }
+                    None => {}
+                }
+            }
+            #[cfg(not(feature = "renderer-cell-liquid-policy"))]
             if texture.flags & TEXTURE_LIQUID == 0 {
                 match leaf_invariant_facing(plane, u16::from(visible.face.flags), bounds) {
                     Some(false) => continue,
@@ -7498,7 +7656,7 @@ fn select_frame_faces_blocked(
     visible_faces: &[VisibleFace],
     #[cfg(feature = "renderer-compact-cell-stream")] visible_planes: &[CompactPlane],
     visible_blocks: &[VisibleFaceBlock],
-    active_textures: &[TextureInfo],
+    #[cfg(not(feature = "renderer-cell-liquid-policy"))] active_textures: &[TextureInfo],
     origin: Vec3I32,
     frustum: &[AabbClipPlane; 4],
     water_plane: i16,
@@ -7521,14 +7679,27 @@ fn select_frame_faces_blocked(
     while first < visible_faces.len() {
         let block = unsafe { visible_blocks.get_unchecked(block_index) };
         let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
-        if !scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
+        #[cfg(feature = "renderer-block-clip-flags")]
+        let block_clip_flags = scene::classify_aabb_clip4(block.mins, block.maxs, frustum, 0x0f);
+        #[cfg(not(feature = "renderer-block-clip-flags"))]
+        let block_clip_flags = if scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
+            -1
+        } else {
+            0x0f
+        };
+        if block_clip_flags >= 0 {
             let mut visible_index = first;
             while visible_index < end {
                 let visible = unsafe { visible_faces.get_unchecked(visible_index) };
+                #[cfg(not(feature = "renderer-cell-liquid-policy"))]
                 let texture =
                     unsafe { active_textures.get_unchecked(visible.face.material as usize) };
+                #[cfg(not(feature = "renderer-cell-liquid-policy"))]
                 let water_blend =
                     texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
+                #[cfg(feature = "renderer-cell-liquid-policy")]
+                let water_blend = visible.bounds.surface_index & VISIBLE_LIQUID_BIT != 0
+                    && visible.face.plane as i16 == water_plane;
                 #[cfg(any(
                     feature = "renderer-compact-cell-stream",
                     feature = "renderer-cell-policy"
@@ -7588,7 +7759,7 @@ fn select_frame_faces_blocked(
                         visible.bounds.mins,
                         visible.bounds.maxs,
                         frustum,
-                        0x0f,
+                        block_clip_flags as u8,
                     )
                 {
                     let entry =
@@ -7795,6 +7966,20 @@ fn flag_near_faces(visible_faces: &[VisibleFace], selected: &mut [u16], near: Ne
         let visible =
             unsafe { visible_faces.get_unchecked((*entry & FRAME_FACE_INDEX_MASK) as usize) };
         if near.reaches_behind(visible.bounds.mins, visible.bounds.maxs) {
+            *entry |= NEAR_FACE_BIT;
+        }
+    }
+}
+
+/// Preserve the separate, register-light selected-face pass while moving its
+/// three signed products to the GTE row already loaded beside the frustum.
+#[cfg(feature = "renderer-gte-near-classification")]
+#[inline(never)]
+fn flag_near_faces_gte(visible_faces: &[VisibleFace], selected: &mut [u16], near: &AabbClipPlane) {
+    for entry in selected.iter_mut() {
+        let visible =
+            unsafe { visible_faces.get_unchecked((*entry & FRAME_FACE_INDEX_MASK) as usize) };
+        if scene::aabb_reaches_behind_aux(visible.bounds.mins, visible.bounds.maxs, near) {
             *entry |= NEAR_FACE_BIT;
         }
     }

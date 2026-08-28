@@ -1,6 +1,10 @@
 //! Quake for PlayStation 1 on the PSoXide SDK.
 
 #![feature(optimize_attribute)]
+#![cfg_attr(
+    all(target_arch = "mips", feature = "renderer-quake-baked-materialize"),
+    feature(asm_experimental_arch)
+)]
 #![no_std]
 #![no_main]
 

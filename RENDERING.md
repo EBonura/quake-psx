@@ -616,10 +616,84 @@ adaptive, oversized, changed or already-live ranges. The complete handoff and
 clean-room range model are committed privately at `quake2-psx-decomp`
 `34f6f8b`.
 
+### Quake II-informed selector/materialization leader
+
+The next profile-guided pass broke the 23.428 fps working baseline without
+changing resolution, draw order, polygon topology, simulation cadence, or any
+rendered pixel. The accepted stack completes the deterministic E1M1 route in
+3,054,410,221 bus cycles at 23.651 fps. Both complete runs present 2,134 frames
+and retain VRAM hash `0x09a7f019bb9a5e7c` and display hash
+`0x9bac66f3bec0e66b`. This saves 29,133,270 cycles and gains 0.223 fps (0.95%)
+against the 23.428 capture, or 28,561,497 cycles and 0.219 fps against the
+previous documented 23.432 leader.
+
+The cumulative exact A/B sequence was:
+
+| Stack addition | Bus cycles | Fixed-step fps | Increment |
+| --- | ---: | ---: | ---: |
+| documented cell-policy leader | 3,082,971,718 | 23.432 | baseline |
+| GTE near classification | 3,078,401,738 | 23.467 | +0.035 |
+| retained liquid policy | 3,068,691,494 | 23.541 | +0.074 |
+| Quake-specialized submit kernel | 3,057,266,396 | 23.629 | +0.088 |
+| liquid visibility fast rejection | 3,054,981,456 | 23.647 | +0.018 |
+| inline baked-corner materializer | 3,054,410,221 | 23.651 | +0.004 |
+
+The first change keeps near classification as a separate, register-light pass
+but places its three-product AABB support test in the otherwise unused second
+GTE light-matrix row. The four frustum planes and auxiliary near plane are
+loaded together only on a selection-cache miss. The second change stores a
+liquid bit in the retained cell's spare surface-index bit. This removes the
+texture-table load from every PVS face in the selector and lets the later
+visible-liquid scan reject ordinary faces before reading material state. The
+last change copies Quake's most useful code-shape lesson: the dominant baked
+indexed-corner gather is one fixed, non-calling MIPS schedule inside the
+materialization body. Dynamic light styles and UV offsets still use the
+authoritative generic path.
+
+An out-of-band PSoXide PC sample on the accepted predecessor kept the next
+targets honest. `gpu_end_frame` waits account for 20.05% of samples, the
+specialized world submitter 11.11%, collision trace 7.13%, `draw_frame` 6.73%,
+the Quake loop 6.44%, sector reading 5.88%, face selection 5.25%, liquid warp
+5.15%, and materialization 4.02%. Across the measured window the CPU spends
+43.66% of cycles issuing instructions, 42.01% stalled on RAM loads, 8.86% on
+I-cache misses, and 8.53% on stack-load stalls. The evidence therefore still
+favours compact fixed schedules and fewer dependent RAM reads; it does not
+support adding another runtime cache or descriptor interpreter.
+
+Exact but slower controls remain feature-gated for research. Propagating
+hierarchical block clip flags reached only 23.463 fps because the selector grew
+from `0x7f0` to `0x9f0` bytes. The first out-of-line baked materializer reached
+23.471 fps, and fusing near classification into the selector reached 23.638
+fps versus its 23.647 parent. A reordered inline-assembly prototype was also
+discarded after disassembly exposed a destination increment moved out of the
+branch delay slot; the accepted routine uses an explicit `.set noreorder`
+schedule. These are code-shape rejections, not visual failures: the completed
+controls retained the canonical hashes.
+
+Reproduce the leader or build its non-regression playable disc using only
+PSoXide:
+
+```sh
+cargo run --release -- e1m1-gpu-polygon-leader-bench \
+  --psoxide ../PSoXide/target/release/frontend
+cargo run --release -- gpu-polygon-leader-disc \
+  --psoxide ../PSoXide/target/release/frontend
+cargo run --release -- e1m2-e1m3-leader-route-regress \
+  --psoxide ../PSoXide/target/release/frontend
+```
+
+The playable image passes the shipping boot gate with 62,240 bytes of heap
+free. Two complete authored E1M2/E1M3 runs also agree exactly: 6,023 gameplay
+frames, all `0x1fffffff` mechanism bits, 86 target edges, two map transitions
+into E1M4, VRAM hash `0xb43b84dba8258f74`, and display hash
+`0xdd1e0c9c06d994cf`.
+
 The research feature gates in this branch use matching local PSoXide engine
-changes inside the deliberately ignored `.psoxide` hydration. They are not
-part of the shipping/default build and must not be inferred to exist in the
-pinned public SDK until the engine-side API is ported and reviewed separately.
+and GTE SDK changes inside the deliberately ignored `.psoxide` hydration.
+In particular, `renderer-gte-near-classification` needs the auxiliary AABB row
+API. These changes are not part of the shipping/default build and must not be
+inferred to exist in the pinned public SDK until the PSoXide-side API is ported
+and reviewed separately.
 
 Run the PSoXide-only census and analyzer with:
 
