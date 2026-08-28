@@ -10,6 +10,9 @@ use psx_math::SIN_TABLE;
 
 pub const LIQUID_TILE_SIDE: usize = 64;
 pub const LIQUID_TILE_BYTES: usize = LIQUID_TILE_SIDE * LIQUID_TILE_SIDE;
+pub const LIQUID_BORDERED_STRIDE: usize = LIQUID_TILE_SIDE + 2;
+pub const LIQUID_BORDERED_ROWS: usize = LIQUID_TILE_SIDE + 1;
+pub const LIQUID_BORDERED_TILE_BYTES: usize = LIQUID_BORDERED_STRIDE * LIQUID_BORDERED_ROWS;
 pub const LIQUID_CYCLE: usize = 128;
 
 const fn turbulence_table() -> [u8; LIQUID_CYCLE] {
@@ -161,6 +164,112 @@ pub fn warp_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
     }
 }
 
+/// Resample a 64x64 tile and append the repeated samples needed at the
+/// inclusive `u=64` and `v=64` edges of page-local liquid cells. Two columns
+/// keep every upload row 16-bit aligned; the second is harmless padding.
+#[inline(never)]
+pub fn warp_bordered_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
+    if source.len() != LIQUID_TILE_BYTES || destination.len() != LIQUID_BORDERED_TILE_BYTES {
+        return false;
+    }
+    #[cfg(target_arch = "mips")]
+    unsafe {
+        core::arch::asm!(
+            "addu  $24, $7, $6",
+            "move  $8, $zero",
+            "addiu $25, $zero, 64",
+            "2:",
+            "addu  $15, $24, $8",
+            "lbu   $10, 0($15)",
+            "move  $11, $24",
+            "addiu $9, $zero, 32",
+            "3:",
+            "lbu   $12, 0($11)",
+            "addu  $13, $8, $12",
+            "andi  $13, $13, 63",
+            "sll   $13, $13, 6",
+            "or    $13, $13, $10",
+            "addu  $15, $4, $13",
+            "lbu   $14, 0($15)",
+            "sb    $14, 0($5)",
+            "addiu $10, $10, 1",
+            "andi  $10, $10, 63",
+            "lbu   $12, 1($11)",
+            "addu  $13, $8, $12",
+            "andi  $13, $13, 63",
+            "sll   $13, $13, 6",
+            "or    $13, $13, $10",
+            "addu  $15, $4, $13",
+            "lbu   $14, 0($15)",
+            "sb    $14, 1($5)",
+            "addiu $10, $10, 1",
+            "andi  $10, $10, 63",
+            "addiu $11, $11, 2",
+            "addiu $5, $5, 2",
+            "addiu $9, $9, -1",
+            "bnez  $9, 3b",
+            "nop",
+            // Repeat the first two pixels at the right edge and advance over
+            // the physical 66-byte row.
+            "addiu $15, $5, -64",
+            "lbu   $12, 0($15)",
+            "sb    $12, 0($5)",
+            "lbu   $12, 1($15)",
+            "sb    $12, 1($5)",
+            "addiu $5, $5, 2",
+            "addiu $8, $8, 1",
+            "bne   $8, $25, 2b",
+            "nop",
+            // The bottom border repeats the complete first physical row.
+            "addiu $15, $5, -4224",
+            "addiu $9, $zero, 33",
+            "4:",
+            "lhu   $12, 0($15)",
+            "sh    $12, 0($5)",
+            "addiu $15, $15, 2",
+            "addiu $5, $5, 2",
+            "addiu $9, $9, -1",
+            "bnez  $9, 4b",
+            "nop",
+            in("$4") source.as_ptr(),
+            inout("$5") destination.as_mut_ptr() => _,
+            in("$6") u32::from(phase & (LIQUID_CYCLE as u8 - 1)),
+            in("$7") TURBULENCE_DOUBLE.as_ptr(),
+            lateout("$8") _,
+            lateout("$9") _,
+            lateout("$10") _,
+            lateout("$11") _,
+            lateout("$12") _,
+            lateout("$13") _,
+            lateout("$14") _,
+            lateout("$15") _,
+            lateout("$24") _,
+            lateout("$25") _,
+            options(nostack),
+        );
+        return true;
+    }
+
+    #[cfg(not(target_arch = "mips"))]
+    {
+        let phase = phase as usize & (LIQUID_CYCLE - 1);
+        for y in 0..LIQUID_TILE_SIDE {
+            let x_offset = TURBULENCE_DOUBLE[phase + y] as usize;
+            let row = y * LIQUID_BORDERED_STRIDE;
+            for x in 0..LIQUID_TILE_SIDE {
+                let source_x = (x + x_offset) & (LIQUID_TILE_SIDE - 1);
+                let source_y = (y + TURBULENCE_DOUBLE[phase + x] as usize)
+                    & (LIQUID_TILE_SIDE - 1);
+                destination[row + x] = source[source_y * LIQUID_TILE_SIDE + source_x];
+            }
+            destination[row + LIQUID_TILE_SIDE] = destination[row];
+            destination[row + LIQUID_TILE_SIDE + 1] = destination[row + 1];
+        }
+        destination.copy_within(0..LIQUID_BORDERED_STRIDE, LIQUID_TILE_SIDE * LIQUID_BORDERED_STRIDE);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +299,25 @@ mod tests {
             &mut destination[..LIQUID_TILE_BYTES - 1],
             0
         ));
+    }
+
+    #[test]
+    fn bordered_warp_repeats_the_right_and_bottom_edges() {
+        let mut source = [0; LIQUID_TILE_BYTES];
+        for (index, pixel) in source.iter_mut().enumerate() {
+            *pixel = (index ^ (index >> 6)) as u8;
+        }
+        let mut destination = [0; LIQUID_BORDERED_TILE_BYTES];
+        assert!(warp_bordered_tile_64(&source, &mut destination, 17));
+        for row in 0..LIQUID_TILE_SIDE {
+            let start = row * LIQUID_BORDERED_STRIDE;
+            assert_eq!(destination[start + LIQUID_TILE_SIDE], destination[start]);
+            assert_eq!(destination[start + LIQUID_TILE_SIDE + 1], destination[start + 1]);
+        }
+        assert_eq!(
+            &destination[LIQUID_TILE_SIDE * LIQUID_BORDERED_STRIDE..],
+            &destination[..LIQUID_BORDERED_STRIDE]
+        );
     }
 
     #[test]

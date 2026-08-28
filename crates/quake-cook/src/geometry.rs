@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use psx_render_contract::CookedDrawSurface;
 use quake_formats::{
     encode_leaf_bound_max, encode_leaf_bound_min, LEAF_BOUNDS_FOOTER_BYTES,
-    LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, LIQUID_DOUBLE_BUFFER_MARKER,
+    LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC,
+    LIQUID_BORDERED_DOUBLE_BUFFER_MARKER,
 };
 
 use super::{psx_tpage, Bsp, BspLump, CookError, MipTexture};
@@ -20,6 +21,7 @@ const TEXTURE_NULL: u8 = 0x80;
 const FACE_BACKSIDE: u8 = 1;
 const FACE_BAKED_UV: u8 = 2;
 const FACE_BAKED_LIGHT: u8 = 4;
+const FACE_PAGE_LOCAL_UV: u8 = 16;
 const MAX_LIGHT_STYLES: usize = 64;
 const NORMAL_LIGHT_STYLE_VALUE: u32 = 12 * 22;
 
@@ -281,10 +283,13 @@ fn cook_textures(
             continue;
         }
         let (level, width, height) = selected_mip(texture, flags);
+        let bordered_liquid = flags & TEXTURE_LIQUID != 0;
+        let allocation_width = width + if bordered_liquid { 2 } else { 0 };
+        let allocation_height = height + usize::from(bordered_liquid);
         let (atlas_uv, tpage, x, y) = if flags & TEXTURE_SKY != 0 {
             atlas.fit_with_alignment(width, height, width / 2, height)?
         } else {
-            atlas.fit(width, height)?
+            atlas.fit(allocation_width, allocation_height)?
         };
         let mut pixels = texture.levels[level].to_vec();
         if flags & TEXTURE_SKY != 0 {
@@ -314,7 +319,16 @@ fn cook_textures(
                 }
             }
         }
-        atlas.store(x, y, width, height, &pixels);
+        if bordered_liquid {
+            pixels = repeat_liquid_border(&pixels, width, height);
+        }
+        atlas.store(
+            x,
+            y,
+            allocation_width,
+            allocation_height,
+            &pixels,
+        );
         let mut cooked = CookTexture {
             atlas: atlas_uv,
             size: [(width / 2) as i16, height as i16],
@@ -326,9 +340,15 @@ fn cook_textures(
         };
         if flags & TEXTURE_LIQUID != 0 {
             let (alternate_uv, alternate_tpage, alternate_x, alternate_y) =
-                atlas.fit(width, height)?;
-            atlas.store(alternate_x, alternate_y, width, height, &pixels);
-            cooked.animation_total = LIQUID_DOUBLE_BUFFER_MARKER;
+                atlas.fit(allocation_width, allocation_height)?;
+            atlas.store(
+                alternate_x,
+                alternate_y,
+                allocation_width,
+                allocation_height,
+                &pixels,
+            );
+            cooked.animation_total = LIQUID_BORDERED_DOUBLE_BUFFER_MARKER;
             cooked.animation_min = alternate_uv[0] as i8;
             cooked.animation_max = alternate_uv[1] as i8;
             cooked.animation_next = alternate_tpage as u8 as i8;
@@ -338,6 +358,22 @@ fn cook_textures(
     }
     sequence_animations(&source, &mut textures)?;
     Ok((textures, atlas))
+}
+
+fn repeat_liquid_border(source: &[u8], width: usize, height: usize) -> Vec<u8> {
+    debug_assert_eq!(source.len(), width * height);
+    let stride = width + 2;
+    let mut output = vec![0; stride * (height + 1)];
+    for row in 0..height {
+        let source_start = row * width;
+        let destination_start = row * stride;
+        output[destination_start..destination_start + width]
+            .copy_from_slice(&source[source_start..source_start + width]);
+        output[destination_start + width] = source[source_start];
+        output[destination_start + width + 1] = source[source_start + 1];
+    }
+    output.copy_within(0..stride, height * stride);
+    output
 }
 
 fn sort_mip_dimensions(texture: MipTexture<'_>) -> (usize, usize) {
@@ -556,7 +592,7 @@ fn cook_faces(
         }
 
         let polygons = if cooked_texture.flags & TEXTURE_LIQUID != 0 {
-            subdivide_liquid_polygon(source_polygon, 128.0)
+            subdivide_liquid_polygon(source_polygon, 64.0)
         } else {
             vec![source_polygon]
         };
@@ -583,6 +619,8 @@ fn cook_faces(
             let mut uv_size = [0.0; 2];
             let mut uv_max = [0.0; 2];
             let mut liquid_uv_base = [0.0; 2];
+            let mut liquid_page_uv_base = [0.0; 2];
+            let mut liquid_page_local = cooked_texture.flags & TEXTURE_LIQUID != 0;
             let mut light_min = [0.0; 2];
             let mut light_size = [0.0; 2];
             for axis in 0..2 {
@@ -595,8 +633,11 @@ fn cook_faces(
                     cooked_texture.size[1] as f32
                 };
                 let liquid_min = st_min[axis] * cooked_extent / texture_size[axis];
+                let liquid_max = st_max[axis] * cooked_extent / texture_size[axis];
                 let atlas = cooked_texture.atlas[axis] as f32;
                 liquid_uv_base[axis] = ((liquid_min + atlas) / 64.0).floor() * 64.0;
+                liquid_page_uv_base[axis] = (liquid_min / 64.0).floor() * 64.0;
+                liquid_page_local &= liquid_max - liquid_page_uv_base[axis] <= 64.001;
                 let minimum = (st_min[axis] / 16.0).floor();
                 let maximum = (st_max[axis] / 16.0).ceil();
                 light_min[axis] = minimum * 16.0;
@@ -622,7 +663,12 @@ fn cook_faces(
                         };
                         let authored =
                             vertex.texture_space[axis] * cooked_extent / texture_size[axis];
-                        face_uv[axis] = authored - liquid_uv_base[axis];
+                        face_uv[axis] = authored
+                            - if liquid_page_local {
+                                liquid_page_uv_base[axis]
+                            } else {
+                                liquid_uv_base[axis]
+                            };
                     } else {
                         let delta =
                             (vertex.texture_space[axis] - st_min[axis]) / texture_size[axis];
@@ -698,7 +744,12 @@ fn cook_faces(
             let texture = compact_face_index(texture_index, "texture")?;
             output_faces.push(CookFace {
                 plane,
-                flags: if side != 0 { FACE_BACKSIDE } else { 0 },
+                flags: (if side != 0 { FACE_BACKSIDE } else { 0 })
+                    | if liquid_page_local {
+                        FACE_PAGE_LOCAL_UV
+                    } else {
+                        0
+                    },
                 first_vertex,
                 vertex_count,
                 texture,
@@ -986,7 +1037,11 @@ fn update_leaf_lighting(
 fn bake_vertices(textures: &[CookTexture], faces: &mut [CookFace], vertices: &mut [CookVertex]) {
     for face in faces {
         let texture = textures[face.texture as usize];
-        let bake_uv = texture.flags & TEXTURE_ANIMATED == 0;
+        // Page-local liquids retain material-relative UVs because their
+        // double-buffered active atlas home changes every phase. Runtime adds
+        // the current home and can then use compact packets without GP0(E2).
+        let bake_uv = texture.flags & TEXTURE_ANIMATED == 0
+            && face.flags & FACE_PAGE_LOCAL_UV == 0;
         let bake_light = face.styles[0] == 0 && (face.styles[1] == 0 || face.styles[1] == 64);
         if bake_uv {
             face.flags |= FACE_BAKED_UV;
@@ -1470,7 +1525,10 @@ mod tests {
         };
 
         let water = decode(0);
-        assert_eq!(water.animation_total, LIQUID_DOUBLE_BUFFER_MARKER);
+        assert_eq!(
+            water.animation_total,
+            LIQUID_BORDERED_DOUBLE_BUFFER_MARKER
+        );
         let alternate =
             quake_formats::liquid_alternate_texture(water).expect("double buffered liquid");
         let (ax, ay, aw, ah) = vram_rect(water);

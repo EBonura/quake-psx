@@ -224,6 +224,9 @@ renderer-window-insert-coalescing = ["psx-gpu/ot-window-insert-coalescing"]
 # Preserve the original linker for ordinary packets and revisit only ranges
 # emitted by scoped-window fans after their final OT links are known.
 renderer-window-range-coalescing = []
+# Cooker-proven liquid faces whose complete UV domain fits one 64x64 atlas
+# tile join the compact ordinary batch and omit per-polygon GP0(E2) scope.
+renderer-page-local-liquid = []
 hardware-performance = []
 hardware-regression = ["hardware-performance"]
 
