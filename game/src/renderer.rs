@@ -85,6 +85,7 @@ use quake_core::view_model;
 use quake_formats::{
     alias_model_is_sprite, AliasModelView, CompactPlane, Face, GraphicsPicture, GraphicsPictureId,
     Plane, TextureInfo, Vec3I32, FACE_BACKSIDE, FACE_BAKED_LIGHT, FACE_BAKED_UV,
+    FACE_PAGE_LOCAL_UV,
     GRAPHICS_WEAPON_ICON_OFFSETS, GRAPHICS_WEAPON_ICON_VARIANT_BYTES, TEXTURE_INVISIBLE,
     TEXTURE_LAYERED_SKY, TEXTURE_LIQUID, TEXTURE_NULL, TEXTURE_SKY,
 };
@@ -98,11 +99,12 @@ const GPU_ARENA_WORDS: usize = GPU_ARENA_BYTES / core::mem::size_of::<u32>();
 // Closed Episode 1 corpus maximum (E1M4). The host cooker pins this bound so
 // the guest can keep both the PVS mask and its ordered visible-face cache
 // tightly sized instead of reserving for the PSB wire-format maximum.
-const MAX_FACE_COUNT: usize = 6_614;
-// Exhaustive PVS census maximum is 1,325 faces (E1M1). The host asset gate
+const MAX_FACE_COUNT: usize = 7_314;
+// The bordered 64-texel liquid-cell cooker can increase the number of faces
+// in one PVS row; the host asset gate pins the exact Episode 1 high water.
 // pins the closed Episode 1 corpus; the guest also fails closed if a future
 // map exceeds this cache instead of growing the monotonic heap.
-const MAX_VISIBLE_FACE_COUNT: usize = 1_325;
+const MAX_VISIBLE_FACE_COUNT: usize = 1_456;
 #[cfg(any(
     feature = "renderer-compact-cell-stream",
     feature = "renderer-cell-policy"
@@ -280,7 +282,8 @@ const MENU_TPAGE: u16 = 0x009f;
 const QPLAQUE_SIZE: (u8, u8) = (32, 144);
 const MAX_LIQUID_TEXTURES: usize = 4;
 const MAX_RENDER_TEXTURES: usize = 128;
-const LIQUID_WARP_BYTES: usize = MAX_LIQUID_TEXTURES * quake_core::liquid::LIQUID_TILE_BYTES;
+const LIQUID_WARP_STRIDE: usize = quake_core::liquid::LIQUID_BORDERED_TILE_BYTES;
+const LIQUID_WARP_BYTES: usize = MAX_LIQUID_TEXTURES * LIQUID_WARP_STRIDE;
 
 /// The full-screen blends `quake_core::screenblend` can ask for: the sustained
 /// contents murk, the transient flash, and the port's own level-transition
@@ -2284,14 +2287,26 @@ impl Renderer {
             let Some(source) = map.liquid_source(liquid) else {
                 return;
             };
-            let start = liquid_index * quake_core::liquid::LIQUID_TILE_BYTES;
+            let bordered = cfg!(feature = "renderer-page-local-liquid")
+                && quake_formats::liquid_has_repeated_border(liquid.primary);
+            let start = liquid_index * LIQUID_WARP_STRIDE;
+            let len = if bordered {
+                quake_core::liquid::LIQUID_BORDERED_TILE_BYTES
+            } else {
+                quake_core::liquid::LIQUID_TILE_BYTES
+            };
             let destination = unsafe {
                 core::slice::from_raw_parts_mut(
                     addr_of_mut!(LIQUID_WARP).cast::<u8>().add(start),
-                    quake_core::liquid::LIQUID_TILE_BYTES,
+                    len,
                 )
             };
-            if !quake_core::liquid::warp_tile_64(source, destination, phase) {
+            let warped = if bordered {
+                quake_core::liquid::warp_bordered_tile_64(source, destination, phase)
+            } else {
+                quake_core::liquid::warp_tile_64(source, destination, phase)
+            };
+            if !warped {
                 return;
             }
             let alternate_active = quake_core::liquid::alternate_tile_is_active(
@@ -2303,13 +2318,16 @@ impl Renderer {
             } else {
                 liquid.alternate
             };
-            let Some(rect) = texture_rect(destination) else {
+            let Some(mut rect) = texture_rect(destination) else {
                 return;
             };
+            if bordered {
+                rect = psx_vram::VramRect::new(rect.x, rect.y, rect.w + 1, rect.h + 1);
+            }
             uploads[upload_count] = crate::platform::VramUploadRange {
                 rect,
                 start,
-                len: quake_core::liquid::LIQUID_TILE_BYTES,
+                len,
             };
             upload_count += 1;
         }
@@ -2673,11 +2691,17 @@ impl Renderer {
                     stats.visible_faces = stats.visible_faces.saturating_add(1);
                     continue;
                 }
+                let page_local_liquid = cfg!(feature = "renderer-page-local-liquid")
+                    && texture.flags & TEXTURE_LIQUID != 0
+                    && u16::from(face.flags) & FACE_PAGE_LOCAL_UV != 0
+                    && !water_blend;
                 if texture.flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 {
                     #[cfg(feature = "renderer-static-world-reuse")]
                     {
                         static_world_cache_eligible = false;
                     }
+                }
+                if texture.flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 && !page_local_liquid {
                     #[cfg(all(
                         feature = "renderer-census",
                         not(feature = "renderer-topology-cache")
@@ -2904,7 +2928,7 @@ impl Renderer {
                         texture,
                         &mut vertices[..vertex_count],
                     );
-                    if self.frame_light.is_some() {
+                    if self.frame_light.is_some() && texture.flags & TEXTURE_LIQUID == 0 {
                         self.light_face(visible_index, &mut vertices[..vertex_count]);
                     }
                     let clipped_count =
@@ -2965,7 +2989,7 @@ impl Renderer {
                         texture,
                         &mut vertices[..vertex_count],
                     );
-                    if self.frame_light.is_some() {
+                    if self.frame_light.is_some() && texture.flags & TEXTURE_LIQUID == 0 {
                         self.light_face(visible_index, &mut vertices[..vertex_count]);
                     }
                     let clipped_count =
@@ -3148,7 +3172,7 @@ impl Renderer {
                 // Before the near clip, which interpolates the corner colours
                 // of whichever vertices it keeps.
                 #[cfg(not(feature = "renderer-fused-materialize-project"))]
-                if self.frame_light.is_some() {
+                if self.frame_light.is_some() && texture.flags & TEXTURE_LIQUID == 0 {
                     self.light_face(visible_index, &mut vertices[..vertex_count]);
                 }
                 #[cfg(not(feature = "renderer-fused-materialize-project"))]
@@ -4780,7 +4804,9 @@ impl Renderer {
             let vertex_count = face.vertex_count as usize;
             let clip = near && vertex_count < NEAR_CLIP_MAX_VERTICES;
             let reserve_count = vertex_count + usize::from(clip);
-            let windowed = texture.flags & TEXTURE_LIQUID != 0;
+            let windowed = texture.flags & TEXTURE_LIQUID != 0
+                && !(cfg!(feature = "renderer-page-local-liquid")
+                    && face.flags & FACE_PAGE_LOCAL_UV != 0);
             let face_worst_words = (reserve_count - 2)
                 * if windowed {
                     WORST_WINDOWED_PACKET_WORDS_PER_TRIANGLE

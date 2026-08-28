@@ -142,6 +142,11 @@ mod leaf_bounds_tests {
 /// so their five animation bytes are available to carry the alternate atlas
 /// coordinates without widening the shared PSB4 texture record.
 pub const LIQUID_DOUBLE_BUFFER_MARKER: i8 = -2;
+/// Double-buffered liquid whose physical atlas allocation also contains a
+/// repeated right column and bottom row. The logical texture record remains
+/// 64x64; the border is an emission contract which lets 64-texel cooked cells
+/// sample their inclusive edge without a GPU texture window.
+pub const LIQUID_BORDERED_DOUBLE_BUFFER_MARKER: i8 = -3;
 
 /// Cooked alias-style model flag for a Quake `.spr` sheet. The shared model
 /// table still validates its bounded frames and texture binding; the Quake
@@ -197,7 +202,9 @@ mod sprite_marker_tests {
 /// Reconstruct the inactive copy of a double-buffered liquid texture.
 #[optimize(size)]
 pub fn liquid_alternate_texture(texture: TextureInfo) -> Option<TextureInfo> {
-    if texture.flags & TEXTURE_LIQUID == 0 || texture.animation_total != LIQUID_DOUBLE_BUFFER_MARKER
+    if texture.flags & TEXTURE_LIQUID == 0
+        || (texture.animation_total != LIQUID_DOUBLE_BUFFER_MARKER
+            && texture.animation_total != LIQUID_BORDERED_DOUBLE_BUFFER_MARKER)
     {
         return None;
     }
@@ -215,6 +222,12 @@ pub fn liquid_alternate_texture(texture: TextureInfo) -> Option<TextureInfo> {
         animation_alt: -1,
         ..texture
     })
+}
+
+#[inline]
+pub const fn liquid_has_repeated_border(texture: TextureInfo) -> bool {
+    texture.flags & TEXTURE_LIQUID != 0
+        && texture.animation_total == LIQUID_BORDERED_DOUBLE_BUFFER_MARKER
 }
 
 #[cfg(test)]
@@ -252,6 +265,17 @@ mod liquid_double_buffer_tests {
         assert_eq!(alternate.animation_max, 0);
         assert_eq!(alternate.animation_next, -1);
         assert_eq!(alternate.animation_alt, -1);
+    }
+
+    #[test]
+    fn bordered_marker_keeps_the_same_alternate_wire_contract() {
+        let mut primary = marked_liquid();
+        primary.animation_total = LIQUID_BORDERED_DOUBLE_BUFFER_MARKER;
+        assert!(liquid_has_repeated_border(primary));
+        let alternate = liquid_alternate_texture(primary).expect("bordered liquid");
+        assert_eq!(alternate.atlas, Vec2U8 { x: 192, y: 200 });
+        assert_eq!(alternate.texture_page, 0x0195);
+        assert!(!liquid_has_repeated_border(alternate));
     }
 
     #[optimize(size)]
@@ -593,12 +617,12 @@ pub const TEXTURE_LAYERED_SKY: u8 = 64;
 /// PSoXide's engine default is [`psx_bsp::resident::MAX_RESIDENT_MAP_BYTES`]
 /// (1,100,000), a generic budget for any XBSP world. The shareware Episode 1
 /// corpus is fully known at build time, so this is Quake policy instead: the
-/// largest indexed PSB5 map (`e1m3`) needs about 856 KiB after the canonical
-/// render-node expansion. A measured 24 KiB structural-growth margin frees the
+/// largest bordered-cell PSB5 map (`e1m3`) needs about 866 KiB after the
+/// canonical render-node expansion. A measured margin frees the
 /// old PSB1 arena's unused heap
 /// without making routine recooks brittle. `assert_cooked_maps_fit` loads every
 /// map through this exact capacity and pins the measured high-water mark.
-pub const RESIDENT_MAP_ARENA_BYTES: usize = 880_000;
+pub const RESIDENT_MAP_ARENA_BYTES: usize = 896_000;
 
 /// One packed `pic_t` record in the Rust-cooked `gfx.dat` index.
 pub const GRAPHICS_PICTURE_RECORD_BYTES: usize = 6;

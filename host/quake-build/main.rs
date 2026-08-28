@@ -235,6 +235,7 @@ enum Action {
     E1m1GpuPolygonWindowRunsBench,
     E1m1GpuPolygonWindowInsertBench,
     E1m1GpuPolygonWindowRangeBench,
+    E1m1GpuPolygonPageLocalLiquidBench,
     E1m1GpuPolygonCellStreamBench,
     E1m1GpuPolygonCellPolicyBench,
     GpuPolygonCellPolicyDisc,
@@ -1056,6 +1057,28 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-window-range-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonPageLocalLiquidBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-page-local-liquid-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-page-local-liquid",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-page-local-liquid-bench",
             )?;
         }
         Action::E1m1GpuPolygonCellStreamBench => {
@@ -3248,6 +3271,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-window-runs-bench"
             | "e1m1-gpu-polygon-window-insert-bench"
             | "e1m1-gpu-polygon-window-range-bench"
+            | "e1m1-gpu-polygon-page-local-liquid-bench"
             | "e1m1-gpu-polygon-cell-stream-bench"
             | "e1m1-gpu-polygon-cell-policy-bench"
             | "gpu-polygon-cell-policy-disc"
@@ -3346,6 +3370,9 @@ fn parse_cli() -> Result<Cli> {
                         Action::E1m1GpuPolygonWindowInsertBench
                     }
                     "e1m1-gpu-polygon-window-range-bench" => Action::E1m1GpuPolygonWindowRangeBench,
+                    "e1m1-gpu-polygon-page-local-liquid-bench" => {
+                        Action::E1m1GpuPolygonPageLocalLiquidBench
+                    }
                     "e1m1-gpu-polygon-cell-stream-bench" => Action::E1m1GpuPolygonCellStreamBench,
                     "e1m1-gpu-polygon-cell-policy-bench" => Action::E1m1GpuPolygonCellPolicyBench,
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
@@ -3480,6 +3507,7 @@ fn print_help() {
            e1m1-gpu-polygon-plane-index-bench  Memoize BSP plane sides by direct cooked index\n  \
            e1m1-gpu-polygon-window-runs-bench  Coalesce final GPU-order liquid window state runs\n  \
            e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
+           e1m1-gpu-polygon-page-local-liquid-bench  Batch cooker-proven 64x64 liquids without GP0(E2)\n  \
            e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
            e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
@@ -4013,13 +4041,13 @@ fn validate_episode_directory(root: &Path) -> Result<()> {
 /// allocation far from the cause. Loading each map through an arena of exactly
 /// the guest's size reproduces the guest's own capacity check on the host.
 fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
-    const MAX_RENDER_FACE_COUNT: usize = 6_614;
-    const MAX_VISIBLE_FACE_COUNT: usize = 1_325;
+    const MAX_RENDER_FACE_COUNT: usize = 7_314;
+    const MAX_VISIBLE_FACE_COUNT: usize = 1_456;
     const EXPECTED_FACE_COUNTS: [usize; 9] = [
-        5_750, 5_890, 5_812, 5_566, 6_614, 5_273, 4_408, 1_780, 3_443,
+        6_086, 6_424, 6_596, 5_976, 7_314, 5_487, 4_506, 1_982, 3_639,
     ];
     const EXPECTED_MAX_PVS_FACES: [usize; 9] =
-        [1_176, 1_325, 1_052, 898, 1_046, 939, 1_201, 913, 1_306];
+        [1_257, 1_456, 1_227, 1_029, 1_219, 1_031, 1_223, 1_000, 1_355];
     let mut largest_required = 0usize;
     let mut pickup_count = 0usize;
     let mut floor_boundary_pickups = 0usize;
@@ -4167,9 +4195,9 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
         };
         largest_required = largest_required.max(required);
     }
-    if largest_required != 865_958 {
+    if largest_required != 887_062 {
         return Err(format!(
-            "indexed resident census drifted: largest map needs {largest_required} bytes, expected 865958"
+            "indexed resident census drifted: largest map needs {largest_required} bytes, expected 887062"
         )
         .into());
     }
@@ -4194,15 +4222,15 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
 /// records and persistent-sound dedup visible in every validation run.
 fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     const MAPS: [(&str, usize, usize); 9] = [
-        ("start", 1_769_840, 1_464_806),
-        ("e1m1", 1_862_013, 1_549_333),
-        ("e1m2", 2_076_988, 1_756_594),
-        ("e1m3", 2_147_866, 1_844_570),
-        ("e1m4", 2_096_303, 1_781_981),
-        ("e1m5", 2_036_505, 1_713_133),
-        ("e1m6", 1_990_529, 1_688_683),
-        ("e1m7", 1_601_558, 1_389_440),
-        ("e1m8", 1_646_042, 1_417_964),
+        ("start", 1_769_840, 1_490_218),
+        ("e1m1", 1_862_013, 1_569_603),
+        ("e1m2", 2_076_988, 1_795_496),
+        ("e1m3", 2_147_866, 1_864_390),
+        ("e1m4", 2_096_303, 1_822_913),
+        ("e1m5", 2_036_505, 1_727_683),
+        ("e1m6", 1_990_529, 1_696_089),
+        ("e1m7", 1_601_558, 1_405_578),
+        ("e1m8", 1_646_042, 1_427_848),
     ];
     let mut legacy_total = 0usize;
     let mut compact_total = 0usize;
@@ -4238,9 +4266,9 @@ fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     let global_bytes = fs::metadata(root.join("id1psx/sounds/global.qsb"))?.len() as usize;
     let persistent_total = compact_total + global_bytes;
     if legacy_total != 17_227_644
-        || compact_total != 14_606_504
+        || compact_total != 14_799_818
         || global_bytes != 159_418
-        || persistent_total != 14_765_922
+        || persistent_total != 14_959_236
     {
         return Err(format!(
             "PSB5/QSB1 episode census drifted: {legacy_total} -> {compact_total} + {global_bytes}"
@@ -9278,6 +9306,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-window-runs-bench"
             | "build-psoxide-e1m1-gpu-polygon-window-insert-bench"
             | "build-psoxide-e1m1-gpu-polygon-window-range-bench"
+            | "build-psoxide-e1m1-gpu-polygon-page-local-liquid-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-stream-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-policy-bench"
             | "build-psoxide-gpu-polygon-cell-policy-playable"
