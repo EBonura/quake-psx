@@ -214,6 +214,10 @@ renderer-plane-index-cache = ["renderer-block-frustum"]
 # whose plane can never back-face. Unlike the compact-stream experiment this
 # retains the proven single 36-byte face/plane record.
 renderer-cell-policy = []
+# Exact Quake II-style code-shape A/B: keep the selected cell/block policy,
+# but replace LLVM's duplicated four-plane support-point expansion with one
+# fixed, inlined MIPS-I/GTE microkernel. Host builds retain the Rust oracle.
+renderer-mips-selection-kernel = ["renderer-block-frustum"]
 # Exact final-GPU-order state optimization: adjacent scoped liquid packets
 # with the same GP0(E2) selector share one selector/reset pair at run bounds.
 # Polygon bytes, OT order, and state at every non-windowed command stay fixed.

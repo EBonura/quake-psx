@@ -1,6 +1,10 @@
 //! Quake for PlayStation 1 on the PSoXide SDK.
 
 #![feature(optimize_attribute)]
+#![cfg_attr(
+    all(feature = "renderer-mips-selection-kernel", target_arch = "mips"),
+    feature(asm_experimental_arch)
+)]
 #![no_std]
 #![no_main]
 
