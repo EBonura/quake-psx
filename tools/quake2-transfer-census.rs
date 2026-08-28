@@ -7,12 +7,18 @@
 //! can exact-visibility, shared-edge brush ranges be without admitting hidden
 //! faces, and how much source order would they disturb?
 
-use quake_cook::{cook_portal_graph, cook_portal_graph_with_merge_area, Bsp, BspLump, PakArchive};
+use quake_cook::{
+    cook_portal_graph, cook_portal_graph_with_merge_area, encode_render_section_payload,
+    encode_render_sections, Bsp, BspLump, PakArchive, RenderSectionCellInput,
+    RenderSectionCornerInput, RenderSectionFaceInput, RenderSectionInput,
+    RenderSectionPayloadInput,
+};
 use quake_formats::resident::ResidentMap;
 use quake_formats::{
     leaf_portal_graph, LumpKind, Plane, SliceReader, FACE_BACKSIDE, FACE_BAKED_LIGHT,
-    FACE_BAKED_UV, LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, RESIDENT_MAP_ARENA_BYTES,
-    TEXTURE_INVISIBLE, TEXTURE_LAYERED_SKY, TEXTURE_LIQUID, TEXTURE_NULL, TEXTURE_SKY,
+    FACE_BAKED_UV, LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, RENDER_SECTION_NONE,
+    RESIDENT_MAP_ARENA_BYTES, TEXTURE_INVISIBLE, TEXTURE_LAYERED_SKY, TEXTURE_LIQUID, TEXTURE_NULL,
+    TEXTURE_SKY,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -81,6 +87,8 @@ struct Surface {
     mins: [i16; 3],
     maxs: [i16; 3],
     positions: Vec<u16>,
+    corners: Vec<RenderSectionCornerInput>,
+    light_styles: [u8; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -173,11 +181,16 @@ struct RenderSectionMetrics {
 
 impl RenderSectionMetrics {
     fn geometry_bytes(self) -> usize {
-        // PSB5 face, indexed corner, indexed position, and material records.
-        self.faces * 10
-            + self.corner_references * 8
-            + self.unique_positions * 6
-            + self.unique_materials * 14
+        // QRP1's 28-byte face includes the source draw record, six i16
+        // conservative bounds, and a u32 active-template offset. Materials
+        // remain in the retained global texture table.
+        self.faces * 28 + self.corner_references * 8 + self.unique_positions * 6
+    }
+
+    fn directory_bytes(self) -> usize {
+        // Fixed QRP1 header, one source-leaf/cell-stream range per owned
+        // camera cell, and the worst two-byte alignment pad after positions.
+        48 + self.leaves * 8 + 2
     }
 
     fn projection_bytes(self) -> usize {
@@ -191,6 +204,7 @@ impl RenderSectionMetrics {
 
     fn resident_render_bytes(self) -> usize {
         self.geometry_bytes()
+            + self.directory_bytes()
             + self.projection_bytes()
             + self.dual_template_bytes()
             + self.cell_stream_bytes
@@ -199,7 +213,7 @@ impl RenderSectionMetrics {
     fn compact_stream_bytes(self) -> usize {
         // CD/preload form before the active section allocates its projection
         // cache and installs packet templates in both GPU pools.
-        self.geometry_bytes() + self.cell_stream_bytes
+        self.geometry_bytes() + self.directory_bytes() + self.cell_stream_bytes
     }
 
     fn full_window_page_bytes(self) -> usize {
@@ -215,6 +229,7 @@ struct SectionCensus {
     assigned_leaves: usize,
     directed_edges: usize,
     bounded: Vec<BudgetPartitionCensus>,
+    sidecar: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -225,6 +240,10 @@ struct BudgetPartitionCensus {
     transition_compact_preload_bytes: Vec<usize>,
     cross_edges: usize,
     over_budget_sections: usize,
+    area_assignment: Vec<usize>,
+    section_neighbors: Vec<Vec<u16>>,
+    section_faces: Vec<BTreeSet<usize>>,
+    section_views: Vec<Vec<usize>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -477,6 +496,14 @@ const CELL_STREAM_ESCAPE: u8 = 0x7f;
 /// authoritative runtime plane test. Escape records carry a u16 absolute
 /// source face. This is a destination prototype, not a claimed retail format.
 fn encode_cell_stream(entries: &[CellFace], surfaces: &[Surface]) -> Vec<u8> {
+    encode_cell_stream_as(entries, surfaces, |face| face)
+}
+
+fn encode_cell_stream_as(
+    entries: &[CellFace],
+    surfaces: &[Surface],
+    face_id: impl Fn(u16) -> u16,
+) -> Vec<u8> {
     let mut output = Vec::new();
     for block in entries.chunks(CELL_STREAM_BLOCK_FACES) {
         let mut mins = surfaces[block[0].face as usize].mins;
@@ -498,16 +525,17 @@ fn encode_cell_stream(entries: &[CellFace], surfaces: &[Surface]) -> Vec<u8> {
         let payload = output.len();
         let mut previous = 0u16;
         for (index, entry) in block.iter().enumerate() {
-            let delta = entry.face.wrapping_sub(previous);
+            let face = face_id(entry.face);
+            let delta = face.wrapping_sub(previous);
             let mode = u8::from(entry.dynamic_facing) << 7;
             if delta < u16::from(CELL_STREAM_ESCAPE) {
                 output.push(mode | delta as u8);
             } else {
                 output.push(mode | CELL_STREAM_ESCAPE);
-                output.extend_from_slice(&entry.face.to_le_bytes());
+                output.extend_from_slice(&face.to_le_bytes());
             }
-            previous = entry.face;
-            debug_assert!(index == 0 || block[index - 1].face < entry.face);
+            previous = face;
+            debug_assert!(index == 0 || face_id(block[index - 1].face) < face);
         }
         let payload_bytes = u16::try_from(output.len() - payload).expect("bounded block payload");
         output[header..header + 2].copy_from_slice(&payload_bytes.to_le_bytes());
@@ -927,6 +955,8 @@ fn bounded_partition(
     let mut unassigned = vec![true; area_faces.len()];
     let mut assignment = vec![usize::MAX; area_faces.len()];
     let mut sections = Vec::new();
+    let mut section_face_sets = Vec::new();
+    let mut section_view_sets = Vec::new();
 
     while let Some(seed) = (0..area_faces.len())
         .filter(|&area| unassigned[area])
@@ -1002,6 +1032,9 @@ fn bounded_partition(
             assignment[area] = section;
         }
         sections.push(metrics);
+        section_face_sets.push(section_faces);
+        section_views.sort_unstable();
+        section_view_sets.push(section_views);
     }
 
     let mut transition_pairs = BTreeSet::new();
@@ -1023,6 +1056,11 @@ fn bounded_partition(
             sections[left].resident_render_bytes() + sections[right].resident_render_bytes()
         })
         .collect::<Vec<_>>();
+    let mut section_neighbors = vec![Vec::<u16>::new(); sections.len()];
+    for &(left, right) in &transition_pairs {
+        section_neighbors[left].push(right as u16);
+        section_neighbors[right].push(left as u16);
+    }
     let transition_compact_preload_bytes = transition_pairs
         .iter()
         .map(|&(left, right)| {
@@ -1042,15 +1080,21 @@ fn bounded_partition(
         transition_compact_preload_bytes,
         cross_edges,
         over_budget_sections,
+        area_assignment: assignment,
+        section_neighbors,
+        section_faces: section_face_sets,
+        section_views: section_view_sets,
     }
 }
 
 fn section_census(
     visibility: &[u8],
     source: &Bsp<'_>,
+    cell_view_entries: &[Vec<CellFace>],
     cell_view_faces: &[Vec<usize>],
     views: &[ViewMetrics],
     surfaces: &[Surface],
+    world_positions: &[[i16; 3]],
 ) -> Result<SectionCensus> {
     let graph = leaf_portal_graph(visibility)
         .ok_or("cooked map is missing the reconstructed portal-area graph")?;
@@ -1151,7 +1195,136 @@ fn section_census(
                 surfaces,
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let payload_partition = bounded
+        .iter()
+        .find(|partition| partition.budget_bytes == 192 * 1024)
+        .ok_or("192 KiB render-section partition is missing")?;
+    let leaf_sections = (0..leaf_graph.leaf_count())
+        .map(|leaf| {
+            leaf_graph
+                .leaf_area(leaf)
+                .map_or(RENDER_SECTION_NONE, |area| {
+                    payload_partition.area_assignment[area] as u16
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut section_inputs = Vec::with_capacity(payload_partition.sections.len());
+    for section_index in 0..payload_partition.sections.len() {
+        let metrics = payload_partition.sections[section_index];
+        let face_set = &payload_partition.section_faces[section_index];
+        let mut local_face = vec![u16::MAX; surfaces.len()];
+        for (local, &global) in face_set.iter().enumerate() {
+            local_face[global] =
+                u16::try_from(local).map_err(|_| "render-section local face index exceeds u16")?;
+        }
+
+        let global_positions = face_set
+            .iter()
+            .flat_map(|&face| surfaces[face].positions.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut local_position = BTreeMap::new();
+        let mut positions = Vec::with_capacity(global_positions.len());
+        for (local, global) in global_positions.into_iter().enumerate() {
+            let position = *world_positions
+                .get(global as usize)
+                .ok_or("render-section face references a missing world position")?;
+            let local = u16::try_from(local)
+                .map_err(|_| "render-section local position index exceeds u16")?;
+            local_position.insert(global, local);
+            positions.push(position);
+        }
+
+        let mut faces = Vec::with_capacity(face_set.len());
+        let mut corners = Vec::new();
+        for &global_face in face_set {
+            let surface = &surfaces[global_face];
+            let first_corner = u16::try_from(corners.len())
+                .map_err(|_| "render-section first corner exceeds u16")?;
+            let corner_count = u8::try_from(surface.corners.len())
+                .map_err(|_| "render-section face corner count exceeds u8")?;
+            faces.push(RenderSectionFaceInput {
+                plane: surface.plane,
+                material: surface.material,
+                first_corner,
+                corner_count,
+                flags: u8::try_from(surface.face_flags)
+                    .map_err(|_| "render-section face flags exceed u8")?,
+                light_styles: surface.light_styles,
+                mins: surface.mins,
+                maxs: surface.maxs,
+                template_eligible: surface.template_eligible,
+            });
+            for corner in &surface.corners {
+                corners.push(RenderSectionCornerInput {
+                    position: *local_position
+                        .get(&corner.position)
+                        .ok_or("render-section corner position was not collected")?,
+                    texture: corner.texture,
+                    light: corner.light,
+                });
+            }
+        }
+
+        let mut cells = Vec::with_capacity(payload_partition.section_views[section_index].len());
+        for &view in &payload_partition.section_views[section_index] {
+            let entries = cell_view_entries
+                .get(view)
+                .ok_or("render-section references a missing camera cell")?;
+            if entries.iter().any(|entry| {
+                local_face
+                    .get(entry.face as usize)
+                    .is_none_or(|&face| face == u16::MAX)
+            }) {
+                return Err("render-section camera cell references an unowned face".into());
+            }
+            let stream = encode_cell_stream_as(entries, surfaces, |face| local_face[face as usize]);
+            let decoded = decode_cell_stream(&stream)
+                .ok_or("render-section local camera stream failed to decode")?;
+            if decoded.len() != entries.len()
+                || decoded.iter().zip(entries).any(|(actual, expected)| {
+                    actual.face != local_face[expected.face as usize]
+                        || actual.dynamic_facing != expected.dynamic_facing
+                })
+            {
+                return Err("render-section local camera stream changed face semantics".into());
+            }
+            cells.push(RenderSectionCellInput {
+                leaf: u16::try_from(view + 1)
+                    .map_err(|_| "render-section camera leaf exceeds u16")?,
+                stream,
+            });
+        }
+
+        let encoded = encode_render_section_payload(&RenderSectionPayloadInput {
+            faces,
+            corners,
+            positions,
+            cells,
+        })?;
+        if encoded.bytes.len() > metrics.compact_stream_bytes()
+            || encoded.active_bytes > metrics.resident_render_bytes()
+        {
+            return Err(format!(
+                "render-section {section_index} encoder exceeds its conservative RAM census: compact {} > {} or active {} > {}",
+                encoded.bytes.len(),
+                metrics.compact_stream_bytes(),
+                encoded.active_bytes,
+                metrics.resident_render_bytes(),
+            )
+            .into());
+        }
+        section_inputs.push(RenderSectionInput {
+            neighbors: payload_partition.section_neighbors[section_index].clone(),
+            compact_bytes: u32::try_from(encoded.bytes.len())
+                .map_err(|_| "render-section compact payload exceeds u32")?,
+            active_bytes: u32::try_from(encoded.active_bytes)
+                .map_err(|_| "render-section active allocation exceeds u32")?,
+            payload: encoded.bytes,
+            flags: 0,
+        });
+    }
+    let sidecar = encode_render_sections(&leaf_sections, &section_inputs)?;
 
     Ok(SectionCensus {
         sections,
@@ -1159,6 +1332,7 @@ fn section_census(
         assigned_leaves,
         directed_edges: graph.edge_count(),
         bounded,
+        sidecar,
     })
 }
 
@@ -1269,9 +1443,17 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
             let texture_bytes = usize::try_from(texture.size.x.max(0)).unwrap_or(0)
                 * usize::try_from(texture.size.y.max(0)).unwrap_or(0)
                 * 2;
-            let positions = indexed.corners[first..end]
+            let corners = indexed.corners[first..end]
                 .iter()
-                .map(|corner| corner.position_index)
+                .map(|corner| RenderSectionCornerInput {
+                    position: corner.position_index,
+                    texture: corner.texture,
+                    light: corner.light,
+                })
+                .collect::<Vec<_>>();
+            let positions = corners
+                .iter()
+                .map(|corner| corner.position)
                 .collect::<Vec<_>>();
             let mut mins = [i16::MAX; 3];
             let mut maxs = [i16::MIN; 3];
@@ -1294,10 +1476,17 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
                 mins,
                 maxs,
                 positions,
+                corners,
+                light_styles: face.light_styles,
             }
         })
         .collect::<Vec<_>>();
     let resident_breakdown = resident_breakdown(&resident, &surfaces)?;
+    let world_positions = indexed
+        .positions
+        .iter()
+        .map(|position| position.position)
+        .collect::<Vec<_>>();
 
     let leaves = resident.leaves();
     let marks = resident.mark_surfaces();
@@ -1372,10 +1561,12 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         .enumerate()
         .map(|(view_index, faces)| view_metrics(view_index, faces, &surfaces, &connected_batches))
         .collect::<Vec<_>>();
+    let mut cell_view_entries = vec![Vec::<CellFace>::new(); view_faces.len()];
     let mut cell_view_faces = vec![Vec::<usize>::new(); view_faces.len()];
     for (view_index, faces) in view_faces.iter().enumerate() {
         let bounds = source_bounds[view_index + 1];
         let (cell_faces, cell) = cell_stream_metrics(faces, &surfaces, &planes, bounds)?;
+        cell_view_entries[view_index] = cell_faces.clone();
         cell_view_faces[view_index] = cell_faces.iter().map(|entry| entry.face as usize).collect();
         views[view_index].cell_faces = cell.cell_faces;
         views[view_index].cell_dynamic_facing = cell.cell_dynamic_facing;
@@ -1423,9 +1614,11 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
     let sections = section_census(
         resident.visibility(),
         source,
+        &cell_view_entries,
         &cell_view_faces,
         &views,
         &surfaces,
+        &world_positions,
     )?;
 
     Ok(MapCensus {
@@ -1738,7 +1931,7 @@ fn print_map(census: &MapCensus) {
     );
     let sections = &census.sections.sections;
     println!(
-        "  {}: streamed portal-area sections={} ({} leaves, {} directed transitions): retained faces p50/p95/max={}/{}/{}, dual eligible templates={}/{}/{} KiB, geometry+projection={}/{}/{} KiB, cell streams={}/{}/{} KiB, resident render set={}/{}/{} KiB",
+        "  {}: streamed portal-area sections={} ({} leaves, {} directed transitions): retained faces p50/p95/max={}/{}/{}, dual eligible templates={}/{}/{} KiB, geometry+directory+projection={}/{}/{} KiB, cell streams={}/{}/{} KiB, resident render set={}/{}/{} KiB",
         census.map,
         sections.len(),
         census.sections.assigned_leaves,
@@ -1757,18 +1950,28 @@ fn print_map(census: &MapCensus) {
         percentile(
             sections
                 .iter()
-                .map(|section| section.geometry_bytes() + section.projection_bytes()),
+                .map(|section| {
+                    section.geometry_bytes()
+                        + section.directory_bytes()
+                        + section.projection_bytes()
+                }),
             50,
         ) / 1024,
         percentile(
             sections
                 .iter()
-                .map(|section| section.geometry_bytes() + section.projection_bytes()),
+                .map(|section| {
+                    section.geometry_bytes()
+                        + section.directory_bytes()
+                        + section.projection_bytes()
+                }),
             95,
         ) / 1024,
         sections
             .iter()
-            .map(|section| section.geometry_bytes() + section.projection_bytes())
+            .map(|section| {
+                section.geometry_bytes() + section.directory_bytes() + section.projection_bytes()
+            })
             .max()
             .unwrap_or(0)
             / 1024,
@@ -1894,12 +2097,13 @@ fn print_map(census: &MapCensus) {
             / 1024,
     );
     println!(
-        "  {}: whole-map resident={} KiB; sectioning can replace {} KiB of world vertices/faces/marks/PVS, retaining {} KiB collision/game/inline core ({} KiB inline brush render payload)",
+        "  {}: whole-map resident={} KiB; sectioning can replace {} KiB of world vertices/faces/marks/PVS, retaining {} KiB collision/game/inline core ({} KiB inline brush render payload); checked QRS1/QRP1 sidecar={} KiB",
         census.map,
         census.resident.whole_map_bytes / 1024,
         census.resident.streamable_world_bytes / 1024,
         census.resident.retained_core_bytes / 1024,
         census.resident.retained_inline_render_bytes / 1024,
+        census.sections.sidecar.len() / 1024,
     );
     for partition in &census.sections.bounded {
         let bounded = &partition.sections;
@@ -2070,6 +2274,13 @@ fn main() -> Result<()> {
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".quakepsx/cache/shareware/ID1/PAK0.PAK"));
+    let sidecar_dir = arguments.next().map(PathBuf::from);
+    if arguments.next().is_some() {
+        return Err("usage: quake2-transfer-census [maps-dir] [pak0] [sidecar-dir]".into());
+    }
+    if let Some(directory) = &sidecar_dir {
+        fs::create_dir_all(directory)?;
+    }
     let pak_bytes = fs::read(&pak_path)?;
     let pak = PakArchive::parse(&pak_bytes)?;
     println!("# Quake II PSX static-brush transfer census");
@@ -2096,6 +2307,14 @@ fn main() -> Result<()> {
         );
         let census = load_census(&maps_dir.join(format!("{map}.psb")), map, &source)?;
         print_map(&census);
+        if let Some(directory) = &sidecar_dir {
+            let path = directory.join(format!("{map}.qrs"));
+            fs::write(&path, &census.sections.sidecar)?;
+            println!(
+                "  {map}: wrote checked QRS1/QRP1 render-section sidecar to {}",
+                path.display()
+            );
+        }
         censuses.push(census);
     }
 
@@ -2144,6 +2363,14 @@ mod tests {
             mins: [0; 3],
             maxs: [1; 3],
             positions: positions.to_vec(),
+            corners: positions
+                .iter()
+                .map(|&position| RenderSectionCornerInput {
+                    position,
+                    ..RenderSectionCornerInput::default()
+                })
+                .collect(),
+            light_styles: [0, 64],
         }
     }
 
@@ -2289,7 +2516,7 @@ mod tests {
             &area_faces,
             &area_views,
             &adjacency,
-            350,
+            420,
             &cell_view_faces,
             &views,
             &surfaces,
@@ -2305,12 +2532,10 @@ mod tests {
                 .sum::<usize>(),
             3,
         );
-        assert!(
-            partition
-                .sections
-                .iter()
-                .all(|section| section.resident_render_bytes() <= 350)
-        );
+        assert!(partition
+            .sections
+            .iter()
+            .all(|section| section.resident_render_bytes() <= 420));
     }
 
     #[test]

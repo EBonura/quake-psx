@@ -10,9 +10,13 @@
 #[cfg(test)]
 extern crate std;
 
+mod render_section_payload;
+mod render_sections;
 mod sound;
 
 pub use psx_bsp::*;
+pub use render_section_payload::*;
+pub use render_sections::*;
 pub use sound::*;
 
 /// Footer magic for Quake's optional source-leaf AABB table appended to the
