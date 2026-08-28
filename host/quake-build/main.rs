@@ -3644,9 +3644,9 @@ fn print_help() {
            e1m1-gpu-polygon-cell-liquid-bench  A/B remove hot selector texture lookups\n  \
            e1m1-gpu-polygon-block-clip-flags-bench  A/B propagate exact block clip flags\n  \
            e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
-           e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.651 renderer stack\n  \
+           e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
-           gpu-polygon-leader-disc  Build and boot-test the playable 23.651 renderer feature stack\n  \
+           gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
            e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
            e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \
            e1m1-hoisted-indexed-world-bench  A/B decode PSB5 indexed view once per world frame\n  \
@@ -3675,7 +3675,7 @@ fn print_help() {
            e1m1-gpu-census  Capture GP0 work for the accepted selector on the fixed route\n  \
            e1m1-gpu-polygon-census  Capture GP0 work for the GPU-clipped candidate\n  \
            e1m2-e1m3-route-regress  Walk E1M2 and E1M3's authored progression into E1M4 headlessly\n  \
-           e1m2-e1m3-leader-route-regress  Repeat E1M2/E1M3 with the 23.651 renderer stack\n  \
+           e1m2-e1m3-leader-route-regress  Repeat E1M2/E1M3 with the 23.656 renderer stack\n  \
            survival-regress  Walk E1M1's authored hazards: burn, fall, drown, die, respawn\n  \
            systems-regress  Prove Start's authored lava spouts headlessly\n  \
            combat-regress  Prove shotgun damage and death against cooked E1M1\n  \
