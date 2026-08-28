@@ -4,10 +4,19 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-only"
 description = "End-to-end shareware demo builder and PSoXide regression runner for quake-psx"
+default-run = "quake-psx-build"
 
 [[bin]]
 name = "quake-psx-build"
 path = "host/quake-build/main.rs"
+
+[[bin]]
+name = "quake2-transfer-census"
+path = "tools/quake2-transfer-census.rs"
+
+[[bin]]
+name = "fixed-quad-tessellation-census"
+path = "tools/fixed-quad-tessellation-census.rs"
 
 [dependencies]
 # The hydration helper and the guest SDK resolve from the same published

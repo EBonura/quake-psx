@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use psx_render_contract::CookedDrawSurface;
-use quake_formats::LIQUID_DOUBLE_BUFFER_MARKER;
+use quake_formats::{
+    encode_leaf_bound_max, encode_leaf_bound_min, LEAF_BOUNDS_FOOTER_BYTES,
+    LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, LIQUID_DOUBLE_BUFFER_MARKER,
+};
 
 use super::{psx_tpage, Bsp, BspLump, CookError, MipTexture};
 
@@ -91,6 +94,8 @@ struct CookLeaf {
     visibility_offset: i32,
     first_mark_surface: u16,
     mark_surface_count: u16,
+    mins: [i16; 3],
+    maxs: [i16; 3],
     light: [u8; 2],
     styles: [u8; 2],
 }
@@ -229,7 +234,7 @@ pub(crate) fn cook_geometry_staged(
         texture_info: serialize_textures(&textures),
         faces: serialize_faces(&faces),
         mark_surfaces: serialize_mark_surfaces(&mark_surfaces),
-        visibility: bsp.lump(BspLump::Visibility).to_vec(),
+        visibility: serialize_visibility(bsp, &leaves)?,
         leaves: serialize_leaves(&leaves),
         nodes: serialize_nodes(&nodes),
         clip_nodes: cook_clip_nodes(bsp)?,
@@ -882,6 +887,8 @@ fn cook_nodes_and_leaves(bsp: &Bsp<'_>) -> Result<(Vec<CookNode>, Vec<CookLeaf>)
             visibility_offset,
             first_mark_surface: u16_at(source, 20)?,
             mark_surface_count,
+            mins: [u16_at(source, 8)? as i16, u16_at(source, 10)? as i16, u16_at(source, 12)? as i16],
+            maxs: [u16_at(source, 14)? as i16, u16_at(source, 16)? as i16, u16_at(source, 18)? as i16],
             light: [0; 2],
             styles: [MAX_LIGHT_STYLES as u8; 2],
         });
@@ -1134,6 +1141,29 @@ fn serialize_mark_surfaces(marks: &[u16]) -> Vec<u8> {
     output
 }
 
+/// Preserve the source PVS byte-for-byte and append one outward-quantized
+/// camera-cell AABB per leaf. PVS offsets continue to address the unchanged
+/// prefix; the fixed footer makes the optional sidecar discoverable without
+/// changing the shared PSB5 leaf record.
+fn serialize_visibility(bsp: &Bsp<'_>, leaves: &[CookLeaf]) -> Result<Vec<u8>, CookError> {
+    let count = u16::try_from(leaves.len())
+        .map_err(|_| CookError::new("leaf-bounds sidecar exceeds u16"))?;
+    let mut output = Vec::with_capacity(
+        bsp.lump(BspLump::Visibility).len()
+            + leaves.len() * LEAF_BOUNDS_RECORD_BYTES
+            + LEAF_BOUNDS_FOOTER_BYTES,
+    );
+    output.extend_from_slice(bsp.lump(BspLump::Visibility));
+    for leaf in leaves {
+        output.extend(leaf.mins.map(encode_leaf_bound_min).map(|value| value as u8));
+        output.extend(leaf.maxs.map(encode_leaf_bound_max).map(|value| value as u8));
+    }
+    output.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+    output.extend_from_slice(&count.to_le_bytes());
+    output.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+    Ok(output)
+}
+
 /// PSB5 leaf: contents i8, pad, mark count u16, visibility offset i32,
 /// first mark u16, lightmap, light styles (14 bytes).
 fn serialize_leaves(leaves: &[CookLeaf]) -> Vec<u8> {
@@ -1294,6 +1324,8 @@ mod tests {
             visibility_offset: -1,
             first_mark_surface: 0x4567,
             mark_surface_count: 0x0178,
+            mins: [-33, -1, 0],
+            maxs: [1, 33, i16::MAX],
             light: [9, 10],
             styles: [11, 12],
         };

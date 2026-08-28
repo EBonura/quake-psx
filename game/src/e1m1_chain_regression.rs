@@ -24,6 +24,12 @@ use crate::asset::EpisodeMap;
 use crate::entity::{EntityScene, GameplayResult};
 use crate::input::InputFrame;
 use crate::player::Player;
+#[cfg(any(
+    feature = "renderer-topology-cache",
+    feature = "renderer-indexed-projection",
+    feature = "renderer-subdivision-cache"
+))]
+use crate::renderer::RenderStats;
 
 const PROBE_MAGIC: u32 = 0x5150_5358;
 // Version 9 also pins the t15 shortcut door's one-shot message semantics.
@@ -343,6 +349,96 @@ static mut ROUTE_INDEX: usize = 0;
 static mut STALL_FRAMES: u32 = 0;
 static mut DETOUR: usize = 0;
 static mut BEST_DISTANCE: i32 = i32::MAX;
+
+/// Accumulate resident-packet cache efficacy in fields unused by this route.
+/// Keeping the shared 136-byte probe shape lets the existing PSoXide host
+/// reader report the experiment without adding debug I/O to timed frames.
+#[cfg(feature = "renderer-topology-cache")]
+pub fn observe_render(stats: RenderStats) {
+    unsafe {
+        let probe = addr_of_mut!(PROBE);
+        for (field, value) in [
+            (
+                addr_of_mut!((*probe).monster_present),
+                stats.topology_cache_hits,
+            ),
+            (
+                addr_of_mut!((*probe).monster_animated),
+                stats.topology_cache_misses,
+            ),
+            (
+                addr_of_mut!((*probe).monster_state_bounds),
+                stats.topology_invariant_hit_slots,
+            ),
+            (
+                addr_of_mut!((*probe).monster_attack),
+                stats.topology_invariant_miss_slots,
+            ),
+        ] {
+            write_volatile(field, read_volatile(field).wrapping_add(value));
+        }
+    }
+}
+
+/// Accumulate exact subdivision-slab activity in route-unused fields. The
+/// host labels these values separately for the cache benchmark; keeping the
+/// established probe ABI avoids debug output in the timed renderer.
+#[cfg(feature = "renderer-subdivision-cache")]
+pub fn observe_render(stats: RenderStats) {
+    unsafe {
+        let probe = addr_of_mut!(PROBE);
+        for (field, value) in [
+            (
+                addr_of_mut!((*probe).monster_present),
+                stats.subdivision_cache_hits,
+            ),
+            (
+                addr_of_mut!((*probe).monster_animated),
+                stats.subdivision_cache_allocations,
+            ),
+            (
+                addr_of_mut!((*probe).monster_state_bounds),
+                stats.subdivision_cache_replacements,
+            ),
+            (
+                addr_of_mut!((*probe).monster_attack),
+                stats.subdivision_cache_fallbacks,
+            ),
+            (
+                addr_of_mut!((*probe).monster_pain),
+                stats.subdivision_cache_initializations,
+            ),
+            (
+                addr_of_mut!((*probe).monster_death),
+                stats.subdivision_cache_packets,
+            ),
+        ] {
+            write_volatile(field, read_volatile(field).wrapping_add(value));
+        }
+    }
+}
+
+/// Accumulate the actual number of per-corner projections replaced by dense
+/// shared-position projections. These route-unused fields preserve the probe
+/// ABI and keep timed frames free of debug output.
+#[cfg(feature = "renderer-indexed-projection")]
+pub fn observe_render(stats: RenderStats) {
+    unsafe {
+        let probe = addr_of_mut!(PROBE);
+        for (field, value) in [
+            (
+                addr_of_mut!((*probe).monster_pain),
+                stats.indexed_projection_corners,
+            ),
+            (
+                addr_of_mut!((*probe).monster_death),
+                stats.indexed_projection_unique,
+            ),
+        ] {
+            write_volatile(field, read_volatile(field).wrapping_add(value));
+        }
+    }
+}
 
 pub fn map_loaded(map: EpisodeMap) {
     unsafe {
