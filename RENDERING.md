@@ -223,6 +223,17 @@ be a small non-calling MIPS scatter/link island fed by cooked packet offsets;
 another Rust trait or aggregate-array boundary will not reach the retail code
 shape.
 
+A subsequent fixed-schedule control kept Quake-PSX's exact L2 midpoint,
+projection, OTZ, packet-order and underdraw rules inside the hot submitter, but
+replaced its four-GT3/six-GT4 base expansion with a compact descriptor loop.
+The MIPS body shrank from `0x1b98` to `0x1880` bytes (-11.2%) and both
+canonical hashes remained exact across two complete routes. Performance fell
+from 23.432 to 22.893 fps (3,155,519,282 gameplay bus cycles). The additional
+descriptor and point-table RAM loads cost more than the saved instruction
+refills. This closes a table-interpreted fixed schedule: the Quake II transfer
+must preserve its unrolled register/packet scatter, not merely its small code
+footprint.
+
 ### Renderer census
 
 A diagnostic-only `renderer-census` build now measures retained-renderer
