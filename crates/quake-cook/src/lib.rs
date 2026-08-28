@@ -18,6 +18,7 @@ mod geometry;
 mod map;
 mod model;
 mod portal;
+mod render_sections;
 mod sound;
 
 pub use bsp::{Bsp, BspLump, BspStats, MipTexture};
@@ -27,6 +28,11 @@ pub use map::{cook_map, CookedMap, MapCookConfig};
 pub use model::{cook_geometry_and_models, CookedModels, ModelCookStats};
 pub use portal::{cook_portal_graph, cook_portal_graph_with_merge_area, PortalGraphStats};
 pub use psx_sfx::PARKING_TAIL as SFX_PARKING_TAIL;
+pub use render_sections::{
+    encode_render_section_payload, encode_render_sections, EncodedRenderSectionPayload,
+    RenderSectionCellInput, RenderSectionCornerInput, RenderSectionFaceInput, RenderSectionInput,
+    RenderSectionPayloadInput,
+};
 pub use sound::{
     cook_global_sounds, cook_monolithic_sounds_for_validation, cook_sounds,
     merge_sound_banks_for_validation, CookedGlobalSounds, CookedSounds, SoundCookStats,

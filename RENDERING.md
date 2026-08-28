@@ -732,28 +732,49 @@ packet templates in both display pools. It keeps near, liquid, sky, ambiguous,
 and other non-template faces as a measured dynamic fallback rather than
 pretending the entire map has fixed topology.
 
-The 192 KiB result is the practical starting point:
+The 192 KiB result is the practical starting point. The table now reports the
+actual checked `QRS1`/`QRP1` sidecars rather than an estimated manifest:
 
-| Map | Sections | Oversize sections | Whole-map resident | Replaceable world render | Retained core | Compact section payload on CD | Worst retained-core + active + compact-neighbor | Arena headroom |
+| Map | Sections | Oversize sections | Whole-map resident | Replaceable world render | Retained core | Full section sidecar on CD | Worst retained-core + active + compact-neighbor | Arena headroom |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| start | 62 | 8 | 696 KiB | 360 KiB | 336 KiB | 3,610 KiB | 653 KiB | 205 KiB |
-| e1m1 | 69 | 0 | 712 KiB | 376 KiB | 335 KiB | 4,236 KiB | 647 KiB | 211 KiB |
-| e1m2 | 59 | 0 | 811 KiB | 361 KiB | 449 KiB | 2,642 KiB | 735 KiB | 123 KiB |
-| e1m3 | 48 | 0 | 855 KiB | 318 KiB | 536 KiB | 1,822 KiB | 827 KiB | 32 KiB |
-| e1m4 | 99 | 0 | 830 KiB | 404 KiB | 425 KiB | 3,977 KiB | 721 KiB | 138 KiB |
-| e1m5 | 46 | 0 | 748 KiB | 315 KiB | 433 KiB | 1,656 KiB | 711 KiB | 147 KiB |
-| e1m6 | 45 | 1 | 730 KiB | 228 KiB | 501 KiB | 2,023 KiB | 791 KiB | 67 KiB |
-| e1m7 | 16 | 0 | 480 KiB | 98 KiB | 381 KiB | 716 KiB | 651 KiB | 207 KiB |
-| e1m8 | 177 | 51 | 484 KiB | 210 KiB | 274 KiB | 8,552 KiB | 583 KiB | 275 KiB |
+| start | 83 | 22 | 696 KiB | 360 KiB | 336 KiB | 5,370 KiB | 676 KiB | 182 KiB |
+| e1m1 | 78 | 3 | 712 KiB | 376 KiB | 335 KiB | 5,773 KiB | 649 KiB | 210 KiB |
+| e1m2 | 60 | 1 | 811 KiB | 361 KiB | 449 KiB | 3,264 KiB | 735 KiB | 123 KiB |
+| e1m3 | 58 | 0 | 855 KiB | 318 KiB | 536 KiB | 2,708 KiB | 828 KiB | 30 KiB |
+| e1m4 | 133 | 4 | 830 KiB | 404 KiB | 425 KiB | 6,563 KiB | 721 KiB | 137 KiB |
+| e1m5 | 47 | 0 | 748 KiB | 315 KiB | 433 KiB | 2,081 KiB | 717 KiB | 141 KiB |
+| e1m6 | 50 | 2 | 730 KiB | 228 KiB | 501 KiB | 2,710 KiB | 797 KiB | 62 KiB |
+| e1m7 | 22 | 0 | 480 KiB | 98 KiB | 381 KiB | 1,189 KiB | 661 KiB | 197 KiB |
+| e1m8 | 212 | 80 | 484 KiB | 210 KiB | 274 KiB | 12,325 KiB | 620 KiB | 238 KiB |
 
 An "oversize" row means one source camera cell already exceeds the requested
-192 KiB cap; it is not a memory overflow. The measured largest cells remain
-bounded, and every active-plus-compact-neighbor projection above fits the
-existing 880,000-byte resident-map arena. A uniform 256 KiB cap removes every
-oversize section, but its active-plus-preload peak exceeds the arena on E1M3
-and E1M6. The implementation should therefore use the 192 KiB target, allow a
-bounded exceptional cell, and stop installing templates when the active cap
-would otherwise be exceeded.
+192 KiB cap; it is not a memory overflow. The budget includes the concrete
+payload metadata omitted by the first estimate: six i16 bounds and a u32
+template offset per section face, an eight-byte directory record per owned
+camera cell, and a fixed section header. The measured largest exceptional cell
+is 261 KiB, and every active-plus-compact-neighbor projection above still fits
+the existing 880,000-byte resident-map arena. The implementation should use the
+192 KiB target, allow a bounded exceptional cell, and stop installing templates
+when a future map would otherwise exceed the active cap.
+
+The implementation now has checked wire contracts for both layers. `QRS1`
+maps source leaves to sections, records transition neighbors, payload ranges,
+and exact compact/active allocation sizes. Each embedded `QRP1` payload owns
+section-local faces, corners, positions and camera-cell streams. It records
+one activation-time packet-template offset per eligible face; templates are
+not duplicated on CD, because activation constructs their invariant words
+directly in both display pools. The host encoder validates all local indices,
+canonical ranges, template allocation, stream ownership and memory sizes, then
+re-parses the completed sidecar through the no-std guest readers. The full
+Episode 1 corpus completed this round trip.
+
+The real files also expose the remaining cooker problem. Geometry shared by
+several camera sections is duplicated in this first self-contained encoding,
+so E1M8 expands to 12,325 KiB despite its small 484 KiB whole-map resident
+form. That does not invalidate the RAM/runtime result, but it is too expensive
+to accept blindly. The production cooker needs a map-global immutable geometry
+bank with section-local cell streams and activation lists, or another checked
+deduplication layer, while retaining the same active-section lifetime.
 
 The compact-neighbor distinction is essential. Holding two fully expanded
 sections at once wastes two projection caches and four copies of invariant
@@ -761,10 +782,17 @@ packet fields. Instead, the current section remains active while the neighbor's
 geometry and cell streams are read into compact staging. At the boundary the
 old templates are discarded, `InitBrush`-equivalent code expands the staged
 section into the two GPU pools, and the staging allocation becomes available
-again. E1M1's compact sections are 63/100/119 KiB P50/P95/max, corresponding to
-roughly 0.21/0.33/0.40 seconds at the PlayStation CD-ROM's nominal 2x payload
+again. E1M1's compact sections are 74/110/121 KiB P50/P95/max, corresponding to
+roughly 0.24/0.37/0.41 seconds at the PlayStation CD-ROM's nominal 2x payload
 rate before seek and filesystem overhead. That explains why the retail maps
 extend or add corridors around section transitions.
+
+Generate and validate the complete prototype sidecars with:
+
+```sh
+cargo run --release --bin quake2-transfer-census -- \
+  id1psx/maps .quakepsx/cache/shareware/ID1/PAK0.PAK /tmp/quake-sections
+```
 
 This evidence changes the authorized implementation boundary. The next
 performance build must replace world render residency and per-frame packet
