@@ -15,6 +15,127 @@ mod sound;
 pub use psx_bsp::*;
 pub use sound::*;
 
+/// Footer magic for Quake's optional source-leaf AABB table appended to the
+/// otherwise unchanged compressed visibility lump (`QLB1`). Existing PVS
+/// offsets continue to address the original prefix.
+pub const LEAF_BOUNDS_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"QLB1");
+pub const LEAF_BOUNDS_RECORD_BYTES: usize = 6;
+pub const LEAF_BOUNDS_FOOTER_BYTES: usize = 8;
+/// World units represented by one signed leaf-bound code.
+pub const LEAF_BOUNDS_GRID: i16 = 32;
+const LEAF_BOUNDS_GRID_SHIFT: u32 = LEAF_BOUNDS_GRID.trailing_zeros();
+
+pub const fn encode_leaf_bound_min(value: i16) -> i8 {
+    let units = (value as i32) >> LEAF_BOUNDS_GRID_SHIFT;
+    if units <= i8::MIN as i32 {
+        i8::MIN
+    } else {
+        units as i8
+    }
+}
+
+pub const fn encode_leaf_bound_max(value: i16) -> i8 {
+    let units = ((value as i32) + (LEAF_BOUNDS_GRID as i32 - 1)) >> LEAF_BOUNDS_GRID_SHIFT;
+    if units >= i8::MAX as i32 {
+        i8::MAX
+    } else {
+        units as i8
+    }
+}
+
+pub const fn decode_leaf_bound_min(code: i8) -> i16 {
+    if code == i8::MIN {
+        i16::MIN
+    } else {
+        (code as i16) << LEAF_BOUNDS_GRID_SHIFT
+    }
+}
+
+pub const fn decode_leaf_bound_max(code: i8) -> i16 {
+    if code == i8::MAX {
+        i16::MAX
+    } else {
+        (code as i16) << LEAF_BOUNDS_GRID_SHIFT
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct LeafBounds {
+    pub mins: [i16; 3],
+    pub maxs: [i16; 3],
+}
+
+/// Read one optional Quake leaf-bounds record from a visibility-lump suffix.
+/// Legacy maps and malformed trailers return `None` without affecting PVS
+/// decompression.
+pub fn leaf_bounds_at(visibility: &[u8], leaf_index: usize) -> Option<LeafBounds> {
+    let footer = visibility.get(visibility.len().checked_sub(LEAF_BOUNDS_FOOTER_BYTES)?..)?;
+    if u32::from_le_bytes(footer[0..4].try_into().ok()?) != LEAF_BOUNDS_TRAILER_MAGIC
+        || u16::from_le_bytes(footer[6..8].try_into().ok()?) as usize != LEAF_BOUNDS_RECORD_BYTES
+    {
+        return None;
+    }
+    let count = u16::from_le_bytes(footer[4..6].try_into().ok()?) as usize;
+    if leaf_index >= count {
+        return None;
+    }
+    let table_bytes = count.checked_mul(LEAF_BOUNDS_RECORD_BYTES)?;
+    let table_start = visibility
+        .len()
+        .checked_sub(LEAF_BOUNDS_FOOTER_BYTES + table_bytes)?;
+    let start = table_start.checked_add(leaf_index.checked_mul(LEAF_BOUNDS_RECORD_BYTES)?)?;
+    let record = visibility.get(start..start + LEAF_BOUNDS_RECORD_BYTES)?;
+    Some(LeafBounds {
+        mins: [
+            decode_leaf_bound_min(record[0] as i8),
+            decode_leaf_bound_min(record[1] as i8),
+            decode_leaf_bound_min(record[2] as i8),
+        ],
+        maxs: [
+            decode_leaf_bound_max(record[3] as i8),
+            decode_leaf_bound_max(record[4] as i8),
+            decode_leaf_bound_max(record[5] as i8),
+        ],
+    })
+}
+
+#[cfg(test)]
+mod leaf_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn optional_visibility_suffix_is_bounded_and_legacy_safe() {
+        let mut bytes = std::vec![0xaa, 0xbb, 0xcc];
+        bytes.extend_from_slice(&[-1i8 as u8, -1i8 as u8, -1i8 as u8, 1, 1, 1]);
+        bytes.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+        assert_eq!(
+            leaf_bounds_at(&bytes, 0),
+            Some(LeafBounds {
+                mins: [-32, -32, -32],
+                maxs: [32, 32, 32],
+            })
+        );
+        assert_eq!(leaf_bounds_at(&bytes, 1), None);
+        assert_eq!(leaf_bounds_at(&bytes[..3], 0), None);
+    }
+
+    #[test]
+    fn leaf_bound_grid_rounds_outward_and_saturates_conservatively() {
+        assert_eq!(decode_leaf_bound_min(encode_leaf_bound_min(-33)), -64);
+        assert_eq!(decode_leaf_bound_max(encode_leaf_bound_max(33)), 64);
+        assert_eq!(
+            decode_leaf_bound_min(encode_leaf_bound_min(i16::MIN)),
+            i16::MIN
+        );
+        assert_eq!(
+            decode_leaf_bound_max(encode_leaf_bound_max(i16::MAX)),
+            i16::MAX
+        );
+    }
+}
+
 /// Quake-only `TextureInfo` marker for a liquid tile with a second VRAM home.
 ///
 /// Liquid names never participate in Quake's `+0` texture animation chains,
