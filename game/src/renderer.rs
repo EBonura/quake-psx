@@ -68,6 +68,16 @@ use psx_gte::math::{Mat3I16, Vec3I16 as GteVec3I16, Vec3I32 as GteVec3I32};
 compile_error!(
     "renderer-fused-materialize-project is an alternative ordinary-world batch submitter"
 );
+#[cfg(all(
+    feature = "renderer-self-contained-face-select",
+    any(
+        feature = "renderer-compact-cell-stream",
+        feature = "renderer-census",
+        feature = "renderer-plane-index-cache",
+        feature = "renderer-hierarchical-block-frustum"
+    )
+))]
+compile_error!("renderer-self-contained-face-select owns the selected block-selector record");
 use psx_gte::scene::{self, AabbClipPlane};
 use psx_math::int32::{isqrt_i32, mul_q12_i32, mul_q12_i32_wide, square_i32_saturating};
 use psx_math::{atan2_q12, cos_q12, sin_q12};
@@ -113,6 +123,14 @@ const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x7fff;
     feature = "renderer-cell-policy"
 ))]
 const VISIBLE_INVARIANT_FRONT_BIT: u16 = 0x8000;
+#[cfg(feature = "renderer-self-contained-face-select")]
+const CANDIDATE_WATER_BLEND_BIT: u8 = 0x08;
+#[cfg(feature = "renderer-self-contained-face-select")]
+const CANDIDATE_BACKSIDE_BIT: u8 = 0x20;
+#[cfg(feature = "renderer-self-contained-face-select")]
+const CANDIDATE_LIQUID_BIT: u8 = 0x40;
+#[cfg(feature = "renderer-self-contained-face-select")]
+const CANDIDATE_INVARIANT_FRONT_BIT: u8 = 0x80;
 #[cfg(any(
     feature = "renderer-compact-cell-stream",
     feature = "renderer-cell-policy"
@@ -744,13 +762,90 @@ struct VisibleFace {
     #[cfg(not(feature = "renderer-compact-cell-stream"))]
     plane: CompactPlane,
     bounds: RetainedSurfaceBounds,
+    #[cfg(not(feature = "renderer-self-contained-face-select"))]
     face: CookedDrawSurface,
+    #[cfg(feature = "renderer-self-contained-face-select")]
+    face: PackedVisibleDrawFace,
 }
 
-#[cfg(not(feature = "renderer-compact-cell-stream"))]
+#[cfg(all(
+    not(feature = "renderer-compact-cell-stream"),
+    not(feature = "renderer-self-contained-face-select")
+))]
 const _: [(); 36] = [(); core::mem::size_of::<VisibleFace>()];
 #[cfg(feature = "renderer-compact-cell-stream")]
 const _: [(); 24] = [(); core::mem::size_of::<VisibleFace>()];
+
+/// Minimal draw identity packed behind the selector plane/AABB. Materials are
+/// bounded to 128 entries, only the baked UV/light bits survive cell compile,
+/// and the PSB face contract is capped below 64 corners. This makes the full
+/// candidate/draw record exactly one 32-byte power-of-two stride.
+#[cfg(feature = "renderer-self-contained-face-select")]
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct PackedVisibleDrawFace {
+    first_corner: u16,
+    material: u8,
+    baked_flags_and_corners: u8,
+    light_styles: [u8; 2],
+}
+
+#[cfg(feature = "renderer-self-contained-face-select")]
+impl PackedVisibleDrawFace {
+    #[inline(always)]
+    fn new(face: CookedDrawSurface) -> Self {
+        debug_assert!(face.material < MAX_RENDER_TEXTURES as u16);
+        debug_assert!(face.corner_count < 64);
+        let baked = u8::from(u16::from(face.flags) & FACE_BAKED_UV != 0)
+            | (u8::from(u16::from(face.flags) & FACE_BAKED_LIGHT != 0) << 1);
+        Self {
+            first_corner: face.first_corner,
+            material: face.material as u8,
+            baked_flags_and_corners: baked | face.corner_count << 2,
+            light_styles: face.light_styles,
+        }
+    }
+
+    #[inline(always)]
+    fn decoded(self) -> CookedDrawSurface {
+        let packed = self.baked_flags_and_corners;
+        CookedDrawSurface {
+            plane: 0,
+            first_corner: self.first_corner,
+            material: u16::from(self.material),
+            flags: if packed & 1 != 0 {
+                FACE_BAKED_UV as u8
+            } else {
+                0
+            } | if packed & 2 != 0 {
+                FACE_BAKED_LIGHT as u8
+            } else {
+                0
+            },
+            corner_count: packed >> 2,
+            light_styles: self.light_styles,
+        }
+    }
+}
+
+#[cfg(feature = "renderer-self-contained-face-select")]
+const _: [(); 6] = [(); core::mem::size_of::<PackedVisibleDrawFace>()];
+#[cfg(feature = "renderer-self-contained-face-select")]
+const _: [(); 32] = [(); core::mem::size_of::<VisibleFace>()];
+
+impl VisibleFace {
+    #[inline(always)]
+    fn draw_face(self) -> CookedDrawSurface {
+        #[cfg(feature = "renderer-self-contained-face-select")]
+        {
+            self.face.decoded()
+        }
+        #[cfg(not(feature = "renderer-self-contained-face-select"))]
+        {
+            self.face
+        }
+    }
+}
 
 /// Conservative union bounds for one consecutive visible-face block.
 #[cfg(feature = "renderer-block-frustum")]
@@ -1744,6 +1839,8 @@ pub struct Renderer {
     // leaf. Iterating this list preserves legacy draw order while avoiding a
     // full face scan and repeated compact Face/Plane decoding every frame.
     visible_faces: Vec<VisibleFace>,
+    #[cfg(feature = "renderer-self-contained-face-select")]
+    candidate_water_plane: i16,
     /// Plane records are a cold parallel stream in the compact-cell path.
     /// Invariant-front faces never touch it during per-frame selection.
     #[cfg(feature = "renderer-compact-cell-stream")]
@@ -1821,6 +1918,8 @@ impl Renderer {
             face_visible: vec![0; MAX_FACE_COUNT.div_ceil(4)],
             visible_faces_generation: None,
             visible_faces: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
+            #[cfg(feature = "renderer-self-contained-face-select")]
+            candidate_water_plane: i16::MIN,
             #[cfg(feature = "renderer-compact-cell-stream")]
             visible_face_planes: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
             #[cfg(feature = "renderer-block-frustum")]
@@ -2249,7 +2348,7 @@ impl Renderer {
         let mut visible_mask = 0u8;
         for &frame_entry in &self.frame_face_indices {
             let visible_index = (frame_entry & FRAME_FACE_INDEX_MASK) as usize;
-            let texture_index = self.visible_faces[visible_index].face.material;
+            let texture_index = self.visible_faces[visible_index].draw_face().material;
             for (liquid_index, liquid) in liquids.iter().enumerate() {
                 if liquid.texture_index == texture_index {
                     visible_mask |= 1 << liquid_index;
@@ -2492,9 +2591,11 @@ impl Renderer {
                 #[cfg(feature = "renderer-compact-cell-stream")]
                 &self.visible_face_planes,
                 &self.visible_face_blocks,
+                #[cfg(not(feature = "renderer-self-contained-face-select"))]
                 &self.active_textures,
                 camera.origin,
                 &frustum,
+                #[cfg(not(feature = "renderer-self-contained-face-select"))]
                 self.active_water_plane,
                 &mut self.frame_face_indices,
             );
@@ -2654,7 +2755,7 @@ impl Renderer {
                 // mutably borrows the renderer while the face metadata is
                 // still needed to form the cache key below.
                 let visible = unsafe { *self.visible_faces.get_unchecked(visible_index) };
-                let face = visible.face;
+                let face = visible.draw_face();
                 #[cfg(feature = "renderer-topology-cache")]
                 let visible_bounds = visible.bounds;
                 let texture =
@@ -4922,13 +5023,40 @@ impl Renderer {
             if let Some(portal) = self.water_portal(map, camera.origin) {
                 if self.mark_visible_faces(map, camera.origin, Some(portal.leaf)) {
                     self.active_water_plane = portal.plane;
+                    #[cfg(feature = "renderer-self-contained-face-select")]
+                    self.set_candidate_water_plane(map, portal.plane);
                     return true;
                 }
             }
         }
 
         self.active_water_plane = -1;
-        self.mark_visible_faces(map, camera.origin, None)
+        let valid = self.mark_visible_faces(map, camera.origin, None);
+        #[cfg(feature = "renderer-self-contained-face-select")]
+        if valid {
+            self.set_candidate_water_plane(map, -1);
+        }
+        valid
+    }
+
+    /// Mark the one liquid support plane that uses the water-blend override.
+    /// This only walks the compact stream when the PVS or water plane changes.
+    #[cfg(feature = "renderer-self-contained-face-select")]
+    #[inline(never)]
+    fn set_candidate_water_plane(&mut self, map: &ResidentMap, water_plane: i16) {
+        if self.candidate_water_plane == water_plane {
+            return;
+        }
+        let faces = map.faces();
+        for visible in &mut self.visible_faces {
+            visible.plane.sign_bits &= !CANDIDATE_WATER_BLEND_BIT;
+            let source_index = visible.bounds.surface_index & VISIBLE_SURFACE_INDEX_MASK;
+            let source_plane = unsafe { faces.get_unchecked(source_index as usize) }.plane as i16;
+            if visible.plane.sign_bits & CANDIDATE_LIQUID_BIT != 0 && source_plane == water_plane {
+                visible.plane.sign_bits |= CANDIDATE_WATER_BLEND_BIT;
+            }
+        }
+        self.candidate_water_plane = water_plane;
     }
 
     /// Rebuild the conservative 16-face unions only when the PVS list changes.
@@ -5004,7 +5132,14 @@ impl Renderer {
             return None;
         }
         for (visible_index, visible) in self.visible_faces.iter().enumerate() {
-            let Some(texture) = self.active_textures.get(visible.face.material as usize) else {
+            let mut face = visible.draw_face();
+            #[cfg(feature = "renderer-self-contained-face-select")]
+            {
+                let source_index = visible.bounds.surface_index & VISIBLE_SURFACE_INDEX_MASK;
+                let source = map.faces().get(source_index as usize)?;
+                face.plane = source.plane as u16;
+            }
+            let Some(texture) = self.active_textures.get(face.material as usize) else {
                 continue;
             };
             if texture.flags & TEXTURE_LIQUID == 0 {
@@ -5014,7 +5149,7 @@ impl Renderer {
             let plane = unsafe { *self.visible_face_planes.get_unchecked(visible_index) };
             #[cfg(not(feature = "renderer-compact-cell-stream"))]
             let plane = visible.plane;
-            let center = water_face_sample(map, visible.face);
+            let center = water_face_sample(map, face);
             // Axial cooked planes intentionally use `kind` as their hot
             // normal; their retained normal components are not authoritative.
             // Match `plane_distance` or both samples can remain in one leaf.
@@ -5068,7 +5203,7 @@ impl Renderer {
                 continue;
             }
             return Some(WaterPortal {
-                plane: visible.face.plane as i16,
+                plane: face.plane as i16,
                 leaf: opposite.0 as u16,
             });
         }
@@ -5347,16 +5482,21 @@ impl Renderer {
                     sign_bits |= 1 << axis;
                 }
             }
-            let compact_plane = CompactPlane {
+            let mut compact_plane = CompactPlane {
                 normal: plane.normal,
                 kind: plane.kind as u8,
                 sign_bits,
                 distance: plane.distance,
             };
+            #[cfg(feature = "renderer-self-contained-face-select")]
+            if face.flags & FACE_BACKSIDE != 0 {
+                compact_plane.sign_bits |= CANDIDATE_BACKSIDE_BIT;
+            }
             unsafe {
                 ptr::write(
                     entries.add(write),
                     VisibleFace {
+                        #[cfg(not(feature = "renderer-self-contained-face-select"))]
                         face: CookedDrawSurface {
                             plane: face.plane as u16,
                             first_corner: face.first_vertex as u16,
@@ -5365,6 +5505,15 @@ impl Renderer {
                             corner_count: face.vertex_count as u8,
                             light_styles: face.light_styles,
                         },
+                        #[cfg(feature = "renderer-self-contained-face-select")]
+                        face: PackedVisibleDrawFace::new(CookedDrawSurface {
+                            plane: face.plane as u16,
+                            first_corner: face.first_vertex as u16,
+                            material: face.texture as u16,
+                            flags: face.flags as u8,
+                            corner_count: face.vertex_count as u8,
+                            light_styles: face.light_styles,
+                        }),
                         #[cfg(not(feature = "renderer-compact-cell-stream"))]
                         plane: compact_plane,
                         bounds: RetainedSurfaceBounds {
@@ -5385,6 +5534,10 @@ impl Renderer {
             feature = "renderer-cell-policy"
         ))]
         self.retain_cell_faces(map, leaf_index);
+        #[cfg(feature = "renderer-self-contained-face-select")]
+        {
+            self.candidate_water_plane = i16::MIN;
+        }
         #[cfg(feature = "renderer-block-frustum")]
         self.rebuild_visible_face_blocks();
         self.visible_leaf_count = visible_leaves;
@@ -5412,26 +5565,54 @@ impl Renderer {
         let mut write = 0usize;
         for read in 0..self.visible_faces.len() {
             let visible = unsafe { &mut *faces.add(read) };
+            let draw_face = visible.draw_face();
             visible.bounds.surface_index &= VISIBLE_SURFACE_INDEX_MASK;
-            let texture = unsafe { textures.get_unchecked(visible.face.material as usize) };
+            let texture = unsafe { textures.get_unchecked(draw_face.material as usize) };
             if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
                 continue;
             }
             #[cfg(feature = "renderer-compact-cell-stream")]
-            let plane = unsafe { ptr::read(planes.add(read)) };
+            let mut plane = unsafe { ptr::read(planes.add(read)) };
             #[cfg(all(
                 feature = "renderer-cell-policy",
                 not(feature = "renderer-compact-cell-stream")
             ))]
-            let plane = visible.plane;
+            let mut plane = visible.plane;
+            #[cfg(feature = "renderer-self-contained-face-select")]
+            {
+                plane.sign_bits &= 0x07;
+                plane.sign_bits |= visible.plane.sign_bits & CANDIDATE_BACKSIDE_BIT;
+                if texture.flags & TEXTURE_LIQUID != 0 {
+                    plane.sign_bits |= CANDIDATE_LIQUID_BIT;
+                }
+            }
             if texture.flags & TEXTURE_LIQUID == 0 {
-                match leaf_invariant_facing(plane, u16::from(visible.face.flags), bounds) {
+                #[cfg(feature = "renderer-self-contained-face-select")]
+                let face_flags = if plane.sign_bits & CANDIDATE_BACKSIDE_BIT != 0 {
+                    FACE_BACKSIDE
+                } else {
+                    0
+                };
+                #[cfg(not(feature = "renderer-self-contained-face-select"))]
+                let face_flags = u16::from(draw_face.flags);
+                match leaf_invariant_facing(plane, face_flags, bounds) {
                     Some(false) => continue,
                     Some(true) => {
                         visible.bounds.surface_index |= VISIBLE_INVARIANT_FRONT_BIT;
+                        #[cfg(feature = "renderer-self-contained-face-select")]
+                        {
+                            plane.sign_bits |= CANDIDATE_INVARIANT_FRONT_BIT;
+                        }
                     }
                     None => {}
                 }
+            }
+            #[cfg(all(
+                feature = "renderer-self-contained-face-select",
+                not(feature = "renderer-compact-cell-stream")
+            ))]
+            {
+                visible.plane = plane;
             }
             if write != read {
                 unsafe { move_visible_face(faces.add(read), faces.add(write)) };
@@ -7498,19 +7679,20 @@ fn select_frame_faces_blocked(
     visible_faces: &[VisibleFace],
     #[cfg(feature = "renderer-compact-cell-stream")] visible_planes: &[CompactPlane],
     visible_blocks: &[VisibleFaceBlock],
-    active_textures: &[TextureInfo],
+    #[cfg(not(feature = "renderer-self-contained-face-select"))] active_textures: &[TextureInfo],
     origin: Vec3I32,
     frustum: &[AabbClipPlane; 4],
-    water_plane: i16,
+    #[cfg(not(feature = "renderer-self-contained-face-select"))] water_plane: i16,
     output: &mut Vec<u16>,
 ) {
     output.clear();
     debug_assert!(output.capacity() >= visible_faces.len());
     #[cfg(feature = "renderer-compact-cell-stream")]
     debug_assert_eq!(visible_faces.len(), visible_planes.len());
+    let face_count = visible_faces.len();
     debug_assert_eq!(
         visible_blocks.len(),
-        visible_faces.len().div_ceil(VISIBLE_FACE_BLOCK_SIZE)
+        face_count.div_ceil(VISIBLE_FACE_BLOCK_SIZE)
     );
     let out = output.as_mut_ptr();
     let mut count = 0usize;
@@ -7518,17 +7700,21 @@ fn select_frame_faces_blocked(
     let mut plane_cache = FrontFacingCache::EMPTY;
     let mut block_index = 0usize;
     let mut first = 0usize;
-    while first < visible_faces.len() {
+    while first < face_count {
         let block = unsafe { visible_blocks.get_unchecked(block_index) };
-        let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
+        let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(face_count);
         if !scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
             let mut visible_index = first;
             while visible_index < end {
                 let visible = unsafe { visible_faces.get_unchecked(visible_index) };
+                #[cfg(not(feature = "renderer-self-contained-face-select"))]
                 let texture =
                     unsafe { active_textures.get_unchecked(visible.face.material as usize) };
+                #[cfg(not(feature = "renderer-self-contained-face-select"))]
                 let water_blend =
                     texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
+                #[cfg(feature = "renderer-self-contained-face-select")]
+                let water_blend = visible.plane.sign_bits & CANDIDATE_WATER_BLEND_BIT != 0;
                 #[cfg(any(
                     feature = "renderer-compact-cell-stream",
                     feature = "renderer-cell-policy"
@@ -7546,18 +7732,31 @@ fn select_frame_faces_blocked(
                             feature = "renderer-cell-policy"
                         ))]
                         {
-                            visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
-                                || front_facing_compact_plane(
-                                    #[cfg(feature = "renderer-compact-cell-stream")]
-                                    unsafe { *visible_planes.get_unchecked(visible_index) },
-                                    #[cfg(all(
-                                        feature = "renderer-cell-policy",
-                                        not(feature = "renderer-compact-cell-stream")
-                                    ))]
-                                    visible.plane,
-                                    u16::from(visible.face.flags),
-                                    origin,
-                                )
+                            #[cfg(feature = "renderer-self-contained-face-select")]
+                            {
+                                visible.plane.sign_bits & CANDIDATE_INVARIANT_FRONT_BIT != 0 || {
+                                    let behind = compact_plane_distance(visible.plane, origin) < 0;
+                                    behind
+                                        == (visible.plane.sign_bits & CANDIDATE_BACKSIDE_BIT != 0)
+                                }
+                            }
+                            #[cfg(not(feature = "renderer-self-contained-face-select"))]
+                            {
+                                visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
+                                    || front_facing_compact_plane(
+                                        #[cfg(feature = "renderer-compact-cell-stream")]
+                                        unsafe {
+                                            *visible_planes.get_unchecked(visible_index)
+                                        },
+                                        #[cfg(all(
+                                            feature = "renderer-cell-policy",
+                                            not(feature = "renderer-compact-cell-stream")
+                                        ))]
+                                        visible.plane,
+                                        u16::from(visible.face.flags),
+                                        origin,
+                                    )
+                            }
                         }
                         #[cfg(all(
                             not(any(

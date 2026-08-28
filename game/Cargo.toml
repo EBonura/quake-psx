@@ -214,6 +214,10 @@ renderer-plane-index-cache = ["renderer-block-frustum"]
 # whose plane can never back-face. Unlike the compact-stream experiment this
 # retains the proven single 36-byte face/plane record.
 renderer-cell-policy = []
+# Quake II-style monotonic candidate records: fold the cold cell policy's
+# liquid/backside/invariant-front results into the retained plane byte so the
+# per-frame selector never chases the material table or draw-only face flags.
+renderer-self-contained-face-select = ["renderer-cell-policy", "renderer-block-frustum"]
 # Exact final-GPU-order state optimization: adjacent scoped liquid packets
 # with the same GP0(E2) selector share one selector/reset pair at run bounds.
 # Polygon bytes, OT order, and state at every non-windowed command stay fixed.
