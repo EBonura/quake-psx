@@ -237,6 +237,7 @@ enum Action {
     E1m1GpuPolygonWindowRangeBench,
     E1m1GpuPolygonCellStreamBench,
     E1m1GpuPolygonCellPolicyBench,
+    E1m1GpuPolygonSelfContainedSelectBench,
     GpuPolygonCellPolicyDisc,
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLevel0RunBench,
@@ -1122,6 +1123,28 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-cell-policy-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonSelfContainedSelectBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-self-contained-select-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-self-contained-face-select",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-self-contained-select-bench",
             )?;
         }
         Action::GpuPolygonCellPolicyDisc => {
@@ -3250,6 +3273,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-window-range-bench"
             | "e1m1-gpu-polygon-cell-stream-bench"
             | "e1m1-gpu-polygon-cell-policy-bench"
+            | "e1m1-gpu-polygon-self-contained-select-bench"
             | "gpu-polygon-cell-policy-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
@@ -3348,6 +3372,9 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-window-range-bench" => Action::E1m1GpuPolygonWindowRangeBench,
                     "e1m1-gpu-polygon-cell-stream-bench" => Action::E1m1GpuPolygonCellStreamBench,
                     "e1m1-gpu-polygon-cell-policy-bench" => Action::E1m1GpuPolygonCellPolicyBench,
+                    "e1m1-gpu-polygon-self-contained-select-bench" => {
+                        Action::E1m1GpuPolygonSelfContainedSelectBench
+                    }
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
@@ -3482,6 +3509,7 @@ fn print_help() {
            e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
            e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
            e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
+           e1m1-gpu-polygon-self-contained-select-bench  Fold hot face-selection policy into monotonic records\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
            e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \
@@ -9280,6 +9308,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-window-range-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-stream-bench"
             | "build-psoxide-e1m1-gpu-polygon-cell-policy-bench"
+            | "build-psoxide-e1m1-gpu-polygon-self-contained-select-bench"
             | "build-psoxide-gpu-polygon-cell-policy-playable"
             | "build-psoxide-e1m1-gpu-polygon-quake-kernel-bench"
             | "build-psoxide-e1m1-gpu-polygon-level0-run-bench"
