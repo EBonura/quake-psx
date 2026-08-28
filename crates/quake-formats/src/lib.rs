@@ -21,6 +21,10 @@ pub use sound::*;
 pub const LEAF_BOUNDS_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"QLB1");
 pub const LEAF_BOUNDS_RECORD_BYTES: usize = 6;
 pub const LEAF_BOUNDS_FOOTER_BYTES: usize = 8;
+/// Optional cooker-authored static scene-object table stored immediately
+/// before the leaf-bounds table in the visibility sidecar.
+pub const SCENE_OBJECT_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"QSO1");
+pub const SCENE_OBJECT_FOOTER_BYTES: usize = 8;
 /// World units represented by one signed leaf-bound code.
 pub const LEAF_BOUNDS_GRID: i16 = 32;
 const LEAF_BOUNDS_GRID_SHIFT: u32 = LEAF_BOUNDS_GRID.trailing_zeros();
@@ -63,6 +67,75 @@ pub const fn decode_leaf_bound_max(code: i8) -> i16 {
 pub struct LeafBounds {
     pub mins: [i16; 3],
     pub maxs: [i16; 3],
+}
+
+/// Checked view over the optional face-to-object sidecar. Object AABBs are
+/// reconstructed from retained face bounds when the guest's PVS changes.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SceneObjects<'a> {
+    face_objects: &'a [u8],
+    object_count: usize,
+}
+
+impl SceneObjects<'_> {
+    #[must_use]
+    pub const fn face_count(self) -> usize {
+        self.face_objects.len() / 2
+    }
+
+    #[must_use]
+    pub const fn object_count(self) -> usize {
+        self.object_count
+    }
+
+    #[must_use]
+    pub fn object_for_face(self, face_index: usize) -> Option<u16> {
+        let start = face_index.checked_mul(2)?;
+        Some(u16::from_le_bytes(
+            self.face_objects.get(start..start + 2)?.try_into().ok()?,
+        ))
+    }
+}
+
+fn leaf_bounds_table_start(visibility: &[u8]) -> Option<usize> {
+    let footer = visibility.get(visibility.len().checked_sub(LEAF_BOUNDS_FOOTER_BYTES)?..)?;
+    if u32::from_le_bytes(footer[0..4].try_into().ok()?) != LEAF_BOUNDS_TRAILER_MAGIC
+        || u16::from_le_bytes(footer[6..8].try_into().ok()?) as usize != LEAF_BOUNDS_RECORD_BYTES
+    {
+        return None;
+    }
+    let count = u16::from_le_bytes(footer[4..6].try_into().ok()?) as usize;
+    visibility
+        .len()
+        .checked_sub(LEAF_BOUNDS_FOOTER_BYTES + count.checked_mul(LEAF_BOUNDS_RECORD_BYTES)?)
+}
+
+/// Read the optional cooker-authored scene-object sidecar. Malformed and
+/// legacy visibility lumps return `None` without changing PVS behavior.
+#[must_use]
+pub fn scene_objects(visibility: &[u8]) -> Option<SceneObjects<'_>> {
+    let leaf_table_start = leaf_bounds_table_start(visibility)?;
+    let footer_start = leaf_table_start.checked_sub(SCENE_OBJECT_FOOTER_BYTES)?;
+    let footer = visibility.get(footer_start..leaf_table_start)?;
+    if u32::from_le_bytes(footer[0..4].try_into().ok()?) != SCENE_OBJECT_TRAILER_MAGIC {
+        return None;
+    }
+    let face_count = u16::from_le_bytes(footer[4..6].try_into().ok()?) as usize;
+    let object_count = u16::from_le_bytes(footer[6..8].try_into().ok()?) as usize;
+    let face_bytes = face_count.checked_mul(2)?;
+    let face_start = footer_start.checked_sub(face_bytes)?;
+    let face_objects = visibility.get(face_start..footer_start)?;
+    let table = SceneObjects {
+        face_objects,
+        object_count,
+    };
+    for face in 0..table.face_count() {
+        let object = table.object_for_face(face)?;
+        if object != u16::MAX && usize::from(object) >= table.object_count() {
+            return None;
+        }
+    }
+    Some(table)
 }
 
 /// Read one optional Quake leaf-bounds record from a visibility-lump suffix.
@@ -133,6 +206,39 @@ mod leaf_bounds_tests {
             decode_leaf_bound_max(encode_leaf_bound_max(i16::MAX)),
             i16::MAX
         );
+    }
+
+    #[test]
+    fn optional_scene_objects_are_checked_before_the_leaf_table() {
+        let mut bytes = std::vec![0xaa, 0xbb];
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&SCENE_OBJECT_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&[-1i8 as u8, -1i8 as u8, -1i8 as u8, 1, 1, 1]);
+        bytes.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+
+        let table = scene_objects(&bytes).expect("valid scene-object sidecar");
+        assert_eq!(table.face_count(), 1);
+        assert_eq!(table.object_count(), 1);
+        assert_eq!(table.object_for_face(0), Some(0));
+        assert!(leaf_bounds_at(&bytes, 0).is_some());
+    }
+
+    #[test]
+    fn malformed_scene_object_indices_fail_closed() {
+        let mut bytes = std::vec![0xaa];
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&SCENE_OBJECT_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; LEAF_BOUNDS_RECORD_BYTES]);
+        bytes.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(LEAF_BOUNDS_RECORD_BYTES as u16).to_le_bytes());
+        assert_eq!(scene_objects(&bytes), None);
     }
 }
 

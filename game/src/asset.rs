@@ -9,12 +9,12 @@ use psx_bsp::resident::{
 use psx_math::int32::mul_q12_i32_wide;
 use psx_vram::VramRect;
 use quake_formats::{
-    episode_directory_index, episode_directory_index_or_try, leaf_bounds_at, AliasModelTable,
-    BrushModel, CachedIndexReader, ClipNode, CompactNode, Face, GraphicsPicture, GraphicsPictureId,
-    Leaf, LeafBounds, LumpKind, LumpRange, MapEntity, Node, Plane, PsbError, PsbIndex, PsbVersion,
-    ReadAt, RecordSlice, TextureInfo, Vec3I32, Vertex, EPISODE_DIRECTORY_BYTES,
-    GRAPHICS_PICTURE_RECORD_BYTES, GRAPHICS_WEAPON_ICON_BYTES, RESIDENT_MAP_ARENA_BYTES,
-    TEXTURE_LIQUID,
+    episode_directory_index, episode_directory_index_or_try, leaf_bounds_at, scene_objects,
+    AliasModelTable, BrushModel, CachedIndexReader, ClipNode, CompactNode, Face, GraphicsPicture,
+    GraphicsPictureId, Leaf, LeafBounds, LumpKind, LumpRange, MapEntity, Node, Plane, PsbError,
+    PsbIndex, PsbVersion, ReadAt, RecordSlice, SceneObjects, TextureInfo, Vec3I32, Vertex,
+    EPISODE_DIRECTORY_BYTES, GRAPHICS_PICTURE_RECORD_BYTES, GRAPHICS_WEAPON_ICON_BYTES,
+    RESIDENT_MAP_ARENA_BYTES, TEXTURE_LIQUID,
 };
 
 use crate::platform::{self, StorageError};
@@ -750,6 +750,11 @@ impl ResidentMap {
     #[optimize(size)]
     pub(crate) fn leaf_bounds(&self, leaf_index: usize) -> Option<LeafBounds> {
         leaf_bounds_at(self.shared.visibility(), leaf_index)
+    }
+
+    #[optimize(size)]
+    pub(crate) fn scene_objects(&self) -> Option<SceneObjects<'_>> {
+        scene_objects(self.shared.visibility())
     }
 
     #[optimize(size)]

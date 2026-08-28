@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use psx_render_contract::CookedDrawSurface;
 use quake_formats::{
     encode_leaf_bound_max, encode_leaf_bound_min, LEAF_BOUNDS_FOOTER_BYTES,
     LEAF_BOUNDS_RECORD_BYTES, LEAF_BOUNDS_TRAILER_MAGIC, LIQUID_DOUBLE_BUFFER_MARKER,
+    SCENE_OBJECT_FOOTER_BYTES, SCENE_OBJECT_TRAILER_MAGIC,
 };
 
 use super::{psx_tpage, Bsp, BspLump, CookError, MipTexture};
@@ -85,6 +86,16 @@ struct CookFace {
     vertex_count: u8,
     texture: u16,
     styles: [u8; 2],
+}
+
+const SCENE_OBJECT_MAX_FACES: usize = 32;
+const SCENE_OBJECT_MAX_POSITIONS: usize = 255;
+const SCENE_OBJECT_MIN_FACES: usize = 3;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SceneObjectSidecar {
+    face_objects: Vec<u16>,
+    object_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -226,6 +237,7 @@ pub(crate) fn cook_geometry_staged(
     let mark_surfaces = remap_mark_surfaces(bsp, &face_offsets, &mut leaves)?;
     update_leaf_lighting(&mark_surfaces, &faces, &vertices, &mut leaves)?;
     bake_vertices(&textures, &mut faces, &mut vertices);
+    let scene_objects = build_scene_objects(&faces, &vertices)?;
 
     let geometry = GeometryLumps {
         texture_data: Vec::new(),
@@ -234,7 +246,7 @@ pub(crate) fn cook_geometry_staged(
         texture_info: serialize_textures(&textures),
         faces: serialize_faces(&faces),
         mark_surfaces: serialize_mark_surfaces(&mark_surfaces),
-        visibility: serialize_visibility(bsp, &leaves)?,
+        visibility: serialize_visibility(bsp, &leaves, &scene_objects)?,
         leaves: serialize_leaves(&leaves),
         nodes: serialize_nodes(&nodes),
         clip_nodes: cook_clip_nodes(bsp)?,
@@ -887,8 +899,16 @@ fn cook_nodes_and_leaves(bsp: &Bsp<'_>) -> Result<(Vec<CookNode>, Vec<CookLeaf>)
             visibility_offset,
             first_mark_surface: u16_at(source, 20)?,
             mark_surface_count,
-            mins: [u16_at(source, 8)? as i16, u16_at(source, 10)? as i16, u16_at(source, 12)? as i16],
-            maxs: [u16_at(source, 14)? as i16, u16_at(source, 16)? as i16, u16_at(source, 18)? as i16],
+            mins: [
+                u16_at(source, 8)? as i16,
+                u16_at(source, 10)? as i16,
+                u16_at(source, 12)? as i16,
+            ],
+            maxs: [
+                u16_at(source, 14)? as i16,
+                u16_at(source, 16)? as i16,
+                u16_at(source, 18)? as i16,
+            ],
             light: [0; 2],
             styles: [MAX_LIGHT_STYLES as u8; 2],
         });
@@ -1141,22 +1161,170 @@ fn serialize_mark_surfaces(marks: &[u16]) -> Vec<u8> {
     output
 }
 
+fn scene_object_find(parents: &mut [usize], mut index: usize) -> usize {
+    while parents[index] != index {
+        parents[index] = parents[parents[index]];
+        index = parents[index];
+    }
+    index
+}
+
+fn scene_object_union(parents: &mut [usize], first: usize, second: usize) {
+    let first_root = scene_object_find(parents, first);
+    let second_root = scene_object_find(parents, second);
+    if first_root != second_root {
+        let (low, high) = if first_root < second_root {
+            (first_root, second_root)
+        } else {
+            (second_root, first_root)
+        };
+        parents[high] = low;
+    }
+}
+
+fn flush_scene_object(
+    members: &[usize],
+    face_objects: &mut [u16],
+    object_count: &mut usize,
+) -> Result<(), CookError> {
+    if members.is_empty() {
+        return Ok(());
+    }
+    if members.len() < SCENE_OBJECT_MIN_FACES {
+        for &face_index in members {
+            face_objects[face_index] = u16::MAX;
+        }
+        return Ok(());
+    }
+    let object_index = u16::try_from(*object_count)
+        .map_err(|_| CookError::new("scene-object table exceeds u16"))?;
+    for &face_index in members {
+        face_objects[face_index] = object_index;
+    }
+    *object_count += 1;
+    Ok(())
+}
+
+/// Partition static faces into deterministic connected objects. Only faces
+/// with the same plane and material can join, and a full boundary edge must
+/// match exactly. Components are split at the recovered retail bounds of 32
+/// faces and 255 unique positions. Object identity never changes face order;
+/// it is only a conservative candidate gate for the guest renderer.
+fn build_scene_objects(
+    faces: &[CookFace],
+    vertices: &[CookVertex],
+) -> Result<SceneObjectSidecar, CookError> {
+    let mut parents = (0..faces.len()).collect::<Vec<_>>();
+    let mut edge_owner = BTreeMap::<(u16, u16, [i16; 3], [i16; 3]), usize>::new();
+    for (face_index, face) in faces.iter().copied().enumerate() {
+        let first = usize::from(face.first_vertex);
+        let count = usize::from(face.vertex_count);
+        let corners = &vertices[first..first + count];
+        for edge in 0..count {
+            let a = corners[edge].position;
+            let b = corners[(edge + 1) % count].position;
+            let (low, high) = if a <= b { (a, b) } else { (b, a) };
+            let key = (face.plane, face.texture, low, high);
+            if let Some(&other) = edge_owner.get(&key) {
+                scene_object_union(&mut parents, face_index, other);
+            } else {
+                edge_owner.insert(key, face_index);
+            }
+        }
+    }
+
+    let mut components = BTreeMap::<usize, Vec<usize>>::new();
+    for face_index in 0..faces.len() {
+        let root = scene_object_find(&mut parents, face_index);
+        components.entry(root).or_default().push(face_index);
+    }
+    let mut components = components.into_values().collect::<Vec<_>>();
+    components.sort_unstable_by_key(|members| members[0]);
+
+    let mut face_objects = vec![u16::MAX; faces.len()];
+    let mut object_count = 0usize;
+    for component in components {
+        let mut members = Vec::new();
+        let mut positions = BTreeSet::<[i16; 3]>::new();
+        for face_index in component {
+            let face = faces[face_index];
+            let first = usize::from(face.first_vertex);
+            let end = first + usize::from(face.vertex_count);
+            let face_positions = vertices[first..end]
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<BTreeSet<_>>();
+            let added_positions = face_positions
+                .iter()
+                .filter(|position| !positions.contains(*position))
+                .count();
+            if !members.is_empty()
+                && (members.len() == SCENE_OBJECT_MAX_FACES
+                    || positions.len() + added_positions > SCENE_OBJECT_MAX_POSITIONS)
+            {
+                flush_scene_object(&members, &mut face_objects, &mut object_count)?;
+                members.clear();
+                positions.clear();
+            }
+            positions.extend(face_positions);
+            members.push(face_index);
+        }
+        flush_scene_object(&members, &mut face_objects, &mut object_count)?;
+    }
+    Ok(SceneObjectSidecar {
+        face_objects,
+        object_count,
+    })
+}
+
+fn serialize_scene_objects(
+    scene: &SceneObjectSidecar,
+    output: &mut Vec<u8>,
+) -> Result<(), CookError> {
+    let face_count = u16::try_from(scene.face_objects.len())
+        .map_err(|_| CookError::new("scene-object face table exceeds u16"))?;
+    let object_count = u16::try_from(scene.object_count)
+        .map_err(|_| CookError::new("scene-object table exceeds u16"))?;
+    for object in &scene.face_objects {
+        output.extend_from_slice(&object.to_le_bytes());
+    }
+    output.extend_from_slice(&SCENE_OBJECT_TRAILER_MAGIC.to_le_bytes());
+    output.extend_from_slice(&face_count.to_le_bytes());
+    output.extend_from_slice(&object_count.to_le_bytes());
+    Ok(())
+}
+
 /// Preserve the source PVS byte-for-byte and append one outward-quantized
 /// camera-cell AABB per leaf. PVS offsets continue to address the unchanged
 /// prefix; the fixed footer makes the optional sidecar discoverable without
 /// changing the shared PSB5 leaf record.
-fn serialize_visibility(bsp: &Bsp<'_>, leaves: &[CookLeaf]) -> Result<Vec<u8>, CookError> {
+fn serialize_visibility(
+    bsp: &Bsp<'_>,
+    leaves: &[CookLeaf],
+    scene: &SceneObjectSidecar,
+) -> Result<Vec<u8>, CookError> {
     let count = u16::try_from(leaves.len())
         .map_err(|_| CookError::new("leaf-bounds sidecar exceeds u16"))?;
     let mut output = Vec::with_capacity(
         bsp.lump(BspLump::Visibility).len()
+            + scene.face_objects.len() * 2
+            + SCENE_OBJECT_FOOTER_BYTES
             + leaves.len() * LEAF_BOUNDS_RECORD_BYTES
             + LEAF_BOUNDS_FOOTER_BYTES,
     );
     output.extend_from_slice(bsp.lump(BspLump::Visibility));
+    serialize_scene_objects(scene, &mut output)?;
     for leaf in leaves {
-        output.extend(leaf.mins.map(encode_leaf_bound_min).map(|value| value as u8));
-        output.extend(leaf.maxs.map(encode_leaf_bound_max).map(|value| value as u8));
+        output.extend(
+            leaf.mins
+                .map(encode_leaf_bound_min)
+                .map(|value| value as u8),
+        );
+        output.extend(
+            leaf.maxs
+                .map(encode_leaf_bound_max)
+                .map(|value| value as u8),
+        );
     }
     output.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
     output.extend_from_slice(&count.to_le_bytes());
@@ -1284,6 +1452,48 @@ fn dot3_host(left: [f32; 3], right: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scene_vertex(position: [i16; 3]) -> CookVertex {
+        CookVertex {
+            position,
+            uv: [0; 2],
+            light: [0; 4],
+        }
+    }
+
+    #[test]
+    fn scene_objects_join_shared_edges_without_reordering_faces() {
+        let vertices = [
+            scene_vertex([0, 0, 0]),
+            scene_vertex([8, 0, 0]),
+            scene_vertex([8, 8, 0]),
+            scene_vertex([0, 8, 0]),
+            scene_vertex([8, 0, 0]),
+            scene_vertex([16, 0, 0]),
+            scene_vertex([16, 8, 0]),
+            scene_vertex([8, 8, 0]),
+            scene_vertex([16, 0, 0]),
+            scene_vertex([24, 0, 0]),
+            scene_vertex([24, 8, 0]),
+            scene_vertex([16, 8, 0]),
+            scene_vertex([24, 0, 0]),
+            scene_vertex([32, 0, 0]),
+            scene_vertex([32, 8, 0]),
+            scene_vertex([24, 8, 0]),
+        ];
+        let face = |first_vertex, texture| CookFace {
+            plane: 3,
+            flags: 0,
+            first_vertex,
+            vertex_count: 4,
+            texture,
+            styles: [0; 2],
+        };
+        let faces = [face(0, 5), face(4, 5), face(8, 5), face(12, 6)];
+        let scene = build_scene_objects(&faces, &vertices).unwrap();
+        assert_eq!(scene.face_objects, [0, 0, 0, u16::MAX]);
+        assert_eq!(scene.object_count, 1);
+    }
 
     fn texture(width: usize, height: usize) -> MipTexture<'static> {
         MipTexture {

@@ -214,6 +214,10 @@ renderer-plane-index-cache = ["renderer-block-frustum"]
 # whose plane can never back-face. Unlike the compact-stream experiment this
 # retains the proven single 36-byte face/plane record.
 renderer-cell-policy = []
+# Quake II-style cooker object gate: a stable face-to-object table lets the
+# guest rebuild tight PVS-object AABBs before authoritative face tests.
+# Source face order, depth keys, subdivision and packet bytes remain unchanged.
+renderer-scene-object-gate = ["renderer-block-frustum"]
 # Exact final-GPU-order state optimization: adjacent scoped liquid packets
 # with the same GP0(E2) selector share one selector/reset pair at run bounds.
 # Polygon bytes, OT order, and state at every non-windowed command stay fixed.

@@ -27,7 +27,8 @@ use crate::player::Player;
 #[cfg(any(
     feature = "renderer-topology-cache",
     feature = "renderer-indexed-projection",
-    feature = "renderer-subdivision-cache"
+    feature = "renderer-subdivision-cache",
+    feature = "renderer-scene-object-gate"
 ))]
 use crate::renderer::RenderStats;
 
@@ -433,6 +434,26 @@ pub fn observe_render(stats: RenderStats) {
             (
                 addr_of_mut!((*probe).monster_death),
                 stats.indexed_projection_unique,
+            ),
+        ] {
+            write_volatile(field, read_volatile(field).wrapping_add(value));
+        }
+    }
+}
+
+/// Accumulate cooker scene-object gate work without timed debug output.
+#[cfg(feature = "renderer-scene-object-gate")]
+pub fn observe_render(stats: RenderStats) {
+    unsafe {
+        let probe = addr_of_mut!(PROBE);
+        for (field, value) in [
+            (
+                addr_of_mut!((*probe).monster_pain),
+                stats.scene_object_tests,
+            ),
+            (
+                addr_of_mut!((*probe).monster_death),
+                stats.scene_object_rejected_faces,
             ),
         ] {
             write_volatile(field, read_volatile(field).wrapping_add(value));
