@@ -621,10 +621,10 @@ clean-room range model are committed privately at `quake2-psx-decomp`
 The next profile-guided pass broke the 23.428 fps working baseline without
 changing resolution, draw order, polygon topology, simulation cadence, or any
 rendered pixel. The accepted stack completes the deterministic E1M1 route in
-3,054,410,221 bus cycles at 23.651 fps. Both complete runs present 2,134 frames
+3,053,838,735 bus cycles at 23.656 fps. Both complete runs present 2,134 frames
 and retain VRAM hash `0x09a7f019bb9a5e7c` and display hash
-`0x9bac66f3bec0e66b`. This saves 29,133,270 cycles and gains 0.223 fps (0.95%)
-against the 23.428 capture, or 28,561,497 cycles and 0.219 fps against the
+`0x9bac66f3bec0e66b`. This saves 29,704,756 cycles and gains 0.228 fps (0.97%)
+against the 23.428 capture, or 29,132,983 cycles and 0.224 fps against the
 previous documented 23.432 leader.
 
 The cumulative exact A/B sequence was:
@@ -637,6 +637,7 @@ The cumulative exact A/B sequence was:
 | Quake-specialized submit kernel | 3,057,266,396 | 23.629 | +0.088 |
 | liquid visibility fast rejection | 3,054,981,456 | 23.647 | +0.018 |
 | inline baked-corner materializer | 3,054,410,221 | 23.651 | +0.004 |
+| scheduled liquid-warp delay slots | 3,053,838,735 | 23.656 | +0.005 |
 
 The first change keeps near classification as a separate, register-light pass
 but places its three-product AABB support test in the otherwise unused second
@@ -649,6 +650,15 @@ last change copies Quake's most useful code-shape lesson: the dominant baked
 indexed-corner gather is one fixed, non-calling MIPS schedule inside the
 materialization body. Dynamic light styles and UV offsets still use the
 authoritative generic path.
+
+The liquid-warp disassembly exposed another assembler code-shape trap. In
+reorder mode each explicit branch-delay NOP acquired a second inserted NOP.
+An explicit `.set noreorder` schedule moves the destination advance into the
+inner branch delay slot and precomputes the next row in the outer slot. The
+exact 64x64 resample shrinks from `0xa8` to `0x9c` bytes and saves 571,486
+route cycles. A four-texel unroll grew the kernel to `0xec` bytes and regressed
+to 3,054,410,276 cycles (23.651 fps), so the smaller two-texel form remains
+authoritative.
 
 An out-of-band PSoXide PC sample on the accepted predecessor kept the next
 targets honest. `gpu_end_frame` waits account for 20.05% of samples, the

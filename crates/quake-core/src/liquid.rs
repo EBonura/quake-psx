@@ -79,12 +79,13 @@ pub fn warp_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
     #[cfg(target_arch = "mips")]
     unsafe {
         core::arch::asm!(
+            ".set noreorder",
             "addu  $24, $7, $6",
             "move  $8, $zero",
             "addiu $25, $zero, 64",
+            "addu  $11, $24, $8",
             "2:",
-            "addu  $15, $24, $8",
-            "lbu   $10, 0($15)",
+            "lbu   $10, 0($11)",
             "move  $11, $24",
             // Two texels share one loop branch and counter update. Source
             // coordinates and write order remain exactly the original dense
@@ -112,13 +113,13 @@ pub fn warp_tile_64(source: &[u8], destination: &mut [u8], phase: u8) -> bool {
             "addiu $10, $10, 1",
             "andi  $10, $10, 63",
             "addiu $11, $11, 2",
-            "addiu $5, $5, 2",
             "addiu $9, $9, -1",
             "bnez  $9, 3b",
-            "nop",
+            "addiu $5, $5, 2",
             "addiu $8, $8, 1",
             "bne   $8, $25, 2b",
-            "nop",
+            "addu  $11, $24, $8",
+            ".set reorder",
             in("$4") source.as_ptr(),
             inout("$5") destination.as_mut_ptr() => _,
             in("$6") u32::from(phase & (LIQUID_CYCLE as u8 - 1)),
