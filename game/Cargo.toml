@@ -224,6 +224,9 @@ renderer-window-insert-coalescing = ["psx-gpu/ot-window-insert-coalescing"]
 # Preserve the original linker for ordinary packets and revisit only ranges
 # emitted by scoped-window fans after their final OT links are known.
 renderer-window-range-coalescing = []
+# Pack consecutive same-window children sharing one exact OT slot into one
+# scoped DMA range before the ordinary tagged-stream linker sees them.
+renderer-window-slot-packing = []
 hardware-performance = []
 hardware-regression = ["hardware-performance"]
 
