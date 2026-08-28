@@ -22,7 +22,7 @@ path = "tools/fixed-quad-tessellation-census.rs"
 # The hydration helper and the guest SDK resolve from the same published
 # revision. The build verifies this lockfile source before copying any SDK
 # inputs into the content-addressed guest stage.
-psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "916ba811a86229a1b63d94c70734154dc1b6be81" }
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "bc295a055deb0b376fe24acd3deb98145f4aa070" }
 quake-cook = { path = "crates/quake-cook" }
 quake-core = { path = "crates/quake-core" }
 quake-formats = { path = "crates/quake-formats" }

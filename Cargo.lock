@@ -198,7 +198,7 @@ dependencies = [
 [[package]]
 name = "psoxide-link"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=916ba811a86229a1b63d94c70734154dc1b6be81#916ba811a86229a1b63d94c70734154dc1b6be81"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=bc295a055deb0b376fe24acd3deb98145f4aa070#bc295a055deb0b376fe24acd3deb98145f4aa070"
 dependencies = [
  "serde_json",
 ]
@@ -234,6 +234,7 @@ dependencies = [
  "psx-math",
  "psx-pad",
  "psx-rt",
+ "psx-settings",
  "psx-sfx",
  "psx-spu",
  "psx-telemetry",
@@ -317,6 +318,13 @@ version = "0.1.0"
 dependencies = [
  "psx-hw",
  "psx-io",
+]
+
+[[package]]
+name = "psx-settings"
+version = "0.1.0"
+dependencies = [
+ "psx-pad",
 ]
 
 [[package]]
