@@ -230,6 +230,9 @@ renderer-cell-liquid-policy = ["renderer-cell-policy"]
 # the resident map and resolve camera leaves to bounded render sections. The
 # existing PSB renderer remains authoritative until QRP4 activation lands.
 renderer-streamed-sections = []
+# QRP4 becomes authoritative for world and inline-brush rendering. This
+# permits the PSB resident loader to retain only gameplay/collision data.
+renderer-owned-sections = ["renderer-streamed-sections"]
 # Stage the current liquid turbulence phase in the PS1 scratchpad once, then
 # reuse it for every visible 64x64 liquid tile in that phase.
 renderer-scratchpad-liquid-phase = []
