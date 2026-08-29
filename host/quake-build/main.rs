@@ -248,6 +248,8 @@ enum Action {
     E1m1GpuPolygonLeaderBench,
     E1m1GpuPolygonScratchLiquidBench,
     E1m1SelectionDecimateBench,
+    E1m1NoWorldBench,
+    E1m1ScreenFrustumBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
     E1m1GpuPolygonColdLevel2Bench,
@@ -1332,6 +1334,42 @@ fn real_main() -> Result<()> {
                 &build,
                 "e1m1-gpu-polygon-scratch-liquid-bench",
             )?;
+        }
+        Action::E1m1ScreenFrustumBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-screen-frustum-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-screen-frustum-bench")?;
+        }
+        Action::E1m1NoWorldBench => {
+            // Diagnostic ceiling: submit no world faces, pricing everything the
+            // frame does apart from the world surface path.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-no-world-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-selection-drop-world",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-no-world-bench")?;
         }
         Action::E1m1SelectionDecimateBench => {
             // Diagnostic ceiling only: drop every other selected world face to
@@ -3480,6 +3518,8 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-leader-bench"
             | "e1m1-gpu-polygon-scratch-liquid-bench"
             | "e1m1-selection-decimate-bench"
+            | "e1m1-no-world-bench"
+            | "e1m1-screen-frustum-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
             | "e1m1-gpu-polygon-cold-level2-bench"
@@ -3595,6 +3635,8 @@ fn parse_cli() -> Result<Cli> {
                         Action::E1m1GpuPolygonScratchLiquidBench
                     }
                     "e1m1-selection-decimate-bench" => Action::E1m1SelectionDecimateBench,
+                    "e1m1-no-world-bench" => Action::E1m1NoWorldBench,
+                    "e1m1-screen-frustum-bench" => Action::E1m1ScreenFrustumBench,
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
                     "e1m1-gpu-polygon-cold-adaptive-bench" => {
                         Action::E1m1GpuPolygonColdAdaptiveBench
@@ -4424,6 +4466,7 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
             }
             Ok(()) => return Err(format!("cooked {map} unexpectedly needs zero bytes").into()),
         };
+        println!("PSB5 resident {map}: {required} bytes");
         largest_required = largest_required.max(required);
     }
     if largest_required != 865_958 {

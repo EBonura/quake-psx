@@ -48,13 +48,18 @@ renderer-census = ["emulator-telemetry"]
 # Feature-gated QRC1 follow-up: preserve the selected-face list when the exact
 # camera, PVS/portal key and active water plane are unchanged.
 renderer-selection-cache = []
+# Cull against the frustum the GPU can actually draw. The vertical half-angle
+# is 120/160, not the 45 degrees `forward +- up` assumes, so a third of the
+# culled volume is off-screen band whose faces are selected, materialized and
+# submitted only to be discarded by the draw area.
+renderer-screen-frustum = []
 # Diagnostic ceiling only. Drops every other selected world face so the frame
 # cost's sensitivity to the selected-face count can be measured directly. The
 # image is wrong by construction and its hashes must differ.
 renderer-selection-decimate = []
-# Quake II-style cell stream: append conservative source-leaf bounds at cook
-# time, prune invariant backs on leaf changes, and keep compact 24-byte draw
-# records separate from planes that only ambiguous faces touch per frame.
+# Harder form of the same ceiling: submit no world faces at all, pricing
+# everything the frame does apart from the world surface path.
+renderer-selection-drop-world = ["renderer-selection-decimate"]
 renderer-compact-cell-stream = ["renderer-block-frustum"]
 # Feature-gated Quake II transfer experiment: retain invariant compact packet
 # fields when an exact selected batch and adaptive topology recur in the same
