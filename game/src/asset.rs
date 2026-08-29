@@ -2,12 +2,15 @@
 
 use alloc::vec::Vec;
 
+#[cfg(feature = "renderer-owned-sections")]
+use psx_bsp::resident::ResidentMapProfile;
 use psx_bsp::resident::{
     IndexedVertices, MapLoadError as SharedMapLoadError, ResidentMap as SharedResidentMap,
     TEXTURE_ROW_BYTES, TEXTURE_VRAM_MAX_ROWS, TEXTURE_VRAM_WIDTH, TEXTURE_VRAM_X,
 };
 use psx_math::int32::mul_q12_i32_wide;
 use psx_vram::VramRect;
+use quake_formats::CookedRecord;
 use quake_formats::{
     episode_directory_index, episode_directory_index_or_try, leaf_bounds_at, AliasModelTable,
     BrushModel, CachedIndexReader, ClipNode, CompactNode, Face, GraphicsPicture, GraphicsPictureId,
@@ -16,6 +19,8 @@ use quake_formats::{
     GRAPHICS_PICTURE_RECORD_BYTES, GRAPHICS_WEAPON_ICON_BYTES, RESIDENT_MAP_ARENA_BYTES,
     TEXTURE_LIQUID,
 };
+#[cfg(feature = "renderer-owned-sections")]
+use quake_formats::{RenderQuadPayloadHeader, RENDER_QUAD_HEADER_BYTES};
 #[cfg(feature = "renderer-streamed-sections")]
 use quake_formats::{RenderSectionHeader, RenderSectionIndex, RENDER_SECTION_HEADER_BYTES};
 
@@ -333,6 +338,17 @@ const RESIDENT_LUMPS: [LumpKind; 13] = [
     LumpKind::Entities,
 ];
 
+#[cfg(feature = "renderer-owned-sections")]
+const GAMEPLAY_CORE_LUMPS: [LumpKind; 7] = [
+    LumpKind::ModelData,
+    LumpKind::Leaves,
+    LumpKind::Nodes,
+    LumpKind::ClipNodes,
+    LumpKind::Models,
+    LumpKind::Strings,
+    LumpKind::Entities,
+];
+
 /// Quake map identity plus platform-owned streaming around canonical resident
 /// storage and cross-lump validation.
 pub struct ResidentMap {
@@ -353,6 +369,8 @@ pub struct ResidentMap {
     render_section_directory: Vec<u8>,
     #[cfg(feature = "renderer-streamed-sections")]
     render_section_header: Option<RenderSectionHeader>,
+    #[cfg(feature = "renderer-owned-sections")]
+    render_quad_header: Option<RenderQuadPayloadHeader>,
 }
 
 impl ResidentMap {
@@ -380,6 +398,8 @@ impl ResidentMap {
             render_section_directory: Vec::with_capacity(RENDER_SECTION_DIRECTORY_CAPACITY),
             #[cfg(feature = "renderer-streamed-sections")]
             render_section_header: None,
+            #[cfg(feature = "renderer-owned-sections")]
+            render_quad_header: None,
         }
     }
 
@@ -417,8 +437,11 @@ impl ResidentMap {
             return Err(MapLoadError::Format);
         }
         validate_texture_lump(&index)?;
-        if resident_bytes_required(&index).ok_or(MapLoadError::TooLarge)? > RESIDENT_MAP_ARENA_BYTES
-        {
+        #[cfg(not(feature = "renderer-owned-sections"))]
+        let resident_bytes = resident_bytes_required(&index);
+        #[cfg(feature = "renderer-owned-sections")]
+        let resident_bytes = resident_bytes_required_for(&index, &GAMEPLAY_CORE_LUMPS);
+        if resident_bytes.ok_or(MapLoadError::TooLarge)? > RESIDENT_MAP_ARENA_BYTES {
             return Err(MapLoadError::TooLarge);
         }
         Ok(MapLoadPlan { map, index })
@@ -438,6 +461,28 @@ impl ResidentMap {
         {
             self.render_section_directory.clear();
             self.render_section_header = None;
+            #[cfg(feature = "renderer-owned-sections")]
+            {
+                self.render_quad_header = None;
+            }
+        }
+        #[cfg(feature = "renderer-owned-sections")]
+        {
+            stream_record_lump(
+                plan.map.chunk_id(),
+                plan.index.lump(LumpKind::Planes),
+                &mut self.stream_scratch,
+                &mut self.collision_planes,
+                COLLISION_PLANE_CAPACITY,
+            )?;
+            stream_record_lump(
+                plan.map.chunk_id(),
+                plan.index.lump(LumpKind::TextureInfo),
+                &mut self.stream_scratch,
+                &mut self.render_textures,
+                RENDER_TEXTURE_CAPACITY,
+            )?;
+            self.stream_scratch.clear();
         }
         let shared_result = {
             let payload = ForwardChunkReader::open(
@@ -447,11 +492,22 @@ impl ResidentMap {
             )
             .map_err(MapLoadError::Storage)?;
             let mut reader = CachedIndexReader::new(&plan.index, payload);
-            self.shared.load(plan.map.chunk_id(), &mut reader)
+            #[cfg(not(feature = "renderer-owned-sections"))]
+            let result = self.shared.load(plan.map.chunk_id(), &mut reader);
+            #[cfg(feature = "renderer-owned-sections")]
+            let result = self.shared.load_with_profile(
+                plan.map.chunk_id(),
+                &mut reader,
+                ResidentMapProfile::GameplayCore,
+            );
+            result
         };
         self.stream_scratch.clear();
         shared_result.map_err(map_shared_error)?;
+        #[cfg(not(feature = "renderer-owned-sections"))]
         self.refresh_collision_working_set()?;
+        #[cfg(feature = "renderer-owned-sections")]
+        self.validate_renderer_owned_working_set()?;
         #[cfg(feature = "renderer-streamed-sections")]
         self.load_render_section_directory(plan.map)?;
         self.upload_textures(plan.map, &plan.index)?;
@@ -482,6 +538,42 @@ impl ResidentMap {
         if index.leaf_count() != self.shared.leaves().len() {
             return Err(MapLoadError::Format);
         }
+        #[cfg(feature = "renderer-owned-sections")]
+        {
+            let payload_bytes = file_bytes
+                .checked_sub(header.directory_bytes())
+                .ok_or(MapLoadError::Format)?;
+            let mut payload_header = [0u8; RENDER_QUAD_HEADER_BYTES];
+            platform::read_chunk_exact(
+                chunk_id,
+                header.directory_bytes() as u32,
+                &mut payload_header,
+            )
+            .map_err(MapLoadError::Storage)?;
+            let quad_header = RenderQuadPayloadHeader::parse(&payload_header, payload_bytes)
+                .map_err(|_| MapLoadError::Format)?;
+            let covered_cells = index
+                .section(
+                    index
+                        .section_count()
+                        .checked_sub(1)
+                        .ok_or(MapLoadError::Format)?,
+                )
+                .and_then(|section| {
+                    usize::from(section.first_cell).checked_add(usize::from(section.cell_count))
+                })
+                .ok_or(MapLoadError::Format)?;
+            if covered_cells != quad_header.cell_count()
+                || self
+                    .shared
+                    .resident_bytes_len()
+                    .checked_add(header.streaming_budget_bytes() as usize)
+                    .is_none_or(|bytes| bytes > self.shared.arena_capacity())
+            {
+                return Err(MapLoadError::TooLarge);
+            }
+            self.render_quad_header = Some(quad_header);
+        }
         self.render_section_header = Some(header);
         Ok(())
     }
@@ -495,7 +587,7 @@ impl ResidentMap {
         let section = u16::from_le_bytes([bytes[0], bytes[1]]);
         (section != quake_formats::RENDER_SECTION_NONE
             && (section as usize) < header.section_count())
-            .then_some(section as usize)
+        .then_some(section as usize)
     }
 
     #[optimize(size)]
@@ -523,6 +615,28 @@ impl ResidentMap {
         self.collision_planes.extend(packed.iter());
         self.render_textures.clear();
         self.render_textures.extend(textures.iter());
+        self.world_render_head_node = world.head_nodes[0];
+        Ok(())
+    }
+
+    #[cfg(feature = "renderer-owned-sections")]
+    #[optimize(size)]
+    fn validate_renderer_owned_working_set(&mut self) -> Result<(), MapLoadError> {
+        if self.collision_planes.is_empty()
+            || self.render_textures.is_empty()
+            || self.shared.clip_nodes().as_native_clip_nodes().is_none()
+            || self.shared.nodes().as_native_compact_nodes().is_none()
+            || !self
+                .shared
+                .collision_plane_references_valid(self.collision_planes.len())
+        {
+            return Err(MapLoadError::Format);
+        }
+        let world = self
+            .shared
+            .brush_models()
+            .get(0)
+            .ok_or(MapLoadError::Format)?;
         self.world_render_head_node = world.head_nodes[0];
         Ok(())
     }
@@ -1029,10 +1143,60 @@ fn validate_texture_lump(index: &PsbIndex) -> Result<LumpRange, MapLoadError> {
     Ok(texture)
 }
 
+#[cfg(feature = "renderer-owned-sections")]
+#[optimize(size)]
+fn stream_record_lump<T: CookedRecord>(
+    chunk_id: u32,
+    range: LumpRange,
+    scratch: &mut Vec<u8>,
+    output: &mut Vec<T>,
+    capacity: usize,
+) -> Result<(), MapLoadError> {
+    let record_bytes = T::SIZE;
+    let source_bytes = range.len as usize;
+    if record_bytes == 0
+        || source_bytes == 0
+        || source_bytes % record_bytes != 0
+        || source_bytes / record_bytes > capacity
+    {
+        return Err(MapLoadError::Format);
+    }
+    let batch_bytes = (STREAM_SCRATCH_BYTES / record_bytes) * record_bytes;
+    if batch_bytes == 0 {
+        return Err(MapLoadError::TooLarge);
+    }
+    output.clear();
+    scratch.clear();
+    scratch.resize(batch_bytes.min(source_bytes), 0);
+    let mut stream =
+        platform::ChunkStream::open_at(chunk_id, range.offset).map_err(MapLoadError::Storage)?;
+    let mut consumed = 0usize;
+    while consumed < source_bytes {
+        let bytes = (source_bytes - consumed).min(batch_bytes);
+        stream
+            .read_exact_at(range.offset + consumed as u32, &mut scratch[..bytes])
+            .map_err(MapLoadError::Storage)?;
+        for record in scratch[..bytes].chunks_exact(record_bytes) {
+            output.push(T::decode(record));
+        }
+        consumed += bytes;
+    }
+    if output.len() != source_bytes / record_bytes {
+        output.clear();
+        return Err(MapLoadError::Format);
+    }
+    Ok(())
+}
+
 #[optimize(size)]
 fn resident_bytes_required(index: &PsbIndex) -> Option<usize> {
+    resident_bytes_required_for(index, &RESIDENT_LUMPS)
+}
+
+#[optimize(size)]
+fn resident_bytes_required_for(index: &PsbIndex, lumps: &[LumpKind]) -> Option<usize> {
     let mut total = 0usize;
-    for kind in RESIDENT_LUMPS {
+    for &kind in lumps {
         total = total.checked_add(3)? & !3;
         let source_len = index.lump(kind).len as usize;
         let resident_len = if index.version() == PsbVersion::LegacyV1 {
@@ -1045,6 +1209,10 @@ fn resident_bytes_required(index: &PsbIndex) -> Option<usize> {
                     .checked_mul(compact as usize)?,
                 _ => source_len,
             }
+        } else if kind == LumpKind::Nodes {
+            source_len
+                .checked_div(kind.record_size(PsbVersion::IndexedV5)? as usize)?
+                .checked_mul(Node::SIZE)?
         } else {
             source_len
         };
