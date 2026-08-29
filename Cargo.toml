@@ -22,6 +22,10 @@ path = "tools/fixed-quad-tessellation-census.rs"
 name = "portal-census"
 path = "tools/portal-census.rs"
 
+[[bin]]
+name = "face-merge-census"
+path = "tools/face-merge-census.rs"
+
 [dependencies]
 # The hydration helper and the guest SDK resolve from the same published
 # revision. The build verifies this lockfile source before copying any SDK
