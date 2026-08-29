@@ -704,6 +704,43 @@ must retain the current writer on fallback and pass PSoXide gameplay, VRAM,
 display, packet-order, CPU/GPU high-water, and canonical 0.122 fps noise-band
 gates before acceptance.
 
+### QRS3 guest bridge
+
+The first runtime milestone now carries the checked format across the disc
+boundary without changing the renderer. `quake2-transfer-census` can write all
+nine deterministic `.qrs` files after measuring the real cooked corpus. The
+feature-gated disc stages them as world-pack chunks 200 through 208. During a
+map load the guest reads the 48-byte QRS3 header, allocates only the bounded
+leaf/section/edge prefix, and validates canonical offsets, payload coverage,
+neighbor order, arbitrary-transition CPU budgets, and installed-pool GPU
+budgets against the complete chunk length. Camera-leaf changes then use one
+direct two-byte lookup over that immutable checked prefix. The guest does not
+retain a multi-megabyte sidecar or load a QRP3 payload yet.
+
+The QRS3 header now records the measured collision/gameplay core instead of a
+placeholder zero. E1M1 records a 285 KiB core, a 227 KiB worst active plus
+arbitrary-payload transition, and a complete 4.297 MiB sidecar. The guest also
+checks that its leaf table has the same length as the resident PSB map before
+publishing the index. The renderer resolves camera-leaf changes to section IDs
+but leaves the established PSB writer authoritative.
+
+The initial read-only bridge passed two complete PSoXide E1M1 routes with the
+canonical VRAM `0x09a7f019bb9a5e7c` and display `0x9bac66f3bec0e66b` hashes, but
+measured only 23.727 fps because every camera-leaf change revalidated the whole
+directory. That control is rejected. The direct checked-prefix lookup recovered
+11,996,165 cycles and is the authoritative bridge: two deterministic runs
+measured 3,032,702,848 bus cycles and 23.821 fps with the same canonical hashes.
+Its 4,569,879-cycle cost is about 2,141 cycles per presentation and the 0.035
+fps delta remains inside the established 0.122 fps noise gate. It is still
+scaffolding rather than a speedup; QRP3 activation must pass the 23.856 leader.
+
+Reproduce the bridge with:
+
+```sh
+cargo run --release -- e1m1-gpu-polygon-streamed-sections-bench \
+  --psoxide ../PSoXide/target/release/frontend
+```
+
 The runtime residency controls now close the per-root and per-polygon forms.
 A bounded 26-slot L2 stream cache remained exact at 22.276 fps. Replacing its
 generic hit writer with a fixed, non-calling 3,048-byte position-only scatter
@@ -839,6 +876,8 @@ Run the static transfer census with:
 
 ```sh
 cargo run --release --bin quake2-transfer-census
+cargo run --release --bin quake2-transfer-census -- \
+  id1psx/maps .quakepsx/cache/shareware/ID1/PAK0.PAK id1psx/maps
 ```
 
 The action never invokes DuckStation. `tools/analyze_renderer_census.py`
