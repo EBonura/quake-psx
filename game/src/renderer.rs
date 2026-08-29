@@ -7689,6 +7689,8 @@ fn select_frame_faces_blocked(
     );
     let out = output.as_mut_ptr();
     let mut count = 0usize;
+    #[cfg(feature = "renderer-selection-decimate")]
+    let mut kept = 0usize;
     #[cfg(feature = "renderer-plane-run-cache")]
     let mut plane_cache = FrontFacingCache::EMPTY;
     let mut block_index = 0usize;
@@ -7781,7 +7783,17 @@ fn select_frame_faces_blocked(
                 {
                     let entry =
                         visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
-                    unsafe { ptr::write(out.add(count), entry) };
+                    #[cfg(feature = "renderer-selection-decimate")]
+                    {
+                        if count & 1 == 0 {
+                            unsafe { ptr::write(out.add(kept), entry) };
+                            kept += 1;
+                        }
+                    }
+                    #[cfg(not(feature = "renderer-selection-decimate"))]
+                    unsafe {
+                        ptr::write(out.add(count), entry)
+                    };
                     count += 1;
                 }
                 visible_index += 1;
@@ -7790,7 +7802,17 @@ fn select_frame_faces_blocked(
         first = end;
         block_index += 1;
     }
-    unsafe { output.set_len(count) };
+    // Diagnostic ceiling: `renderer-selection-decimate` keeps every other
+    // accepted face so the frame cost's sensitivity to the selected-face count
+    // can be measured directly. The image is wrong by construction.
+    #[cfg(feature = "renderer-selection-decimate")]
+    unsafe {
+        output.set_len(kept)
+    };
+    #[cfg(not(feature = "renderer-selection-decimate"))]
+    unsafe {
+        output.set_len(count)
+    };
 }
 
 /// Block-frustum selector with an exact direct-index memo of the camera side

@@ -48,6 +48,10 @@ renderer-census = ["emulator-telemetry"]
 # Feature-gated QRC1 follow-up: preserve the selected-face list when the exact
 # camera, PVS/portal key and active water plane are unchanged.
 renderer-selection-cache = []
+# Diagnostic ceiling only. Drops every other selected world face so the frame
+# cost's sensitivity to the selected-face count can be measured directly. The
+# image is wrong by construction and its hashes must differ.
+renderer-selection-decimate = []
 # Quake II-style cell stream: append conservative source-leaf bounds at cook
 # time, prune invariant backs on leaf changes, and keep compact 24-byte draw
 # records separate from planes that only ambiguous faces touch per frame.
