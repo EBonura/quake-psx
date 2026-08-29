@@ -390,6 +390,15 @@ viewport even though the polygon crosses it. Reference subdivision creates
 interior vertices that survive the established pairwise screen-reject rule.
 The speedup therefore includes missing subdivision work and geometry.
 
+Repeating that ceiling on the complete accepted August 2026 renderer stack
+measured 24.628 fps versus its 23.825 fps stable baseline. Removing all
+ordinary-world adaptive subdivision therefore saves only about 3.3% of frame
+cycles after the other accepted improvements. Even this deliberately
+incorrect topology remains more than five frames per second short of 30 fps.
+Subdivision is no longer the primary architectural target; the larger gap is
+work admitted before submission, especially broad BSP visibility candidates
+that still incur selection, materialization, and packet costs.
+
 A quality ladder which retains the complete level-two lattice but flattens
 level-one roots restored that near-wall coverage and measured 23.149 fps
 deterministically (+5.91% over original, +2.49% over accepted). Its submitter
@@ -746,6 +755,237 @@ cargo run --release -- selection-cache-ship-boot \
   --psoxide ../PSoXide/target/release/frontend
 ```
 
+### Where the E1M1 frame actually goes (August 2026 worker pass)
+
+The stable baseline was reproduced from clean source before any experiment:
+2,134 presentations, 3,034,987,462 cycles, 23.803 fps, VRAM
+`0x09a7f019bb9a5e7c`, display `0x9bac66f3bec0e66b`. That is 0.022 fps from the
+previously recorded exact capture with identical hashes, so it sits inside the
+established layout-noise band.
+
+Two measurements reframed the target.
+
+**The renderer is not waiting on the GPU; it is waiting on the display.** A
+PSoXide PC-sample profile over gameplay ticks 600..5700 attributes 22.05% of
+samples to `gpu_end_frame`, but 17.69 of those points sit on exactly four
+instructions at `0x8004b56c..0x8004b578`. Disassembling them shows
+`lw at,(counter); nop; beq at,v1; nop`: the vblank counter spin inside
+`wait_vblank`. `wait_for_pending_submission`, the actual GPU fence, never
+appears. The GPU finishes before the CPU does, so submitted GPU work is not the
+limiter and `gpu_end_frame` contains only about 4.4% of real CPU work.
+
+**A frame is therefore quantized to whole NTSC fields, and the useful metric is
+work per frame, not fps.** Presentation intervals over the canonical route
+partition as 8.44% one field, 39.01% two, 48.62% three, 3.05% four, 0.75% five
+and 0.14% six. 47.45% of frames already present at 30 Hz or better. Subtracting
+the measured spin share per 64-tick window gives the work distribution against
+the 1,130,089-cycle two-field budget:
+
+```text
+mean work/frame  1,227,919 cycles  2.173 fields
+p50              1,264,508          2.24
+p75              1,421,363          2.52
+p90              1,586,693          2.81
+p95              1,624,573          2.88
+p99              1,976,447          3.50
+```
+
+A stable 30 fps therefore needs roughly a **29-31% work reduction** across the
+heavy sections and about 43% for the worst window, not the 20% the mean fps
+suggests.
+
+### Diagnostic ceiling: selected-face sensitivity
+
+`renderer-selection-decimate` keeps every other accepted face in
+`select_frame_faces_blocked`. It is a labelled diagnostic; the image is wrong
+and its hashes must differ.
+
+```text
+presentations: 2,134
+cycles:        2,633,978,973
+fps:           27.427
+VRAM hash:     0x5927dda76aa5e224
+display hash:  0x7f0eb055aee3041d
+fields:        9.66% one, 67.65% two, 19.78% three, 2.67% four, 0.23% five
+```
+
+Halving the selected world faces removes 401,008,489 cycles (13.2%) and moves
+the two-field share from 47.45% to 77.31%. This fixes the slope: the
+face-proportional part of the frame is about 24% of all work, so **even
+removing every world face cannot reach a stable 30 fps on its own**. The
+remainder is collision, game logic, liquid warping, entities and fixed renderer
+cost.
+
+Gameplay-window symbol shares behind that conclusion (PC samples, ticks
+600..5700, 312,673 samples):
+
+```text
+gpu_end_frame                     22.05%  (17.69 spin, 4.36 real)
+submit_quake_classic_affine_batch 11.89%
+Renderer::draw_frame               7.44%
+collision trace_into               7.36%
+Quake run                          7.01%
+select_frame_faces_blocked         5.76%
+liquid warp_tile_64_prepared       4.99%
+materialize_surface                4.25%
+SceneCollision trace               3.02%
+alias model submit                 2.90%
+mark_visible_faces                 2.60%
+point_leaf_index                   2.26%
+memcpy                             1.98%
+scoped windowed fan                1.95%
+```
+
+Grouped: world face path about 35%, collision and physics 15.7%, game logic
+7.6%, liquid 5.6%, entities 4.3%, real `gpu_end_frame` 4.4%.
+
+### Exact BSP portal reconstruction and its RAM verdict
+
+No `.prt` or `.map` files exist locally, so `tools/portal-census.rs` rebuilds
+the portal graph from the compiled BSP with the standard qbsp
+`MakeHeadnodePortals`/`MakeTreePortals` construction, including qbsp's
+`WindingIsTiny` rejection. For E1M1 it recovers 3,312 leaf-to-leaf portals
+between open leaves over 2,750 nodes and 1,531 leaves, mean 4.00 vertices and
+at most 8, with 4 portals per leaf at p50 and 12 at p95.
+
+The census then samples every open leaf centre at eight yaws with the runtime's
+own four-plane frustum (`forward +- right`, `forward +- up`) and compares what
+a conservative portal walk admits against the current PVS-plus-frustum path:
+
+```text
+mode         cells  doorways   pvs  frustum  admitted   removed  tests/frame
+leaf/rect     1531      3312  759.0    260.5     138.5   46.85%        847.8
+leaf/aabb     1531      3312  759.0    260.5     189.6   27.22%        239.7
+leaf/pair     1531      3312  759.0    260.5     227.4   12.69%        299.7
+merge>=16384  1242      2667  759.0    260.5     172.1   33.93%       1475.0
+merge>=4096    763      1260  759.0    260.5     214.0   17.86%       1896.0
+merge>=1024    495       349  759.0    260.5     232.5   10.73%        534.1
+merge>=256     408        69  759.0    260.5     242.1    7.05%        107.5
+```
+
+`leaf/rect` is the exact recursive screen-rectangle narrowing; `leaf/aabb`
+crosses a portal when its world AABB survives the frustum planes, with no
+projection and therefore no near-plane hazard; `leaf/pair` replaces the portal
+bound with the intersection of the two leaves' already-resident 32-unit leaf
+bounds, so it needs no cooked geometry at all. Merging leaves into rooms by
+portal area was tested across five thresholds and consistently loses more
+rejection than it saves in doorway count.
+
+Combined with the decimation slope, `leaf/aabb` is worth about +1.9 fps and
+`leaf/rect` about +3.4 fps before paying for the walk.
+
+**This does not fit in RAM.** The guest reserves one 880,000-byte resident-map
+arena and the largest cooked map already needs 865,958 bytes, leaving a
+**14,042-byte margin for every map**. The cheapest honest leaf-portal layout for
+E1M1 alone is a `[u16; leaves+1]` offset table (3,064 bytes) plus one `u16`
+neighbour per portal side (6,624 entries, 13,248 bytes) — 16,312 bytes with no
+portal geometry at all, and that layout is exactly the weak `leaf/pair` variant.
+Adding a portal AABB good enough for `leaf/aabb` costs another six bytes per
+portal. Byte-level packing (delta-coded neighbours, fraction-of-leaf-box
+bounds) reaches roughly 26 KB, still nearly twice the whole arena margin, and
+the larger maps have less room than E1M1, not more.
+
+Per-map sidecar cost for the plain layout (leaf offset table, one `u16`
+neighbour per portal side, one 6-byte portal AABB per portal):
+
+```text
+start 35,078   e1m1 36,184   e1m2 35,142   e1m3 29,680   e1m4 41,896
+e1m5  27,644   e1m6 17,914   e1m7  8,306   e1m8 14,800
+```
+
+Every Episode 1 map except `e1m7` and `e1m8` exceeds the whole arena margin.
+
+**A bounded gate budget does not rescue it either.** Scoring each portal by how
+often it actually stopped the walk and keeping only the best K as gates, then
+merging the leaves either side of everything else:
+
+```text
+gates   cells  doorways  sidecar  admitted  removed  tests/frame
+   64     385         0     772B     243.9    6.37%          0.0
+  128     385         0     772B     243.9    6.37%          0.0
+  256     387        27   1,046B     243.6    6.47%         19.6
+  512     389        29   1,070B     243.5    6.51%         21.0
+ 1024     418       451   5,348B     240.2    7.77%        230.2
+ 2048     668     1,656  17,898B     219.6   15.68%        178.2
+ 3312    1531     3,312  36,184B     189.6   27.22%        239.7
+```
+
+The rejection value is spread thinly across the entire portal set: there is no
+small high-value subset. Inside the 14,042-byte budget the best result is about
+7.8% fewer admitted faces, which the decimation slope prices at roughly +0.5
+fps before paying for the walk, the admitted-face bitset and the extra
+selector test. Portal admission is closed at every affordable budget, and the
+census binary is retained so the numbers can be re-derived rather than
+re-argued.
+
+### Rejected: run-decomposed liquid resampler
+
+`warp_tile_64_runs` replaced the per-texel gather with the phase's
+constant-displacement column runs. Columns sharing a displacement read one
+contiguous span of a single source row, so the per-texel index arithmetic and
+the masked column advance disappear. A `quake-core` test proved the output
+byte-identical to the dense resampler over all 128 phases, and a
+register-level simulation confirmed the shipping MIPS kernel and the portable
+host kernel already agree.
+
+```text
+cycles: 3,039,557,989
+fps:    23.767   (baseline 23.803)
+hashes: changed
+```
+
+No gain, and the guest image changed for a cause not localized. The arithmetic
+explains the null result: the turbulence window averages 3.84 columns per run,
+so a tile needs 64 rows x 18 runs = 1,152 run setups for 4,096 texels. Each
+setup recomputes the source row, the source column and the wrap split, which
+costs about as much as the per-texel arithmetic it removes. Run decomposition
+cannot beat the dense gather at this run length; do not retry it without a
+representation that amortizes the per-row setup.
+
+### What is actually left between quake-psx and Quake II PSX
+
+Two of Quake II's measured advantages do not transfer, and the reason is
+structural rather than a missing optimization.
+
+Its cooked cell streams narrow the candidate set offline. Reproducing that on a
+Quake BSP means a leaf portal graph, and the graph does not fit the resident
+arena at any budget that keeps its value.
+
+Its resident `POLY_GT4` templates supply 84.47% of textured quads, patched with
+XY and DMA linkage instead of rebuilt. That works because Quake II's scene is
+instanced: templates are per static model, each capped below 64 polygons, so a
+few hundred models cover the level. A Quake BSP world has no instancing. E1M1
+alone cooks 5,890 render faces, so per-face templates would need about 212 KB
+against a 14 KB margin. The previously rejected 16-slot resident cache is the
+same wall seen from the other side: 30,674 hits against 587,881 packets, a 5%
+hit rate, while hot text grew from 7,064 to 11,064 bytes.
+
+What remains transferable is bounded and already partly done: small sequential
+hot loops, stable source order, low texture-window churn, and rejecting dynamic
+actors before animation. None of those is worth the roughly 30% of frame work a
+stable 30 fps still needs.
+
+The measured priority order for the remaining work, by share of gameplay CPU:
+
+1. World face path, about 35%. Face-proportional work is about 24% of the
+   frame and a 50% face cut is worth +3.624 fps, but the affordable
+   candidate-narrowing mechanisms are now closed. What is left is cost per
+   selected face, not fewer faces.
+2. Collision and physics, 15.7%. `trace_into` alone is 7.36% and is recursive;
+   stack load stalls are already 8.52% of all cycles. An explicit-stack hull
+   trace is untried. Two earlier micro-attempts (compact 12-byte planes,
+   shared single descent) were exact but measured 23.753 and 23.785 fps.
+3. Instruction cache, 8.80% of cycles and 125,536 stall cycles per frame over
+   25,660 refill events. `submit_quake_classic_affine_batch` is 7,064 bytes
+   against a 4 KB direct-mapped cache. Every splitting variant tried so far
+   (`renderer-quake-level0-run` 22.943, the compact kernel family) lost more
+   than it saved.
+4. Game logic, 7.6%, and liquid, 5.6%.
+
+A 20% work cut converts roughly 95% of frames to two fields; 30% is needed
+before the worst window fits. Nothing measured so far offers a single change of
+that size.
+
 ## Visual checks
 
 The fixed E1M1 camera is stored in
@@ -786,6 +1026,33 @@ allowing simulation speed to alter the path:
 ```sh
 cargo run --release -- e1m1-chain-bench --psoxide ../PSoXide-quake
 ```
+
+The canonical accepted-stack benchmark is:
+
+```sh
+cargo run --locked --release -- e1m1-gpu-polygon-scratch-liquid-bench \
+  --psoxide /path/to/PSoXide/target/run-fast/frontend
+```
+
+Two diagnostics answer "how much would this be worth" before an optimization is
+written. Both change the image and must never be shipped:
+
+```sh
+cargo run --locked --release -- e1m1-selection-decimate-bench --psoxide ...
+cargo run --locked --release -- portal-census e1m1
+```
+
+`e1m1-selection-decimate-bench` halves the selected world faces and prices the
+face-proportional part of the frame. `portal-census` rebuilds the exact BSP
+portal graph host-side and reports admission ceilings, merge and gate sweeps,
+and the resident-arena cost of every sidecar layout.
+
+Because presentation is quantized to whole NTSC fields, fps is a coarse
+readout. Prefer the two-field share and the work-per-frame distribution: take a
+`--pc-sample-window-log`, treat the four instructions of the `wait_vblank`
+counter spin as idle, and subtract that share from each window's bus-cycle
+span. `47.45%` of frames present in two fields or fewer at the current
+baseline.
 
 For a shipping-cadence result, use:
 
