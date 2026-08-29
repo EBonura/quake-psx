@@ -483,33 +483,65 @@ consume the prefix without reducing that frame's dynamic tail. Residency must
 therefore be leaf/PVS-keyed, or use independently budgeted memory; it cannot be
 a permanent map-wide allocation carved from the current arena.
 
-The first real `QRP2` conversion makes the lifetime distinction explicit. It
-encodes real cooked positions, baked UV/RGB packet words, current GT4 fan order,
-material runs, source planes, per-cell facing modes, and an explicit GT3 or
-dynamic fallback. The result round-trips through the checked no-std parser and
-the `QRS2` section directory. It is a format and memory proof, not a runtime
-speed claim.
+The checked `QRP3` conversion makes the missing lifetime and object distinctions
+explicit. It encodes real cooked positions, baked UV/RGB packet words, current
+GT4 fan order, source face identities, source planes, and exact per-cell
+visible/dynamic-facing masks. One object owns at most 32 consecutive faces, 32
+GT4s, and 255 object-local positions. The source face identity lets the new
+stream merge with odd GT3, near, liquid, sky, animated, and adaptive fallback
+work in the established OT order. The result round-trips through checked no-std
+`QRP3` and `QRS3` parsers. It proves compact/base-topology format and memory
+feasibility, not yet runtime speed or the final adaptive high-water.
 
-A whole-map E1M1 payload is still the wrong shape: 3,340 eligible faces become
-4,531 GT4 templates and 3,340 planar objects, but 300,881 repeated cell/object
-commands inflate the payload to 1,508 KiB and full activation to 2,012 KiB.
-One leaf-local activation is much smaller: 71/148/200 KiB P50/P95/max including
-the conservative dynamic fallback. Greedily combining consecutive BSP leaves
-under a 192 KiB target produces 84 checked sections, only three exceptional
-single-cell sections, a 5,861 KiB sidecar, and a 285 KiB worst active plus
-adjacent compact-payload preload.
+The accounting now matches the recovered Quake II lifetime. Activation installs
+invariant words directly into the two existing 128 KiB GPU arenas, then
+discards the compact invariant/run transfer records. Those packet pools are not
+allocated again in the CPU streaming tail. `QRS3` therefore checks CPU retained
+metadata plus projected positions against a 96 KiB active target, and checks
+one installed base-packet pool plus exact fallback against the 120 KiB safe GPU
+base limit. Its arbitrary-transition proof retains enough CPU space for any active
+section plus the largest compact section payload; edge records are prefetch
+hints only.
 
-| Map | Whole-map QRP2 | Whole activation | Leaf-local P95/max | 192 KiB sections/oversize | Checked QRS2 sidecar | Worst active + preload |
+On E1M1, 3,340 eligible faces become 4,531 GT4 templates and 573 source-order
+objects. The whole compact payload falls from the face-object prototype's 1,508
+KiB to 1,213 KiB. More importantly, a leaf needs only 54/70 KiB CPU P95/max and
+77/100 KiB GPU P95/max. Thirty-seven checked sections cover the map with no
+oversize section, a 4,297 KiB CD sidecar, and a 227 KiB worst CPU active plus
+arbitrary-payload preload. All maps fit both base-topology active limits. E1M8 alone needs 61
+cell/object commands, covering 136 faces and 9 KiB of base packets, routed back
+to the exact old writer to keep its worst GPU cell at 119 KiB.
+
+| Map | QRS3 sections / GPU spills | Sidecar | Leaf CPU P95/max | Leaf base-GPU P95/max | Worst arbitrary transition | Core + transition / arena headroom |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Start | 1,555 KiB | 2,053 KiB | 152/223 KiB | 85/21 | 5,938 KiB | 293 KiB |
-| E1M1 | 1,508 KiB | 2,012 KiB | 148/200 KiB | 84/3 | 5,861 KiB | 285 KiB |
-| E1M2 | 1,653 KiB | 2,266 KiB | 135/200 KiB | 76/1 | 5,439 KiB | 296 KiB |
-| E1M3 | 1,401 KiB | 1,927 KiB | 126/167 KiB | 48/0 | 3,648 KiB | 298 KiB |
-| E1M4 | 1,955 KiB | 2,592 KiB | 154/204 KiB | 119/7 | 8,219 KiB | 299 KiB |
-| E1M5 | 1,183 KiB | 1,712 KiB | 132/187 KiB | 49/0 | 3,539 KiB | 287 KiB |
-| E1M6 | 938 KiB | 1,295 KiB | 126/221 KiB | 54/4 | 3,753 KiB | 303 KiB |
-| E1M7 | 430 KiB | 591 KiB | 144/188 KiB | 20/0 | 1,452 KiB | 273 KiB |
-| E1M8 | 1,119 KiB | 1,515 KiB | 219/267 KiB | 220/84 | 15,082 KiB | 360 KiB |
+| Start | 21 / 0 | 2,453 KiB | 52/62 KiB | 72/91 KiB | 221 KiB | 497/361 KiB |
+| E1M1 | 37 / 0 | 4,297 KiB | 54/70 KiB | 77/100 KiB | 227 KiB | 512/346 KiB |
+| E1M2 | 31 / 0 | 3,673 KiB | 50/75 KiB | 70/99 KiB | 229 KiB | 625/233 KiB |
+| E1M3 | 20 / 0 | 2,330 KiB | 42/51 KiB | 60/70 KiB | 221 KiB | 687/171 KiB |
+| E1M4 | 40 / 0 | 4,468 KiB | 53/67 KiB | 74/91 KiB | 228 KiB | 590/269 KiB |
+| E1M5 | 21 / 0 | 2,465 KiB | 46/66 KiB | 64/87 KiB | 230 KiB | 607/252 KiB |
+| E1M6 | 22 / 0 | 2,561 KiB | 50/84 KiB | 68/112 KiB | 226 KiB | 649/209 KiB |
+| E1M7 | 5 / 0 | 542 KiB | 51/55 KiB | 70/75 KiB | 217 KiB | 575/284 KiB |
+| E1M8 | 83 / 61 | 10,389 KiB | 86/92 KiB | 114/119 KiB | 231 KiB | 477/382 KiB |
+
+This is feasible only as a replacement for the current resident renderer, not
+as another heap allocation beside it. The current E1M1 PSB5 resident lumps use
+673 KiB. Keeping collision/gameplay data and removing renderer-owned vertices,
+texture info, faces, mark surfaces, and PVS leaves a 285 KiB core, reclaiming
+387 KiB inside the existing 880 KiB arena. Core plus the worst arbitrary QRS3
+transition is 512 KiB, leaving 346 KiB there. Every Episode 1 map retains at
+least 171 KiB by the same conservative split. The runtime loader still has to
+implement and validate this ownership split, but physical RAM is no longer an
+unanswered objection.
+
+The GPU column is deliberately limited to fixed L0 packets plus current base
+fallback. Adaptive affine expansion is not silently counted as free. QRC3's
+exact E1M1 route reached a 108,488-byte conservative combined high-water in the
+older face-object model, but masked-object overprojection changes that bound.
+The first runtime island must measure installed QRP3 prefixes plus exact old
+writer adaptive/fallback use and spill more object commands when the 120 KiB
+limit would be crossed. No visual-neutral acceptance claim is valid before that
+PSoXide high-water and hash gate passes.
 
 This also identifies a second missing layer: object granularity. E1M1's exact
 face-object form averages 262.09 cell commands, while the retail Quake II trace
@@ -639,38 +671,38 @@ cargo run --release --bin fixed-quad-tessellation-census
 The next implementation is therefore a cooker/runtime contract, not another
 feature branch inside the current per-face writer:
 
-1. The cooker triangulates each convex surface once, pairs adjacent fan
-   triangles into fixed GT4s, emits the odd GT3 remainder, and assigns compact
-   batch-local position indices.
-2. It prebuilds invariant command, colour, UV, CLUT and TPAGE fields for both
-   display pools and gives each packet object a stable identity.
-3. A variable leaf/PVS-and-topology-keyed working set reserves the complete
-   theoretical ordinary packet shape, including screen-rejected slots. The
-   measured maximum is 75,648 bytes and the conservative combined high-water
-   is 108,488 of the safe 122,880 bytes. A map-global prefix remains rejected.
-   Each display pool owns its own key and contents; misses rebuild invariant
-   fields directly and never copy last frame's stream.
-4. The selected-face stream retains source/OT order. Only order-stable object
-   ranges use direct splices; near, water, sky, and ambiguous ranges keep their
-   existing paths.
-5. The runtime consumes cooker-authored local indices sequentially, projects
-   each object position once, and patches only current-pool XY/link words.
-   Runtime hash tables, lookup/scatter maps, and whole-stream copies are ruled
-   out by the measured regressions above.
-6. Adaptive affine leaves become a fixed-capacity topology/packet cache keyed
-   by source packet and the exact selected topology class, with deferred
-   reclamation across GPU ownership and the existing dynamic fallback. QRC3's
-   98.43% conditional and 76.04% overall topology persistence are the cache-hit
-   targets; the current writer remains authoritative on a miss.
+1. Split the 880 KiB resident arena into collision/gameplay core and render
+   streaming tail. Renderer-owned vertices, texture info, faces, mark surfaces,
+   and PVS leave the permanent core only after the QRP3 loader can validate and
+   replace every reference.
+2. The cooker groups consecutive eligible faces into bounded QRP3 objects,
+   pairs adjacent fan triangles into fixed GT4s, assigns object-local u8
+   position indices, and emits exact source-face masks per cell. Odd GT3 and
+   non-ordinary work remain explicit fallback records.
+3. Section activation writes invariant command, colour, UV, CLUT, and TPAGE
+   fields directly into reserved prefixes of both existing GPU arenas. Compact
+   invariant/run input is discarded; the CPU tail retains only object, face,
+   position-reference, source-position, cell, command, and projection records.
+4. The frame path consumes one object command, projects its bounded position
+   range sequentially, applies dynamic face masks and GTE NCLIP, patches only
+   current-pool XY/tag words, and links surviving packet ranges. It performs no
+   hash lookup, trait dispatch, whole-stream copy, or per-face packet build.
+5. Source face identities merge accelerated objects and the old authoritative
+   fallback in exact order. GPU-cap spills use that same path, as do near,
+   water, sky, animated, odd, adaptive, and otherwise ambiguous faces.
+6. Only after the base masked-object island is exact and faster should adaptive
+   affine leaves become a fixed-capacity topology extension. QRC3's 98.43%
+   conditional and 76.04% overall topology persistence remain its cache-hit
+   targets, but the cache must attach to QRP3 objects rather than wrap the old
+   writer.
 
-The clean-room decomp crate now encodes this contract in
-`renderer::resident_packets`: exact fan-packet footprints, dual-pool GT4 patch
-isolation, deterministic cell-local placement, preserved render order, and a
-per-view arena high-water proof. QRC3 now supplies the adaptive packet
-provenance that the earlier optimistic audit lacked. A feature-gated topology
-working-set implementation is authorized, but it must retain the current
-writer on misses and pass PSoXide gameplay, VRAM, display, packet-order,
-arena-high-water, and canonical 0.122 fps noise-band gates before acceptance.
+The clean-room decomp crate's `renderer::resident_packets` model supplied the
+packet footprint, dual-pool patch isolation, deterministic placement, and
+arena high-water rules. QRP3/QRS3 now express their Quake-specific source-order,
+mask, streaming, and collision-core contract in checked formats. The runtime
+must retain the current writer on fallback and pass PSoXide gameplay, VRAM,
+display, packet-order, CPU/GPU high-water, and canonical 0.122 fps noise-band
+gates before acceptance.
 
 The runtime residency controls now close the per-root and per-polygon forms.
 A bounded 26-slot L2 stream cache remained exact at 22.276 fps. Replacing its

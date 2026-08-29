@@ -13,9 +13,13 @@ use quake_cook::{
 };
 use quake_formats::resident::ResidentMap;
 use quake_formats::{
-    Plane, RenderQuad, RenderQuadCommand, RenderQuadObject, RenderQuadRun, SliceReader,
-    FACE_BACKSIDE, FACE_BAKED_LIGHT, FACE_BAKED_UV, RENDER_QUAD_COMMAND_DYNAMIC_FACING,
-    RENDER_QUAD_OBJECT_BACKSIDE, RENDER_QUAD_OBJECT_MAX_QUADS, RENDER_QUAD_RUN_PATCH_CLUT,
+    LumpKind, Plane, PsbIndex, RenderQuad, RenderQuadCommand, RenderQuadFace, RenderQuadObject,
+    RenderQuadRun, SliceReader, FACE_BACKSIDE, FACE_BAKED_LIGHT, FACE_BAKED_UV,
+    RENDER_QUAD_COMMAND_BYTES, RENDER_QUAD_FACE_BACKSIDE, RENDER_QUAD_FACE_BYTES,
+    RENDER_QUAD_HEADER_BYTES, RENDER_QUAD_OBJECT_BYTES, RENDER_QUAD_OBJECT_MAX_FACES,
+    RENDER_QUAD_OBJECT_MAX_POSITIONS, RENDER_QUAD_OBJECT_MAX_QUADS, RENDER_QUAD_PACKET_BYTES,
+    RENDER_QUAD_POSITION_BYTES, RENDER_QUAD_PROJECTED_POSITION_BYTES, RENDER_QUAD_RECORD_BYTES,
+    RENDER_QUAD_REFERENCE_BYTES, RENDER_QUAD_RUN_BYTES, RENDER_QUAD_RUN_PATCH_CLUT,
     RENDER_SECTION_NONE, RESIDENT_MAP_ARENA_BYTES, TEXTURE_INVISIBLE, TEXTURE_LAYERED_SKY,
     TEXTURE_LIQUID, TEXTURE_NULL, TEXTURE_SKY,
 };
@@ -36,7 +40,8 @@ const LEAF_BOUNDS_GRID: i16 = 32;
 const LEAF_BOUNDS_GRID_SHIFT: u32 = LEAF_BOUNDS_GRID.trailing_zeros();
 const GPU_ARENA_BYTES: usize = 128 * 1024;
 const GPU_ARENA_SAFETY_BYTES: usize = 8 * 1024;
-const RENDER_SECTION_TARGET_BYTES: usize = 192 * 1024;
+const RENDER_SECTION_CPU_ACTIVE_TARGET_BYTES: usize = 96 * 1024;
+const RENDER_SECTION_GPU_TARGET_BYTES: usize = GPU_ARENA_BYTES - GPU_ARENA_SAFETY_BYTES;
 const HOT_PREFIX_KIB: [usize; 5] = [0, 16, 32, 48, 64];
 
 const fn encode_leaf_bound_min(value: i16) -> i8 {
@@ -152,6 +157,8 @@ struct MapCensus {
     invariant_facing_pairs: usize,
     quad_payload: QuadPayloadMetrics,
     masked_objects: MaskedObjectMetrics,
+    resident_bytes: usize,
+    resident_core_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -165,6 +172,9 @@ struct QuadPayloadMetrics {
     invariant_commands: usize,
     dynamic_commands: usize,
     pruned_back_commands: usize,
+    spilled_commands: usize,
+    spilled_faces: usize,
+    spill_fallback_bytes: usize,
     template_faces: usize,
     excluded_faces: usize,
     baked_overflow_corners: usize,
@@ -192,6 +202,9 @@ struct QuadPayloadMetrics {
     section_activation_p50_bytes: usize,
     section_activation_p95_bytes: usize,
     section_activation_max_bytes: usize,
+    section_gpu_p50_bytes: usize,
+    section_gpu_p95_bytes: usize,
+    section_gpu_max_bytes: usize,
     section_transition_max_bytes: usize,
 }
 
@@ -741,6 +754,50 @@ fn percentile(values: impl IntoIterator<Item = usize>, percentile: usize) -> usi
     values[index]
 }
 
+fn packed_lump_bytes(index: &PsbIndex, lumps: &[LumpKind]) -> Option<usize> {
+    lumps.iter().try_fold(0usize, |bytes, &kind| {
+        bytes
+            .checked_add(3)
+            .map(|bytes| bytes & !3)
+            .and_then(|bytes| bytes.checked_add(index.lump(kind).len as usize))
+    })
+}
+
+fn resident_and_collision_core_bytes(index: &PsbIndex) -> Result<(usize, usize)> {
+    const RESIDENT: [LumpKind; 13] = [
+        LumpKind::ModelData,
+        LumpKind::Vertices,
+        LumpKind::Planes,
+        LumpKind::TextureInfo,
+        LumpKind::Faces,
+        LumpKind::MarkSurfaces,
+        LumpKind::Visibility,
+        LumpKind::Leaves,
+        LumpKind::Nodes,
+        LumpKind::ClipNodes,
+        LumpKind::Models,
+        LumpKind::Strings,
+        LumpKind::Entities,
+    ];
+    // Vertices, texture info, faces, mark surfaces, and PVS are replaced by
+    // the streamed render section. Nodes and leaves remain because collision,
+    // point-leaf queries, entity visibility, and submodel ownership use them.
+    const CORE: [LumpKind; 8] = [
+        LumpKind::ModelData,
+        LumpKind::Planes,
+        LumpKind::Leaves,
+        LumpKind::Nodes,
+        LumpKind::ClipNodes,
+        LumpKind::Models,
+        LumpKind::Strings,
+        LumpKind::Entities,
+    ];
+    Ok((
+        packed_lump_bytes(index, &RESIDENT).ok_or("resident lump byte count overflow")?,
+        packed_lump_bytes(index, &CORE).ok_or("resident core byte count overflow")?,
+    ))
+}
+
 fn source_leaf_bounds(bsp: &Bsp<'_>) -> Vec<LeafBounds> {
     bsp.lump(BspLump::Leaves)
         .chunks_exact(28)
@@ -802,69 +859,66 @@ fn leaf_invariant_facing(plane: Plane, face_flags: u16, bounds: LeafBounds) -> O
     Some(behind == (face_flags & FACE_BACKSIDE != 0))
 }
 
-fn dense_position(
-    source_index: u16,
-    source_positions: &[[i16; 3]],
-    indices: &mut BTreeMap<u16, u16>,
-    positions: &mut Vec<[i16; 3]>,
-) -> Result<u16> {
-    if let Some(&index) = indices.get(&source_index) {
-        return Ok(index);
-    }
-    let position = *source_positions
-        .get(source_index as usize)
-        .ok_or("quad template references a missing source position")?;
-    let index = u16::try_from(positions.len()).map_err(|_| "quad template position overflow")?;
-    positions.push(position);
-    indices.insert(source_index, index);
-    Ok(index)
-}
-
 fn leaf_local_quad_memory(
     input: &RenderQuadPayloadInput,
     commands: &[RenderQuadCommand],
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize)> {
+    let mut face_count = 0usize;
     let mut quad_count = 0usize;
-    let mut positions = BTreeSet::new();
+    let mut position_count = 0usize;
+    let mut run_count = 0usize;
     for command in commands {
         let object = input
             .objects
             .get(command.object as usize)
-            .ok_or("leaf-local QRP2 command references a missing object")?;
+            .ok_or("leaf-local QRP3 command references a missing object")?;
+        face_count = face_count
+            .checked_add(object.face_count as usize)
+            .ok_or("leaf-local QRP3 face count overflow")?;
         quad_count = quad_count
             .checked_add(object.quad_count as usize)
-            .ok_or("leaf-local QRP2 quad count overflow")?;
-        for quad_index in
-            object.first_quad as usize..object.first_quad as usize + object.quad_count as usize
-        {
-            let quad = input
-                .quads
-                .get(quad_index)
-                .ok_or("leaf-local QRP2 object has a bad quad range")?;
-            positions.extend(quad.positions);
-        }
+            .ok_or("leaf-local QRP3 quad count overflow")?;
+        position_count = position_count
+            .checked_add(object.position_count as usize)
+            .ok_or("leaf-local QRP3 position count overflow")?;
+        run_count = run_count
+            .checked_add(object.run_count as usize)
+            .ok_or("leaf-local QRP3 run count overflow")?;
     }
     let object_count = commands.len();
-    let objects_end = 64usize
-        .checked_add(object_count * 24)
-        .ok_or("leaf-local QRP2 payload overflow")?;
-    let quads_end = objects_end
-        .checked_add(quad_count * 40)
-        .ok_or("leaf-local QRP2 payload overflow")?;
+    let objects_end = RENDER_QUAD_HEADER_BYTES
+        .checked_add(object_count * RENDER_QUAD_OBJECT_BYTES)
+        .ok_or("leaf-local QRP3 payload overflow")?;
+    let faces_end = objects_end
+        .checked_add(face_count * RENDER_QUAD_FACE_BYTES)
+        .ok_or("leaf-local QRP3 payload overflow")?;
+    let quads_end = faces_end
+        .checked_add(quad_count * RENDER_QUAD_RECORD_BYTES)
+        .ok_or("leaf-local QRP3 payload overflow")?;
     let positions_end = quads_end
-        .checked_add(positions.len() * 6)
-        .ok_or("leaf-local QRP2 payload overflow")?;
+        .checked_add(position_count * RENDER_QUAD_POSITION_BYTES)
+        .ok_or("leaf-local QRP3 payload overflow")?;
     let runs_offset = (positions_end + 3) & !3;
     let payload_bytes = runs_offset
-        .checked_add(object_count * 8)
+        .checked_add(run_count * RENDER_QUAD_RUN_BYTES)
         .and_then(|bytes| bytes.checked_add(12))
-        .and_then(|bytes| bytes.checked_add(object_count * 4))
-        .ok_or("leaf-local QRP2 payload overflow")?;
-    let activation_bytes = payload_bytes
-        .checked_add(quad_count * 52 * 2)
-        .and_then(|bytes| bytes.checked_add(positions.len() * 8))
-        .ok_or("leaf-local QRP2 activation overflow")?;
-    Ok((payload_bytes, activation_bytes))
+        .and_then(|bytes| bytes.checked_add(object_count * RENDER_QUAD_COMMAND_BYTES))
+        .ok_or("leaf-local QRP3 payload overflow")?;
+    let runtime_metadata_bytes = object_count
+        .checked_mul(RENDER_QUAD_OBJECT_BYTES)
+        .and_then(|bytes| bytes.checked_add(face_count * RENDER_QUAD_FACE_BYTES))
+        .and_then(|bytes| bytes.checked_add(quad_count * RENDER_QUAD_REFERENCE_BYTES))
+        .and_then(|bytes| bytes.checked_add(position_count * RENDER_QUAD_POSITION_BYTES))
+        .and_then(|bytes| bytes.checked_add(12))
+        .and_then(|bytes| bytes.checked_add(object_count * RENDER_QUAD_COMMAND_BYTES))
+        .ok_or("leaf-local QRP3 runtime metadata overflow")?;
+    let activation_bytes = runtime_metadata_bytes
+        .checked_add(position_count * RENDER_QUAD_PROJECTED_POSITION_BYTES)
+        .ok_or("leaf-local QRP3 activation overflow")?;
+    let packet_pool_bytes = quad_count
+        .checked_mul(RENDER_QUAD_PACKET_BYTES)
+        .ok_or("leaf-local QRP3 packet-pool overflow")?;
+    Ok((payload_bytes, activation_bytes, packet_pool_bytes))
 }
 
 fn section_quad_memory(
@@ -872,93 +926,102 @@ fn section_quad_memory(
     first_cell: usize,
     end_cell: usize,
     fallback_bytes: &[usize],
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize)> {
     let cells = input
         .cells
         .get(first_cell..end_cell)
-        .ok_or("QRP2 section cell range is invalid")?;
+        .ok_or("QRP3 section cell range is invalid")?;
     let mut object_indices = BTreeSet::new();
     let mut command_count = 0usize;
     for cell in cells {
         command_count = command_count
             .checked_add(cell.commands.len())
-            .ok_or("QRP2 section command count overflow")?;
+            .ok_or("QRP3 section command count overflow")?;
         object_indices.extend(cell.commands.iter().map(|command| command.object));
     }
+    let mut face_count = 0usize;
     let mut quad_count = 0usize;
-    let mut positions = BTreeSet::new();
+    let mut position_count = 0usize;
+    let mut run_count = 0usize;
     for object_index in &object_indices {
         let object = input
             .objects
             .get(*object_index as usize)
-            .ok_or("QRP2 section references a missing object")?;
+            .ok_or("QRP3 section references a missing object")?;
+        face_count = face_count
+            .checked_add(object.face_count as usize)
+            .ok_or("QRP3 section face count overflow")?;
         quad_count = quad_count
             .checked_add(object.quad_count as usize)
-            .ok_or("QRP2 section quad count overflow")?;
-        for quad_index in
-            object.first_quad as usize..object.first_quad as usize + object.quad_count as usize
-        {
-            let quad = input
-                .quads
-                .get(quad_index)
-                .ok_or("QRP2 section object has a bad quad range")?;
-            positions.extend(quad.positions);
-        }
+            .ok_or("QRP3 section quad count overflow")?;
+        position_count = position_count
+            .checked_add(object.position_count as usize)
+            .ok_or("QRP3 section position count overflow")?;
+        run_count = run_count
+            .checked_add(object.run_count as usize)
+            .ok_or("QRP3 section run count overflow")?;
     }
     let object_count = object_indices.len();
     let objects_bytes = object_count
-        .checked_mul(24)
-        .ok_or("QRP2 section payload overflow")?;
+        .checked_mul(RENDER_QUAD_OBJECT_BYTES)
+        .ok_or("QRP3 section payload overflow")?;
+    let faces_bytes = face_count
+        .checked_mul(RENDER_QUAD_FACE_BYTES)
+        .ok_or("QRP3 section payload overflow")?;
     let quads_bytes = quad_count
-        .checked_mul(40)
-        .ok_or("QRP2 section payload overflow")?;
-    let positions_bytes = positions
-        .len()
-        .checked_mul(6)
-        .ok_or("QRP2 section payload overflow")?;
-    let runs_bytes = object_count
-        .checked_mul(8)
-        .ok_or("QRP2 section payload overflow")?;
+        .checked_mul(RENDER_QUAD_RECORD_BYTES)
+        .ok_or("QRP3 section payload overflow")?;
+    let positions_bytes = position_count
+        .checked_mul(RENDER_QUAD_POSITION_BYTES)
+        .ok_or("QRP3 section payload overflow")?;
+    let runs_bytes = run_count
+        .checked_mul(RENDER_QUAD_RUN_BYTES)
+        .ok_or("QRP3 section payload overflow")?;
     let cells_bytes = cells
         .len()
         .checked_mul(12)
-        .ok_or("QRP2 section payload overflow")?;
+        .ok_or("QRP3 section payload overflow")?;
     let commands_bytes = command_count
-        .checked_mul(4)
-        .ok_or("QRP2 section payload overflow")?;
-    let positions_end = 64usize
+        .checked_mul(RENDER_QUAD_COMMAND_BYTES)
+        .ok_or("QRP3 section payload overflow")?;
+    let positions_end = RENDER_QUAD_HEADER_BYTES
         .checked_add(objects_bytes)
+        .and_then(|bytes| bytes.checked_add(faces_bytes))
         .and_then(|bytes| bytes.checked_add(quads_bytes))
         .and_then(|bytes| bytes.checked_add(positions_bytes))
-        .ok_or("QRP2 section payload overflow")?;
+        .ok_or("QRP3 section payload overflow")?;
     let payload_bytes = ((positions_end + 3) & !3)
         .checked_add(runs_bytes)
         .and_then(|bytes| bytes.checked_add(cells_bytes))
         .and_then(|bytes| bytes.checked_add(commands_bytes))
-        .ok_or("QRP2 section payload overflow")?;
+        .ok_or("QRP3 section payload overflow")?;
+    let runtime_metadata_bytes = objects_bytes
+        .checked_add(faces_bytes)
+        .and_then(|bytes| bytes.checked_add(quad_count * RENDER_QUAD_REFERENCE_BYTES))
+        .and_then(|bytes| bytes.checked_add(positions_bytes))
+        .and_then(|bytes| bytes.checked_add(cells_bytes))
+        .and_then(|bytes| bytes.checked_add(commands_bytes))
+        .ok_or("QRP3 section runtime metadata overflow")?;
     let packet_pool_bytes = quad_count
-        .checked_mul(52)
-        .ok_or("QRP2 section packet-pool overflow")?;
-    let projection_bytes = positions
-        .len()
-        .checked_mul(8)
-        .ok_or("QRP2 section projection overflow")?;
-    let dual_packet_pool_bytes = packet_pool_bytes
-        .checked_mul(2)
-        .ok_or("QRP2 section packet-pool overflow")?;
+        .checked_mul(RENDER_QUAD_PACKET_BYTES)
+        .ok_or("QRP3 section packet-pool overflow")?;
+    let projection_bytes = position_count
+        .checked_mul(RENDER_QUAD_PROJECTED_POSITION_BYTES)
+        .ok_or("QRP3 section projection overflow")?;
     let fallback = fallback_bytes
         .get(first_cell..end_cell)
-        .ok_or("QRP2 section fallback range is invalid")?
+        .ok_or("QRP3 section fallback range is invalid")?
         .iter()
         .copied()
         .max()
         .unwrap_or(0);
-    let activation_bytes = payload_bytes
-        .checked_add(dual_packet_pool_bytes)
-        .and_then(|bytes| bytes.checked_add(projection_bytes))
-        .and_then(|bytes| bytes.checked_add(fallback))
-        .ok_or("QRP2 section activation overflow")?;
-    Ok((payload_bytes, activation_bytes))
+    let activation_bytes = runtime_metadata_bytes
+        .checked_add(projection_bytes)
+        .ok_or("QRP3 section activation overflow")?;
+    let gpu_bytes = packet_pool_bytes
+        .checked_add(fallback)
+        .ok_or("QRP3 section GPU high-water overflow")?;
+    Ok((payload_bytes, activation_bytes, gpu_bytes))
 }
 
 fn encode_local_quad_section(
@@ -969,69 +1032,87 @@ fn encode_local_quad_section(
     let source_cells = source
         .cells
         .get(first_cell..end_cell)
-        .ok_or("QRP2 section cell range is invalid")?;
+        .ok_or("QRP3 section cell range is invalid")?;
     let object_indices = source_cells
         .iter()
         .flat_map(|cell| cell.commands.iter().map(|command| command.object))
         .collect::<BTreeSet<_>>();
     let mut output = RenderQuadPayloadInput::default();
     let mut object_remap = BTreeMap::<u16, u16>::new();
-    let mut position_remap = BTreeMap::<u16, u16>::new();
 
     for source_object_index in object_indices {
         let source_object = *source
             .objects
             .get(source_object_index as usize)
-            .ok_or("QRP2 section references a missing object")?;
+            .ok_or("QRP3 section references a missing object")?;
         let local_object_index = u16::try_from(output.objects.len())
-            .map_err(|_| "QRP2 section object count exceeds u16")?;
+            .map_err(|_| "QRP3 section object count exceeds u16")?;
         object_remap.insert(source_object_index, local_object_index);
+        let first_face =
+            u16::try_from(output.faces.len()).map_err(|_| "QRP3 section face count exceeds u16")?;
         let first_quad =
-            u16::try_from(output.quads.len()).map_err(|_| "QRP2 section quad count exceeds u16")?;
+            u16::try_from(output.quads.len()).map_err(|_| "QRP3 section quad count exceeds u16")?;
+        let first_position = u16::try_from(output.positions.len())
+            .map_err(|_| "QRP3 section position count exceeds u16")?;
+        let first_run =
+            u16::try_from(output.runs.len()).map_err(|_| "QRP3 section run count exceeds u16")?;
+
+        for source_face_index in source_object.first_face as usize
+            ..source_object.first_face as usize + source_object.face_count as usize
+        {
+            let mut face = *source
+                .faces
+                .get(source_face_index)
+                .ok_or("QRP3 section object has a bad face range")?;
+            let relative = face
+                .first_quad
+                .checked_sub(source_object.first_quad)
+                .ok_or("QRP3 section face begins before its object")?;
+            face.first_quad = first_quad
+                .checked_add(relative)
+                .ok_or("QRP3 section face range exceeds u16")?;
+            output.faces.push(face);
+        }
         for source_quad_index in source_object.first_quad as usize
             ..source_object.first_quad as usize + source_object.quad_count as usize
         {
-            let mut quad = *source
-                .quads
-                .get(source_quad_index)
-                .ok_or("QRP2 section object has a bad quad range")?;
-            for position in &mut quad.positions {
-                *position = if let Some(&local) = position_remap.get(position) {
-                    local
-                } else {
-                    let value = *source
-                        .positions
-                        .get(*position as usize)
-                        .ok_or("QRP2 section quad references a missing position")?;
-                    let local = u16::try_from(output.positions.len())
-                        .map_err(|_| "QRP2 section position count exceeds u16")?;
-                    output.positions.push(value);
-                    position_remap.insert(*position, local);
-                    local
-                };
-            }
-            output.quads.push(quad);
+            output.quads.push(
+                *source
+                    .quads
+                    .get(source_quad_index)
+                    .ok_or("QRP3 section object has a bad quad range")?,
+            );
         }
-        let first_run =
-            u16::try_from(output.runs.len()).map_err(|_| "QRP2 section run count exceeds u16")?;
+        output.positions.extend_from_slice(
+            source
+                .positions
+                .get(
+                    source_object.first_position as usize
+                        ..source_object.first_position as usize
+                            + source_object.position_count as usize,
+                )
+                .ok_or("QRP3 section object has a bad position range")?,
+        );
         for source_run_index in source_object.first_run as usize
             ..source_object.first_run as usize + source_object.run_count as usize
         {
             let mut run = *source
                 .runs
                 .get(source_run_index)
-                .ok_or("QRP2 section object has a bad run range")?;
+                .ok_or("QRP3 section object has a bad run range")?;
             let relative = run
                 .first_quad
                 .checked_sub(source_object.first_quad)
-                .ok_or("QRP2 section run begins before its object")?;
+                .ok_or("QRP3 section run begins before its object")?;
             run.first_quad = first_quad
                 .checked_add(relative)
-                .ok_or("QRP2 section run range exceeds u16")?;
+                .ok_or("QRP3 section run range exceeds u16")?;
             output.runs.push(run);
         }
         output.objects.push(RenderQuadObject {
+            first_face,
             first_quad,
+            first_position,
             first_run,
             ..source_object
         });
@@ -1045,8 +1126,10 @@ fn encode_local_quad_section(
                 Ok(RenderQuadCommand {
                     object: *object_remap
                         .get(&command.object)
-                        .ok_or("QRP2 section command object was not localized")?,
+                        .ok_or("QRP3 section command object was not localized")?,
                     flags: command.flags,
+                    visible_faces: command.visible_faces,
+                    dynamic_faces: command.dynamic_faces,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1077,18 +1160,10 @@ fn push_masked_object(
     *quads = 0;
 }
 
-/// Measure an exact source-order object alternative. Consecutive eligible
-/// faces share one object even when their PVS/facing signatures differ; a
-/// runtime command would carry per-face visible and dynamic masks. This keeps
-/// ordering stable while testing whether coarser commands save enough work to
-/// justify projecting masked-out members of an admitted object.
-fn masked_object_metrics(
+fn masked_render_objects(
     surfaces: &[Surface],
     signatures: &[Vec<u64>],
-    view_faces: &[Vec<usize>],
-    planes: &[Plane],
-    source_bounds: &[LeafBounds],
-) -> Result<MaskedObjectMetrics> {
+) -> Result<Vec<MaskedRenderObject>> {
     let mut objects = Vec::new();
     let mut faces = Vec::new();
     let mut positions = BTreeSet::new();
@@ -1112,9 +1187,9 @@ fn masked_object_metrics(
             .filter(|position| !positions.contains(position))
             .count();
         if !faces.is_empty()
-            && (faces.len() == RETAIL_FACE_LIMIT
+            && (faces.len() == RENDER_QUAD_OBJECT_MAX_FACES
                 || quads + face_quads > RENDER_QUAD_OBJECT_MAX_QUADS
-                || positions.len() + added_positions > RETAIL_VERTEX_LIMIT)
+                || positions.len() + added_positions > RENDER_QUAD_OBJECT_MAX_POSITIONS)
         {
             push_masked_object(&mut objects, &mut faces, &mut positions, &mut quads);
         }
@@ -1123,6 +1198,22 @@ fn masked_object_metrics(
         quads += face_quads;
     }
     push_masked_object(&mut objects, &mut faces, &mut positions, &mut quads);
+    Ok(objects)
+}
+
+/// Measure an exact source-order object alternative. Consecutive eligible
+/// faces share one object even when their PVS/facing signatures differ; a
+/// runtime command would carry per-face visible and dynamic masks. This keeps
+/// ordering stable while testing whether coarser commands save enough work to
+/// justify projecting masked-out members of an admitted object.
+fn masked_object_metrics(
+    surfaces: &[Surface],
+    signatures: &[Vec<u64>],
+    view_faces: &[Vec<usize>],
+    planes: &[Plane],
+    source_bounds: &[LeafBounds],
+) -> Result<MaskedObjectMetrics> {
+    let objects = masked_render_objects(surfaces, signatures)?;
 
     let mut metrics = MaskedObjectMetrics {
         objects: objects.len(),
@@ -1171,13 +1262,14 @@ fn masked_object_metrics(
     Ok(metrics)
 }
 
-/// Compile the real cooked map into the exact base-level subset QRP2 can own.
+/// Compile the real cooked map into the exact base-level subset QRP3 can own.
 ///
-/// One object is one planar source face (split only at the retail 32-quad
-/// ceiling), so a dynamic-facing command always has an authoritative plane.
-/// Adjacent fan triangles use the live renderer's `[previous,current,root,next]`
-/// GT4 order. Odd triangles, animated/special materials and adaptive
-/// subdivision remain explicitly budgeted fallback work.
+/// Consecutive eligible faces share one bounded object and cell commands carry
+/// exact visible/dynamic-facing masks. Object-local u8 position indices feed a
+/// sequential fixed kernel. Adjacent fan triangles retain the live renderer's
+/// `[previous,current,root,next]` GT4 order. Source face identities allow the
+/// accelerated stream to merge with odd-triangle, animated/special-material,
+/// near, and adaptive-subdivision fallback work without reordering the OT.
 fn build_quad_payload(
     surfaces: &[Surface],
     signatures: &[Vec<u64>],
@@ -1187,42 +1279,57 @@ fn build_quad_payload(
     source_positions: &[[i16; 3]],
 ) -> Result<QuadPayloadMetrics> {
     let mut input = RenderQuadPayloadInput::default();
-    let mut position_indices = BTreeMap::<u16, u16>::new();
-    let mut object_faces = Vec::<usize>::new();
     let mut metrics = QuadPayloadMetrics::default();
     let mut leaf_payload_bytes = Vec::with_capacity(view_faces.len());
     let mut leaf_activation_bytes = Vec::with_capacity(view_faces.len());
+    let mut leaf_packet_pool_bytes = Vec::with_capacity(view_faces.len());
+    let objects = masked_render_objects(surfaces, signatures)?;
 
     for (face_index, surface) in surfaces.iter().enumerate() {
         if signature_is_empty(&signatures[face_index]) {
             continue;
         }
-        if !surface.policy_visible || !surface.template_eligible {
-            if surface.policy_visible && !signature_is_empty(&signatures[face_index]) {
+        let root_triangles = surface.corners.len().saturating_sub(2);
+        let quad_count = root_triangles / 2;
+        if !surface.policy_visible || !surface.template_eligible || quad_count == 0 {
+            if surface.policy_visible {
                 metrics.excluded_faces += 1;
             }
             continue;
         }
-        let root_triangles = surface.corners.len().saturating_sub(2);
-        let quad_count = root_triangles / 2;
-        metrics.odd_fallback_triangles += root_triangles & 1;
-        if quad_count == 0 {
-            metrics.excluded_faces += 1;
-            continue;
-        }
         metrics.template_faces += 1;
+        metrics.odd_fallback_triangles += root_triangles & 1;
         metrics.baked_overflow_corners += surface
             .corners
             .iter()
             .filter(|corner| corner.color & 0xff00_0000 != 0)
             .count();
+    }
 
-        let mut first_pair = 0usize;
-        while first_pair < quad_count {
-            let object_quad_count = (quad_count - first_pair).min(RENDER_QUAD_OBJECT_MAX_QUADS);
-            let first_quad =
-                u16::try_from(input.quads.len()).map_err(|_| "quad template count exceeds QRP2")?;
-            for pair in first_pair..first_pair + object_quad_count {
+    for object_faces in &objects {
+        let first_face =
+            u16::try_from(input.faces.len()).map_err(|_| "render face count exceeds QRP3")?;
+        let first_quad =
+            u16::try_from(input.quads.len()).map_err(|_| "quad template count exceeds QRP3")?;
+        let first_position =
+            u16::try_from(input.positions.len()).map_err(|_| "quad position count exceeds QRP3")?;
+        let first_run =
+            u16::try_from(input.runs.len()).map_err(|_| "quad material-run count exceeds QRP3")?;
+        let mut local_indices = BTreeMap::<u16, u8>::new();
+        let mut local_positions = Vec::<[i16; 3]>::new();
+        let mut mins = [i16::MAX; 3];
+        let mut maxs = [i16::MIN; 3];
+
+        for &face_index in &object_faces.faces {
+            let surface = &surfaces[face_index];
+            for axis in 0..3 {
+                mins[axis] = mins[axis].min(surface.mins[axis]);
+                maxs[axis] = maxs[axis].max(surface.maxs[axis]);
+            }
+            let face_first_quad =
+                u16::try_from(input.quads.len()).map_err(|_| "quad template count exceeds QRP3")?;
+            let face_quad_count = surface.corners.len().saturating_sub(2) / 2;
+            for pair in 0..face_quad_count {
                 let previous = 1 + pair * 2;
                 let current = previous + 1;
                 let next = current + 1;
@@ -1232,14 +1339,20 @@ fn build_quad_payload(
                     &surface.corners[0],
                     &surface.corners[next],
                 ];
-                let mut positions = [0u16; 4];
+                let mut positions = [0u8; 4];
                 for (destination, corner) in positions.iter_mut().zip(source_corners) {
-                    *destination = dense_position(
-                        corner.position,
-                        source_positions,
-                        &mut position_indices,
-                        &mut input.positions,
-                    )?;
+                    *destination = if let Some(&local) = local_indices.get(&corner.position) {
+                        local
+                    } else {
+                        let value = *source_positions
+                            .get(corner.position as usize)
+                            .ok_or("quad template references a missing source position")?;
+                        let local = u8::try_from(local_positions.len())
+                            .map_err(|_| "QRP3 object position count exceeds u8")?;
+                        local_positions.push(value);
+                        local_indices.insert(corner.position, local);
+                        local
+                    };
                 }
                 input.quads.push(RenderQuad {
                     positions,
@@ -1255,77 +1368,49 @@ fn build_quad_payload(
                     ],
                 });
             }
-            let first_run = u16::try_from(input.runs.len())
-                .map_err(|_| "quad material-run count exceeds QRP2")?;
-            let object_quad_count = u16::try_from(object_quad_count).unwrap();
-            input.runs.push(RenderQuadRun {
-                first_quad,
-                quad_count: object_quad_count,
+            let face_quad_count = u16::try_from(face_quad_count).unwrap();
+            input.faces.push(RenderQuadFace {
+                source_face: u16::try_from(face_index)
+                    .map_err(|_| "source face index exceeds QRP3")?,
+                first_quad: face_first_quad,
+                quad_count: face_quad_count,
+                plane: surface.plane,
                 material: surface.material,
-                flags: RENDER_QUAD_RUN_PATCH_CLUT,
-            });
-            input.objects.push(RenderQuadObject {
-                first_quad,
-                quad_count: object_quad_count,
-                first_run,
-                run_count: 1,
-                mins: surface.mins,
-                maxs: surface.maxs,
                 flags: if surface.face_flags & FACE_BACKSIDE != 0 {
-                    RENDER_QUAD_OBJECT_BACKSIDE
+                    RENDER_QUAD_FACE_BACKSIDE
                 } else {
                     0
                 },
-                plane: surface.plane,
             });
-            object_faces.push(face_index);
-            first_pair += object_quad_count as usize;
-        }
-    }
-
-    for view_index in 0..view_faces.len() {
-        let bounds = source_bounds[view_index + 1];
-        let mut commands = Vec::new();
-        for (object_index, &face_index) in object_faces.iter().enumerate() {
-            if !signature_has(&signatures[face_index], view_index) {
-                continue;
-            }
-            let surface = &surfaces[face_index];
-            let plane = *planes
-                .get(surface.plane as usize)
-                .ok_or("quad template face plane is out of range")?;
-            let flags = match leaf_invariant_facing(plane, surface.face_flags, bounds) {
-                Some(false) => {
-                    metrics.pruned_back_commands += 1;
-                    continue;
-                }
-                Some(true) => {
-                    metrics.invariant_commands += 1;
-                    0
-                }
-                None => {
-                    metrics.dynamic_commands += 1;
-                    RENDER_QUAD_COMMAND_DYNAMIC_FACING
-                }
-            };
-            commands.push(RenderQuadCommand {
-                object: u16::try_from(object_index)
-                    .map_err(|_| "quad object count exceeds QRP2")?,
-                flags,
+            input.runs.push(RenderQuadRun {
+                first_quad: face_first_quad,
+                quad_count: face_quad_count,
+                material: surface.material,
+                flags: RENDER_QUAD_RUN_PATCH_CLUT,
             });
         }
-        metrics.commands += commands.len();
-        let (payload_bytes, activation_bytes) = leaf_local_quad_memory(&input, &commands)?;
-        leaf_payload_bytes.push(payload_bytes);
-        leaf_activation_bytes.push(activation_bytes);
-        input.cells.push(RenderQuadCellInput {
-            leaf: u16::try_from(view_index + 1).map_err(|_| "QRP2 leaf count exceeds u16")?,
+        let position_count = u16::try_from(local_positions.len())
+            .map_err(|_| "QRP3 object position count exceeds u16")?;
+        if position_count == 0 || position_count as usize > RENDER_QUAD_OBJECT_MAX_POSITIONS {
+            return Err("QRP3 object position count exceeds its fixed-kernel limit".into());
+        }
+        input.positions.extend(local_positions);
+        input.objects.push(RenderQuadObject {
+            first_face,
+            face_count: u16::try_from(object_faces.faces.len()).unwrap(),
+            first_quad,
+            quad_count: u16::try_from(object_faces.quads).unwrap(),
+            first_position,
+            position_count,
+            first_run,
+            run_count: u16::try_from(object_faces.faces.len()).unwrap(),
+            mins,
+            maxs,
             flags: 0,
-            commands,
         });
     }
 
-    let mut fallback_bytes = Vec::new();
+    let mut fallback_bytes = Vec::with_capacity(view_faces.len());
     for (view_index, faces) in view_faces.iter().enumerate() {
         let bounds = source_bounds[view_index + 1];
         let mut bytes = 0usize;
@@ -1350,22 +1435,117 @@ fn build_quad_payload(
         fallback_bytes.push(bytes);
     }
 
+    for view_index in 0..view_faces.len() {
+        let bounds = source_bounds[view_index + 1];
+        let mut commands = Vec::new();
+        for (object_index, object) in objects.iter().enumerate() {
+            let mut visible_faces = 0u32;
+            let mut dynamic_faces = 0u32;
+            for (local_face, &face_index) in object.faces.iter().enumerate() {
+                if !signature_has(&signatures[face_index], view_index) {
+                    continue;
+                }
+                let surface = &surfaces[face_index];
+                let plane = *planes
+                    .get(surface.plane as usize)
+                    .ok_or("quad template face plane is out of range")?;
+                let bit = 1u32 << local_face;
+                match leaf_invariant_facing(plane, surface.face_flags, bounds) {
+                    Some(false) => metrics.pruned_back_commands += 1,
+                    Some(true) => {
+                        visible_faces |= bit;
+                        metrics.invariant_commands += 1;
+                    }
+                    None => {
+                        visible_faces |= bit;
+                        dynamic_faces |= bit;
+                        metrics.dynamic_commands += 1;
+                    }
+                }
+            }
+            if visible_faces != 0 {
+                commands.push(RenderQuadCommand {
+                    object: u16::try_from(object_index)
+                        .map_err(|_| "quad object count exceeds QRP3")?,
+                    flags: 0,
+                    visible_faces,
+                    dynamic_faces,
+                });
+            }
+        }
+        let mut packet_pool_bytes = commands.iter().try_fold(0usize, |bytes, command| {
+            let object = input
+                .objects
+                .get(command.object as usize)
+                .ok_or("QRP3 cell command references a missing object")?;
+            bytes
+                .checked_add(object.quad_count as usize * RENDER_QUAD_PACKET_BYTES)
+                .ok_or("QRP3 cell packet-pool size overflow")
+        })?;
+        while packet_pool_bytes + fallback_bytes[view_index] > RENDER_SECTION_GPU_TARGET_BYTES {
+            let Some((spill_index, _, selected_bytes)) = commands
+                .iter()
+                .enumerate()
+                .filter_map(|(command_index, command)| {
+                    let object = &objects[command.object as usize];
+                    let full_bytes = object.quads * RENDER_QUAD_PACKET_BYTES;
+                    let selected_bytes = object
+                        .faces
+                        .iter()
+                        .enumerate()
+                        .filter(|(local_face, _)| command.visible_faces & (1 << local_face) != 0)
+                        .map(|(_, face_index)| {
+                            surfaces[*face_index].corners.len().saturating_sub(2) / 2
+                                * RENDER_QUAD_PACKET_BYTES
+                        })
+                        .sum::<usize>();
+                    (full_bytes > selected_bytes).then_some((
+                        command_index,
+                        full_bytes - selected_bytes,
+                        selected_bytes,
+                    ))
+                })
+                .max_by_key(|(_, saving, _)| *saving)
+            else {
+                break;
+            };
+            let command = commands.remove(spill_index);
+            let object = &objects[command.object as usize];
+            let full_bytes = object.quads * RENDER_QUAD_PACKET_BYTES;
+            packet_pool_bytes -= full_bytes;
+            fallback_bytes[view_index] += selected_bytes;
+            metrics.spilled_commands += 1;
+            metrics.spilled_faces += command.visible_faces.count_ones() as usize;
+            metrics.spill_fallback_bytes += selected_bytes;
+        }
+        metrics.commands += commands.len();
+        let (payload_bytes, activation_bytes, packet_pool_bytes) =
+            leaf_local_quad_memory(&input, &commands)?;
+        leaf_payload_bytes.push(payload_bytes);
+        leaf_activation_bytes.push(activation_bytes);
+        leaf_packet_pool_bytes.push(packet_pool_bytes);
+        input.cells.push(RenderQuadCellInput {
+            leaf: u16::try_from(view_index + 1).map_err(|_| "QRP3 leaf count exceeds u16")?,
+            flags: 0,
+            commands,
+        });
+    }
+
     let encoded = encode_render_quad_payload(&input)?;
     metrics.payload_bytes = encoded.bytes.len();
-    metrics.activation_bytes = encoded.bytes.len()
-        + encoded.packet_pool_bytes as usize * 2
-        + encoded.projection_bytes as usize;
+    metrics.activation_bytes =
+        encoded.runtime_metadata_bytes as usize + encoded.projection_bytes as usize;
     metrics.objects = input.objects.len();
     metrics.quads = input.quads.len();
     metrics.positions = input.positions.len();
     metrics.fallback_p50_bytes = percentile(fallback_bytes.iter().copied(), 50);
     metrics.fallback_p95_bytes = percentile(fallback_bytes.iter().copied(), 95);
     metrics.fallback_max_bytes = fallback_bytes.iter().copied().max().unwrap_or(0);
-    let leaf_total_bytes = leaf_activation_bytes
+    let leaf_total_bytes = leaf_packet_pool_bytes
         .iter()
         .copied()
         .zip(fallback_bytes.iter().copied())
-        .map(|(activation, fallback)| activation + fallback)
+        .map(|(packets, fallback)| packets + fallback)
         .collect::<Vec<_>>();
     metrics.leaf_payload_total_bytes = leaf_payload_bytes.iter().sum();
     metrics.leaf_payload_p50_bytes = percentile(leaf_payload_bytes.iter().copied(), 50);
@@ -1378,41 +1558,59 @@ fn build_quad_payload(
     metrics.leaf_total_p95_bytes = percentile(leaf_total_bytes.iter().copied(), 95);
     metrics.leaf_total_max_bytes = leaf_total_bytes.into_iter().max().unwrap_or(0);
 
-    let mut section_ranges = Vec::<(usize, usize, usize, usize)>::new();
+    let mut section_ranges = Vec::<(usize, usize, usize, usize, usize)>::new();
     let mut first_cell = 0usize;
     while first_cell < input.cells.len() {
         let mut end_cell = first_cell + 1;
-        let (mut payload_bytes, mut activation_bytes) =
+        let (mut payload_bytes, mut activation_bytes, mut gpu_bytes) =
             section_quad_memory(&input, first_cell, end_cell, &fallback_bytes)?;
         while end_cell < input.cells.len() {
-            let (candidate_payload, candidate_activation) =
+            let (candidate_payload, candidate_activation, candidate_gpu) =
                 section_quad_memory(&input, first_cell, end_cell + 1, &fallback_bytes)?;
-            if candidate_activation > RENDER_SECTION_TARGET_BYTES {
+            if candidate_activation > RENDER_SECTION_CPU_ACTIVE_TARGET_BYTES
+                || candidate_gpu > RENDER_SECTION_GPU_TARGET_BYTES
+            {
                 break;
             }
             end_cell += 1;
             payload_bytes = candidate_payload;
             activation_bytes = candidate_activation;
+            gpu_bytes = candidate_gpu;
         }
-        section_ranges.push((first_cell, end_cell, payload_bytes, activation_bytes));
+        section_ranges.push((
+            first_cell,
+            end_cell,
+            payload_bytes,
+            activation_bytes,
+            gpu_bytes,
+        ));
         first_cell = end_cell;
     }
     let section_leaves = section_ranges
         .iter()
-        .map(|(first, end, _, _)| end - first)
+        .map(|(first, end, _, _, _)| end - first)
         .collect::<Vec<_>>();
     let section_activations = section_ranges
         .iter()
-        .map(|(_, _, _, activation)| *activation)
+        .map(|(_, _, _, activation, _)| *activation)
+        .collect::<Vec<_>>();
+    let section_gpu = section_ranges
+        .iter()
+        .map(|(_, _, _, _, gpu)| *gpu)
         .collect::<Vec<_>>();
     metrics.section_count = section_ranges.len();
     metrics.section_oversize_count = section_activations
         .iter()
-        .filter(|activation| **activation > RENDER_SECTION_TARGET_BYTES)
+        .copied()
+        .zip(section_gpu.iter().copied())
+        .filter(|(activation, gpu)| {
+            *activation > RENDER_SECTION_CPU_ACTIVE_TARGET_BYTES
+                || *gpu > RENDER_SECTION_GPU_TARGET_BYTES
+        })
         .count();
     metrics.section_payload_total_bytes = section_ranges
         .iter()
-        .map(|(_, _, payload, _)| *payload)
+        .map(|(_, _, payload, _, _)| *payload)
         .sum();
     metrics.section_leaves_p50 = percentile(section_leaves.iter().copied(), 50);
     metrics.section_leaves_p95 = percentile(section_leaves.iter().copied(), 95);
@@ -1420,26 +1618,30 @@ fn build_quad_payload(
     metrics.section_activation_p50_bytes = percentile(section_activations.iter().copied(), 50);
     metrics.section_activation_p95_bytes = percentile(section_activations.iter().copied(), 95);
     metrics.section_activation_max_bytes = section_activations.iter().copied().max().unwrap_or(0);
-    metrics.section_transition_max_bytes = section_ranges
-        .windows(2)
-        .map(|pair| {
-            let (_, _, left_payload, left_activation) = pair[0];
-            let (_, _, right_payload, right_activation) = pair[1];
-            (left_activation + right_payload).max(right_activation + left_payload)
-        })
-        .max()
-        .unwrap_or(metrics.section_activation_max_bytes);
+    metrics.section_gpu_p50_bytes = percentile(section_gpu.iter().copied(), 50);
+    metrics.section_gpu_p95_bytes = percentile(section_gpu.iter().copied(), 95);
+    metrics.section_gpu_max_bytes = section_gpu.iter().copied().max().unwrap_or(0);
+    metrics.section_transition_max_bytes = metrics
+        .section_activation_max_bytes
+        .checked_add(
+            section_ranges
+                .iter()
+                .map(|(_, _, payload, _, _)| *payload)
+                .max()
+                .unwrap_or(0),
+        )
+        .ok_or("QRS3 arbitrary-transition budget overflow")?;
 
     let mut leaf_sections = vec![RENDER_SECTION_NONE; input.cells.len() + 1];
     let mut section_inputs = Vec::with_capacity(section_ranges.len());
     let mut encoded_payload_total = 0usize;
-    for (section_index, &(first, end, expected_payload, expected_activation)) in
+    for (section_index, &(first, end, expected_payload, expected_activation, expected_gpu)) in
         section_ranges.iter().enumerate()
     {
         let payload = encode_local_quad_section(&input, first, end)?;
         if payload.bytes.len() != expected_payload {
             return Err(format!(
-                "QRP2 section {section_index} payload accounting drifted: {} != {expected_payload}",
+                "QRP3 section {section_index} payload accounting drifted: {} != {expected_payload}",
                 payload.bytes.len()
             )
             .into());
@@ -1449,23 +1651,28 @@ fn build_quad_payload(
             .copied()
             .max()
             .unwrap_or(0);
-        let actual_activation = payload.bytes.len()
-            + payload.packet_pool_bytes as usize * 2
-            + payload.projection_bytes as usize
-            + fallback;
+        let actual_activation =
+            payload.runtime_metadata_bytes as usize + payload.projection_bytes as usize;
         if actual_activation != expected_activation {
             return Err(format!(
-                "QRP2 section {section_index} activation accounting drifted: {actual_activation} != {expected_activation}"
+                "QRP3 section {section_index} CPU activation accounting drifted: {actual_activation} != {expected_activation}"
+            )
+            .into());
+        }
+        let actual_gpu = payload.packet_pool_bytes as usize + fallback;
+        if actual_gpu != expected_gpu {
+            return Err(format!(
+                "QRP3 section {section_index} GPU accounting drifted: {actual_gpu} != {expected_gpu}"
             )
             .into());
         }
         for cell in &input.cells[first..end] {
             let leaf = cell.leaf as usize;
             if leaf >= leaf_sections.len() || leaf_sections[leaf] != RENDER_SECTION_NONE {
-                return Err("QRS2 leaf assignment is invalid or duplicated".into());
+                return Err("QRS3 leaf assignment is invalid or duplicated".into());
             }
             leaf_sections[leaf] =
-                u16::try_from(section_index).map_err(|_| "QRS2 section count exceeds u16")?;
+                u16::try_from(section_index).map_err(|_| "QRS3 section count exceeds u16")?;
         }
         let mut neighbors = Vec::with_capacity(2);
         if section_index != 0 {
@@ -1479,19 +1686,21 @@ fn build_quad_payload(
             neighbors,
             payload,
             fallback_bytes: u32::try_from(fallback)
-                .map_err(|_| "QRS2 fallback workspace exceeds u32")?,
+                .map_err(|_| "QRS3 fallback workspace exceeds u32")?,
             flags: 0,
         });
     }
     if encoded_payload_total != metrics.section_payload_total_bytes {
-        return Err("QRS2 encoded payload total drifted from the census".into());
+        return Err("QRS3 encoded payload total drifted from the census".into());
     }
     let sidecar = encode_render_sections(
         &leaf_sections,
         &section_inputs,
         0,
         u32::try_from(metrics.section_transition_max_bytes)
-            .map_err(|_| "QRS2 streaming budget exceeds u32")?,
+            .map_err(|_| "QRS3 streaming budget exceeds u32")?,
+        u32::try_from(RENDER_SECTION_GPU_TARGET_BYTES)
+            .map_err(|_| "QRS3 GPU budget exceeds u32")?,
     )?;
     metrics.section_sidecar_bytes = sidecar.len();
     Ok(metrics)
@@ -1499,6 +1708,10 @@ fn build_quad_payload(
 
 fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
     let bytes = fs::read(path)?;
+    let mut index_reader = SliceReader::new(&bytes);
+    let index = PsbIndex::read(&mut index_reader)
+        .map_err(|error| format!("cannot read {} index: {error:?}", path.display()))?;
+    let (resident_bytes, resident_core_bytes) = resident_and_collision_core_bytes(&index)?;
     let mut reader = SliceReader::new(&bytes);
     let mut resident = ResidentMap::with_capacity(RESIDENT_MAP_ARENA_BYTES);
     resident
@@ -1716,6 +1929,8 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         invariant_facing_pairs,
         quad_payload,
         masked_objects,
+        resident_bytes,
+        resident_core_bytes,
     })
 }
 
@@ -1932,7 +2147,7 @@ fn print_map(census: &MapCensus) {
     );
     let qrp = census.quad_payload;
     println!(
-        "  {}: real QRP2 base subset={} faces/{} quads/{} objects/{} positions, payload={} KiB, dual-pool activation={} KiB; cell commands={} ({} invariant, {} dynamic, {} invariant-back pruned); excluded faces={}, baked overflow corners={}, odd GT3 source fallbacks={}; conservative dynamic packet bytes p50/p95/max={}/{}/{} KiB",
+        "  {}: real QRP3 base subset={} faces/{} quads/{} objects/{} positions, compact payload={} KiB, activated CPU metadata+projection={} KiB; cell commands={} ({} invariant, {} dynamic, {} invariant-back pruned), GPU-cap spills={} commands/{} faces/{} KiB; excluded faces={}, baked overflow corners={}, odd GT3 source fallbacks={}; base fallback packet bytes p50/p95/max={}/{}/{} KiB",
         census.map,
         qrp.template_faces,
         qrp.quads,
@@ -1944,6 +2159,9 @@ fn print_map(census: &MapCensus) {
         qrp.invariant_commands,
         qrp.dynamic_commands,
         qrp.pruned_back_commands,
+        qrp.spilled_commands,
+        qrp.spilled_faces,
+        qrp.spill_fallback_bytes / 1024,
         qrp.excluded_faces,
         qrp.baked_overflow_corners,
         qrp.odd_fallback_triangles,
@@ -1952,7 +2170,7 @@ fn print_map(census: &MapCensus) {
         qrp.fallback_max_bytes / 1024,
     );
     println!(
-        "  {}: leaf-local QRP2 payload p50/p95/max={}/{}/{} KiB ({} KiB duplicated on disc); template activation p50/p95/max={}/{}/{} KiB; activation plus conservative fallback p50/p95/max={}/{}/{} KiB",
+        "  {}: leaf-local QRP3 payload p50/p95/max={}/{}/{} KiB ({} KiB duplicated on disc); CPU activation p50/p95/max={}/{}/{} KiB; active GPU base+fallback p50/p95/max={}/{}/{} KiB",
         census.map,
         qrp.leaf_payload_p50_bytes / 1024,
         qrp.leaf_payload_p95_bytes / 1024,
@@ -1966,9 +2184,10 @@ fn print_map(census: &MapCensus) {
         qrp.leaf_total_max_bytes / 1024,
     );
     println!(
-        "  {}: checked consecutive-leaf QRS2 target {} KiB -> {} sections ({} oversize), leaves p50/p95/max={}/{}/{}, activation p50/p95/max={}/{}/{} KiB, payload/complete sidecar={}/{} KiB, worst active+adjacent-payload preload={} KiB",
+        "  {}: checked consecutive-leaf QRS3 CPU/GPU targets {}/{} KiB -> {} sections ({} oversize), leaves p50/p95/max={}/{}/{}, CPU activation p50/p95/max={}/{}/{} KiB, GPU high-water p50/p95/max={}/{}/{} KiB, payload/complete sidecar={}/{} KiB, worst CPU active+arbitrary-payload preload={} KiB",
         census.map,
-        RENDER_SECTION_TARGET_BYTES / 1024,
+        RENDER_SECTION_CPU_ACTIVE_TARGET_BYTES / 1024,
+        RENDER_SECTION_GPU_TARGET_BYTES / 1024,
         qrp.section_count,
         qrp.section_oversize_count,
         qrp.section_leaves_p50,
@@ -1977,9 +2196,25 @@ fn print_map(census: &MapCensus) {
         qrp.section_activation_p50_bytes / 1024,
         qrp.section_activation_p95_bytes / 1024,
         qrp.section_activation_max_bytes / 1024,
+        qrp.section_gpu_p50_bytes / 1024,
+        qrp.section_gpu_p95_bytes / 1024,
+        qrp.section_gpu_max_bytes / 1024,
         qrp.section_payload_total_bytes / 1024,
         qrp.section_sidecar_bytes / 1024,
         qrp.section_transition_max_bytes / 1024,
+    );
+    let split_high_water = census.resident_core_bytes + qrp.section_transition_max_bytes;
+    println!(
+        "  {}: resident split current/core/reclaimed={}/{}/{} KiB; core + worst QRS3 transition={} KiB, arena headroom={} KiB",
+        census.map,
+        census.resident_bytes / 1024,
+        census.resident_core_bytes / 1024,
+        census
+            .resident_bytes
+            .saturating_sub(census.resident_core_bytes)
+            / 1024,
+        split_high_water / 1024,
+        (RESIDENT_MAP_ARENA_BYTES as isize - split_high_water as isize) / 1024,
     );
     let masked = census.masked_objects;
     println!(

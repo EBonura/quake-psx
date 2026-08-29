@@ -1,15 +1,17 @@
 //! Checked directory for Quake II-style streamed world-render sections.
 //!
-//! `QRS2` separates the always-resident collision/gameplay core from one
-//! activated world-render section and one compact neighbor preload. The
-//! directory carries enough memory accounting for both the host cooker and
-//! the guest loader to reject a map which cannot fit the reserved streaming
-//! tail before any packet pool is installed.
+//! `QRS3` separates the always-resident collision/gameplay core from one
+//! activated world-render section and one arbitrary compact-section preload. The
+//! directory carries separate CPU streaming-tail and existing GPU-arena
+//! accounting. Packet templates are installed directly into both existing GPU
+//! arenas, not allocated a third time in the CPU streaming tail.
 
 use core::convert::TryInto;
 
-pub const RENDER_SECTION_MAGIC: u32 = u32::from_le_bytes(*b"QRS2");
-pub const RENDER_SECTION_VERSION: u16 = 2;
+use super::render_quad_payload::RenderQuadPayload;
+
+pub const RENDER_SECTION_MAGIC: u32 = u32::from_le_bytes(*b"QRS3");
+pub const RENDER_SECTION_VERSION: u16 = 3;
 pub const RENDER_SECTION_HEADER_BYTES: usize = 48;
 pub const RENDER_SECTION_RECORD_BYTES: usize = 32;
 pub const RENDER_SECTION_EDGE_BYTES: usize = 4;
@@ -37,13 +39,13 @@ pub struct RenderSectionRecord {
     pub edge_count: u16,
     pub payload_offset: u32,
     pub payload_len: u32,
-    /// Total streaming-tail bytes after activation.
+    /// CPU streaming-tail bytes retained after activation.
     pub activation_bytes: u32,
     /// Bytes occupied by one resident GT4 packet pool.
     pub packet_pool_bytes: u32,
     /// Shared projected-position cache installed beside the packet pools.
     pub projection_bytes: u32,
-    /// Bounded dynamic-fallback workspace owned by this section.
+    /// Bounded active-pool packet tail for dynamic fallback work.
     pub fallback_bytes: u32,
     pub flags: u16,
 }
@@ -63,6 +65,7 @@ pub struct RenderSectionDirectory<'a> {
     payload_offset: usize,
     resident_core_bytes: u32,
     streaming_budget_bytes: u32,
+    gpu_arena_budget_bytes: u32,
 }
 
 impl<'a> RenderSectionDirectory<'a> {
@@ -85,10 +88,6 @@ impl<'a> RenderSectionDirectory<'a> {
         if u32_at(header, 32) as usize != bytes.len() {
             return Err(RenderSectionError::BadFileSize);
         }
-        if u32_at(header, 44) != 0 {
-            return Err(RenderSectionError::NonCanonicalLayout);
-        }
-
         let leaf_count = u16_at(header, 8) as usize;
         let section_count = u16_at(header, 10) as usize;
         let edge_count = u16_at(header, 12) as usize;
@@ -98,6 +97,7 @@ impl<'a> RenderSectionDirectory<'a> {
         let payload_offset = u32_at(header, 28) as usize;
         let resident_core_bytes = u32_at(header, 36);
         let streaming_budget_bytes = u32_at(header, 40);
+        let gpu_arena_budget_bytes = u32_at(header, 44);
         let leaf_end = checked_table_end(leaf_offset, leaf_count, 2)?;
         let section_end =
             checked_table_end(section_offset, section_count, RENDER_SECTION_RECORD_BYTES)?;
@@ -124,6 +124,7 @@ impl<'a> RenderSectionDirectory<'a> {
             payload_offset,
             resident_core_bytes,
             streaming_budget_bytes,
+            gpu_arena_budget_bytes,
         };
 
         for leaf in 0..leaf_count {
@@ -151,24 +152,34 @@ impl<'a> RenderSectionDirectory<'a> {
             if section.payload_offset as usize != expected_payload {
                 return Err(RenderSectionError::BadPayloadRange);
             }
+            let payload_start = expected_payload;
             expected_payload = expected_payload
                 .checked_add(section.payload_len as usize)
                 .ok_or(RenderSectionError::BadPayloadRange)?;
             if expected_payload > bytes.len() {
                 return Err(RenderSectionError::BadPayloadRange);
             }
-            let dual_packet_pool_bytes = section
-                .packet_pool_bytes
-                .checked_mul(2)
+            let payload = bytes
+                .get(payload_start..expected_payload)
+                .ok_or(RenderSectionError::BadPayloadRange)?;
+            let payload = RenderQuadPayload::parse(payload)
+                .map_err(|_| RenderSectionError::BadPayloadRange)?;
+            if payload.packet_pool_bytes() != section.packet_pool_bytes
+                || payload.projection_bytes() != section.projection_bytes
+            {
+                return Err(RenderSectionError::BadMemoryBudget);
+            }
+            let expected_activation = payload
+                .runtime_metadata_bytes()
+                .checked_add(section.projection_bytes)
                 .ok_or(RenderSectionError::BadMemoryBudget)?;
-            let expected_activation = section
-                .payload_len
-                .checked_add(dual_packet_pool_bytes)
-                .and_then(|bytes| bytes.checked_add(section.projection_bytes))
-                .and_then(|bytes| bytes.checked_add(section.fallback_bytes))
+            let gpu_high_water = section
+                .packet_pool_bytes
+                .checked_add(section.fallback_bytes)
                 .ok_or(RenderSectionError::BadMemoryBudget)?;
             if expected_activation != section.activation_bytes
                 || section.activation_bytes > streaming_budget_bytes
+                || gpu_high_water > gpu_arena_budget_bytes
             {
                 return Err(RenderSectionError::BadMemoryBudget);
             }
@@ -192,10 +203,22 @@ impl<'a> RenderSectionDirectory<'a> {
             return Err(RenderSectionError::NonCanonicalLayout);
         }
 
-        // While the current section is active, the largest adjacent compact
-        // payload must still fit in the same streaming tail as a preload.
+        // While any section is active, the largest compact payload must still
+        // fit in the same streaming tail. Edges are prefetch hints, not a
+        // completeness assumption about possible BSP leaf transitions.
+        let largest_payload = (0..section_count)
+            .map(|index| directory.section(index).unwrap().payload_len)
+            .max()
+            .unwrap_or(0);
         for section_index in 0..section_count {
             let section = directory.section(section_index).unwrap();
+            if section
+                .activation_bytes
+                .checked_add(largest_payload)
+                .is_none_or(|bytes| bytes > streaming_budget_bytes)
+            {
+                return Err(RenderSectionError::BadMemoryBudget);
+            }
             for edge_index in section.first_edge as usize
                 ..section.first_edge as usize + section.edge_count as usize
             {
@@ -236,6 +259,11 @@ impl<'a> RenderSectionDirectory<'a> {
     #[inline]
     pub const fn streaming_budget_bytes(self) -> u32 {
         self.streaming_budget_bytes
+    }
+
+    #[inline]
+    pub const fn gpu_arena_budget_bytes(self) -> u32 {
+        self.gpu_arena_budget_bytes
     }
 
     #[inline]
