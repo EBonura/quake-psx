@@ -3,6 +3,17 @@
 //! This module is the root of the shipping game. The target contains no
 //! foreign game objects or native-source compatibility layer.
 
+/// Simulation ticks the fixed-step benchmark advances per rendered frame.
+///
+/// Three matches the current ~23.8 fps cadence over a 60 Hz clock. A build that
+/// actually reached 30 fps would consume two, so `perf-fixed-ticks-30hz`
+/// measures the honest simulation load at the target frame rate rather than at
+/// today's.
+#[cfg(all(feature = "perf-fixed-ticks", not(feature = "perf-fixed-ticks-30hz")))]
+const PERF_FIXED_TICKS_PER_FRAME: u32 = 3;
+#[cfg(all(feature = "perf-fixed-ticks", feature = "perf-fixed-ticks-30hz"))]
+const PERF_FIXED_TICKS_PER_FRAME: u32 = 2;
+
 use quake_core::level_session::{CenterprintText, LevelPresentation};
 
 /// The original holds a centerprint for two seconds.
@@ -197,7 +208,7 @@ pub fn run() -> ! {
             // SAFETY: the game loop is single-threaded and this is the only
             // access.
             unsafe {
-                FIXED_TICK = FIXED_TICK.wrapping_add(3);
+                FIXED_TICK = FIXED_TICK.wrapping_add(PERF_FIXED_TICKS_PER_FRAME);
                 FIXED_TICK
             }
         };
@@ -211,7 +222,7 @@ pub fn run() -> ! {
         // Performance benchmark: a fixed step keeps the scripted route and
         // its scene sequence identical across builds of differing speed.
         #[cfg(feature = "perf-fixed-ticks")]
-        let elapsed_ticks = 3;
+        let elapsed_ticks = PERF_FIXED_TICKS_PER_FRAME as u16;
         movement_tick = audio_tick;
         presentation.explosion_effects_mut().tick(elapsed_ticks);
         presentation.impact_particles_mut().tick(elapsed_ticks);

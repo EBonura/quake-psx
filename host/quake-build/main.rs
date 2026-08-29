@@ -250,6 +250,8 @@ enum Action {
     E1m1SelectionDecimateBench,
     E1m1NoWorldBench,
     E1m1ScreenFrustumBench,
+    E1m1CollisionBroadPhaseBench,
+    E1m130hzCadenceBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
     E1m1GpuPolygonColdLevel2Bench,
@@ -1333,6 +1335,45 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-scratch-liquid-bench",
+            )?;
+        }
+        Action::E1m130hzCadenceBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-30hz-cadence-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks-30hz,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-30hz-cadence-bench")?;
+        }
+        Action::E1m1CollisionBroadPhaseBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-collision-broad-phase-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-collision-broad-phase-bench",
             )?;
         }
         Action::E1m1ScreenFrustumBench => {
@@ -3520,6 +3561,8 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-selection-decimate-bench"
             | "e1m1-no-world-bench"
             | "e1m1-screen-frustum-bench"
+            | "e1m1-collision-broad-phase-bench"
+            | "e1m1-30hz-cadence-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
             | "e1m1-gpu-polygon-cold-level2-bench"
@@ -3637,6 +3680,8 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-selection-decimate-bench" => Action::E1m1SelectionDecimateBench,
                     "e1m1-no-world-bench" => Action::E1m1NoWorldBench,
                     "e1m1-screen-frustum-bench" => Action::E1m1ScreenFrustumBench,
+                    "e1m1-collision-broad-phase-bench" => Action::E1m1CollisionBroadPhaseBench,
+                    "e1m1-30hz-cadence-bench" => Action::E1m130hzCadenceBench,
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
                     "e1m1-gpu-polygon-cold-adaptive-bench" => {
                         Action::E1m1GpuPolygonColdAdaptiveBench

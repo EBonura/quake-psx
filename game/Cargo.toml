@@ -40,6 +40,10 @@ visual-parity-regression = ["emulator-telemetry"]
 # fixed three ticks per rendered frame so the scripted route takes the same
 # path on builds of differing speed and only the frame cost changes.
 perf-fixed-ticks = []
+# Advance two ticks per frame instead of three: the simulation load a build
+# that actually held 30 fps would carry. Diagnostic cadence control, not a
+# renderer change; the route still steps deterministically.
+perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
 emulator-telemetry = ["psx-telemetry/emit"]
 # Diagnostic-only renderer census. This deliberately emits one guest debug
 # line per frame and performs extra classification passes; never use it for a

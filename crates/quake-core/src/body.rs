@@ -146,6 +146,10 @@ impl Default for BodyBlockers {
 /// Broad-phase margin around a candidate's clip box, in whole units.
 pub const BROAD_PHASE_MARGIN_UNITS: i32 = 32;
 
+/// Broad-phase margin for a hull sweep. The largest Quake hull reaches 64 units
+/// above its origin, so this covers every hull the game traces with.
+pub const HULL_BROAD_PHASE_MARGIN_UNITS: i32 = 64;
+
 /// One trace's swept extent reduced to whole units, so the per-candidate broad
 /// phase compares against unshifted `i16` clip bounds instead of rebuilding
 /// each candidate's Q12 box.
@@ -185,10 +189,23 @@ impl SweptUnitBox {
 
     #[inline]
     pub fn overlaps(&self, clip_mins: [i16; 3], clip_maxs: [i16; 3]) -> bool {
+        self.overlaps_within(clip_mins, clip_maxs, BROAD_PHASE_MARGIN_UNITS)
+    }
+
+    /// As [`Self::overlaps`] with an explicit margin. A hull trace sweeps a box,
+    /// not a point, so its broad phase has to grow by the hull's own extent;
+    /// [`HULL_BROAD_PHASE_MARGIN_UNITS`] covers every Quake hull.
+    #[inline]
+    pub fn overlaps_within(
+        &self,
+        clip_mins: [i16; 3],
+        clip_maxs: [i16; 3],
+        margin_units: i32,
+    ) -> bool {
         let mut axis = 0usize;
         while axis < 3 {
-            if self.max_units[axis] < i32::from(clip_mins[axis]) - BROAD_PHASE_MARGIN_UNITS
-                || self.min_units[axis] > i32::from(clip_maxs[axis]) + BROAD_PHASE_MARGIN_UNITS
+            if self.max_units[axis] < i32::from(clip_mins[axis]) - margin_units
+                || self.min_units[axis] > i32::from(clip_maxs[axis]) + margin_units
             {
                 return false;
             }

@@ -4812,8 +4812,20 @@ impl EntityScene {
         if !world.trace_into(start, end, scratch, &mut best) {
             return false;
         }
+        // Broad phase, matching the one `SceneCollision::trace` already runs.
+        // Without it every monster step traced all 29 solid submodels of E1M1
+        // through their full hulls no matter where the monster stood, and a
+        // blocked monster fans over six directions.
+        let swept = SweptUnitBox::new(*start, *end);
         for entity in &self.entities {
             if !entity.visible || !entity.solid || entity.model_id >= 0 {
+                continue;
+            }
+            if !swept.overlaps_within(
+                entity.clip_mins,
+                entity.clip_maxs,
+                quake_core::body::HULL_BROAD_PHASE_MARGIN_UNITS,
+            ) {
                 continue;
             }
             let Some(model) = map.brush_models().get(entity.model_index as usize) else {

@@ -1864,6 +1864,10 @@ pub struct Renderer {
     visibility: [u8; MAX_VISIBILITY_BYTES],
     visible_leaf_count: usize,
     cached_visibility: Option<(u32, usize, u16)>,
+    /// The camera does not move inside a frame, but `prepare_visibility`,
+    /// `mark_visible_faces`, `water_portal` and the view-model lighting each
+    /// located it independently. One memo collapses five BSP descents to one.
+    cached_camera_leaf: Option<(u32, Vec3I32, Option<usize>)>,
     active_water_plane: i16,
     #[cfg(feature = "renderer-selection-cache")]
     cached_frame_selection: Option<(Camera, Option<(u32, usize, u16)>, i16)>,
@@ -1936,6 +1940,7 @@ impl Renderer {
             visibility: [0; MAX_VISIBILITY_BYTES],
             visible_leaf_count: 0,
             cached_visibility: None,
+            cached_camera_leaf: None,
             active_water_plane: -1,
             #[cfg(feature = "renderer-selection-cache")]
             cached_frame_selection: None,
@@ -5052,6 +5057,18 @@ impl Renderer {
         submitted.next_packet
     }
 
+    /// `ResidentMap::point_leaf_index` memoized for the current frame's camera.
+    fn camera_leaf(&mut self, map: &ResidentMap, point: Vec3I32) -> Option<usize> {
+        if let Some((generation, cached_point, leaf)) = self.cached_camera_leaf {
+            if generation == map.generation() && cached_point == point {
+                return leaf;
+            }
+        }
+        let leaf = map.point_leaf_index(point);
+        self.cached_camera_leaf = Some((map.generation(), point, leaf));
+        leaf
+    }
+
     fn point_visible(&self, leaf_index: usize) -> bool {
         if leaf_index == 0 {
             return false;
@@ -5068,7 +5085,7 @@ impl Renderer {
     #[optimize(size)]
     #[inline(never)]
     fn prepare_visibility(&mut self, map: &ResidentMap, camera: Camera, water_alpha: bool) -> bool {
-        let camera_leaf = map.point_leaf_index(camera.origin);
+        let camera_leaf = self.camera_leaf(map, camera.origin);
         let camera_matches = camera_leaf.is_some_and(|leaf| {
             self.cached_visibility
                 .is_some_and(|(generation, cached_leaf, _)| {
@@ -5079,7 +5096,9 @@ impl Renderer {
             if !camera_matches && !self.mark_visible_faces(map, camera.origin, None) {
                 return false;
             }
-            if let Some(portal) = self.water_portal(map, camera.origin) {
+            if let Some(portal) =
+                camera_leaf.and_then(|leaf| self.water_portal(map, camera.origin, leaf))
+            {
                 if self.mark_visible_faces(map, camera.origin, Some(portal.leaf)) {
                     self.active_water_plane = portal.plane;
                     return true;
@@ -5157,8 +5176,12 @@ impl Renderer {
     /// new topology; only that one PVS is ever merged into the frame.
     #[optimize(size)]
     #[inline(never)]
-    fn water_portal(&self, map: &ResidentMap, point: Vec3I32) -> Option<WaterPortal> {
-        let camera_leaf = map.point_leaf_index(point)?;
+    fn water_portal(
+        &self,
+        map: &ResidentMap,
+        point: Vec3I32,
+        camera_leaf: usize,
+    ) -> Option<WaterPortal> {
         let camera_contents = map.leaves().get(camera_leaf)?.contents;
         if camera_contents != CONTENTS_EMPTY && camera_contents != CONTENTS_WATER {
             return None;
@@ -5255,7 +5278,7 @@ impl Renderer {
             self.visible_faces.clear();
             return false;
         }
-        let Some(leaf_index) = map.point_leaf_index(point) else {
+        let Some(leaf_index) = self.camera_leaf(map, point) else {
             self.cached_visibility = None;
             self.visible_leaf_count = 0;
             self.visible_faces.clear();
