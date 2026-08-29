@@ -967,6 +967,28 @@ passes must reduce cell-transition CD traffic and replace the broad per-object
 projection loop with Quake II style early rejection and compact projection
 schedules.
 
+The first resident-section cache uses the already allocated map-arena headroom
+instead of reserving another heap buffer. E1M1 retains nineteen 8 KiB section
+slots behind its 414 KiB QRP5 dictionary and bounded active-cell staging range.
+The tags are fully associative with FIFO replacement and are published only
+after a successful section read and cell validation. A cache hit therefore
+keeps the same dictionary-adjacent active-cell layout while removing the CD
+command sequence and sector transfer.
+
+Two complete PSoXide routes retained the canonical gameplay, VRAM, and display
+hashes. The cache reduced `ReadN` sessions from 110 to 70 and reduced the route
+from 3,880,420,934 to 3,737,611,117 bus cycles. Throughput increased from
+18.599 to 19.310 fps, a 142,809,817-cycle or 3.68% reduction and a 0.711 fps
+gain. This is the first positive QRC2 architecture result, but it still trails
+the verified 23.803 fps stable renderer.
+
+Two geometry-granularity experiments were rejected before the cache milestone.
+Reducing E1M1 objects from the default 32-face bound to 16 faces lowered quad
+overprojection from 117.9% to 91.6%, but increased command count and fell to
+18.488 fps. Caching only the position indices referenced by selected face masks
+fell further to 18.436 fps. The evidence favors fewer compact commands and
+resident data over indirect per-frame projection filtering.
+
 Reproduce the checkpoint using only PSoXide:
 
 ```sh
