@@ -13,11 +13,14 @@ use psx_bsp::resident::IndexedVertices;
     feature = "renderer-indexed-projection"
 ))]
 use psx_engine::materialize_classic_affine_indexed_baked_vertices;
+#[cfg(feature = "renderer-owned-sections")]
+use psx_engine::projection::{project_triangle_scheduled, project_vertex_scheduled};
 #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
 use psx_engine::submit_classic_affine_batch;
 #[cfg(any(
     feature = "renderer-fused-materialize-project",
-    feature = "renderer-indexed-projection"
+    feature = "renderer-indexed-projection",
+    feature = "renderer-owned-sections"
 ))]
 use psx_engine::submit_classic_affine_projected_batch;
 #[cfg(feature = "renderer-quake-specialized-kernel")]
@@ -73,6 +76,17 @@ use psx_gte::math::{Mat3I16, Vec3I16 as GteVec3I16, Vec3I32 as GteVec3I32};
 compile_error!(
     "renderer-fused-materialize-project is an alternative ordinary-world batch submitter"
 );
+#[cfg(all(
+    feature = "renderer-owned-sections",
+    any(
+        feature = "renderer-fused-materialize-project",
+        feature = "renderer-indexed-projection",
+        feature = "renderer-hoisted-indexed-world",
+        feature = "renderer-subdivision-cache",
+        feature = "renderer-topology-cache"
+    )
+))]
+compile_error!("renderer-owned-sections supplies its own indexed world source");
 use psx_gte::scene::{self, AabbClipPlane};
 use psx_math::int32::{isqrt_i32, mul_q12_i32, mul_q12_i32_wide, square_i32_saturating};
 use psx_math::{atan2_q12, cos_q12, sin_q12};
@@ -93,6 +107,12 @@ use quake_formats::{
     GRAPHICS_WEAPON_ICON_OFFSETS, GRAPHICS_WEAPON_ICON_VARIANT_BYTES, TEXTURE_INVISIBLE,
     TEXTURE_LAYERED_SKY, TEXTURE_LIQUID, TEXTURE_NULL, TEXTURE_SKY,
 };
+#[cfg(feature = "renderer-owned-sections")]
+use quake_formats::{
+    RenderQuadFace, RenderQuadObject, RenderQuadPayload, RENDER_QUAD_CELL_WATER_PORTAL,
+    RENDER_QUAD_FACE_BAKED_LIGHT, RENDER_QUAD_FACE_BAKED_UV, RENDER_QUAD_OBJECT_SUBMODEL,
+    RENDER_QUAD_PACKET_BYTES,
+};
 
 use crate::asset::{texture_rect, EpisodeMap, ResidentMap};
 use crate::entity::{model_rotates, LightningBeam, RenderEntity};
@@ -100,6 +120,22 @@ use crate::platform::QuakeViewTransform;
 
 const GPU_ARENA_BYTES: usize = 0x20000;
 const GPU_ARENA_WORDS: usize = GPU_ARENA_BYTES / core::mem::size_of::<u32>();
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_OBJECT_MAX_POSITIONS: usize = quake_formats::RENDER_QUAD_OBJECT_MAX_POSITIONS;
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_VISIBLE_LOCAL_FACE_MASK: u16 = 31;
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_VISIBLE_OBJECT_SHIFT: u32 = 5;
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_VISIBLE_OBJECT_MAX: u16 = (1 << 10) - 1;
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_VISIBLE_REFERENCE_MASK: u16 = 0x7fff;
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_TEMPLATE_FACE_BIT: u16 = 0x8000;
+#[cfg(feature = "renderer-owned-sections")]
+const OWNED_GT4_WORDS: usize = RENDER_QUAD_PACKET_BYTES / core::mem::size_of::<u32>();
+#[cfg(feature = "renderer-owned-sections")]
+const _: () = assert!(OWNED_GT4_WORDS == 13);
 // Closed Episode 1 corpus maximum (E1M4). The host cooker pins this bound so
 // the guest can keep both the PVS mask and its ordered visible-face cache
 // tightly sized instead of reserving for the PSB wire-format maximum.
@@ -775,10 +811,33 @@ struct VisibleFace {
     plane: CompactPlane,
     bounds: RetainedSurfaceBounds,
     face: CookedDrawSurface,
+    #[cfg(feature = "renderer-owned-sections")]
+    object: u16,
 }
 
-#[cfg(not(feature = "renderer-compact-cell-stream"))]
+/// Identity of the immutable QRP4 packet image installed in one display pool.
+///
+/// The GPU may still be consuming the other pool, so section activation is
+/// deliberately lazy per arena after `gpu_begin_frame` has returned ownership
+/// of the current build buffer.
+#[cfg(feature = "renderer-owned-sections")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct OwnedTemplateKey {
+    map_generation: u32,
+    section: u16,
+    clut: u16,
+}
+
+#[cfg(all(
+    not(feature = "renderer-compact-cell-stream"),
+    not(feature = "renderer-owned-sections")
+))]
 const _: [(); 36] = [(); core::mem::size_of::<VisibleFace>()];
+#[cfg(all(
+    not(feature = "renderer-compact-cell-stream"),
+    feature = "renderer-owned-sections"
+))]
+const _: [(); 40] = [(); core::mem::size_of::<VisibleFace>()];
 #[cfg(feature = "renderer-compact-cell-stream")]
 const _: [(); 24] = [(); core::mem::size_of::<VisibleFace>()];
 
@@ -1567,9 +1626,7 @@ impl ClassicAffineSubdivisionCacheSink for ResidentSubdivisionSink<'_> {
         self.allocations = self
             .allocations
             .wrapping_add(u32::from(!acquired.logical_hit));
-        self.replacements = self
-            .replacements
-            .wrapping_add(u32::from(acquired.replaced));
+        self.replacements = self.replacements.wrapping_add(u32::from(acquired.replaced));
         self.initializations = self
             .initializations
             .wrapping_add(u32::from(!acquired.resident));
@@ -1614,9 +1671,7 @@ impl ClassicAffineSubdivisionCacheSink for ResidentSubdivisionSink<'_> {
         self.allocations = self
             .allocations
             .wrapping_add(u32::from(!acquired.logical_hit));
-        self.replacements = self
-            .replacements
-            .wrapping_add(u32::from(acquired.replaced));
+        self.replacements = self.replacements.wrapping_add(u32::from(acquired.replaced));
         self.initializations = self
             .initializations
             .wrapping_add(u32::from(!acquired.resident));
@@ -1665,6 +1720,12 @@ fn dynamic_light_add(light: DynamicLight, x: i32, y: i32, z: i32) -> i32 {
     let dz = (z - i32::from(light.origin.z)).abs();
     let longest = dx.max(dy).max(dz);
     light.radius_units() - (longest + (dx + dy + dz - longest) / 3)
+}
+
+#[cfg(feature = "renderer-owned-sections")]
+#[inline(always)]
+fn pack_screen(screen: [i16; 2]) -> u32 {
+    u32::from(screen[0] as u16) | (u32::from(screen[1] as u16) << 16)
 }
 
 /// True when a light cannot reach a box. All that survives of `R_MarkLights`
@@ -1837,6 +1898,40 @@ unsafe fn materialize_quake_baked_inline(
     }
 }
 
+/// Materialize QRP4's dominant baked fallback corner stream in one fixed MIPS
+/// loop. The corner's object-local u8 index selects a six-byte position;
+/// authored UV and RGB words copy directly into the classic vertex record.
+#[cfg(feature = "renderer-owned-sections")]
+#[inline(always)]
+unsafe fn materialize_owned_baked_inline(
+    corners: *const u8,
+    positions: *const ClassicAffinePosition,
+    vertex_count: usize,
+    destination: *mut ClassicAffineVertex,
+) {
+    let mut index = 0usize;
+    while index < vertex_count {
+        let corner = unsafe { corners.add(index * quake_formats::RENDER_QUAD_CORNER_BYTES) };
+        let position = unsafe { ptr::read(positions.add(ptr::read(corner) as usize)) }.position;
+        let u = unsafe { ptr::read(corner.add(1)) };
+        let v = unsafe { ptr::read(corner.add(2)) };
+        let color = unsafe { ptr::read_unaligned(corner.add(4).cast::<u32>()) };
+        unsafe {
+            ptr::write(
+                destination.add(index),
+                ClassicAffineVertex {
+                    position,
+                    uv: [u, v],
+                    color,
+                    screen: [0; 2],
+                    depth: 0,
+                },
+            );
+        }
+        index += 1;
+    }
+}
+
 pub struct Renderer {
     arena: usize,
     frame: u32,
@@ -1878,6 +1973,14 @@ pub struct Renderer {
     #[cfg(feature = "renderer-plane-index-cache")]
     plane_facing_behind: Vec<u8>,
     alias_projected: Vec<ClassicAliasProjectedVertex>,
+    /// One bounded Quake-II-style object's shared projections. QRP4 guarantees
+    /// an object contains at most 255 positions, so ordinary world faces can
+    /// reuse them without a map-sized projection table.
+    #[cfg(feature = "renderer-owned-sections")]
+    owned_projected: [ClassicAliasProjectedVertex; OWNED_OBJECT_MAX_POSITIONS],
+    /// Fixed GT4 image currently installed at the tail of each GPU arena.
+    #[cfg(feature = "renderer-owned-sections")]
+    owned_template_keys: [Option<OwnedTemplateKey>; 2],
     visible_entity_indices: Vec<u16>,
     cached_frustum: Option<(Camera, [AabbClipPlane; 4])>,
     light_styles: [u16; DUMMY_LIGHT_STYLE + 1],
@@ -1952,6 +2055,10 @@ impl Renderer {
             #[cfg(feature = "renderer-plane-index-cache")]
             plane_facing_behind: Vec::new(),
             alias_projected: vec![ClassicAliasProjectedVertex::default(); MAX_ALIAS_VERTICES],
+            #[cfg(feature = "renderer-owned-sections")]
+            owned_projected: [ClassicAliasProjectedVertex::default(); OWNED_OBJECT_MAX_POSITIONS],
+            #[cfg(feature = "renderer-owned-sections")]
+            owned_template_keys: [None; 2],
             visible_entity_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             cached_frustum: None,
             light_styles,
@@ -2031,6 +2138,250 @@ impl Renderer {
         debug_assert_eq!(self.indexed_unique_count, 0);
     }
 
+    /// Install invariant GT4 words into the tail of the current GPU arena.
+    /// QRP5 keeps only four position references per quad: RGB/UV words are a
+    /// pure function of the retained face corners and current material, so
+    /// reconstructing them once per section saves 32 resident bytes per quad.
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline(never)]
+    unsafe fn prepare_owned_templates(
+        &mut self,
+        map: &ResidentMap,
+        payload: RenderQuadPayload<'_>,
+        arena_start: *mut u32,
+    ) -> *mut u32 {
+        let packet_words = payload.packet_pool_bytes() as usize / 4;
+        debug_assert_eq!(packet_words, payload.quad_count() * OWNED_GT4_WORDS);
+        debug_assert!(packet_words <= GPU_ARENA_WORDS);
+        let fixed_start = unsafe { arena_start.add(GPU_ARENA_WORDS - packet_words) };
+        let key = OwnedTemplateKey {
+            map_generation: map.generation(),
+            section: map
+                .active_render_section_index()
+                .expect("active QRS5 section"),
+            clut: clut_texture(),
+        };
+        if self.owned_template_keys[self.arena] == Some(key) {
+            return fixed_start;
+        }
+
+        let cell = payload.cell(0).expect("validated active QRC1 cell");
+        let mut installed_quad = 0usize;
+        let mut command_index = 0usize;
+        while command_index < cell.command_count as usize {
+            let command = payload
+                .command(cell, command_index)
+                .expect("validated active QRC1 command");
+            let object = payload
+                .object(command.object as usize)
+                .expect("validated QRP5 object");
+            let mut local_face = 0usize;
+            while local_face < object.face_count as usize {
+                let face = payload
+                    .face(object.first_face as usize + local_face)
+                    .expect("validated QRP5 face");
+                if command.template_faces & (1 << local_face) != 0 {
+                    let texture = *self
+                        .active_textures
+                        .get(face.material as usize)
+                        .expect("validated QRP5 material");
+                    let mut local_quad = 0usize;
+                    while local_quad < face.quad_count as usize {
+                        let previous = 1 + local_quad * 2;
+                        let current = previous + 1;
+                        let next = current + 1;
+                        let first_corner = face.first_corner as usize;
+                        let corners = [
+                            payload.corner(first_corner + previous),
+                            payload.corner(first_corner + current),
+                            payload.corner(first_corner),
+                            payload.corner(first_corner + next),
+                        ];
+                        let [Some(previous), Some(current), Some(root), Some(next)] = corners else {
+                            unreachable!("validated QRP5 template corners");
+                        };
+                        let packet = unsafe {
+                            fixed_start.add((installed_quad + local_quad) * OWNED_GT4_WORDS)
+                        };
+                        unsafe {
+                            ptr::write(packet, 12u32 << 24);
+                            ptr::write(packet.add(1), 0x3c00_0000 | previous.light);
+                            ptr::write(packet.add(2), 0);
+                            ptr::write(
+                                packet.add(3),
+                                u32::from(u16::from_le_bytes(previous.texture))
+                                    | (u32::from(key.clut) << 16),
+                            );
+                            ptr::write(packet.add(4), current.light);
+                            ptr::write(packet.add(5), 0);
+                            ptr::write(
+                                packet.add(6),
+                                u32::from(u16::from_le_bytes(current.texture))
+                                    | (u32::from(texture.texture_page) << 16),
+                            );
+                            ptr::write(packet.add(7), root.light);
+                            ptr::write(packet.add(8), 0);
+                            ptr::write(
+                                packet.add(9),
+                                u32::from(u16::from_le_bytes(root.texture)),
+                            );
+                            ptr::write(packet.add(10), next.light);
+                            ptr::write(packet.add(11), 0);
+                            ptr::write(
+                                packet.add(12),
+                                u32::from(u16::from_le_bytes(next.texture)),
+                            );
+                        }
+                        local_quad += 1;
+                    }
+                    installed_quad += face.quad_count as usize;
+                }
+                local_face += 1;
+            }
+            command_index += 1;
+        }
+        debug_assert_eq!(installed_quad * OWNED_GT4_WORDS, packet_words);
+        self.owned_template_keys[self.arena] = Some(key);
+        fixed_start
+    }
+
+    /// Project every shared position in one bounded QRP4 object exactly once.
+    /// Faces then scatter these eight-byte results instead of issuing repeated
+    /// RTPT/RTPS work for each corner reference.
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline(never)]
+    fn project_owned_object(&mut self, payload: RenderQuadPayload<'_>, object: RenderQuadObject) {
+        let count = object.position_count as usize;
+        debug_assert!(count <= self.owned_projected.len());
+        let position_bytes = payload
+            .position_bytes(object.first_position as usize, count)
+            .expect("validated QRP4 object positions");
+        let positions = position_bytes.as_ptr().cast::<ClassicAffinePosition>();
+        debug_assert_eq!(positions.align_offset(core::mem::align_of::<i16>()), 0);
+        let mut index = 0usize;
+        while index + 2 < count {
+            let a = unsafe { ptr::read(positions.add(index)) }.position;
+            let b = unsafe { ptr::read(positions.add(index + 1)) }.position;
+            let c = unsafe { ptr::read(positions.add(index + 2)) }.position;
+            let projected = project_triangle_scheduled(
+                GteVec3I16::new(a[0], a[1], a[2]),
+                GteVec3I16::new(b[0], b[1], b[2]),
+                GteVec3I16::new(c[0], c[1], c[2]),
+            );
+            let mut lane = 0usize;
+            while lane < 3 {
+                self.owned_projected[index + lane] = ClassicAliasProjectedVertex {
+                    screen: [projected[lane].sx, projected[lane].sy],
+                    depth: projected[lane].sz,
+                };
+                lane += 1;
+            }
+            index += 3;
+        }
+        while index < count {
+            let position = unsafe { ptr::read(positions.add(index)) }.position;
+            let projected =
+                project_vertex_scheduled(GteVec3I16::new(position[0], position[1], position[2]));
+            self.owned_projected[index] = ClassicAliasProjectedVertex {
+                screen: [projected.sx, projected.sy],
+                depth: projected.sz,
+            };
+            index += 1;
+        }
+    }
+
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline(always)]
+    fn apply_owned_face_projection(
+        &self,
+        payload: RenderQuadPayload<'_>,
+        face: RenderQuadFace,
+        output: &mut [ClassicAffineVertex],
+    ) {
+        for (local_corner, destination) in output.iter_mut().enumerate() {
+            let position = payload
+                .corner_position(face.first_corner as usize + local_corner)
+                .expect("validated QRP4 corner");
+            let projected = unsafe { *self.owned_projected.get_unchecked(position as usize) };
+            destination.screen = projected.screen;
+            destination.depth = i32::from(projected.depth);
+        }
+    }
+
+    /// Prove that every root in a cooker-authored face remains an exact
+    /// level-zero pair for this camera. This deliberately rejects the entire
+    /// face on the first near, invalid, subdivided, odd, or unequal-depth root.
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline(always)]
+    fn owned_face_is_fixed(&self, payload: RenderQuadPayload<'_>, face: RenderQuadFace) -> bool {
+        let root_count = face.corner_count as usize - 2;
+        if face.quad_count == 0 || face.quad_count as usize * 2 != root_count {
+            return false;
+        }
+        let mut local_quad = 0usize;
+        while local_quad < face.quad_count as usize {
+            let positions = payload
+                .quad_positions(face.first_quad as usize + local_quad)
+                .expect("validated QRP4 quad");
+            let previous = unsafe { self.owned_projected.get_unchecked(positions[0] as usize) };
+            let current = unsafe { self.owned_projected.get_unchecked(positions[1] as usize) };
+            let root = unsafe { self.owned_projected.get_unchecked(positions[2] as usize) };
+            let next = unsafe { self.owned_projected.get_unchecked(positions[3] as usize) };
+            let first_otz = scene::classic_otz3_from_sum(
+                u32::from(previous.depth) + u32::from(current.depth) + u32::from(root.depth),
+            );
+            let second_otz = scene::classic_otz3_from_sum(
+                u32::from(root.depth) + u32::from(current.depth) + u32::from(next.depth),
+            );
+            if first_otz < ClassicAffineProfile::QUAKE_REFERENCE.subdivide_once_at
+                || first_otz >= ClassicAffineProfile::QUAKE_REFERENCE.ot_depth
+                || first_otz != second_otz
+            {
+                return false;
+            }
+            local_quad += 1;
+        }
+        true
+    }
+
+    /// Patch only frame-varying DMA tags and XY words, then expose the face's
+    /// contiguous resident packet range to the ordering table linker.
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline(never)]
+    unsafe fn stage_owned_fixed_face(
+        &self,
+        payload: RenderQuadPayload<'_>,
+        face: RenderQuadFace,
+        template_slot: u16,
+        fixed_start: *mut u32,
+    ) -> (*mut u32, *mut u32) {
+        let first = unsafe { fixed_start.add(template_slot as usize * OWNED_GT4_WORDS) };
+        let mut local_quad = 0usize;
+        while local_quad < face.quad_count as usize {
+            let positions = payload
+                .quad_positions(face.first_quad as usize + local_quad)
+                .expect("validated QRP4 quad");
+            let previous = unsafe { *self.owned_projected.get_unchecked(positions[0] as usize) };
+            let current = unsafe { *self.owned_projected.get_unchecked(positions[1] as usize) };
+            let root = unsafe { *self.owned_projected.get_unchecked(positions[2] as usize) };
+            let next = unsafe { *self.owned_projected.get_unchecked(positions[3] as usize) };
+            let otz = scene::classic_otz3_from_sum(
+                u32::from(previous.depth) + u32::from(current.depth) + u32::from(root.depth),
+            );
+            let packet = unsafe { first.add(local_quad * OWNED_GT4_WORDS) };
+            unsafe {
+                ptr::write(packet, (12u32 << 24) | u32::from(otz));
+                ptr::write(packet.add(2), pack_screen(previous.screen));
+                ptr::write(packet.add(5), pack_screen(current.screen));
+                ptr::write(packet.add(8), pack_screen(root.screen));
+                ptr::write(packet.add(11), pack_screen(next.screen));
+            }
+            local_quad += 1;
+        }
+        let end = unsafe { first.add(face.quad_count as usize * OWNED_GT4_WORDS) };
+        (first, end)
+    }
+
     #[cfg(feature = "renderer-subdivision-cache")]
     unsafe fn flush_cached_subdivision_batch(
         &mut self,
@@ -2080,9 +2431,8 @@ impl Renderer {
         stats.subdivision_cache_initializations = stats
             .subdivision_cache_initializations
             .wrapping_add(sink.initializations);
-        stats.subdivision_cache_packets = stats
-            .subdivision_cache_packets
-            .wrapping_add(sink.packets);
+        stats.subdivision_cache_packets =
+            stats.subdivision_cache_packets.wrapping_add(sink.packets);
         submitted
     }
 
@@ -2531,12 +2881,29 @@ impl Renderer {
                 .cast::<u32>()
                 .add(self.arena * GPU_ARENA_WORDS)
         };
-        #[cfg(not(feature = "renderer-subdivision-cache"))]
+        #[cfg(feature = "renderer-owned-sections")]
+        let owned_payload = map
+            .active_render_payload()
+            .expect("validated active render section");
+        #[cfg(feature = "renderer-owned-sections")]
+        let fixed_start = unsafe { self.prepare_owned_templates(map, owned_payload, start) };
+        #[cfg(all(
+            not(feature = "renderer-subdivision-cache"),
+            not(feature = "renderer-owned-sections")
+        ))]
         let end = unsafe { start.add(GPU_ARENA_WORDS) };
-        #[cfg(feature = "renderer-subdivision-cache")]
+        #[cfg(all(
+            feature = "renderer-subdivision-cache",
+            not(feature = "renderer-owned-sections")
+        ))]
         let end = unsafe { start.add(DYNAMIC_GPU_ARENA_WORDS) };
+        #[cfg(feature = "renderer-owned-sections")]
+        let end = fixed_start;
         let mut next = start;
-        #[cfg(feature = "renderer-subdivision-cache")]
+        #[cfg(any(
+            feature = "renderer-subdivision-cache",
+            feature = "renderer-owned-sections"
+        ))]
         let mut pending_world_start = start;
         let mut stats = RenderStats::default();
         let mut layered_sky_texture = None;
@@ -2810,6 +3177,8 @@ impl Renderer {
             let mut batch_vertex_count = 0usize;
             let mut batch_surface_count = 0usize;
             let mut batch_worst_words = 0usize;
+            #[cfg(feature = "renderer-owned-sections")]
+            let mut owned_projected_object = u16::MAX;
             #[cfg(feature = "renderer-topology-cache")]
             let mut topology_batch_index = 0usize;
             #[cfg(feature = "renderer-topology-cache")]
@@ -2826,6 +3195,19 @@ impl Renderer {
                 // still needed to form the cache key below.
                 let visible = unsafe { *self.visible_faces.get_unchecked(visible_index) };
                 let face = visible.face;
+                #[cfg(feature = "renderer-owned-sections")]
+                let owned_object_index =
+                    (visible.object & OWNED_VISIBLE_REFERENCE_MASK) >> OWNED_VISIBLE_OBJECT_SHIFT;
+                #[cfg(feature = "renderer-owned-sections")]
+                let owned_local_face = visible.object & OWNED_VISIBLE_LOCAL_FACE_MASK;
+                #[cfg(feature = "renderer-owned-sections")]
+                let owned_object = owned_payload
+                    .object(owned_object_index as usize)
+                    .expect("validated QRP4 object");
+                #[cfg(feature = "renderer-owned-sections")]
+                let owned_qrp_face = owned_payload
+                    .face(owned_object.first_face as usize + owned_local_face as usize)
+                    .expect("validated QRP4 face");
                 #[cfg(feature = "renderer-topology-cache")]
                 let visible_bounds = visible.bounds;
                 let texture =
@@ -2965,8 +3347,20 @@ impl Renderer {
                         break;
                     }
                     let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
-                    #[cfg(not(feature = "renderer-hoisted-indexed-world"))]
+                    #[cfg(all(
+                        not(feature = "renderer-hoisted-indexed-world"),
+                        not(feature = "renderer-owned-sections")
+                    ))]
                     self.materialize_retained_face(map, face, texture, vertices);
+                    #[cfg(feature = "renderer-owned-sections")]
+                    self.materialize_owned_retained_face(
+                        owned_payload,
+                        (visible.object & OWNED_VISIBLE_REFERENCE_MASK)
+                            >> OWNED_VISIBLE_OBJECT_SHIFT,
+                        face,
+                        texture,
+                        vertices,
+                    );
                     #[cfg(feature = "renderer-hoisted-indexed-world")]
                     self.materialize_retained_face_from_indexed(
                         indexed_world,
@@ -3020,6 +3414,134 @@ impl Renderer {
                             submitted.next_packet,
                         );
                     }
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    stats.visible_faces = stats.visible_faces.saturating_add(1);
+                    continue;
+                }
+
+                #[cfg(feature = "renderer-owned-sections")]
+                if !near && owned_projected_object != owned_object_index {
+                    self.project_owned_object(owned_payload, owned_object);
+                    owned_projected_object = owned_object_index;
+                }
+
+                #[cfg(feature = "renderer-owned-sections")]
+                if !near
+                    && visible.object & OWNED_TEMPLATE_FACE_BIT != 0
+                    && self.frame_light.is_none_or(|light| {
+                        dynamic_light_misses(light, visible.bounds.mins, visible.bounds.maxs)
+                    })
+                    && self.owned_face_is_fixed(owned_payload, owned_qrp_face)
+                {
+                    let submitted = unsafe {
+                        flush_world_batch(
+                            batch_vertices.as_mut_ptr().cast(),
+                            batch_vertex_count,
+                            batch_surfaces.as_ptr().cast(),
+                            batch_surface_count,
+                            next,
+                        )
+                    };
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    batch_vertex_count = 0;
+                    batch_surface_count = 0;
+                    batch_worst_words = 0;
+
+                    unsafe {
+                        crate::platform::gpu_insert_world_stream(pending_world_start, next);
+                    }
+                    pending_world_start = next;
+                    let (first, fixed_end) = unsafe {
+                        self.stage_owned_fixed_face(
+                            owned_payload,
+                            owned_qrp_face,
+                            visible.bounds.surface_index & VISIBLE_SURFACE_INDEX_MASK,
+                            fixed_start,
+                        )
+                    };
+                    unsafe {
+                        crate::platform::gpu_insert_resident_world_stream(first, fixed_end);
+                    }
+                    stats.packets = stats
+                        .packets
+                        .wrapping_add(u32::from(owned_qrp_face.quad_count));
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(u32::from(owned_qrp_face.quad_count) * 2);
+                    stats.visible_faces = stats.visible_faces.saturating_add(1);
+                    continue;
+                }
+
+                // A near-clipped face creates camera-dependent corners which
+                // have no object-local projection slot. Keep it isolated on
+                // the authoritative project-all path.
+                #[cfg(feature = "renderer-owned-sections")]
+                if near {
+                    let submitted = unsafe {
+                        flush_world_batch(
+                            batch_vertices.as_mut_ptr().cast(),
+                            batch_vertex_count,
+                            batch_surfaces.as_ptr().cast(),
+                            batch_surface_count,
+                            next,
+                        )
+                    };
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    batch_vertex_count = 0;
+                    batch_surface_count = 0;
+                    batch_worst_words = 0;
+
+                    let face_worst_words = (reserve_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
+                    if !packet_capacity(next, end, face_worst_words) {
+                        stats.packet_overflow_avoided = true;
+                        break;
+                    }
+                    let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, reserve_count) };
+                    self.materialize_owned_retained_face(
+                        owned_payload,
+                        owned_object_index,
+                        face,
+                        texture,
+                        &mut vertices[..vertex_count],
+                    );
+                    if self.frame_light.is_some() {
+                        self.light_face(visible_index, &mut vertices[..vertex_count]);
+                    }
+                    let submitted_vertex_count = if clip {
+                        unsafe { clip_face_near(vertices.as_mut_ptr(), vertex_count) }
+                    } else {
+                        vertex_count
+                    };
+                    if submitted_vertex_count < 3 {
+                        continue;
+                    }
+                    let surface = ClassicAffineBatchSurface {
+                        first_vertex: 0,
+                        vertex_count: submitted_vertex_count as u16,
+                        tpage: texture.texture_page,
+                        clut: clut_texture(),
+                    };
+                    let submitted = unsafe {
+                        flush_batch(
+                            vertices.as_mut_ptr(),
+                            submitted_vertex_count,
+                            &surface,
+                            1,
+                            next,
+                        )
+                    };
                     next = submitted.next_packet;
                     stats.packets = stats.packets.wrapping_add(submitted.packets);
                     stats.hardware_triangles = stats
@@ -3289,7 +3811,8 @@ impl Renderer {
                 {
                     #[cfg(all(
                         not(feature = "renderer-fused-materialize-project"),
-                        not(feature = "renderer-hoisted-indexed-world")
+                        not(feature = "renderer-hoisted-indexed-world"),
+                        not(feature = "renderer-owned-sections")
                     ))]
                     self.materialize_retained_face(
                         map,
@@ -3297,6 +3820,24 @@ impl Renderer {
                         texture,
                         &mut vertices[..vertex_count],
                     );
+                    #[cfg(all(
+                        not(feature = "renderer-fused-materialize-project"),
+                        feature = "renderer-owned-sections"
+                    ))]
+                    {
+                        self.materialize_owned_retained_face(
+                            owned_payload,
+                            owned_object_index,
+                            face,
+                            texture,
+                            &mut vertices[..vertex_count],
+                        );
+                        self.apply_owned_face_projection(
+                            owned_payload,
+                            owned_qrp_face,
+                            &mut vertices[..vertex_count],
+                        );
+                    }
                     #[cfg(all(
                         not(feature = "renderer-fused-materialize-project"),
                         feature = "renderer-hoisted-indexed-world"
@@ -3640,11 +4181,17 @@ impl Renderer {
             renderer_census.packet_overflow_avoided = u32::from(stats.packet_overflow_avoided);
             emit_renderer_census(self.frame, &renderer_census);
         }
-        #[cfg(not(feature = "renderer-subdivision-cache"))]
+        #[cfg(not(any(
+            feature = "renderer-subdivision-cache",
+            feature = "renderer-owned-sections"
+        )))]
         unsafe {
             crate::platform::gpu_end_frame(start, next)
         };
-        #[cfg(feature = "renderer-subdivision-cache")]
+        #[cfg(any(
+            feature = "renderer-subdivision-cache",
+            feature = "renderer-owned-sections"
+        ))]
         unsafe {
             crate::platform::gpu_insert_world_stream(pending_world_start, next);
             crate::platform::gpu_end_frame(ptr::null_mut(), ptr::null_mut());
@@ -4448,6 +4995,84 @@ impl Renderer {
         }
     }
 
+    /// Expand one exact QRP4 fallback fan. Positions are object-local, while
+    /// UV/light semantics match the established indexed PSB materializer.
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline(always)]
+    fn materialize_owned_retained_face(
+        &self,
+        payload: RenderQuadPayload<'_>,
+        object_index: u16,
+        face: CookedDrawSurface,
+        texture: TextureInfo,
+        output: &mut [ClassicAffineVertex],
+    ) {
+        let object = payload
+            .object(object_index as usize)
+            .expect("validated QRP4 object");
+        let baked_uv = face.flags & RENDER_QUAD_FACE_BAKED_UV != 0;
+        let baked_light = face.flags & RENDER_QUAD_FACE_BAKED_LIGHT != 0;
+        if baked_uv && baked_light {
+            let corners = payload
+                .corner_bytes(face.first_corner as usize, output.len())
+                .expect("validated QRP4 face corners");
+            let positions = payload
+                .position_bytes(
+                    object.first_position as usize,
+                    object.position_count as usize,
+                )
+                .expect("validated QRP4 object positions");
+            unsafe {
+                materialize_owned_baked_inline(
+                    corners.as_ptr(),
+                    positions.as_ptr().cast::<ClassicAffinePosition>(),
+                    output.len(),
+                    output.as_mut_ptr(),
+                );
+            }
+            return;
+        }
+        let light_weights = [
+            self.light_styles[face.light_styles[0] as usize],
+            self.light_styles[face.light_styles[1] as usize],
+        ];
+        for (local_corner, destination) in output.iter_mut().enumerate() {
+            let corner = payload
+                .corner(face.first_corner as usize + local_corner)
+                .expect("validated QRP4 face corner");
+            let position = payload
+                .position(object.first_position as usize + corner.position as usize)
+                .expect("validated QRP4 object position");
+            let uv = if baked_uv {
+                corner.texture
+            } else {
+                [
+                    corner.texture[0].wrapping_add(texture.atlas.x),
+                    corner.texture[1].wrapping_add(texture.atlas.y),
+                ]
+            };
+            let color = if baked_light {
+                corner.light
+            } else {
+                let mut light = u32::from(corner.light as u8) * u32::from(light_weights[0]);
+                if light_weights[1] != 0 {
+                    light = light.wrapping_add(
+                        u32::from((corner.light >> 8) as u8) * u32::from(light_weights[1]),
+                    );
+                }
+                light >>= 8;
+                light | (light << 8) | (light << 16)
+            };
+            *destination = ClassicAffineVertex {
+                position,
+                uv,
+                color,
+                screen: [0; 2],
+                depth: 0,
+            };
+        }
+    }
+
     #[cfg(feature = "renderer-indexed-projection")]
     fn materialize_indexed_world_face(
         &mut self,
@@ -4901,6 +5526,7 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(not(feature = "renderer-owned-sections"))]
     fn draw_brush_entity(
         &self,
         map: &ResidentMap,
@@ -5072,6 +5698,226 @@ impl Renderer {
         submitted.next_packet
     }
 
+    /// Draw an inline BSP model from the exact fallback objects carried by
+    /// the active QRS5 section. Submodels intentionally own no fixed packet
+    /// templates because their origin changes; this preserves the established
+    /// translated brush path while removing its dependency on legacy PSB
+    /// world-face and vertex lumps.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "renderer-owned-sections")]
+    fn draw_brush_entity(
+        &self,
+        map: &ResidentMap,
+        entity: &RenderEntity,
+        camera: Camera,
+        view: QuakeViewTransform,
+        mut next: *mut u32,
+        end: *mut u32,
+        stats: &mut RenderStats,
+    ) -> *mut u32 {
+        let Some(model) = map.brush_models().get(entity.model_index as usize) else {
+            return next;
+        };
+        let Some(payload) = map.active_render_payload() else {
+            stats.packet_overflow_avoided = true;
+            return next;
+        };
+        let (rotation, translation) = compose_classic_alias_transform(
+            view.rotation,
+            view.translation,
+            Mat3I16::IDENTITY,
+            GteVec3I16::ZERO,
+            GteVec3I32::new(
+                entity.origin.x >> 12,
+                entity.origin.y >> 12,
+                entity.origin.z >> 12,
+            ),
+            GteVec3I16::new(0x1000, 0x1000, 0x1000),
+        );
+        scene::load_rotation(&rotation);
+        scene::load_translation(translation);
+
+        let model_camera = Vec3I32 {
+            x: camera.origin.x.saturating_sub(entity.origin.x),
+            y: camera.origin.y.saturating_sub(entity.origin.y),
+            z: camera.origin.z.saturating_sub(entity.origin.z),
+        };
+        let near = NearPlane::new(camera).reaches_behind(entity.clip_mins, entity.clip_maxs);
+        let batch_vertices = scratchpad_batch_vertices();
+        let mut batch_surfaces = uninit_batch_surfaces();
+        let mut batch_vertex_count = 0usize;
+        let mut batch_surface_count = 0usize;
+        let mut batch_worst_words = 0usize;
+        let first_face = model.first_face as usize;
+        let face_end = first_face.saturating_add(model.face_count as usize);
+
+        for object_index in 0..payload.object_count() {
+            let Some(object) = payload.object(object_index) else {
+                stats.packet_overflow_avoided = true;
+                break;
+            };
+            if object.flags & RENDER_QUAD_OBJECT_SUBMODEL == 0 {
+                continue;
+            }
+            for local_face in 0..object.face_count as usize {
+                let Some(face) = payload.face(object.first_face as usize + local_face) else {
+                    stats.packet_overflow_avoided = true;
+                    break;
+                };
+                let source_face = face.source_face as usize;
+                if source_face < first_face || source_face >= face_end {
+                    continue;
+                }
+                let Some(&texture) = self.active_textures.get(face.material as usize) else {
+                    stats.packet_overflow_avoided = true;
+                    break;
+                };
+                let Some(plane) = map.collision_planes().get(face.plane as usize).copied() else {
+                    stats.packet_overflow_avoided = true;
+                    break;
+                };
+                if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL | TEXTURE_SKY) != 0
+                    || !front_facing_plane(plane, u16::from(face.flags), model_camera)
+                {
+                    continue;
+                }
+
+                let surface = CookedDrawSurface {
+                    plane: face.plane,
+                    first_corner: face.first_corner,
+                    material: face.material,
+                    flags: face.flags,
+                    corner_count: face.corner_count,
+                    light_styles: face.light_styles,
+                };
+                let vertex_count = face.corner_count as usize;
+                let clip = near && vertex_count < NEAR_CLIP_MAX_VERTICES;
+                let reserve_count = vertex_count + usize::from(clip);
+                let windowed = texture.flags & TEXTURE_LIQUID != 0;
+                let face_worst_words = (reserve_count - 2)
+                    * if windowed {
+                        WORST_WINDOWED_PACKET_WORDS_PER_TRIANGLE
+                    } else {
+                        WORST_PACKET_WORDS_PER_TRIANGLE
+                    };
+                if windowed
+                    || batch_vertex_count + reserve_count > BATCH_MAX_VERTICES
+                    || batch_surface_count == BATCH_MAX_SURFACES
+                    || !packet_capacity(next, end, batch_worst_words + face_worst_words)
+                {
+                    let submitted = unsafe {
+                        flush_batch(
+                            batch_vertices.as_mut_ptr().cast(),
+                            batch_vertex_count,
+                            batch_surfaces.as_ptr().cast(),
+                            batch_surface_count,
+                            next,
+                        )
+                    };
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    batch_vertex_count = 0;
+                    batch_surface_count = 0;
+                    batch_worst_words = 0;
+                }
+                if !packet_capacity(next, end, face_worst_words) {
+                    stats.packet_overflow_avoided = true;
+                    break;
+                }
+                if windowed {
+                    let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
+                    self.materialize_owned_retained_face(
+                        payload,
+                        object_index as u16,
+                        surface,
+                        texture,
+                        vertices,
+                    );
+                    animate_special_surface(vertices, texture, self.frame);
+                    let vertex_count = if clip {
+                        unsafe { clip_face_near(batch_vertices.as_mut_ptr().cast(), vertex_count) }
+                    } else {
+                        vertex_count
+                    };
+                    if vertex_count < 3 {
+                        continue;
+                    }
+                    #[cfg(feature = "renderer-window-range-coalescing")]
+                    let window_packet_start = next;
+                    let submitted = unsafe {
+                        submit_classic_affine_scoped_windowed_fan(
+                            batch_vertices.as_mut_ptr().cast(),
+                            vertex_count,
+                            next,
+                            texture.texture_page,
+                            clut_texture(),
+                            special_texture_window(texture).word(),
+                            ClassicAffineProfile::QUAKE_REFERENCE,
+                        )
+                    };
+                    #[cfg(feature = "renderer-window-range-coalescing")]
+                    unsafe {
+                        crate::platform::register_world_window_packet_range(
+                            window_packet_start,
+                            submitted.next_packet,
+                        );
+                    }
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                } else {
+                    let vertices = unsafe {
+                        batch_vertices_mut(batch_vertices, batch_vertex_count, reserve_count)
+                    };
+                    self.materialize_owned_retained_face(
+                        payload,
+                        object_index as u16,
+                        surface,
+                        texture,
+                        &mut vertices[..vertex_count],
+                    );
+                    let vertex_count = if clip {
+                        unsafe { clip_face_near(vertices.as_mut_ptr(), vertex_count) }
+                    } else {
+                        vertex_count
+                    };
+                    if vertex_count < 3 {
+                        continue;
+                    }
+                    batch_surfaces[batch_surface_count].write(ClassicAffineBatchSurface {
+                        first_vertex: batch_vertex_count as u16,
+                        vertex_count: vertex_count as u16,
+                        tpage: texture.texture_page,
+                        clut: clut_texture(),
+                    });
+                    batch_vertex_count += vertex_count;
+                    batch_surface_count += 1;
+                    batch_worst_words += (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
+                }
+                stats.visible_faces = stats.visible_faces.saturating_add(1);
+            }
+        }
+        let submitted = unsafe {
+            flush_batch(
+                batch_vertices.as_mut_ptr().cast(),
+                batch_vertex_count,
+                batch_surfaces.as_ptr().cast(),
+                batch_surface_count,
+                next,
+            )
+        };
+        stats.packets = stats.packets.wrapping_add(submitted.packets);
+        stats.hardware_triangles = stats
+            .hardware_triangles
+            .wrapping_add(submitted.hardware_triangles);
+        submitted.next_packet
+    }
+
     fn point_visible(&self, leaf_index: usize) -> bool {
         if leaf_index == 0 {
             return false;
@@ -5085,6 +5931,7 @@ impl Renderer {
     /// already present in it into exactly one opposite PVS. A failed union is
     /// rebuilt opaque immediately, so custom maps cannot turn this option into
     /// an unbounded face-cache allocation or a partially rendered frame.
+    #[cfg(not(feature = "renderer-owned-sections"))]
     #[optimize(size)]
     #[inline(never)]
     fn prepare_visibility(&mut self, map: &ResidentMap, camera: Camera, water_alpha: bool) -> bool {
@@ -5109,6 +5956,181 @@ impl Renderer {
 
         self.active_water_plane = -1;
         self.mark_visible_faces(map, camera.origin, None)
+    }
+
+    /// Consume the cooker-authored QRP4 camera-cell command stream directly.
+    /// The section gatherer has already validated and rebased every range, so
+    /// a leaf transition only expands its bounded object masks into the same
+    /// retained face contract used by the established draw loop.
+    #[cfg(feature = "renderer-owned-sections")]
+    #[optimize(size)]
+    #[inline(never)]
+    fn prepare_visibility(&mut self, map: &ResidentMap, _camera: Camera, water_alpha: bool) -> bool {
+        let Some(payload) = map.active_render_payload() else {
+            return self.invalidate_owned_visibility();
+        };
+        let Some(leaf_index) = map.active_render_leaf_index() else {
+            return self.invalidate_owned_visibility();
+        };
+        let Some((cell_index, cell)) = (0..payload.cell_count()).find_map(|index| {
+            let cell = payload.cell(index)?;
+            (cell.leaf as usize == leaf_index).then_some((index, cell))
+        }) else {
+            return self.invalidate_owned_visibility();
+        };
+        let portal_open = water_alpha && cell.flags & RENDER_QUAD_CELL_WATER_PORTAL != 0;
+        let portal_key = if portal_open {
+            cell.portal_leaf
+        } else {
+            u16::MAX
+        };
+        self.active_water_plane = if portal_open { cell.portal_plane } else { -1 };
+        if self.cached_visibility == Some((map.generation(), leaf_index, portal_key)) {
+            return true;
+        }
+
+        let Some(base_visibility) = payload.visibility(cell_index) else {
+            return self.invalidate_owned_visibility();
+        };
+        if base_visibility.len() > self.visibility.len() {
+            return self.invalidate_owned_visibility();
+        }
+        self.visibility.fill(0);
+        self.visibility[..base_visibility.len()].copy_from_slice(base_visibility);
+        if portal_open {
+            let Some(portal_visibility) = payload.portal_visibility(cell_index) else {
+                return self.invalidate_owned_visibility();
+            };
+            for (destination, source) in self.visibility[..base_visibility.len()]
+                .iter_mut()
+                .zip(portal_visibility)
+            {
+                *destination |= *source;
+            }
+        }
+
+        self.visible_faces.clear();
+        #[cfg(feature = "renderer-compact-cell-stream")]
+        self.visible_face_planes.clear();
+        let mut packet_slot = 0u16;
+        for command_index in 0..cell.command_count as usize {
+            let Some(command) = payload.command(cell, command_index) else {
+                return self.invalidate_owned_visibility();
+            };
+            let Some(object) = payload.object(command.object as usize) else {
+                return self.invalidate_owned_visibility();
+            };
+            if command.object > OWNED_VISIBLE_OBJECT_MAX {
+                return self.invalidate_owned_visibility();
+            }
+            let selected =
+                command.visible_faces | if portal_open { command.portal_faces } else { 0 };
+            for local_face in 0..object.face_count as usize {
+                let Some(face) = payload.face(object.first_face as usize + local_face) else {
+                    return self.invalidate_owned_visibility();
+                };
+                let template = command.template_faces & (1 << local_face) != 0;
+                let face_packet_slot = packet_slot;
+                if template {
+                    let Some(next_slot) = packet_slot.checked_add(face.quad_count) else {
+                        return self.invalidate_owned_visibility();
+                    };
+                    if next_slot as usize * RENDER_QUAD_PACKET_BYTES
+                        > payload.packet_pool_bytes() as usize
+                    {
+                        return self.invalidate_owned_visibility();
+                    }
+                    packet_slot = next_slot;
+                }
+                if selected & (1 << local_face) == 0 {
+                    continue;
+                }
+                if self.visible_faces.len() == self.visible_faces.capacity() {
+                    return self.invalidate_owned_visibility();
+                }
+                let Some(plane) = map.collision_planes().get(face.plane as usize).copied() else {
+                    return self.invalidate_owned_visibility();
+                };
+                let Some((mins, maxs)) = owned_face_bounds(payload, object, face) else {
+                    return self.invalidate_owned_visibility();
+                };
+                let compact_plane = CompactPlane {
+                    normal: plane.normal,
+                    kind: plane.kind as u8,
+                    sign_bits: u8::from(plane.normal.x < 0)
+                        | (u8::from(plane.normal.y < 0) << 1)
+                        | (u8::from(plane.normal.z < 0) << 2),
+                    distance: plane.distance,
+                };
+                let Some(texture) = self.active_textures.get(face.material as usize).copied()
+                else {
+                    return self.invalidate_owned_visibility();
+                };
+                let surface_flags = if template { face_packet_slot } else { 0 }
+                    | if command.dynamic_faces & (1 << local_face) == 0 {
+                        VISIBLE_INVARIANT_FRONT_BIT
+                    } else {
+                        0
+                    }
+                    | if texture.flags & TEXTURE_LIQUID != 0 {
+                        VISIBLE_LIQUID_BIT
+                    } else {
+                        0
+                    };
+                self.visible_faces.push(VisibleFace {
+                    #[cfg(not(feature = "renderer-compact-cell-stream"))]
+                    plane: compact_plane,
+                    bounds: RetainedSurfaceBounds {
+                        surface_index: surface_flags,
+                        mins,
+                        maxs,
+                    },
+                    face: CookedDrawSurface {
+                        plane: face.plane,
+                        first_corner: face.first_corner,
+                        material: face.material,
+                        flags: face.flags,
+                        corner_count: face.corner_count,
+                        light_styles: face.light_styles,
+                    },
+                    object: (command.object << OWNED_VISIBLE_OBJECT_SHIFT)
+                        | local_face as u16
+                        | if template {
+                            OWNED_TEMPLATE_FACE_BIT
+                        } else {
+                            0
+                        },
+                });
+                #[cfg(feature = "renderer-compact-cell-stream")]
+                self.visible_face_planes.push(compact_plane);
+            }
+        }
+        if packet_slot as usize * RENDER_QUAD_PACKET_BYTES
+            != payload.packet_pool_bytes() as usize
+        {
+            return self.invalidate_owned_visibility();
+        }
+        self.visible_faces_generation = Some(map.generation());
+        self.visible_leaf_count = self.visibility[..base_visibility.len()]
+            .iter()
+            .map(|byte| byte.count_ones() as usize)
+            .sum();
+        self.cached_visibility = Some((map.generation(), leaf_index, portal_key));
+        #[cfg(feature = "renderer-block-frustum")]
+        self.rebuild_visible_face_blocks();
+        true
+    }
+
+    #[cfg(feature = "renderer-owned-sections")]
+    #[inline]
+    fn invalidate_owned_visibility(&mut self) -> bool {
+        self.cached_visibility = None;
+        self.active_water_plane = -1;
+        self.visible_leaf_count = 0;
+        self.visible_faces.clear();
+        #[cfg(feature = "renderer-compact-cell-stream")]
+        self.visible_face_planes.clear();
+        false
     }
 
     /// Rebuild the conservative 16-face unions only when the PVS list changes.
@@ -5450,8 +6472,7 @@ impl Renderer {
                         // Same limit as pushing past the list's capacity:
                         // every kept entry and every new face ends up in it.
                         #[cfg(feature = "renderer-compact-cell-stream")]
-                        let plane_full =
-                            kept + new_count == self.visible_face_planes.capacity();
+                        let plane_full = kept + new_count == self.visible_face_planes.capacity();
                         #[cfg(not(feature = "renderer-compact-cell-stream"))]
                         let plane_full = false;
                         if kept + new_count == self.visible_faces.capacity()
@@ -5506,10 +6527,7 @@ impl Renderer {
                     unsafe { move_visible_face(entries.add(read), entries.add(write)) };
                     #[cfg(feature = "renderer-compact-cell-stream")]
                     unsafe {
-                        ptr::write(
-                            plane_entries.add(write),
-                            ptr::read(plane_entries.add(read)),
-                        );
+                        ptr::write(plane_entries.add(write), ptr::read(plane_entries.add(read)));
                     }
                 }
             }
@@ -5554,6 +6572,8 @@ impl Renderer {
                             mins,
                             maxs,
                         },
+                        #[cfg(feature = "renderer-owned-sections")]
+                        object: 0,
                     },
                 );
                 #[cfg(feature = "renderer-compact-cell-stream")]
@@ -6812,18 +7832,13 @@ unsafe fn flush_batch(
     }
     #[cfg(feature = "renderer-quake-specialized-kernel")]
     unsafe {
-        submit_quake_classic_affine_batch(
-            vertices,
-            vertex_count,
-            surfaces,
-            surface_count,
-            output,
-        )
+        submit_quake_classic_affine_batch(vertices, vertex_count, surfaces, surface_count, output)
     }
 }
 
-/// Submit an ordinary retained-world batch through the authoritative
-/// project-then-topology path.
+/// Submit an ordinary retained-world batch. Renderer-owned sections have
+/// already projected their object-local positions; every other path retains
+/// the authoritative project-then-topology entry point.
 unsafe fn flush_world_batch(
     vertices: *mut ClassicAffineVertex,
     vertex_count: usize,
@@ -6838,7 +7853,21 @@ unsafe fn flush_world_batch(
             hardware_triangles: 0,
         };
     }
-    unsafe { flush_batch(vertices, vertex_count, surfaces, surface_count, output) }
+    #[cfg(not(feature = "renderer-owned-sections"))]
+    unsafe {
+        flush_batch(vertices, vertex_count, surfaces, surface_count, output)
+    }
+    #[cfg(feature = "renderer-owned-sections")]
+    unsafe {
+        submit_classic_affine_projected_batch(
+            vertices,
+            vertex_count,
+            surfaces,
+            surface_count,
+            output,
+            ClassicAffineProfile::QUAKE_REFERENCE,
+        )
+    }
 }
 
 /// Record the exact ordinary-world stream after the shipping submitter has
@@ -7037,6 +8066,26 @@ fn face_bounds(map: &ResidentMap, face: Face) -> ([i16; 3], [i16; 3]) {
         [mins[0] as i16, mins[1] as i16, mins[2] as i16],
         [maxs[0] as i16, maxs[1] as i16, maxs[2] as i16],
     )
+}
+
+#[cfg(feature = "renderer-owned-sections")]
+fn owned_face_bounds(
+    payload: RenderQuadPayload<'_>,
+    object: RenderQuadObject,
+    face: RenderQuadFace,
+) -> Option<([i16; 3], [i16; 3])> {
+    let mut mins = [i16::MAX; 3];
+    let mut maxs = [i16::MIN; 3];
+    for corner_index in 0..face.corner_count as usize {
+        let corner = payload.corner(face.first_corner as usize + corner_index)?;
+        let position =
+            payload.position(object.first_position as usize + corner.position as usize)?;
+        for axis in 0..3 {
+            mins[axis] = mins[axis].min(position[axis]);
+            maxs[axis] = maxs[axis].max(position[axis]);
+        }
+    }
+    Some((mins, maxs))
 }
 
 /// A point guaranteed to lie inside a convex cooked face. Any convex
@@ -7757,7 +8806,9 @@ fn select_frame_faces_blocked(
                             visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
                                 || front_facing_compact_plane(
                                     #[cfg(feature = "renderer-compact-cell-stream")]
-                                    unsafe { *visible_planes.get_unchecked(visible_index) },
+                                    unsafe {
+                                        *visible_planes.get_unchecked(visible_index)
+                                    },
                                     #[cfg(all(
                                         feature = "renderer-cell-policy",
                                         not(feature = "renderer-compact-cell-stream")
@@ -8041,11 +9092,7 @@ fn load_aabb_clip4_with_near(planes: &[AabbClipPlane; 4], near: &AabbClipPlane) 
 /// classifier schedule, selecting MAC2 after the light-matrix MVMVA.
 #[cfg(feature = "renderer-gte-near-classification")]
 #[inline(always)]
-fn aabb_reaches_behind_near_gte(
-    mins: [i16; 3],
-    maxs: [i16; 3],
-    near: &AabbClipPlane,
-) -> bool {
+fn aabb_reaches_behind_near_gte(mins: [i16; 3], maxs: [i16; 3], near: &AabbClipPlane) -> bool {
     let inner = GteVec3I16::new(
         if near.signbits & 1 != 0 {
             maxs[0]

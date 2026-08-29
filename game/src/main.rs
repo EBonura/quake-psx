@@ -2,7 +2,13 @@
 
 #![feature(optimize_attribute)]
 #![cfg_attr(
-    all(target_arch = "mips", feature = "renderer-quake-baked-materialize"),
+    all(
+        target_arch = "mips",
+        any(
+            feature = "renderer-quake-baked-materialize",
+            feature = "renderer-owned-sections"
+        )
+    ),
     feature(asm_experimental_arch)
 )]
 #![no_std]
@@ -41,6 +47,8 @@ mod pusher;
 mod quake;
 #[cfg(feature = "episode1-regression")]
 mod regression;
+#[cfg(feature = "renderer-owned-sections")]
+mod render_section;
 mod renderer;
 #[cfg(feature = "start-route-regression")]
 mod start_route_regression;

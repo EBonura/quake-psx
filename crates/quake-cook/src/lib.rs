@@ -26,8 +26,8 @@ pub use geometry::{cook_geometry, GeometryLumps, SkyEncoding};
 pub use map::{cook_map, CookedMap, MapCookConfig};
 pub use model::{cook_geometry_and_models, CookedModels, ModelCookStats};
 pub use render_sections::{
-    encode_render_quad_payload, encode_render_sections, EncodedRenderQuadPayload,
-    RenderQuadCellInput, RenderQuadPayloadInput, RenderSectionInput,
+    encode_render_quad_payload, encode_render_sections, encode_resident_render_cells,
+    EncodedRenderQuadPayload, RenderQuadCellInput, RenderQuadPayloadInput, RenderSectionInput,
 };
 pub use psx_sfx::PARKING_TAIL as SFX_PARKING_TAIL;
 pub use sound::{

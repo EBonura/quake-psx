@@ -9,7 +9,8 @@ use quake_formats::resident::{MapLoadError as ResidentMapLoadError, ResidentMap}
 use quake_formats::{
     alias_model_is_sprite, decode_sound_bank, episode_directory_index, AliasModelTable,
     CookedRecord, EpisodeDirectoryEncoder, Face, Leaf, LumpKind, MapEntity, PsbIndex, PsbVersion,
-    RecordSlice, RenderSectionDirectory, SliceReader, SoundBankKind, SoundEffect, TextureInfo,
+    RecordSlice, RenderCellDirectory, RenderCellHeader, SliceReader, SoundBankKind, SoundEffect,
+    TextureInfo,
     EPISODE_DIRECTORY_BYTES, RESIDENT_MAP_ARENA_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_SPU_END,
     TEXTURE_LAYERED_SKY, TEXTURE_SKY,
 };
@@ -248,6 +249,7 @@ enum Action {
     E1m1GpuPolygonLeaderBench,
     E1m1GpuPolygonScratchLiquidBench,
     E1m1GpuPolygonStreamedSectionsBench,
+    E1m1GpuPolygonOwnedSectionsBench,
     E1m1GpuPolygonScratchLiquid30HzBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
@@ -1357,6 +1359,29 @@ fn real_main() -> Result<()> {
                 "e1m1-gpu-polygon-streamed-sections-bench",
             )?;
         }
+        Action::E1m1GpuPolygonOwnedSectionsBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            build_render_section_sidecars(&root, &pak)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-owned-sections-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-owned-sections",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-owned-sections-bench",
+            )?;
+        }
         Action::E1m1GpuPolygonScratchLiquid30HzBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1470,8 +1495,7 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentLevel2StreamBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-stream-bench");
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-stream-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -1493,8 +1517,7 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentLevel2ScatterBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-scatter-bench");
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-scatter-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -1516,8 +1539,8 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentLevel2ColdCacheBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build = root
-                .join("build-psoxide-e1m1-gpu-polygon-resident-level2-cold-cache-bench");
+            let build =
+                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-cold-cache-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -1561,8 +1584,7 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentBaseCacheFastBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-base-cache-fast-bench");
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-base-cache-fast-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -3506,6 +3528,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-leader-bench"
             | "e1m1-gpu-polygon-scratch-liquid-bench"
             | "e1m1-gpu-polygon-streamed-sections-bench"
+            | "e1m1-gpu-polygon-owned-sections-bench"
             | "e1m1-gpu-polygon-scratch-liquid-30hz-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
@@ -3623,6 +3646,9 @@ fn parse_cli() -> Result<Cli> {
                     }
                     "e1m1-gpu-polygon-streamed-sections-bench" => {
                         Action::E1m1GpuPolygonStreamedSectionsBench
+                    }
+                    "e1m1-gpu-polygon-owned-sections-bench" => {
+                        Action::E1m1GpuPolygonOwnedSectionsBench
                     }
                     "e1m1-gpu-polygon-scratch-liquid-30hz-bench" => {
                         Action::E1m1GpuPolygonScratchLiquid30HzBench
@@ -3770,6 +3796,7 @@ fn print_help() {
            e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
            e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
            e1m1-gpu-polygon-streamed-sections-bench  Load and validate QRS4 section directories\n  \
+           e1m1-gpu-polygon-owned-sections-bench  Draw the world from gathered QRP4 sections\n  \
            e1m1-gpu-polygon-scratch-liquid-30hz-bench  Measure the leader at a fixed two-tick 30 Hz workload\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
@@ -4290,7 +4317,9 @@ fn build_render_section_sidecars(root: &Path, pak: &Path) -> Result<()> {
     ] {
         let path = maps.join(format!("{map}.qrs"));
         let bytes = fs::read(&path)?;
-        RenderSectionDirectory::parse(&bytes)
+        let header = RenderCellHeader::parse(&bytes, bytes.len())
+            .map_err(|error| format!("invalid generated {}: {error:?}", path.display()))?;
+        RenderCellDirectory::parse_prefix(&bytes[..header.directory_bytes()], bytes.len())
             .map_err(|error| format!("invalid generated {}: {error:?}", path.display()))?;
     }
     Ok(())
@@ -5374,7 +5403,7 @@ fn stage_world_chunks(root: &Path, build: &Path, include_render_sections: bool) 
             let source = root.join(format!("id1psx/maps/{map}.qrs"));
             if !source.is_file() {
                 return Err(format!(
-                    "streamed-section build requires checked QRS4 sidecar {}",
+                    "streamed-section build requires checked QRC1 sidecar {}",
                     source.display()
                 )
                 .into());
@@ -5405,9 +5434,12 @@ fn build_disc(
     let exe = build.join("quake-psx.exe");
     fs::copy(game_exe(root), &exe)?;
     let include_render_sections = feature.is_some_and(|features| {
-        features
-            .split(',')
-            .any(|name| name == "renderer-streamed-sections")
+        features.split(',').any(|name| {
+            matches!(
+                name,
+                "renderer-streamed-sections" | "renderer-owned-sections"
+            )
+        })
     });
     let chunks = stage_world_chunks(root, build, include_render_sections)?;
     let image = build.join("quake-psx.bin");
@@ -6490,10 +6522,12 @@ change; a delta under this is code placement, not work)\n"
     let first_performance = full_level_render_metrics(
         &fs::read_to_string(capture.join("run-a/route.csv"))?,
         &fs::read_to_string(capture.join("run-a/cd.csv"))?,
+        &fs::read_to_string(capture.join("run-a/console.log"))?,
     )?;
     let second_performance = full_level_render_metrics(
         &fs::read_to_string(capture.join("run-b/route.csv"))?,
         &fs::read_to_string(capture.join("run-b/cd.csv"))?,
+        &fs::read_to_string(capture.join("run-b/console.log"))?,
     )?;
     if first_performance != second_performance {
         return Err(format!(
@@ -6542,6 +6576,7 @@ trigger_changelevel -> e1m2\n\
          full_level_presentations={}\n\
          full_level_elapsed_bus_cycles={}\n\
          full_level_fps_x1000={}\n\
+         full_level_readn_sessions={}\n\
          topology_cache_batch_hits={}\n\
          topology_cache_batch_misses={}\n\
          topology_invariant_hit_slots={}\n\
@@ -6563,6 +6598,7 @@ trigger_changelevel -> e1m2\n\
         first_performance.presentations,
         first_performance.elapsed_bus_cycles,
         first_performance.fps_x1000,
+        first_performance.readn_sessions,
         probe.monster_present,
         probe.monster_animated,
         probe.monster_state_bounds,
@@ -8646,12 +8682,17 @@ struct FullLevelRenderMetrics {
     presentations: u64,
     elapsed_bus_cycles: u64,
     fps_x1000: u64,
+    readn_sessions: u64,
 }
 
 /// Measure rendered cadence from the first gameplay presentation until the
 /// next map begins reading. This excludes both cold loading and post-route
 /// idle time while covering the entire authored level traversal.
-fn full_level_render_metrics(route_csv: &str, cd_csv: &str) -> Result<FullLevelRenderMetrics> {
+fn full_level_render_metrics(
+    route_csv: &str,
+    cd_csv: &str,
+    telemetry: &str,
+) -> Result<FullLevelRenderMetrics> {
     const PS1_BUS_CLOCK_HZ: u64 = 33_868_800;
     let rows = route_csv
         .lines()
@@ -8667,17 +8708,36 @@ fn full_level_render_metrics(route_csv: &str, cd_csv: &str) -> Result<FullLevelR
             (fields.next()? == "0x06").then_some(cycle)
         })
         .collect::<Vec<_>>();
-    let (initial_last_read, transition_start) = readn_cycles
-        .windows(2)
-        .max_by_key(|pair| pair[1].saturating_sub(pair[0]))
-        .map(|pair| (pair[0], pair[1]))
-        .ok_or("CD log has fewer than two ReadN sessions")?;
+    let map_load_begins = telemetry
+        .lines()
+        .filter(|line| line.contains("quake-psx: map residency miss begin"))
+        .filter_map(guest_log_cycle)
+        .collect::<Vec<_>>();
+    let (timing_start, transition_start) = if map_load_begins.len() >= 2 {
+        // The first local-bank publication is the last cold-load stage before
+        // the initial render cell is activated. The second map-load marker is
+        // emitted before the E1M1 loading picture or any E1M2 payload read.
+        // Unlike the legacy largest-ReadN-gap heuristic, these boundaries stay
+        // correct when renderer cells legitimately stream during gameplay.
+        (
+            cold_local_audio_publication_cycle(telemetry)?,
+            map_load_begins[1],
+        )
+    } else {
+        // Backward-compatible measurement for old benchmark binaries which
+        // cannot issue gameplay ReadN sessions.
+        readn_cycles
+            .windows(2)
+            .max_by_key(|pair| pair[1].saturating_sub(pair[0]))
+            .map(|pair| (pair[0], pair[1]))
+            .ok_or("CD log has fewer than two ReadN sessions")?
+    };
     let flips = rows
         .iter()
         .filter_map(|line| {
             let fields = line.split(',').collect::<Vec<_>>();
             let cycle = fields.get(3)?.parse::<u64>().ok()?;
-            (fields.get(10) == Some(&"1") && cycle > initial_last_read && cycle < transition_start)
+            (fields.get(10) == Some(&"1") && cycle > timing_start && cycle < transition_start)
                 .then_some(cycle)
         })
         .collect::<Vec<_>>();
@@ -8699,6 +8759,20 @@ fn full_level_render_metrics(route_csv: &str, cd_csv: &str) -> Result<FullLevelR
         presentations: flips.len() as u64,
         elapsed_bus_cycles,
         fps_x1000: numerator / elapsed_bus_cycles,
+        readn_sessions: readn_cycles
+            .iter()
+            .filter(|cycle| **cycle > timing_start && **cycle < transition_start)
+            .count() as u64,
+    })
+}
+
+fn guest_log_cycle(line: &str) -> Option<u64> {
+    line.split_whitespace().find_map(|field| {
+        field
+            .strip_prefix('c')?
+            .strip_suffix(']')?
+            .parse::<u64>()
+            .ok()
     })
 }
 
@@ -9644,6 +9718,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-v3-bench"
             | "build-psoxide-e1m1-gpu-polygon-leader-bench"
             | "build-psoxide-e1m1-gpu-polygon-scratch-liquid-bench"
+            | "build-psoxide-e1m1-gpu-polygon-owned-sections-bench"
             | "build-psoxide-e1m1-gpu-polygon-scratch-liquid-30hz-bench"
             | "build-psoxide-e1m2-e1m3-leader-route-regression"
             | "build-psoxide-e1m2-e1m3-scratch-liquid-route-regression"
@@ -9927,11 +10002,37 @@ mod tests {
                   450,0x09,0,\n\
                   800,0x06,0,\n";
         assert_eq!(
-            full_level_render_metrics(route, cd).unwrap(),
+            full_level_render_metrics(route, cd, "").unwrap(),
             FullLevelRenderMetrics {
                 presentations: 3,
                 elapsed_bus_cycles: 200,
                 fps_x1000: 338_688_000,
+                readn_sessions: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn full_level_render_window_keeps_gameplay_readn_sessions() {
+        let route = "route_tick,tape_frame,cpu_tick,bus_cycles,cpu_tick_delta,bus_cycle_delta,display_x,display_y,display_width,display_height,display_start_changed,port1_polls\n\
+                     0,0,1,400,0,0,0,0,320,240,1,0\n\
+                     1,0,2,600,0,0,0,256,320,240,1,1\n\
+                     2,0,3,700,0,0,0,0,320,240,1,2\n\
+                     3,0,4,900,0,0,0,256,320,240,1,3\n";
+        let cd = "cycle,command,param_len,params\n\
+                  150,0x06,0,\n\
+                  650,0x06,0,\n\
+                  810,0x06,0,\n";
+        let telemetry = "[guest f1 c100] quake-psx: map residency miss begin\n\
+                         [guest f2 c500] quake-psx: audio-local source-bytes=0x00000100 upload-bytes=0x000000f0 sessions=0x00000001 hit=0\n\
+                         [guest f3 c800] quake-psx: map residency miss begin\n";
+        assert_eq!(
+            full_level_render_metrics(route, cd, telemetry).unwrap(),
+            FullLevelRenderMetrics {
+                presentations: 2,
+                elapsed_bus_cycles: 100,
+                fps_x1000: 338_688_000,
+                readn_sessions: 1,
             }
         );
     }

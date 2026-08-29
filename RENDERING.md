@@ -939,6 +939,41 @@ branch delay slot; the accepted routine uses an explicit `.set noreorder`
 schedule. These are code-shape rejections, not visual failures: the completed
 controls retained the canonical hashes.
 
+### Renderer-owned QRC2 checkpoint
+
+The first complete renderer-owned map path is now deterministic and visually
+exact. It replaces the renderer-facing portion of PSB5 with a resident QRP5
+dictionary and cached QRC2 camera cells. The cooker groups source-order faces
+into bounded objects, stores one validated dictionary per map, and emits small
+leaf-local command and visibility streams. At runtime a cell transition gathers
+one bounded section into the reclaimed tail of the existing resident-map arena;
+camera motion within the active leaf performs no storage I/O or allocation.
+
+Two complete fixed-step E1M1 runs agreed on every gameplay probe and retained
+the canonical VRAM hash `0x09a7f019bb9a5e7c` and display hash
+`0x9bac66f3bec0e66b`. The current checkpoint completes 2,132 full-level
+presentations in 3,880,420,934 bus cycles at 18.599 fps, with 110 `ReadN`
+sessions. This is not a performance leader and remains feature-gated, but it is
+the first visually neutral end-to-end architecture in which the renderer owns
+its static geometry representation instead of reparsing Quake BSP face data.
+
+An early implementation spent about 20.2% of sampled gameplay instructions
+revalidating immutable payload and directory structure. QRP5 is now validated
+once during cold map loading, while a leaf transition checks only its newly read
+cell references and performs a constant-time validated rebind. This moved the
+experimental path well beyond its initial 13.079 fps state, but the remaining
+gap to the 23.856 leader proves that ownership alone is insufficient. The next
+passes must reduce cell-transition CD traffic and replace the broad per-object
+projection loop with Quake II style early rejection and compact projection
+schedules.
+
+Reproduce the checkpoint using only PSoXide:
+
+```sh
+cargo run --release -- e1m1-gpu-polygon-owned-sections-bench \
+  --psoxide ../PSoXide/target/release/frontend
+```
+
 Reproduce the leader or build its non-regression playable disc using only
 PSoXide:
 
