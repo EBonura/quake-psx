@@ -17,6 +17,7 @@ mod entities;
 mod geometry;
 mod map;
 mod model;
+mod render_sections;
 mod sound;
 
 pub use bsp::{Bsp, BspLump, BspStats, MipTexture};
@@ -24,6 +25,10 @@ pub use entities::{cook_entities, CookedEntities, SourceEntity};
 pub use geometry::{cook_geometry, GeometryLumps, SkyEncoding};
 pub use map::{cook_map, CookedMap, MapCookConfig};
 pub use model::{cook_geometry_and_models, CookedModels, ModelCookStats};
+pub use render_sections::{
+    encode_render_quad_payload, encode_render_sections, EncodedRenderQuadPayload,
+    RenderQuadCellInput, RenderQuadPayloadInput, RenderSectionInput,
+};
 pub use psx_sfx::PARKING_TAIL as SFX_PARKING_TAIL;
 pub use sound::{
     cook_global_sounds, cook_monolithic_sounds_for_validation, cook_sounds,
