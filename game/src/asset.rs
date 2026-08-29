@@ -17,6 +17,8 @@ use quake_formats::{
     GRAPHICS_PICTURE_RECORD_BYTES, GRAPHICS_WEAPON_ICON_BYTES, RESIDENT_MAP_ARENA_BYTES,
     TEXTURE_LIQUID,
 };
+#[cfg(feature = "renderer-streamed-sections")]
+use quake_formats::{RenderSectionHeader, RenderSectionIndex, RENDER_SECTION_HEADER_BYTES};
 
 use crate::platform::{self, StorageError};
 
@@ -61,6 +63,12 @@ impl EpisodeMap {
             Self::E1M7 => 107,
             Self::E1M8 => 108,
         }
+    }
+
+    #[cfg(feature = "renderer-streamed-sections")]
+    #[optimize(size)]
+    pub const fn render_section_chunk_id(self) -> u32 {
+        self.chunk_id() + 100
     }
 
     #[optimize(size)]
@@ -242,6 +250,8 @@ const RENDER_TEXTURE_CAPACITY: usize = 128;
 const LIQUID_TEXTURE_CAPACITY: usize = 4;
 const LIQUID_TEXTURE_BYTES: usize = quake_core::liquid::LIQUID_TILE_BYTES;
 const LIQUID_SOURCE_CAPACITY: usize = LIQUID_TEXTURE_CAPACITY * LIQUID_TEXTURE_BYTES;
+#[cfg(feature = "renderer-streamed-sections")]
+const RENDER_SECTION_DIRECTORY_CAPACITY: usize = 16 * 1024;
 
 /// One immutable source tile retained while its map is resident.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -340,6 +350,10 @@ pub struct ResidentMap {
     weapon_icons: Vec<u8>,
     episode_directory: [u8; EPISODE_DIRECTORY_BYTES],
     episode_directory_state: EpisodeDirectoryState,
+    #[cfg(feature = "renderer-streamed-sections")]
+    render_section_directory: Vec<u8>,
+    #[cfg(feature = "renderer-streamed-sections")]
+    render_section_header: Option<RenderSectionHeader>,
 }
 
 impl ResidentMap {
@@ -363,6 +377,10 @@ impl ResidentMap {
             weapon_icons: Vec::with_capacity(GRAPHICS_WEAPON_ICON_BYTES),
             episode_directory: [0; EPISODE_DIRECTORY_BYTES],
             episode_directory_state: EpisodeDirectoryState::Unread,
+            #[cfg(feature = "renderer-streamed-sections")]
+            render_section_directory: Vec::with_capacity(RENDER_SECTION_DIRECTORY_CAPACITY),
+            #[cfg(feature = "renderer-streamed-sections")]
+            render_section_header: None,
         }
     }
 
@@ -417,6 +435,11 @@ impl ResidentMap {
         // failure is explicitly fail-stop and requires a fresh disc reload.
         self.index = None;
         self.stream_scratch.clear();
+        #[cfg(feature = "renderer-streamed-sections")]
+        {
+            self.render_section_directory.clear();
+            self.render_section_header = None;
+        }
         let shared_result = {
             let payload = ForwardChunkReader::open(
                 plan.map.chunk_id(),
@@ -430,10 +453,45 @@ impl ResidentMap {
         self.stream_scratch.clear();
         shared_result.map_err(map_shared_error)?;
         self.refresh_collision_working_set()?;
+        #[cfg(feature = "renderer-streamed-sections")]
+        self.load_render_section_directory(plan.map)?;
         self.upload_textures(plan.map, &plan.index)?;
         self.index = Some(plan.index);
         self.map = plan.map;
         Ok(())
+    }
+
+    #[cfg(feature = "renderer-streamed-sections")]
+    #[optimize(size)]
+    fn load_render_section_directory(&mut self, map: EpisodeMap) -> Result<(), MapLoadError> {
+        let chunk_id = map.render_section_chunk_id();
+        let file_bytes = platform::chunk_size(chunk_id).map_err(MapLoadError::Storage)? as usize;
+        let mut header_bytes = [0u8; RENDER_SECTION_HEADER_BYTES];
+        platform::read_chunk_exact(chunk_id, 0, &mut header_bytes)
+            .map_err(MapLoadError::Storage)?;
+        let header = RenderSectionHeader::parse(&header_bytes, file_bytes)
+            .map_err(|_| MapLoadError::Format)?;
+        if header.directory_bytes() > RENDER_SECTION_DIRECTORY_CAPACITY {
+            return Err(MapLoadError::TooLarge);
+        }
+        self.render_section_directory
+            .resize(header.directory_bytes(), 0);
+        platform::read_chunk_exact(chunk_id, 0, &mut self.render_section_directory)
+            .map_err(MapLoadError::Storage)?;
+        let index = RenderSectionIndex::parse_prefix(&self.render_section_directory, file_bytes)
+            .map_err(|_| MapLoadError::Format)?;
+        if index.leaf_count() != self.shared.leaves().len() {
+            return Err(MapLoadError::Format);
+        }
+        self.render_section_header = Some(header);
+        Ok(())
+    }
+
+    #[cfg(feature = "renderer-streamed-sections")]
+    #[optimize(size)]
+    pub fn render_section_index(&self) -> Option<RenderSectionIndex<'_>> {
+        let header = self.render_section_header?;
+        RenderSectionIndex::parse_prefix(&self.render_section_directory, header.file_bytes()).ok()
     }
 
     #[optimize(size)]

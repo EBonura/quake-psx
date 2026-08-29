@@ -247,6 +247,7 @@ enum Action {
     E1m1GpuPolygonLeaderBench,
     E1m1GpuPolygonPortalAreasBench,
     E1m1GpuPolygonScratchLiquidBench,
+    E1m1GpuPolygonStreamedSectionsBench,
     E1m1GpuPolygonSeparatedScratchBench,
     E1m1GpuPolygonSplitScratchBench,
     E1m1GpuPolygonSharedSkyDivisorBench,
@@ -1336,6 +1337,28 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-scratch-liquid-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonStreamedSectionsBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-streamed-sections-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-streamed-sections",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-streamed-sections-bench",
             )?;
         }
         Action::E1m1GpuPolygonSeparatedScratchBench => {
@@ -3512,6 +3535,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-leader-bench"
             | "e1m1-gpu-polygon-portal-areas-bench"
             | "e1m1-gpu-polygon-scratch-liquid-bench"
+            | "e1m1-gpu-polygon-streamed-sections-bench"
             | "e1m1-gpu-polygon-separated-scratch-bench"
             | "e1m1-gpu-polygon-split-scratch-bench"
             | "e1m1-gpu-polygon-shared-sky-divisor-bench"
@@ -3627,6 +3651,9 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-portal-areas-bench" => Action::E1m1GpuPolygonPortalAreasBench,
                     "e1m1-gpu-polygon-scratch-liquid-bench" => {
                         Action::E1m1GpuPolygonScratchLiquidBench
+                    }
+                    "e1m1-gpu-polygon-streamed-sections-bench" => {
+                        Action::E1m1GpuPolygonStreamedSectionsBench
                     }
                     "e1m1-gpu-polygon-separated-scratch-bench" => {
                         Action::E1m1GpuPolygonSeparatedScratchBench
@@ -5317,7 +5344,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     Ok(())
 }
 
-fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
+fn stage_world_chunks(root: &Path, build: &Path, include_render_sections: bool) -> Result<PathBuf> {
     let stage = build.join("world-chunks");
     if stage.exists() {
         fs::remove_dir_all(&stage)?;
@@ -5342,6 +5369,24 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
             stage.join(format!("chunk_{}.psb", 100 + index)),
         )?;
     }
+    if include_render_sections {
+        for (index, map) in [
+            "start", "e1m1", "e1m2", "e1m3", "e1m4", "e1m5", "e1m6", "e1m7", "e1m8",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = root.join(format!("id1psx/maps/{map}.qrs"));
+            if !source.is_file() {
+                return Err(format!(
+                    "streamed-section build requires {}; generate QRS1/QRP1 sidecars with quake2-transfer-census",
+                    source.display()
+                )
+                .into());
+            }
+            fs::copy(source, stage.join(format!("chunk_{}.qrs", 200 + index)))?;
+        }
+    }
     Ok(stage)
 }
 
@@ -5364,7 +5409,12 @@ fn build_disc(
     build_game(root, feature, fresh_guest_target)?;
     let exe = build.join("quake-psx.exe");
     fs::copy(game_exe(root), &exe)?;
-    let chunks = stage_world_chunks(root, build)?;
+    let include_render_sections = feature.is_some_and(|features| {
+        features
+            .split(',')
+            .any(|name| name == "renderer-streamed-sections")
+    });
+    let chunks = stage_world_chunks(root, build, include_render_sections)?;
     let image = build.join("quake-psx.bin");
     if image.exists() {
         fs::remove_file(&image)?;

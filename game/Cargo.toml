@@ -239,6 +239,10 @@ renderer-cell-liquid-policy = ["renderer-cell-policy"]
 # leaf doorways, merges broad BSP splits into rooms, and the runtime propagates
 # clipped screen rectangles before admitting the existing exact face path.
 renderer-portal-areas = ["renderer-block-frustum"]
+# Architectural Quake II transfer gate. Load the checked QRS1 directory for
+# the resident map and resolve camera leaves to bounded render sections. The
+# existing PSB renderer remains authoritative until section activation lands.
+renderer-streamed-sections = []
 renderer-scratchpad-liquid-phase = []
 # Replace the sky lattice's two same-denominator CPU divides with one reciprocal
 # divide and two corrected multiply-high projections.
