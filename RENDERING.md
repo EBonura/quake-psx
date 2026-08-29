@@ -768,6 +768,18 @@ canonical ranges, template allocation, stream ownership and memory sizes, then
 re-parses the completed sidecar through the no-std guest readers. The full
 Episode 1 corpus completed this round trip.
 
+The first guest bridge is also now measured. A feature-gated disc carries the
+nine full sidecars as WORLD.PAK chunks 200--208, reads only the checked QRS1
+directory at map load, and resolves the active section whenever the camera
+leaf changes. The platform asset cache must explicitly admit those IDs; its
+original twelve-entry mapping rejected every new chunk before the pack scan.
+With a 21-entry feature-gated cache the canonical E1M1 route passes twice with
+exact final hashes at 3,042,413,696 cycles, or 23.745 fps. This is 0.45% slower
+than the 3,028,704,094-cycle/23.852-fps scratch leader. That control result is
+useful: section lookup alongside the legacy PVS/face/materialization path is
+overhead, not an optimization. The payload has to become the static-world
+renderer rather than annotate it.
+
 The real files also expose the remaining cooker problem. Geometry shared by
 several camera sections is duplicated in this first self-contained encoding,
 so E1M8 expands to 12,325 KiB despite its small 484 KiB whole-map resident
