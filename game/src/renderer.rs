@@ -2380,6 +2380,18 @@ impl Renderer {
             return;
         }
 
+        #[cfg(feature = "renderer-scratchpad-liquid-phase")]
+        let phase_offsets = unsafe {
+            core::slice::from_raw_parts_mut(
+                psx_engine::scratchpad::base_ptr(),
+                quake_core::liquid::LIQUID_PHASE_OFFSETS,
+            )
+        };
+        #[cfg(feature = "renderer-scratchpad-liquid-phase")]
+        if !quake_core::liquid::prepare_phase_offsets(phase, phase_offsets) {
+            return;
+        }
+
         const EMPTY_UPLOAD: crate::platform::VramUploadRange = crate::platform::VramUploadRange {
             rect: psx_vram::VramRect::new(0, 0, 1, 1),
             start: 0,
@@ -2401,7 +2413,12 @@ impl Renderer {
                     quake_core::liquid::LIQUID_TILE_BYTES,
                 )
             };
-            if !quake_core::liquid::warp_tile_64(source, destination, phase) {
+            #[cfg(not(feature = "renderer-scratchpad-liquid-phase"))]
+            let warped = quake_core::liquid::warp_tile_64(source, destination, phase);
+            #[cfg(feature = "renderer-scratchpad-liquid-phase")]
+            let warped =
+                quake_core::liquid::warp_tile_64_prepared(source, destination, phase_offsets);
+            if !warped {
                 return;
             }
             let alternate_active = quake_core::liquid::alternate_tile_is_active(
@@ -2567,7 +2584,7 @@ impl Renderer {
             #[cfg(feature = "renderer-gte-near-classification")]
             {
                 near_clip_plane = Some(NearPlane::new(camera).as_aabb_clip_plane());
-                scene::load_aabb_clip4_with_aux(
+                load_aabb_clip4_with_near(
                     &frustum,
                     near_clip_plane.as_ref().expect("near plane initialized"),
                 );
@@ -2717,11 +2734,11 @@ impl Renderer {
                 ) = selected_fingerprints(&self.frame_face_indices);
             }
         }
-        self.update_visible_liquid_tiles(map, animation_tick_60hz);
         let view = crate::platform::load_quake_camera(
             [camera.origin.x, camera.origin.y, camera.origin.z],
             camera.angles,
         );
+        self.update_visible_liquid_tiles(map, animation_tick_60hz);
         #[cfg(feature = "renderer-static-world-reuse")]
         let static_world_key = StaticWorldKey {
             camera,
@@ -7979,10 +7996,82 @@ fn flag_near_faces_gte(visible_faces: &[VisibleFace], selected: &mut [u16], near
     for entry in selected.iter_mut() {
         let visible =
             unsafe { visible_faces.get_unchecked((*entry & FRAME_FACE_INDEX_MASK) as usize) };
-        if scene::aabb_reaches_behind_aux(visible.bounds.mins, visible.bounds.maxs, near) {
+        if aabb_reaches_behind_near_gte(visible.bounds.mins, visible.bounds.maxs, near) {
             *entry |= NEAR_FACE_BIT;
         }
     }
+}
+
+/// Load the four ordinary frustum planes plus the near plane used by the
+/// separate selected-face pass. Keeping this composition local means the
+/// renderer builds reproducibly against the pinned public PSoXide API.
+#[cfg(feature = "renderer-gte-near-classification")]
+#[inline(always)]
+fn load_aabb_clip4_with_near(planes: &[AabbClipPlane; 4], near: &AabbClipPlane) {
+    scene::load_rotation(&Mat3I16 {
+        m: [planes[0].normal, planes[1].normal, planes[2].normal],
+    });
+    scene::load_light_matrix(&Mat3I16 {
+        m: [planes[3].normal, near.normal, [0; 3]],
+    });
+}
+
+/// Test the AABB's inner support point against the near plane retained in the
+/// second light-matrix row. The MIPS path mirrors PSoXide's public four-plane
+/// classifier schedule, selecting MAC2 after the light-matrix MVMVA.
+#[cfg(feature = "renderer-gte-near-classification")]
+#[inline(always)]
+fn aabb_reaches_behind_near_gte(
+    mins: [i16; 3],
+    maxs: [i16; 3],
+    near: &AabbClipPlane,
+) -> bool {
+    let inner = GteVec3I16::new(
+        if near.signbits & 1 != 0 {
+            maxs[0]
+        } else {
+            mins[0]
+        },
+        if near.signbits & 2 != 0 {
+            maxs[1]
+        } else {
+            mins[1]
+        },
+        if near.signbits & 4 != 0 {
+            maxs[2]
+        } else {
+            mins[2]
+        },
+    );
+
+    #[cfg(target_arch = "mips")]
+    let dot = {
+        let mut dot = inner.xy_packed();
+        unsafe {
+            core::arch::asm!(
+                ".word 0x48880000",
+                ".word 0x48890800",
+                ".word 0",
+                ".word 0",
+                // MVMVA using the light matrix, followed by MAC2.
+                ".word 0x4a026012",
+                ".word 0x4808d000",
+                ".word 0",
+                inlateout("$8") dot,
+                in("$9") inner.z_packed(),
+                options(nostack, nomem, preserves_flags),
+            );
+        }
+        dot as i32
+    };
+
+    #[cfg(not(target_arch = "mips"))]
+    let dot = i32::from(near.normal[0])
+        .wrapping_mul(i32::from(inner.x))
+        .wrapping_add(i32::from(near.normal[1]).wrapping_mul(i32::from(inner.y)))
+        .wrapping_add(i32::from(near.normal[2]).wrapping_mul(i32::from(inner.z)));
+
+    dot < near.distance
 }
 
 /// Quake near plane backed by the face's cached transformed depths.

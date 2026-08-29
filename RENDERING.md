@@ -72,9 +72,11 @@ The current renderer includes:
 - fixed packet and scratch buffers with overflow counters;
 - shared clipping and projection helpers from PSoXide.
 
-The latest accepted feature-gated selector build measured 22.587 fps on the
-complete fixed-step E1M1 route in PSoXide, up from the 22.128 fps exact-key
-selection-cache baseline and the original 21.857 fps renderer baseline.
+The latest accepted feature-gated renderer build measured 23.856 fps on the
+complete fixed-step E1M1 route in PSoXide, up from the 23.656 fps accepted
+predecessor, the 23.432 fps working baseline and the original 21.857 fps
+renderer baseline.
+
 The goal remains 30 fps. Emulator timing is useful for comparing revisions, but
 only a real console can provide the final result.
 
@@ -621,11 +623,11 @@ clean-room range model are committed privately at `quake2-psx-decomp`
 The next profile-guided pass broke the 23.428 fps working baseline without
 changing resolution, draw order, polygon topology, simulation cadence, or any
 rendered pixel. The accepted stack completes the deterministic E1M1 route in
-3,053,838,735 bus cycles at 23.656 fps. Both complete runs present 2,134 frames
+3,028,132,969 bus cycles at 23.856 fps. Both complete runs present 2,134 frames
 and retain VRAM hash `0x09a7f019bb9a5e7c` and display hash
-`0x9bac66f3bec0e66b`. This saves 29,704,756 cycles and gains 0.228 fps (0.97%)
-against the 23.428 capture, or 29,132,983 cycles and 0.224 fps against the
-previous documented 23.432 leader.
+`0x9bac66f3bec0e66b`. This saves 54,838,749 cycles and gains 0.424 fps (1.81%)
+against the previous documented 23.432 leader. The final scratchpad step alone
+saves 25,705,766 cycles and gains 0.200 fps against the 23.656 predecessor.
 
 The cumulative exact A/B sequence was:
 
@@ -638,6 +640,7 @@ The cumulative exact A/B sequence was:
 | liquid visibility fast rejection | 3,054,981,456 | 23.647 | +0.018 |
 | inline baked-corner materializer | 3,054,410,221 | 23.651 | +0.004 |
 | scheduled liquid-warp delay slots | 3,053,838,735 | 23.656 | +0.005 |
+| scratchpad liquid phase window | 3,028,132,969 | 23.856 | +0.200 |
 
 The first change keeps near classification as a separate, register-light pass
 but places its three-product AABB support test in the otherwise unused second
@@ -659,6 +662,20 @@ exact 64x64 resample shrinks from `0xa8` to `0x9c` bytes and saves 571,486
 route cycles. A four-texel unroll grew the kernel to `0xec` bytes and regressed
 to 3,054,410,276 cycles (23.651 fps), so the smaller two-texel form remains
 authoritative.
+
+The final step copies the 64-byte turbulence displacement window into the
+PS1 scratchpad once per active liquid phase. Every visible 64x64 liquid tile
+then reuses one-cycle scratchpad reads instead of fetching 4,096 displacement
+entries from main RAM. The original source tile, warped upload buffer, atlas
+coordinates and 20 Hz phase policy remain unchanged.
+
+The first research build measured 3,028,704,094 cycles at 23.852 fps, but it
+depended on two auxiliary GTE helpers present only in an ignored SDK hydration.
+The accepted version composes the same fifth AABB plane from PSoXide's pinned
+public matrix API and retains the MAC2 test locally. A clean hydration of
+PSoXide `5048fbde0ea650c8f728f1fb271a9529a447a90b` now builds the feature stack
+without transient source edits. The clean reconstruction is also 571,125
+cycles faster than that research build.
 
 An out-of-band PSoXide PC sample on the accepted predecessor kept the next
 targets honest. `gpu_end_frame` waits account for 20.05% of samples, the
@@ -684,26 +701,19 @@ Reproduce the leader or build its non-regression playable disc using only
 PSoXide:
 
 ```sh
-cargo run --release -- e1m1-gpu-polygon-leader-bench \
+cargo run --release -- e1m1-gpu-polygon-scratch-liquid-bench \
   --psoxide ../PSoXide/target/release/frontend
-cargo run --release -- gpu-polygon-leader-disc \
+cargo run --release -- gpu-polygon-scratch-liquid-disc \
   --psoxide ../PSoXide/target/release/frontend
-cargo run --release -- e1m2-e1m3-leader-route-regress \
+cargo run --release -- e1m2-e1m3-scratch-liquid-route-regress \
   --psoxide ../PSoXide/target/release/frontend
 ```
 
 The playable image passes the shipping boot gate with 62,240 bytes of heap
-free. Two complete authored E1M2/E1M3 runs also agree exactly: 6,023 gameplay
+free. Two complete authored E1M2/E1M3 runs also agree exactly: 6,189 gameplay
 frames, all `0x1fffffff` mechanism bits, 86 target edges, two map transitions
-into E1M4, VRAM hash `0xb43b84dba8258f74`, and display hash
-`0xdd1e0c9c06d994cf`.
-
-The research feature gates in this branch use matching local PSoXide engine
-and GTE SDK changes inside the deliberately ignored `.psoxide` hydration.
-In particular, `renderer-gte-near-classification` needs the auxiliary AABB row
-API. These changes are not part of the shipping/default build and must not be
-inferred to exist in the pinned public SDK until the PSoXide-side API is ported
-and reviewed separately.
+into E1M4, VRAM hash `0x4c2b7b22ffcc6780`, and display hash
+`0x3438b9054b141195`.
 
 Run the PSoXide-only census and analyzer with:
 

@@ -243,8 +243,10 @@ enum Action {
     E1m1GpuPolygonBakedMaterializeBench,
     GpuPolygonCellPolicyDisc,
     GpuPolygonLeaderDisc,
+    GpuPolygonScratchLiquidDisc,
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLeaderBench,
+    E1m1GpuPolygonScratchLiquidBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
     E1m1GpuPolygonColdLevel2Bench,
@@ -277,6 +279,7 @@ enum Action {
     E1m1GpuPolygonCensus,
     E1m2E1m3RouteRegress,
     E1m2E1m3LeaderRouteRegress,
+    E1m2E1m3ScratchLiquidRouteRegress,
     SurvivalRegress,
     VisualParityRegress,
     SystemsRegress,
@@ -1250,6 +1253,24 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_ship_boot(&root, &frontend, &build, &map)?;
         }
+        Action::GpuPolygonScratchLiquidDisc => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-gpu-polygon-scratch-liquid-playable");
+            fs::create_dir_all(&build)?;
+            let map = build.join("quake-psx.map");
+            request_guest_link_map(map.clone())?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_ship_boot(&root, &frontend, &build, &map)?;
+        }
         Action::E1m1GpuPolygonQuakeKernelBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1288,6 +1309,28 @@ fn real_main() -> Result<()> {
             )?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gpu-polygon-leader-bench")?;
+        }
+        Action::E1m1GpuPolygonScratchLiquidBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-scratch-liquid-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-scratch-liquid-bench",
+            )?;
         }
         Action::E1m1GpuPolygonLevel0RunBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -1769,6 +1812,21 @@ fn real_main() -> Result<()> {
                 &build,
                 Some(
                     "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m2_e1m3_route_regression(&root, &frontend, &build)?;
+        }
+        Action::E1m2E1m3ScratchLiquidRouteRegress => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m2-e1m3-scratch-liquid-route-regression");
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
                 ),
                 false,
             )?;
@@ -3396,8 +3454,10 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-baked-materialize-bench"
             | "gpu-polygon-cell-policy-disc"
             | "gpu-polygon-leader-disc"
+            | "gpu-polygon-scratch-liquid-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-leader-bench"
+            | "e1m1-gpu-polygon-scratch-liquid-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
             | "e1m1-gpu-polygon-cold-level2-bench"
@@ -3430,6 +3490,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-census"
             | "e1m2-e1m3-route-regress"
             | "e1m2-e1m3-leader-route-regress"
+            | "e1m2-e1m3-scratch-liquid-route-regress"
             | "survival-regress"
             | "systems-regress"
             | "combat-regress"
@@ -3505,8 +3566,12 @@ fn parse_cli() -> Result<Cli> {
                     }
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
                     "gpu-polygon-leader-disc" => Action::GpuPolygonLeaderDisc,
+                    "gpu-polygon-scratch-liquid-disc" => Action::GpuPolygonScratchLiquidDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
                     "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
+                    "e1m1-gpu-polygon-scratch-liquid-bench" => {
+                        Action::E1m1GpuPolygonScratchLiquidBench
+                    }
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
                     "e1m1-gpu-polygon-cold-adaptive-bench" => {
                         Action::E1m1GpuPolygonColdAdaptiveBench
@@ -3561,6 +3626,9 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-census" => Action::E1m1GpuPolygonCensus,
                     "e1m2-e1m3-route-regress" => Action::E1m2E1m3RouteRegress,
                     "e1m2-e1m3-leader-route-regress" => Action::E1m2E1m3LeaderRouteRegress,
+                    "e1m2-e1m3-scratch-liquid-route-regress" => {
+                        Action::E1m2E1m3ScratchLiquidRouteRegress
+                    }
                     "survival-regress" => Action::SurvivalRegress,
                     "systems-regress" => Action::SystemsRegress,
                     "combat-regress" => Action::CombatRegress,
@@ -3645,8 +3713,10 @@ fn print_help() {
            e1m1-gpu-polygon-block-clip-flags-bench  A/B propagate exact block clip flags\n  \
            e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
            e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
+           e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
+           gpu-polygon-scratch-liquid-disc  Build and boot-test the playable scratchpad-liquid stack\n  \
            e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
            e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \
            e1m1-hoisted-indexed-world-bench  A/B decode PSB5 indexed view once per world frame\n  \
@@ -3676,6 +3746,7 @@ fn print_help() {
            e1m1-gpu-polygon-census  Capture GP0 work for the GPU-clipped candidate\n  \
            e1m2-e1m3-route-regress  Walk E1M2 and E1M3's authored progression into E1M4 headlessly\n  \
            e1m2-e1m3-leader-route-regress  Repeat E1M2/E1M3 with the 23.656 renderer stack\n  \
+           e1m2-e1m3-scratch-liquid-route-regress  Repeat E1M2/E1M3 with scratchpad liquid phase reads\n  \
            survival-regress  Walk E1M1's authored hazards: burn, fall, drown, die, respawn\n  \
            systems-regress  Prove Start's authored lava spouts headlessly\n  \
            combat-regress  Prove shotgun damage and death against cooked E1M1\n  \
@@ -9403,6 +9474,8 @@ fn audit_ignored_top(top: &str) -> bool {
     matches!(
         top,
         ".git"
+            | ".claude"
+            | ".codex"
             | ".psoxide"
             | ".quakepsx"
             | "target"
@@ -9452,6 +9525,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-baked-materialize-v2-bench"
             | "build-psoxide-gpu-polygon-cell-policy-playable"
             | "build-psoxide-gpu-polygon-leader-playable"
+            | "build-psoxide-gpu-polygon-scratch-liquid-playable"
             | "build-psoxide-e1m1-gpu-polygon-quake-kernel-bench"
             | "build-psoxide-e1m1-gpu-polygon-leader-quake-kernel-bench"
             | "build-psoxide-e1m1-gpu-polygon-leader-liquid-scan-bench"
@@ -9460,7 +9534,9 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-v2-bench"
             | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-v3-bench"
             | "build-psoxide-e1m1-gpu-polygon-leader-bench"
+            | "build-psoxide-e1m1-gpu-polygon-scratch-liquid-bench"
             | "build-psoxide-e1m2-e1m3-leader-route-regression"
+            | "build-psoxide-e1m2-e1m3-scratch-liquid-route-regression"
             | "build-psoxide-e1m1-gpu-polygon-level0-run-bench"
             | "build-psoxide-e1m1-gpu-polygon-cold-adaptive-bench"
             | "build-psoxide-e1m1-gpu-polygon-cold-level2-bench"
