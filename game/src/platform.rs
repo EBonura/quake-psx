@@ -28,7 +28,10 @@ const OT_DEPTH: usize = 256;
 const MAX_SCREEN_COMMANDS: usize = 384;
 #[cfg(feature = "renderer-window-range-coalescing")]
 const MAX_WINDOW_PACKET_RANGES: usize = 128;
+#[cfg(not(feature = "renderer-streamed-sections"))]
 const ASSET_COUNT: usize = 12;
+#[cfg(feature = "renderer-streamed-sections")]
+const ASSET_COUNT: usize = 21;
 // Two sectors keep small Quake reads coalesced while leaving the largest
 // Episode 1 map enough resident heap beside the double-buffered GPU arenas.
 // The regression harness builds carry ~68 KB more code than the shipping
@@ -777,6 +780,8 @@ fn cache_index(chunk_id: u32) -> Option<usize> {
         3 => Some(2),
         100 => Some(3),
         101..=108 => Some((chunk_id - 97) as usize),
+        #[cfg(feature = "renderer-streamed-sections")]
+        200..=208 => Some((chunk_id - 188) as usize),
         _ => None,
     }
 }

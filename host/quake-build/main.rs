@@ -9,9 +9,9 @@ use quake_formats::resident::{MapLoadError as ResidentMapLoadError, ResidentMap}
 use quake_formats::{
     alias_model_is_sprite, decode_sound_bank, episode_directory_index, AliasModelTable,
     CookedRecord, EpisodeDirectoryEncoder, Face, Leaf, LumpKind, MapEntity, PsbIndex, PsbVersion,
-    RecordSlice, SliceReader, SoundBankKind, SoundEffect, TextureInfo, EPISODE_DIRECTORY_BYTES,
-    RESIDENT_MAP_ARENA_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_SPU_END, TEXTURE_LAYERED_SKY,
-    TEXTURE_SKY,
+    RecordSlice, RenderSectionDirectory, SliceReader, SoundBankKind, SoundEffect, TextureInfo,
+    EPISODE_DIRECTORY_BYTES, RESIDENT_MAP_ARENA_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_SPU_END,
+    TEXTURE_LAYERED_SKY, TEXTURE_SKY,
 };
 use sha2::{Digest, Sha256};
 use std::env;
@@ -247,6 +247,7 @@ enum Action {
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLeaderBench,
     E1m1GpuPolygonScratchLiquidBench,
+    E1m1GpuPolygonStreamedSectionsBench,
     E1m1GpuPolygonScratchLiquid30HzBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
@@ -1331,6 +1332,29 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-scratch-liquid-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonStreamedSectionsBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            build_render_section_sidecars(&root, &pak)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-streamed-sections-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-streamed-sections",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-streamed-sections-bench",
             )?;
         }
         Action::E1m1GpuPolygonScratchLiquid30HzBench => {
@@ -3481,6 +3505,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-leader-bench"
             | "e1m1-gpu-polygon-scratch-liquid-bench"
+            | "e1m1-gpu-polygon-streamed-sections-bench"
             | "e1m1-gpu-polygon-scratch-liquid-30hz-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
@@ -3595,6 +3620,9 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
                     "e1m1-gpu-polygon-scratch-liquid-bench" => {
                         Action::E1m1GpuPolygonScratchLiquidBench
+                    }
+                    "e1m1-gpu-polygon-streamed-sections-bench" => {
+                        Action::E1m1GpuPolygonStreamedSectionsBench
                     }
                     "e1m1-gpu-polygon-scratch-liquid-30hz-bench" => {
                         Action::E1m1GpuPolygonScratchLiquid30HzBench
@@ -3741,6 +3769,7 @@ fn print_help() {
            e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
            e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
            e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
+           e1m1-gpu-polygon-streamed-sections-bench  Load and validate QRS3 section directories\n  \
            e1m1-gpu-polygon-scratch-liquid-30hz-bench  Measure the leader at a fixed two-tick 30 Hz workload\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
@@ -4235,6 +4264,35 @@ fn write_episode_directory(root: &Path) -> Result<()> {
     let temporary = root.join("id1psx/maps/.episode.qidx.tmp");
     fs::write(&temporary, encoder.finish())?;
     fs::rename(&temporary, &destination)?;
+    Ok(())
+}
+
+fn build_render_section_sidecars(root: &Path, pak: &Path) -> Result<()> {
+    let maps = root.join("id1psx/maps");
+    let mut command = Command::new(require_tool(&["cargo"])?);
+    command
+        .current_dir(root)
+        .args([
+            "run",
+            "--quiet",
+            "--release",
+            "--locked",
+            "--bin",
+            "quake2-transfer-census",
+            "--",
+        ])
+        .arg(&maps)
+        .arg(pak)
+        .arg(&maps);
+    run(&mut command)?;
+    for map in [
+        "start", "e1m1", "e1m2", "e1m3", "e1m4", "e1m5", "e1m6", "e1m7", "e1m8",
+    ] {
+        let path = maps.join(format!("{map}.qrs"));
+        let bytes = fs::read(&path)?;
+        RenderSectionDirectory::parse(&bytes)
+            .map_err(|error| format!("invalid generated {}: {error:?}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -5281,7 +5339,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     Ok(())
 }
 
-fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
+fn stage_world_chunks(root: &Path, build: &Path, include_render_sections: bool) -> Result<PathBuf> {
     let stage = build.join("world-chunks");
     if stage.exists() {
         fs::remove_dir_all(&stage)?;
@@ -5306,6 +5364,24 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
             stage.join(format!("chunk_{}.psb", 100 + index)),
         )?;
     }
+    if include_render_sections {
+        for (index, map) in [
+            "start", "e1m1", "e1m2", "e1m3", "e1m4", "e1m5", "e1m6", "e1m7", "e1m8",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = root.join(format!("id1psx/maps/{map}.qrs"));
+            if !source.is_file() {
+                return Err(format!(
+                    "streamed-section build requires checked QRS3 sidecar {}",
+                    source.display()
+                )
+                .into());
+            }
+            fs::copy(source, stage.join(format!("chunk_{}.qrs", 200 + index)))?;
+        }
+    }
     Ok(stage)
 }
 
@@ -5328,7 +5404,12 @@ fn build_disc(
     build_game(root, feature, fresh_guest_target)?;
     let exe = build.join("quake-psx.exe");
     fs::copy(game_exe(root), &exe)?;
-    let chunks = stage_world_chunks(root, build)?;
+    let include_render_sections = feature.is_some_and(|features| {
+        features
+            .split(',')
+            .any(|name| name == "renderer-streamed-sections")
+    });
+    let chunks = stage_world_chunks(root, build, include_render_sections)?;
     let image = build.join("quake-psx.bin");
     if image.exists() {
         fs::remove_file(&image)?;

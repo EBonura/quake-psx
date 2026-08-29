@@ -487,6 +487,21 @@ mod tests {
         assert_eq!(directory.leaf_section(0), None);
         assert_eq!(directory.leaf_section(2), Some(1));
         assert_eq!(directory.edge(0).unwrap().neighbor, 1);
+        let header = quake_formats::RenderSectionHeader::parse(
+            &bytes[..RENDER_SECTION_HEADER_BYTES],
+            bytes.len(),
+        )
+        .unwrap();
+        let index = quake_formats::RenderSectionIndex::parse_prefix(
+            &bytes[..header.directory_bytes()],
+            header.file_bytes(),
+        )
+        .unwrap();
+        assert_eq!(index.header().resident_core_bytes(), 335_000);
+        assert_eq!(index.leaf_section(0), None);
+        assert_eq!(index.leaf_section(2), Some(1));
+        assert_eq!(index.section(1).unwrap(), directory.section(1).unwrap());
+        assert_eq!(index.edge(0).unwrap().neighbor, 1);
         assert!(RenderQuadPayload::parse(
             directory.payload(directory.section(0).unwrap()).unwrap()
         )

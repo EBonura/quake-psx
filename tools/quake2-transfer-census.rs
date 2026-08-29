@@ -159,6 +159,7 @@ struct MapCensus {
     masked_objects: MaskedObjectMetrics,
     resident_bytes: usize,
     resident_core_bytes: usize,
+    render_sections: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1277,7 +1278,8 @@ fn build_quad_payload(
     planes: &[Plane],
     source_bounds: &[LeafBounds],
     source_positions: &[[i16; 3]],
-) -> Result<QuadPayloadMetrics> {
+    resident_core_bytes: usize,
+) -> Result<(QuadPayloadMetrics, Vec<u8>)> {
     let mut input = RenderQuadPayloadInput::default();
     let mut metrics = QuadPayloadMetrics::default();
     let mut leaf_payload_bytes = Vec::with_capacity(view_faces.len());
@@ -1696,14 +1698,14 @@ fn build_quad_payload(
     let sidecar = encode_render_sections(
         &leaf_sections,
         &section_inputs,
-        0,
+        u32::try_from(resident_core_bytes).map_err(|_| "resident core exceeds QRS3 u32")?,
         u32::try_from(metrics.section_transition_max_bytes)
             .map_err(|_| "QRS3 streaming budget exceeds u32")?,
         u32::try_from(RENDER_SECTION_GPU_TARGET_BYTES)
             .map_err(|_| "QRS3 GPU budget exceeds u32")?,
     )?;
     metrics.section_sidecar_bytes = sidecar.len();
-    Ok(metrics)
+    Ok((metrics, sidecar))
 }
 
 fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
@@ -1895,13 +1897,14 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         }
         views[view_index].ambiguous_facing = ambiguous;
     }
-    let quad_payload = build_quad_payload(
+    let (quad_payload, render_sections) = build_quad_payload(
         &surfaces,
         &signatures,
         &view_faces,
         &planes,
         &source_bounds,
         &source_positions,
+        resident_core_bytes,
     )?;
     let masked_objects =
         masked_object_metrics(&surfaces, &signatures, &view_faces, &planes, &source_bounds)?;
@@ -1931,6 +1934,7 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         masked_objects,
         resident_bytes,
         resident_core_bytes,
+        render_sections,
     })
 }
 
@@ -2350,6 +2354,16 @@ fn main() -> Result<()> {
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".quakepsx/cache/shareware/ID1/PAK0.PAK"));
+    let render_section_dir = arguments.next().map(PathBuf::from);
+    if arguments.next().is_some() {
+        return Err(
+            "usage: quake2-transfer-census [cooked-maps-dir] [pak0.pak] [qrs-output-dir]"
+                .into(),
+        );
+    }
+    if let Some(directory) = &render_section_dir {
+        fs::create_dir_all(directory)?;
+    }
     let pak_bytes = fs::read(&pak_path)?;
     let pak = PakArchive::parse(&pak_bytes)?;
     println!("# Quake II PSX static-brush transfer census");
@@ -2365,8 +2379,18 @@ fn main() -> Result<()> {
     for map in MAPS {
         let source = Bsp::parse(pak.require(&format!("maps/{map}.bsp"))?)?;
         let census = load_census(&maps_dir.join(format!("{map}.psb")), map, &source)?;
+        if let Some(directory) = &render_section_dir {
+            let destination = directory.join(format!("{map}.qrs"));
+            let temporary = directory.join(format!(".{map}.qrs.tmp"));
+            fs::write(&temporary, &census.render_sections)?;
+            fs::rename(&temporary, &destination)?;
+        }
         print_map(&census);
         censuses.push(census);
+    }
+    if let Some(directory) = &render_section_dir {
+        println!();
+        println!("Wrote checked QRS3 sidecars to {}", directory.display());
     }
 
     let faces: usize = censuses.iter().map(|census| census.faces).sum();

@@ -1864,6 +1864,8 @@ pub struct Renderer {
     visibility: [u8; MAX_VISIBILITY_BYTES],
     visible_leaf_count: usize,
     cached_visibility: Option<(u32, usize, u16)>,
+    #[cfg(feature = "renderer-streamed-sections")]
+    active_render_section: Option<(u32, usize, u16)>,
     active_water_plane: i16,
     #[cfg(feature = "renderer-selection-cache")]
     cached_frame_selection: Option<(Camera, Option<(u32, usize, u16)>, i16)>,
@@ -1936,6 +1938,8 @@ impl Renderer {
             visibility: [0; MAX_VISIBILITY_BYTES],
             visible_leaf_count: 0,
             cached_visibility: None,
+            #[cfg(feature = "renderer-streamed-sections")]
+            active_render_section: None,
             active_water_plane: -1,
             #[cfg(feature = "renderer-selection-cache")]
             cached_frame_selection: None,
@@ -2555,6 +2559,22 @@ impl Renderer {
             RendererCensus::default()
         };
         let visibility_valid = self.prepare_visibility(map, camera, water_alpha);
+        #[cfg(feature = "renderer-streamed-sections")]
+        if let Some((generation, leaf, _)) = self.cached_visibility {
+            if self
+                .active_render_section
+                .is_none_or(|(cached_generation, cached_leaf, _)| {
+                    cached_generation != generation || cached_leaf != leaf
+                })
+            {
+                let section = map
+                    .render_section_for_leaf(leaf)
+                    .and_then(|section| u16::try_from(section).ok());
+                self.active_render_section = section.map(|section| (generation, leaf, section));
+            }
+        } else {
+            self.active_render_section = None;
+        }
         #[cfg(feature = "renderer-census")]
         {
             renderer_census.visibility_rebuilt =
