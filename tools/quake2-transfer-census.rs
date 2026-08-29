@@ -151,6 +151,7 @@ struct MapCensus {
     facing_pairs: usize,
     invariant_facing_pairs: usize,
     quad_payload: QuadPayloadMetrics,
+    masked_objects: MaskedObjectMetrics,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -192,6 +193,27 @@ struct QuadPayloadMetrics {
     section_activation_p95_bytes: usize,
     section_activation_max_bytes: usize,
     section_transition_max_bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct MaskedRenderObject {
+    faces: Vec<usize>,
+    positions: Vec<u16>,
+    quads: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MaskedObjectMetrics {
+    objects: usize,
+    faces: usize,
+    commands: usize,
+    commands_p50: usize,
+    commands_p95: usize,
+    commands_max: usize,
+    selected_quads: usize,
+    projected_quads: usize,
+    selected_positions: usize,
+    projected_positions: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1037,6 +1059,118 @@ fn encode_local_quad_section(
     Ok(encode_render_quad_payload(&output)?)
 }
 
+fn push_masked_object(
+    output: &mut Vec<MaskedRenderObject>,
+    faces: &mut Vec<usize>,
+    positions: &mut BTreeSet<u16>,
+    quads: &mut usize,
+) {
+    if faces.is_empty() {
+        return;
+    }
+    output.push(MaskedRenderObject {
+        faces: std::mem::take(faces),
+        positions: positions.iter().copied().collect(),
+        quads: *quads,
+    });
+    positions.clear();
+    *quads = 0;
+}
+
+/// Measure an exact source-order object alternative. Consecutive eligible
+/// faces share one object even when their PVS/facing signatures differ; a
+/// runtime command would carry per-face visible and dynamic masks. This keeps
+/// ordering stable while testing whether coarser commands save enough work to
+/// justify projecting masked-out members of an admitted object.
+fn masked_object_metrics(
+    surfaces: &[Surface],
+    signatures: &[Vec<u64>],
+    view_faces: &[Vec<usize>],
+    planes: &[Plane],
+    source_bounds: &[LeafBounds],
+) -> Result<MaskedObjectMetrics> {
+    let mut objects = Vec::new();
+    let mut faces = Vec::new();
+    let mut positions = BTreeSet::new();
+    let mut quads = 0usize;
+    for (face_index, surface) in surfaces.iter().enumerate() {
+        let face_quads = surface.corners.len().saturating_sub(2) / 2;
+        if !surface.policy_visible
+            || !surface.template_eligible
+            || signature_is_empty(&signatures[face_index])
+            || face_quads == 0
+        {
+            push_masked_object(&mut objects, &mut faces, &mut positions, &mut quads);
+            continue;
+        }
+        if face_quads > RENDER_QUAD_OBJECT_MAX_QUADS {
+            return Err(format!("face {face_index} exceeds the masked-object quad ceiling").into());
+        }
+        let added_positions = surface
+            .positions
+            .iter()
+            .filter(|position| !positions.contains(position))
+            .count();
+        if !faces.is_empty()
+            && (faces.len() == RETAIL_FACE_LIMIT
+                || quads + face_quads > RENDER_QUAD_OBJECT_MAX_QUADS
+                || positions.len() + added_positions > RETAIL_VERTEX_LIMIT)
+        {
+            push_masked_object(&mut objects, &mut faces, &mut positions, &mut quads);
+        }
+        faces.push(face_index);
+        positions.extend(surface.positions.iter().copied());
+        quads += face_quads;
+    }
+    push_masked_object(&mut objects, &mut faces, &mut positions, &mut quads);
+
+    let mut metrics = MaskedObjectMetrics {
+        objects: objects.len(),
+        faces: objects.iter().map(|object| object.faces.len()).sum(),
+        ..MaskedObjectMetrics::default()
+    };
+    let mut commands_per_view = Vec::new();
+    for (view_index, visible_faces) in view_faces.iter().enumerate() {
+        if visible_faces.is_empty() {
+            continue;
+        }
+        let bounds = source_bounds[view_index + 1];
+        let mut view_commands = 0usize;
+        for object in &objects {
+            let mut selected_quads = 0usize;
+            let mut selected_positions = BTreeSet::new();
+            for &face_index in &object.faces {
+                if !signature_has(&signatures[face_index], view_index) {
+                    continue;
+                }
+                let surface = &surfaces[face_index];
+                let plane = *planes
+                    .get(surface.plane as usize)
+                    .ok_or("masked object face plane is out of range")?;
+                if leaf_invariant_facing(plane, surface.face_flags, bounds) == Some(false) {
+                    continue;
+                }
+                selected_quads += surface.corners.len().saturating_sub(2) / 2;
+                selected_positions.extend(surface.positions.iter().copied());
+            }
+            if selected_quads == 0 {
+                continue;
+            }
+            view_commands += 1;
+            metrics.selected_quads += selected_quads;
+            metrics.projected_quads += object.quads;
+            metrics.selected_positions += selected_positions.len();
+            metrics.projected_positions += object.positions.len();
+        }
+        metrics.commands += view_commands;
+        commands_per_view.push(view_commands);
+    }
+    metrics.commands_p50 = percentile(commands_per_view.iter().copied(), 50);
+    metrics.commands_p95 = percentile(commands_per_view.iter().copied(), 95);
+    metrics.commands_max = commands_per_view.into_iter().max().unwrap_or(0);
+    Ok(metrics)
+}
+
 /// Compile the real cooked map into the exact base-level subset QRP2 can own.
 ///
 /// One object is one planar source face (split only at the retail 32-quad
@@ -1556,6 +1690,8 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         &source_bounds,
         &source_positions,
     )?;
+    let masked_objects =
+        masked_object_metrics(&surfaces, &signatures, &view_faces, &planes, &source_bounds)?;
     let pvs_faces = views.iter().map(|view| view.faces).max().unwrap_or(0);
     let visibility_classes = signatures
         .iter()
@@ -1579,6 +1715,7 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         facing_pairs,
         invariant_facing_pairs,
         quad_payload,
+        masked_objects,
     })
 }
 
@@ -1843,6 +1980,30 @@ fn print_map(census: &MapCensus) {
         qrp.section_payload_total_bytes / 1024,
         qrp.section_sidecar_bytes / 1024,
         qrp.section_transition_max_bytes / 1024,
+    );
+    let masked = census.masked_objects;
+    println!(
+        "  {}: source-order masked objects={} for {} faces ({:.2} faces/object); commands mean/p50/p95/max={:.2}/{}/{}/{}, selected/projected quads mean={:.2}/{:.2}, quad overprojection={:.1}%, position overprojection={:.1}%",
+        census.map,
+        masked.objects,
+        masked.faces,
+        ratio(masked.faces, masked.objects),
+        ratio(masked.commands, view_count),
+        masked.commands_p50,
+        masked.commands_p95,
+        masked.commands_max,
+        ratio(masked.selected_quads, view_count),
+        ratio(masked.projected_quads, view_count),
+        ratio(
+            masked.projected_quads.saturating_sub(masked.selected_quads),
+            masked.selected_quads,
+        ) * 100.0,
+        ratio(
+            masked
+                .projected_positions
+                .saturating_sub(masked.selected_positions),
+            masked.selected_positions,
+        ) * 100.0,
     );
     let cell_faces: usize = nonempty_views.clone().map(|view| view.cell_faces).sum();
     let cell_dynamic: usize = nonempty_views
