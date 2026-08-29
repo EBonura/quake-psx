@@ -226,9 +226,9 @@ renderer-cell-policy = []
 # Extend the retained cell policy with one immutable liquid bit so the hot
 # selector no longer indexes the texture table for every PVS face.
 renderer-cell-liquid-policy = ["renderer-cell-policy"]
-# Architectural Quake II transfer gate. Load the checked QRS3 directory for
+# Architectural Quake II transfer gate. Load the checked QRS4 directory for
 # the resident map and resolve camera leaves to bounded render sections. The
-# existing PSB renderer remains authoritative until QRP3 activation lands.
+# existing PSB renderer remains authoritative until QRP4 activation lands.
 renderer-streamed-sections = []
 # Stage the current liquid turbulence phase in the PS1 scratchpad once, then
 # reuse it for every visible 64x64 liquid tile in that phase.

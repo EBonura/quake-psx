@@ -3769,7 +3769,7 @@ fn print_help() {
            e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
            e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
            e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
-           e1m1-gpu-polygon-streamed-sections-bench  Load and validate QRS3 section directories\n  \
+           e1m1-gpu-polygon-streamed-sections-bench  Load and validate QRS4 section directories\n  \
            e1m1-gpu-polygon-scratch-liquid-30hz-bench  Measure the leader at a fixed two-tick 30 Hz workload\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
@@ -5374,7 +5374,7 @@ fn stage_world_chunks(root: &Path, build: &Path, include_render_sections: bool) 
             let source = root.join(format!("id1psx/maps/{map}.qrs"));
             if !source.is_file() {
                 return Err(format!(
-                    "streamed-section build requires checked QRS3 sidecar {}",
+                    "streamed-section build requires checked QRS4 sidecar {}",
                     source.display()
                 )
                 .into());

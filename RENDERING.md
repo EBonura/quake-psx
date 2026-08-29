@@ -734,6 +734,101 @@ Its 4,569,879-cycle cost is about 2,141 cycles per presentation and the 0.035
 fps delta remains inside the established 0.122 fps noise gate. It is still
 scaffolding rather than a speedup; QRP3 activation must pass the 23.856 leader.
 
+### QRP4 full renderer ownership
+
+The QRP3 memory split above was incomplete. Its fixed templates owned only the
+ordinary baked GT4 subset, while `fallback_bytes` was only a packet-arena
+estimate. Near and adaptive faces, odd GT3 tails, animated materials, sky,
+liquid, and GPU-cap spills still dereferenced the resident PSB vertex, face,
+mark-surface, and visibility arrays. QRP3 therefore could not reclaim the
+render-only lumps it counted as absent. The QRS3 bridge result remains a valid
+read-only timing control, but its claimed renderer ownership is superseded.
+
+QRP4 makes each bounded source-order object complete. In addition to optional
+fixed GT4 templates, it stores every retained face's exact fallback corner
+stream, object-local position index, UV, light sample, material, plane,
+light-style pair, source identity, and the three face-state bits used by exact
+materialization. Exact face bounds are derived once during activation from the
+owned corners and positions, then retained in the 24-byte runtime face. They
+are not duplicated in the 16-byte disc record. A cell command has separate
+`visible`, `dynamic`, and `template` masks. Clearing a template mask now
+selects the exact streamed fallback representation instead of returning to the
+resident PSB. Fallback-only objects and faces with zero fixed quads are
+first-class checked records.
+
+The ownership audit also found that doors, lifts, and other inline brush
+models still used the PSB face and vertex lumps. QRP4 now stores those as
+always-resident fallback-only objects and charges their exact compact bytes to
+the per-map core. They have no cell commands or fixed world packets. The first
+complete E1M1 dictionary therefore contains all 5,722 world and inline-model
+render faces and 27,658 fallback corners. Of those, 3,340 world faces also own
+4,531 fixed quads.
+
+A second ownership audit closed the remaining PVS dependency. Dynamic entity
+admission still needs the camera leaf's exact visibility bits, and translucent
+water conditionally merges one opposite PVS. Each QRP4 cell now stores its
+ordinary row, the optional portal row, portal leaf and plane, and disjoint base
+and portal face masks. E1M1 has 277 portal cells and two 144-byte rows per cell.
+The runtime can reproduce both `point_visible` and the water merge without the
+PSB visibility or mark-surface lumps. The resulting complete E1M1 dictionary is
+1,918 KiB on disc; its leaf activation is 170/222 KiB P95/max.
+
+Naively copying complete objects into every section produced a 108 MiB E1M1
+sidecar and was rejected immediately. QRS4 instead stores the QRP4 dictionary
+once and partitions only its cell stream. Each 32-byte section record names a
+cell range and carries independently checked staging, activation, projection,
+fixed-packet, and fallback budgets. The no-allocation QRP4 parser re-derives
+those figures from the shared dictionary, so the directory cannot hide a
+duplicate object or optimistic memory total. Compact staging is consumed
+through the guest's already allocated bounded CD scratch buffer while the
+renderer is quiescent; it is not another resident-map allocation. The active
+section therefore uses the reclaimed arena once rather than dividing it into
+two optimistic half-arenas. A per-map CPU target leaves 64 KiB beyond the
+largest activation.
+
+The GPU lifetime was also corrected from the recovered Quake II layout. Its
+32,408-byte per-display structure points at persistent world, model, and
+subdivision packet pools; it does not build every possibly visible packet into
+one monolithic frame tail. QRS4 now caps the installed fixed prefix at 64 KiB
+per display arena, leaves 56 KiB for the separately overflow-checked dynamic
+writer, and retains the established final 8 KiB reserve. `fallback_bytes` is a conservative pre-cull
+candidate count, not memory that coexists unconditionally with every fixed
+template. Portal-only and dynamic templates spill face by face when a leaf
+would exceed the prefix cap. E1M1 needs no spill; only E1M4 and E1M8 spill in
+the closed corpus. This first activation model permits a section-change pause.
+Seamless neighbor preload remains a later streaming milestone and is not
+claimed here.
+
+| Map | QRS4 sections | Shared sidecar | Core + active section | Arena headroom |
+| --- | ---: | ---: | ---: | ---: |
+| start | 10 | 1,705 KiB | 750 KiB | 108 KiB |
+| e1m1 | 23 | 1,922 KiB | 793 KiB | 65 KiB |
+| e1m2 | 39 | 1,871 KiB | 753 KiB | 105 KiB |
+| e1m3 | 20 | 1,574 KiB | 795 KiB | 64 KiB |
+| e1m4 | 105 | 2,392 KiB | 795 KiB | 64 KiB |
+| e1m5 | 16 | 1,349 KiB | 795 KiB | 64 KiB |
+| e1m6 | 16 | 1,085 KiB | 795 KiB | 64 KiB |
+| e1m7 | 4 | 376 KiB | 610 KiB | 249 KiB |
+| e1m8 | 87 | 950 KiB | 517 KiB | 341 KiB |
+
+E1M3 through E1M6 preserve the deliberate 64 KiB CPU safety margin. E1M4 and
+E1M8 are partitioned primarily by fixed-packet pressure. All nine sidecars are
+byte-deterministic across two complete generations and pass the full and prefix
+parsers. QRP4/QRS4 are still an
+activation prerequisite, not a frame-rate result: the PSB renderer remains
+authoritative until the guest can gather one section, install its dual packet
+pools, and render exact fallback faces from these records.
+
+The updated read-only QRS4 bridge also passed two complete PSoXide E1M1 routes
+with the canonical VRAM and display hashes. It measured 3,034,987,877 bus
+cycles and 23.803 fps over 2,134 presentations before full ownership. The
+complete portal-aware ownership directory then measured 3,031,560,551 cycles
+and 23.830 fps over the same 2,134 presentations. It is 3,427,582 cycles, or
+about 1,606 cycles per presentation, behind the 23.856 leader. The 0.026 fps
+delta remains inside the established 0.122 fps layout band. This accepts the
+shared dictionary and bounded directory as scaffolding, not as a performance
+improvement.
+
 Reproduce the bridge with:
 
 ```sh
