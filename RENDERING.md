@@ -1012,6 +1012,94 @@ not a fixed overhead.
 That reframes the remaining work. It is not "remove 20% everywhere"; it is
 "stop the heavy views from costing 1.6x the light ones".
 
+### The frame is memory-bound, not instruction-bound
+
+The instruction attribution above answers *what runs*. It does not answer *what
+the frame costs*, and on an R3000A with no data cache those are different
+questions. PSoXide's cycle profiler separates them. Over the E1M1 route on the
+accepted stack, per frame:
+
+```text
+profiled CPU cycles      1,387,178
+  issue                    611,438   44.1%   (one per retired instruction)
+  RAM load stalls          580,994   41.9%
+  I-cache refill stalls    116,604    8.4%
+  RAM store stalls          48,816    3.5%
+  multiply/divide           23,376    1.7%
+  MMIO                       5,950    0.4%
+```
+
+**Load stalls very nearly equal instruction issue.** Cutting instructions is at
+best half a lever; the other half is cutting loads. Two corrections follow from
+measuring this properly.
+
+First, earlier attributions in this document were taken over a window that ran
+past the E1M1 route into the E1M2 load. That inflated the whole table by about
+a third and put `SectorReader::read_sector` at 7.5% of "gameplay". Restricting
+the window to route ticks 658..5985 and 2,136 presentations removes it
+completely: it was all disc. The clean gameplay frame is **611,359 retired
+instructions**, not 1,303,376. Attribute through the map's `.text.*` section
+ranges, not its symbol lines: identical-code folding leaves local functions
+unnamed, and symbol-line attribution silently charges their cost to whatever
+precedes them. That is what once made `quake_core::train::leg_distance` appear
+to cost 5.4% of the frame when the code at that address is the liquid warp.
+
+Second, the vblank spin is far more expensive than its instruction count
+suggested, and it is still idle. The two-line spin inside `gpu_end_frame`
+retires 108,364 instructions per frame and pays **166,900 of the frame's load
+stall cycles** polling a counter in main RAM. Net of it, real work is about
+**1,112,000 cycles against the 1,130,089-cycle two-field budget** - the mean
+fits by 1.6%, confirming the cadence measurement above by an independent route.
+
+Load stalls net of the spin, per frame:
+
+```text
+ 54,558  quake::run                     18,549  MovementTrace::trace
+ 48,337  draw_frame                     15,921  warp_tile_64_prepared
+ 35,535  materialize_surface            14,548  AliasModelHeader::decode
+ 35,314  CollisionHull::trace_into      13,789  mark_visible_faces
+ 30,127  select_frame_faces_blocked     13,190  submit_quake_classic_affine_batch
+ 22,001  submit_classic_alias_model     10,677  point_leaf_index
+```
+
+Nearly every entry sits near one stall per retired instruction, which is what
+streaming large arrays through no data cache costs. The exception is
+instructive: `submit_quake_classic_affine_batch` is the largest instruction
+consumer at 11.92% but only 2.27% of load stalls. It is issue-bound, and its
+72,853 instructions are spread almost flat across 439 cache lines - a packet
+writer, with no hot loop to attack.
+
+Reproduce with:
+
+```sh
+frontend launch --path build-psoxide-e1m1-collision-broad-phase-bench/quake-psx.cue \
+  --digital-pad --steps 12000000000 --guest-frames 2136 \
+  --ram-load-stall-line-log captures/matched/loadstall.csv \
+  --ram-load-stall-line-start-route-tick 658
+```
+
+`--ram-load-stall-line-log` was added to PSoXide for this pass. It mirrors the
+existing MMIO stall line log: capture the PC before the step, charge the
+counter delta to that instruction's 16-byte line.
+
+### Closed: splitting the retained face record
+
+The selection pass is the clearest bandwidth case in the frame. It streams the
+entire retained face array every frame, and its 30,127 stall cycles are almost
+exactly what reading 774 records of 36 bytes from main RAM costs. Halving the
+record should have halved the stall.
+
+`renderer-compact-cell-stream` moves the plane into a parallel array, taking
+`VisibleFace` from 36 bytes to 24. On the full accepted stack it measured
+**24.371 fps and 2,964,154,309 cycles against 24.371 and 2,964,154,491** - 182
+cycles apart over three billion, with both canonical hashes exact.
+
+It changes nothing because the pass reads the plane anyway, for the backside
+test. Splitting the record splits the stream; it does not shorten it. The only
+way to cut this pass's bandwidth is to admit fewer candidates, and every
+affordable narrowing mechanism is already closed above. Do not retry record
+packing without first removing a field the selector actually reads.
+
 ### Closed: bounding the sky lattice
 
 The sky lattice *is* the sky: sky brush faces are never drawn, and 240 screen
