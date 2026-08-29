@@ -918,6 +918,239 @@ selector test. Portal admission is closed at every affordable budget, and the
 census binary is retained so the numbers can be re-derived rather than
 re-argued.
 
+### Accepted: cull against the frustum the GPU can actually draw
+
+`quake_frustum` built its four planes as `forward +- right` and `forward +- up`,
+a 90-degree half-angle on both axes. The horizontal one is right: OFX 160 over a
+160 projection plane puts the screen edge at exactly tangent one. The vertical
+one is not. OFY 120 over the same plane puts the top and bottom edges at 0.75,
+so a third of the culled volume was an off-screen band whose faces were
+selected, materialized, submitted and then discarded by the draw area.
+
+`renderer-screen-frustum` scales the forward component of the two vertical
+planes by 3,277/4,096. The water warp only ever lengthens the projection plane
+(165 +- 2) and shifts the offsets by two pixels, so 0.8 stays conservative for
+every configured window.
+
+```text
+presentations: 2,134
+cycles:        3,020,706,845   (baseline 3,034,417,010)
+fps:           23.915          (baseline 23.803)
+VRAM hash:     0x09a7f019bb9a5e7c
+display hash:  0x9bac66f3bec0e66b
+```
+
+Both canonical hashes are exact, which is the proof that the removed work was
+invisible. The gain is 13.7 million cycles, 0.45%. That is under the 0.122 fps
+layout-noise band on its own, but the cycle reduction with byte-identical output
+is not noise, and it costs nothing.
+
+### Accepted: redundant collision, visibility and packet work
+
+Four exact changes, all with byte-identical canonical hashes, measured together
+because each is small on its own.
+
+`EntityScene::trace_hull` had no broad phase. Its sibling `SceneCollision::trace`
+already builds a `SweptUnitBox` and skips candidates that cannot overlap it, but
+the hull path traced all 29 solid submodels of E1M1 through their full hulls on
+every call regardless of where the mover stood. `monster_step` fans over six
+directions, so one blocked monster cost up to 180 hull traces. The same filter
+is now applied with a 64-unit margin, which covers the largest Quake hull.
+
+The camera was located in the BSP five times per frame on one unmoving point:
+`prepare_visibility`, `mark_visible_faces`, `water_portal` and the view-model
+lighting each descended independently. `mark_visible_faces` cached its result
+but only after the descent. One memo keyed on `(generation, origin)` collapses
+all five to one, and `water_portal` now takes the resolved leaf.
+
+The GT4 pairing test re-derived the subdivision level of a neighbour it had just
+proved sat at the same depth key. When the profile carries no affine-error term,
+`QUAKE_REFERENCE` included, the level is a pure function of that key, so the
+three-way ladder and its range guard are already known. Disassembly confirmed
+the dead half: `next_otz < 60` is strictly implied by `next_otz < 136`, and the
+`andi` feeding it was computed twice. The general form stays for profiles that
+consult the UVs.
+
+`plane_contact` reached `__divdi3` four times per contact. R3000A has no 64-bit
+divide. `div_q12_i32` produces the same `numerator * 4096 / denominator` from a
+whole/remainder split in 32-bit arithmetic, so the fraction no longer calls it.
+The three endpoint terms keep the widening product: a 64-bit *product* is native
+`mult`, and `long_floor_probe_keeps_subunit_contact_precision` proves that a Q16
+or Q31 ratio loses sub-unit precision over a 32,768-unit probe.
+
+```text
+                                        cycles           fps
+session baseline                 3,034,417,010        23.803
++ drawable frustum               3,020,706,845        23.915
++ broad phase, camera memo       3,004,712,412        24.042
++ pairing ladder, plane_contact  2,965,296,903        24.362
+```
+
+VRAM `0x09a7f019bb9a5e7c` and display `0x9bac66f3bec0e66b` at every step.
+
+### The frame at the cadence a 30 fps build would actually run
+
+`perf-fixed-ticks` advances three simulation ticks per frame, which matches
+today's ~24 fps over a 60 Hz clock. A build holding 30 fps consumes two.
+`perf-fixed-ticks-30hz` measures that:
+
+```text
+presentations: 1,982
+cycles:        2,699,670,817
+fps:           24.852
+fields:        3.63% one, 57.34% two, 36.55% three, 1.82% four, 0.66% five+
+```
+
+**60.97% of frames already present in two fields**, against 47.45% at the start
+of this pass. At 1,362,094 cycles per frame and a 17.7% vblank-spin share, mean
+work is about 1,120,000 cycles against the 1,130,089-cycle two-field budget.
+**The mean already fits.** What remains is entirely the tail: 36.55% of frames
+land between two and three fields, and the GPU census shows those frames carry
+1,529.6 commands against 947.8 for the frames that fit. The tail is geometry,
+not a fixed overhead.
+
+That reframes the remaining work. It is not "remove 20% everywhere"; it is
+"stop the heavy views from costing 1.6x the light ones".
+
+### Closed: bounding the sky lattice
+
+The sky lattice *is* the sky: sky brush faces are never drawn, and 240 screen
+quads plus 143 view-ray samples are painted into the farthest OT slot every
+frame whether the aperture is the whole screen or a doorway. E1M1 typically
+selects about eight sky faces, so bounding the lattice to the projected union
+box of those faces looked like 3.3% of work.
+
+It is not, on this route. Measured 24.029 fps and 3,006,426,008 cycles against
+24.042 and 3,004,712,412: **1.7 million cycles worse**, with both hashes exact.
+Exact hashes with a bounded lattice means the bound never excluded a cell, so
+E1M1's outdoor start keeps the sky box projecting across the whole viewport and
+the eight-corner projection is pure added cost. The mechanism is sound and would
+pay on an indoor map; it does not pay here, and the benchmark is here.
+
+### Closed: capping liquid warps per frame
+
+One 64x64 liquid tile is 4,096 gathered texels, about 71,000 cycles, and E1M1
+has three liquid textures (`*water0`, `*slime0`, `*teleport`), so a frame that
+sees all three would spend 213,000 cycles of a 1,130,089-cycle budget on water
+animation. Warping one tile per frame and round-robining the rest measured
+24.414 fps with **both hashes exact**, which is the proof that it never fired:
+the route never has more than one tile needing a warp in the same frame. There
+is no multi-tile spike on this route to remove. The cost is real but flat at
+about one tile per frame.
+
+### Closed: packing the liquid resampler's stores
+
+The resampler retires one `sb` per texel, 4,096 byte stores per tile, and the
+R3000A write buffer does not merge byte stores to consecutive addresses.
+Assembling four texels in a register and issuing one `sw` cuts write
+transactions fourfold for about +0.75 instructions per texel. Measured 24.404
+fps and 2,960,156,347 cycles against 24.362 and 2,965,296,903: **inside the
+noise band**, and the hashes changed, so the rewritten kernel is also not yet
+byte-exact. No gain to justify chasing the remaining difference; reverted.
+
+Worth recording from the attempt: the first version put `sll $14, $14, 8`
+directly after `lbu $14, 0($15)`, copying the shape of the existing
+`lbu`/`sb` pair. That is not the same hazard. A store reads its data register a
+pipeline stage later than an ALU instruction reads its operand, so `lbu` into
+`sb` is safe where `lbu` into `sll` reads the stale register. Filling the slot
+with the column advance fixed that specific fault and the output still differed,
+so there is at least one more.
+
+Also established while measuring this: the turbulence resample is genuinely
+two-dimensional and does not separate. A row-rotate pass followed by a
+column-rotate pass yields `src[(y+T[x])&63][(x + T[(y+T[x])&63]) & 63]`, with
+`T` indexed by the shifted row rather than by `y`, and the same failure appears
+in the other order. With no data cache the 4,096 source reads are 4,096 bus
+transactions whatever the layout, so reordering or swizzling the source tile
+buys nothing either.
+
+### Closed: leaf-granular portal flooding
+
+The exact portal graph was cooked into the visibility lump (6 bytes per portal:
+BSP plane index plus the 2D bounding rectangle of the opening on that plane, on
+the 32-unit grid) with a per-leaf CSR of sides, and a runtime walk was built
+that narrows a screen rectangle at every opening and replaces the PVS row
+entirely. `tools/portal-runtime-check.rs` proves the cooked graph round-trips
+exactly: 3,312 portals and 6,624 sides for E1M1, every reconstructed corner on
+its stored plane within 0.89 units, zero plane-class mismatches.
+
+The walk works. It is the cost distribution that kills it:
+
+```text
+per sample   p50    p90     p99     max
+visits        12    231     718    1435
+side tests    73   1798    5889   12178
+projections    -    350       -       -
+```
+
+The mean over uniformly sampled leaf centres is only 78 visits and 600 tests,
+but roughly 1,300 of E1M1's 1,530 leaves are sealed slivers a player never
+occupies. The route lives in the open, highly connected leaves, which are the
+tail: a guest census counter measured 588 visits, 4,888 side tests and 709
+portal projections per frame on the canonical route, matching the host's p95 to
+p99. At that rate the walk costs more than the candidate reduction saves.
+
+Three partitions were tried to cut the churn and all made both quality and cost
+worse, because merging leaves admits whole cells and therefore reaches further:
+
+```text
+partition        cells  doorways  candidates mean/p90   tests mean/p90
+leaf              1531      6624       196.3 /   569     600.2 /  1798
+face cap 24        821      4970       275.8 /   773     880.6 /  2803
+face cap 96        600      3900       439.9 /  1176    1414.4 /  4802
+area >= 16384     1120      4758      1368.2 /  3372    1833.7 /  5745
+area >= 4096       536       968      3758.2 /  5396     560.2 /  1175
+```
+
+Unbounded area merging chains distant rooms into one component through wide
+corridors and admits most of the map. Face-capped growth avoids that but every
+merge still increases reach. Merging leaves with identical PVS rows, which is
+visibility-equivalent by construction, only collapses 1,531 leaves into 1,120.
+
+The structural reason is in the decomp itself: Quake II's cells were authored by
+hand, "making the runtime efficient but content production expensive". It tests
+7.17 doorways per present and admits 1.40. A Quake BSP offers 4.3 portals per
+leaf across 1,530 leaves and no room structure to recover. Do not reopen leaf
+portal admission without authored or offline-clustered rooms that bound both
+doorway count and cell reach.
+
+### Closed: coplanar face merging
+
+`tools/face-merge-census.rs` applies qbsp's own `TryMerge` rule (same plane and
+side, same texture information, same light styles, one shared edge, convex
+after joining, collinear boundary vertices retained so no T-junction appears)
+to every Episode 1 map. It merges **zero** faces on all nine maps: id's qbsp
+already runs its merge pass after splitting, so the remaining fragmentation is
+exactly the part that cannot be rejoined convexly.
+
+### Where the Quake II gap actually is
+
+Normalising both engines to their own surviving faces closes the question:
+
+```text
+                        Quake II PSX     quake-psx
+work per frame            120,516 instr   516,235 instr
+static world renderer      33,826          ~213,000
+surviving source faces         56.46          253.8
+cost per surviving face       599 instr      ~874 instr
+cycles per selected face    ~1,360          ~1,479
+textured primitives           510 quads     1,156
+hardware triangles          ~1,020         ~1,682
+resolution                  512x240         320x240
+```
+
+**quake-psx costs essentially the same per surviving face as Quake II.** It is
+not slower per unit of work. It draws 4.5 times as many faces, producing 1.65
+times the hardware triangles into 0.39 times the pixel area, which is 4.2 times
+the geometric density. Quake II's world is an authored mesh of large quads that
+subdivide at runtime, 14.9 quads per brush and 15.2 brushes per present; a Quake
+BSP hands the renderer 5,516 already minimal convex fragments.
+
+The remaining transferable mechanism is therefore not visibility and not
+per-face efficiency. It is Quake II's resident `POLY_GT4` templates: 60.44% of
+quake-psx's packet bytes are invariant UV, colour, CLUT, TPAGE and opcode, which
+matches Quake II's 32-of-52-byte split almost exactly.
+
 ### Rejected: run-decomposed liquid resampler
 
 `warp_tile_64_runs` replaced the per-texel gather with the phase's

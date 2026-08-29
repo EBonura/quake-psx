@@ -625,6 +625,38 @@ impl Basis {
 /// Project a portal winding to its conservative screen rectangle. The winding
 /// is clipped to the near plane in 3D first, so a portal that straddles the
 /// eye plane keeps an exact bound instead of forcing a full-screen admission.
+fn project_portal_simple(winding: &Winding, basis: &Basis) -> Option<Rect> {
+    let mut low = [f64::MAX; 2];
+    let mut high = [f64::MIN; 2];
+    let mut behind = 0usize;
+    for point in winding {
+        let camera = basis.to_camera(*point);
+        if camera[2] < NEAR_PLANE_UNITS {
+            behind += 1;
+            continue;
+        }
+        let x = camera[0] / camera[2];
+        let y = camera[1] / camera[2];
+        low[0] = low[0].min(x);
+        low[1] = low[1].min(y);
+        high[0] = high[0].max(x);
+        high[1] = high[1].max(y);
+    }
+    if behind == winding.len() {
+        return None;
+    }
+    if behind > 0 {
+        // Retail's mixed-depth shortcut: inherit the parent rectangle rather
+        // than narrowing on a projection that crossed the eye plane.
+        return Some(Rect::FULL);
+    }
+    Rect {
+        mins: low,
+        maxs: high,
+    }
+    .intersect(Rect::FULL)
+}
+
 fn project_portal(winding: &Winding, basis: &Basis) -> Option<Rect> {
     let mut camera: Vec<[f64; 3]> = winding.iter().map(|p| basis.to_camera(*p)).collect();
     // Clip to z >= near.
@@ -692,6 +724,28 @@ fn winding_in_frustum(winding: &Winding, basis: &Basis) -> bool {
     true
 }
 
+/// World units per cooked portal-bound step. One is exact; larger values trade
+/// admission tightness for sidecar bytes.
+static PORTAL_GRID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+static SIMPLE_NEAR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// How many times a cell's admitted rectangle may grow before it is promoted to
+/// the whole screen. Promotion is conservative and bounds the walk.
+static GROWTH_CAP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MAX);
+
+fn portal_grid() -> f64 {
+    PORTAL_GRID.load(std::sync::atomic::Ordering::Relaxed) as f64
+}
+
+fn quantize_down(value: f64) -> i16 {
+    let grid = portal_grid();
+    ((value / grid).floor() * grid).clamp(-32768.0, 32767.0) as i16
+}
+
+fn quantize_up(value: f64) -> i16 {
+    let grid = portal_grid();
+    ((value / grid).ceil() * grid).clamp(-32768.0, 32767.0) as i16
+}
+
 /// Round a bound outward onto the resident 32-unit leaf-bounds grid.
 fn grid_min(value: i16) -> i16 {
     ((value as i32) >> 5 << 5) as i16
@@ -703,6 +757,153 @@ fn grid_max(value: i16) -> i16 {
 
 fn aabb_in_frustum(mins: [i16; 3], maxs: [i16; 3], basis: &Basis) -> bool {
     leaf_in_frustum(mins, maxs, basis)
+}
+
+/// The four corners of a planar winding's 2D bounding rectangle, expressed in
+/// its own plane's dropped-dominant-axis basis and snapped outward to the
+/// 32-unit cooking grid. The third coordinate comes back from the plane
+/// equation, which is a copy for an axial plane and one divide otherwise.
+fn plane_bounding_quad(winding: &Winding) -> Winding {
+    // Recover the plane from the winding.
+    let normal = {
+        let mut best = [0.0f64; 3];
+        let mut best_length = 0.0;
+        for index in 2..winding.len() {
+            let candidate = cross(
+                sub(winding[index - 1], winding[0]),
+                sub(winding[index], winding[0]),
+            );
+            let length = (candidate[0] * candidate[0]
+                + candidate[1] * candidate[1]
+                + candidate[2] * candidate[2])
+                .sqrt();
+            if length > best_length {
+                best_length = length;
+                best = candidate;
+            }
+        }
+        if best_length == 0.0 {
+            return winding.clone();
+        }
+        [
+            best[0] / best_length,
+            best[1] / best_length,
+            best[2] / best_length,
+        ]
+    };
+    let distance = normal[0] * winding[0][0] + normal[1] * winding[0][1] + normal[2] * winding[0][2];
+    let dropped = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+        0
+    } else if normal[1].abs() >= normal[2].abs() {
+        1
+    } else {
+        2
+    };
+    let (u, v) = match dropped {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let mut low = [f64::MAX; 2];
+    let mut high = [f64::MIN; 2];
+    for point in winding {
+        low[0] = low[0].min(point[u]);
+        low[1] = low[1].min(point[v]);
+        high[0] = high[0].max(point[u]);
+        high[1] = high[1].max(point[v]);
+    }
+    // Cooked on the portal grid, rounded outward so the stored rectangle
+    // always contains the portal.
+    let grid = portal_grid();
+    low[0] = (low[0] / grid).floor() * grid;
+    low[1] = (low[1] / grid).floor() * grid;
+    high[0] = (high[0] / grid).ceil() * grid;
+    high[1] = (high[1] / grid).ceil() * grid;
+    let mut quad = Winding::with_capacity(4);
+    for (a, b) in [
+        (low[0], low[1]),
+        (high[0], low[1]),
+        (high[0], high[1]),
+        (low[0], high[1]),
+    ] {
+        let mut point = [0.0f64; 3];
+        point[u] = a;
+        point[v] = b;
+        point[dropped] = (distance - normal[u] * a - normal[v] * b) / normal[dropped];
+        quad.push(point);
+    }
+    quad
+}
+
+/// Conservative screen rectangle of a world AABB: project its eight corners
+/// through the near plane and take the extrema. Returns `None` when the whole
+/// box is behind the near plane.
+fn project_aabb(mins: [i16; 3], maxs: [i16; 3], basis: &Basis) -> Option<Rect> {
+    let mut corners = [[0.0f64; 3]; 8];
+    for (index, corner) in corners.iter_mut().enumerate() {
+        *corner = basis.to_camera([
+            if index & 1 == 0 { mins[0] } else { maxs[0] } as f64,
+            if index & 2 == 0 { mins[1] } else { maxs[1] } as f64,
+            if index & 4 == 0 { mins[2] } else { maxs[2] } as f64,
+        ]);
+    }
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (2, 3),
+        (4, 5),
+        (6, 7),
+        (0, 2),
+        (1, 3),
+        (4, 6),
+        (5, 7),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    let mut low = [f64::MAX; 2];
+    let mut high = [f64::MIN; 2];
+    let mut any = false;
+    let mut add = |point: [f64; 3], low: &mut [f64; 2], high: &mut [f64; 2]| {
+        let x = point[0] / point[2];
+        let y = point[1] / point[2];
+        low[0] = low[0].min(x);
+        low[1] = low[1].min(y);
+        high[0] = high[0].max(x);
+        high[1] = high[1].max(y);
+    };
+    for corner in &corners {
+        if corner[2] >= NEAR_PLANE_UNITS {
+            any = true;
+            add(*corner, &mut low, &mut high);
+        }
+    }
+    if !any {
+        return None;
+    }
+    // A box crossing the near plane still has an exact screen bound: clip each
+    // edge and include the crossing point.
+    for (a, b) in EDGES {
+        let (p, q) = (corners[a], corners[b]);
+        if (p[2] >= NEAR_PLANE_UNITS) == (q[2] >= NEAR_PLANE_UNITS) {
+            continue;
+        }
+        let fraction = (NEAR_PLANE_UNITS - p[2]) / (q[2] - p[2]);
+        add(
+            [
+                p[0] + fraction * (q[0] - p[0]),
+                p[1] + fraction * (q[1] - p[1]),
+                NEAR_PLANE_UNITS,
+            ],
+            &mut low,
+            &mut high,
+        );
+    }
+    Rect {
+        mins: low,
+        maxs: high,
+    }
+    .intersect(Rect::FULL)
 }
 
 /// Does the leaf AABB survive the same four frustum planes the runtime uses?
@@ -770,6 +971,7 @@ struct SimStats {
     admitted_leaves_raw: usize,
     admitted_marks_raw: usize,
     pvs_leaves: usize,
+    portal_projections: usize,
 }
 
 struct Level {
@@ -783,6 +985,10 @@ struct Level {
     /// Per portal: the conservative bound a runtime with no cooked geometry
     /// would use, namely the two leaves' 32-unit bounds intersected.
     portal_bounds: Vec<([i16; 3], [i16; 3])>,
+    /// Per portal: the four corners of its 2D bounding rectangle on its own
+    /// plane, snapped outward to the 32-unit cooking grid. This is the shape
+    /// the six-byte cooked record reproduces.
+    portal_quads: Vec<Winding>,
 }
 
 /// Walk every open leaf centre at eight yaws and compare what the runtime's
@@ -800,6 +1006,23 @@ enum Mode {
     /// No projection at all: a portal is crossed when its world AABB survives
     /// the same four frustum planes the face selector already uses.
     FrustumOnly,
+    /// `RectFlood` using the portal's 2D bounding rectangle on its own BSP
+    /// plane. That is exact for a plane-aligned rectangular portal, tight for
+    /// every other convex one, and cooks to six bytes: a plane index plus four
+    /// signed 32-unit steps.
+    RectFloodPlane,
+    /// `RectFlood` using the portal's quantized world AABB instead of its exact
+    /// winding. The AABB contains the portal, so the derived screen rectangle
+    /// is a superset and admission stays conservative; the cooked sidecar then
+    /// carries six bytes per portal instead of a variable vertex list.
+    RectFloodAabb,
+    /// `Rect` with no PVS restriction at all: exact screen-rectangle narrowing
+    /// is the whole visibility answer, which is what a renderer that dropped
+    /// the visibility lump entirely would rely on.
+    RectFlood,
+    /// `FrustumOnly` with no PVS restriction at all: the flood alone decides,
+    /// which is what a renderer that dropped the visibility lump would do.
+    FloodOnly,
     /// Same as `FrustumOnly` but the portal's own AABB is replaced by the
     /// intersection of the two leaves' already-resident 32-unit leaf bounds.
     /// That intersection contains the portal, so the test stays conservative
@@ -834,6 +1057,9 @@ fn simulate_scored(
     let mut cell_rect: Vec<Option<Rect>> = vec![None; level.cell_count];
     let mut queue: Vec<usize> = Vec::new();
     let mut cell_admitted: Vec<bool> = vec![false; level.cell_count];
+    let mut cell_growth: Vec<i32> = vec![0; level.cell_count];
+    let mut projected: Vec<Option<Option<Rect>>> = vec![None; level.portals.len()];
+    let mut projections_total = 0usize;
 
     for (index, leaf) in leaves.iter().enumerate().skip(1) {
         if leaf.contents == CONTENTS_SOLID || leaf.visibility_offset < 0 {
@@ -876,20 +1102,86 @@ fn simulate_scored(
             }
 
             cell_rect.iter_mut().for_each(|slot| *slot = None);
+            cell_growth.iter_mut().for_each(|slot| *slot = 0);
             cell_rect[start_cell] = Some(Rect::FULL);
             queue.clear();
             queue.push(start_cell);
             let mut tested = 0usize;
-            while let Some(current) = queue.pop() {
+            let mut projections = 0usize;
+            let mut cursor = 0usize;
+            projected.iter_mut().for_each(|slot| *slot = None);
+            while cursor < queue.len() {
+                // Breadth first: a cell's rectangle stops growing sooner, so
+                // far fewer sides are retested than under a depth-first walk.
+                let current = queue[cursor];
+                cursor += 1;
                 let Some(parent) = cell_rect[current] else {
                     continue;
                 };
                 for &(neighbour, portal) in &level.adjacency[current] {
-                    if mode != Mode::Rect && cell_rect[neighbour].is_some() {
+                    if !matches!(
+                        mode,
+                        Mode::Rect | Mode::RectFlood | Mode::RectFloodAabb | Mode::RectFloodPlane
+                    )
+                        && cell_rect[neighbour].is_some()
+                    {
+                        continue;
+                    }
+                    if matches!(
+                        mode,
+                        Mode::FloodOnly | Mode::RectFlood | Mode::RectFloodAabb | Mode::RectFloodPlane
+                    )
+                        && leaves[neighbour].contents == CONTENTS_SOLID
+                    {
                         continue;
                     }
                     tested += 1;
-                    let clipped = if mode == Mode::PairBoundsOnly {
+                    let clipped = if mode == Mode::RectFloodPlane {
+                        let cached = &mut projected[portal];
+                        if cached.is_none() {
+                            projections += 1;
+                            *cached = Some(if SIMPLE_NEAR.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                project_portal_simple(&level.portal_quads[portal], &basis)
+                            } else {
+                                project_portal(&level.portal_quads[portal], &basis)
+                            });
+                        }
+                        let Some(screen) = cached.unwrap() else {
+                            rejections[portal] += 1;
+                            continue;
+                        };
+                        let Some(clipped) = screen.intersect(parent) else {
+                            rejections[portal] += 1;
+                            continue;
+                        };
+                        clipped
+                    } else if mode == Mode::RectFloodAabb {
+                        let cached = &mut projected[portal];
+                        if cached.is_none() {
+                            projections += 1;
+                            *cached = Some(project_aabb(
+                                level.portal_bounds[portal].0,
+                                level.portal_bounds[portal].1,
+                                &basis,
+                            ));
+                        }
+                        let Some(screen) = cached.unwrap() else {
+                            rejections[portal] += 1;
+                            continue;
+                        };
+                        let Some(clipped) = screen.intersect(parent) else {
+                            rejections[portal] += 1;
+                            continue;
+                        };
+                        clipped
+                    } else if mode == Mode::FloodOnly {
+                        if !winding_in_frustum(&level.portals[portal], &basis) {
+                            rejections[portal] += 1;
+                            continue;
+                        }
+                        Rect::FULL
+                    } else if mode == Mode::PairBoundsOnly {
                         if !aabb_in_frustum(
                             level.portal_bounds[portal].0,
                             level.portal_bounds[portal].1,
@@ -906,7 +1198,12 @@ fn simulate_scored(
                         }
                         Rect::FULL
                     } else {
-                        let Some(screen) = project_portal(&level.portals[portal], &basis) else {
+                        let cached = &mut projected[portal];
+                        if cached.is_none() {
+                            projections += 1;
+                            *cached = Some(project_portal(&level.portals[portal], &basis));
+                        }
+                        let Some(screen) = cached.unwrap() else {
                             rejections[portal] += 1;
                             continue;
                         };
@@ -922,7 +1219,17 @@ fn simulate_scored(
                             if union == existing {
                                 continue;
                             }
-                            union
+                            cell_growth[neighbour] += 1;
+                            if cell_growth[neighbour]
+                                > GROWTH_CAP.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                if existing == Rect::FULL {
+                                    continue;
+                                }
+                                Rect::FULL
+                            } else {
+                                union
+                            }
                         }
                         None => clipped,
                     };
@@ -930,6 +1237,7 @@ fn simulate_scored(
                     queue.push(neighbour);
                 }
             }
+            queue.clear();
 
             cell_admitted
                 .iter_mut()
@@ -944,6 +1252,14 @@ fn simulate_scored(
             let mut admitted_marks_raw = 0usize;
             let mut pvs_leaves = 0usize;
             for (candidate, &set) in pvs.iter().enumerate() {
+                let set = set
+                    || matches!(
+                        mode,
+                        Mode::FloodOnly
+                            | Mode::RectFlood
+                            | Mode::RectFloodAabb
+                            | Mode::RectFloodPlane
+                    );
                 if !set {
                     continue;
                 }
@@ -972,10 +1288,12 @@ fn simulate_scored(
             stats.admitted_units += admitted_leaves;
             stats.admitted_faces += admitted_faces;
             stats.portals_tested += tested;
+            projections_total += projections;
             admitted_face_samples.push(admitted_faces);
         }
     }
     admitted_face_samples.sort_unstable();
+    stats.portal_projections = projections_total;
     (stats, admitted_face_samples)
 }
 
@@ -1063,6 +1381,45 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
         portals = open_portals.len(),
         mean = vertices as f64 / open_portals.len().max(1) as f64,
     );
+    // Representation study: how many portals are axis-aligned rectangles, for
+    // which a world AABB is an exact bound and needs no vertex list?
+    let mut axial = 0usize;
+    let mut axial_rect = 0usize;
+    let mut area_ratio_sum = 0.0f64;
+    let mut pairs: std::collections::BTreeSet<(usize, usize)> = std::collections::BTreeSet::new();
+    for (front, back, winding, area) in &open_portals {
+        pairs.insert((*front.min(back), *front.max(back)));
+        let (wmins, wmaxs) = winding_bounds(winding);
+        let flat = (0..3).filter(|&axis| wmaxs[axis] - wmins[axis] < 0.01).count();
+        if flat >= 1 {
+            axial += 1;
+            let mut extent = [0.0f64; 2];
+            let mut index = 0;
+            for axis in 0..3 {
+                if wmaxs[axis] - wmins[axis] >= 0.01 {
+                    if index < 2 {
+                        extent[index] = wmaxs[axis] - wmins[axis];
+                    }
+                    index += 1;
+                }
+            }
+            let box_area = extent[0] * extent[1];
+            if box_area > 0.0 {
+                area_ratio_sum += area / box_area;
+                if (area / box_area) > 0.999 {
+                    axial_rect += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "  axis-aligned portals={axial} ({ashare:.1}%), exact rectangles={axial_rect} \
+         ({rshare:.1}%), mean polygon/box area {ratio:.3}; unique leaf pairs={pairs}",
+        ashare = 100.0 * axial as f64 / open_portals.len() as f64,
+        rshare = 100.0 * axial_rect as f64 / open_portals.len() as f64,
+        ratio = area_ratio_sum / axial.max(1) as f64,
+        pairs = pairs.len(),
+    );
     println!(
         "  portals/leaf p50={p50} p95={p95} max={max}; area p50={a50:.0} p95={a95:.0}",
         p50 = percentile(&degrees, 0.50),
@@ -1094,6 +1451,7 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
         let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); cell_count];
         let mut portals = Vec::new();
         let mut portal_bounds = Vec::new();
+        let mut portal_quads = Vec::new();
         for (front, back, winding, _) in &open_portals {
             let (a, b) = (cell_of[*front], cell_of[*back]);
             if a == b {
@@ -1108,6 +1466,7 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
                 maxs[axis] = grid_max(leaves[*front].maxs[axis]).min(grid_max(leaves[*back].maxs[axis]));
             }
             portal_bounds.push((mins, maxs));
+            portal_quads.push(plane_bounding_quad(winding));
             adjacency[a].push((b, index));
             adjacency[b].push((a, index));
         }
@@ -1128,6 +1487,7 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
             adjacency,
             portals,
             portal_bounds,
+            portal_quads,
         };
         let modes: &[(Mode, &str)] = if threshold == f64::MAX {
             &[
@@ -1135,11 +1495,81 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
                 (Mode::RectOnce, "leaf/rect1"),
                 (Mode::FrustumOnly, "leaf/aabb"),
                 (Mode::PairBoundsOnly, "leaf/pair"),
+                (Mode::FloodOnly, "leaf/flood"),
+                (Mode::RectFlood, "leaf/rectflood"),
+                (Mode::RectFloodPlane, "leaf/planebox"),
             ]
         } else {
             &[(Mode::Rect, "merge/rect")]
         };
         for &(mode, mode_label) in modes {
+        if mode == Mode::RectFloodPlane {
+            for (grid, cap) in [(32i32, 0i32), (32, 1), (32, 2), (32, 4), (32, i32::MAX)] {
+                PORTAL_GRID.store(grid, std::sync::atomic::Ordering::Relaxed);
+                GROWTH_CAP.store(cap, std::sync::atomic::Ordering::Relaxed);
+                let regrid = build_level_with_cells(
+                    &leaves,
+                    &open_portals,
+                    (0..leaves.len()).collect(),
+                    leaves.len(),
+                );
+                let (stats, samples) = simulate(&regrid, visibility, visible_leaves, mode);
+                let n = stats.samples.max(1) as f64;
+                let record = match grid {
+                    32 => 6,
+                    16 => 7,
+                    _ => 10,
+                };
+                let sidecar = (leaves.len() + 1) * 2
+                    + regrid.portals.len() * 4
+                    + regrid.portals.len() * record;
+                println!(
+                    "  [planebox g{grid:2} cap={cap:10}] sidecar={sidecar:6}B | candidates={af:6.1} \
+                     (p95 {p95:4}) leaves={al:5.1} projections={pp:5.1} tests={tests:6.1}",
+                    af = stats.admitted_marks_raw as f64 / n,
+                    p95 = percentile(&samples, 0.95),
+                    al = stats.admitted_leaves_raw as f64 / n,
+                    pp = stats.portal_projections as f64 / n,
+                    tests = stats.portals_tested as f64 / n,
+                );
+            }
+            PORTAL_GRID.store(32, std::sync::atomic::Ordering::Relaxed);
+            GROWTH_CAP.store(i32::MAX, std::sync::atomic::Ordering::Relaxed);
+            continue;
+        }
+        if mode == Mode::RectFloodAabb {
+            for grid in [1i32, 8, 16, 32] {
+                PORTAL_GRID.store(grid, std::sync::atomic::Ordering::Relaxed);
+                let regrid = build_level_with_cells(
+                    &leaves,
+                    &open_portals,
+                    (0..leaves.len()).collect(),
+                    leaves.len(),
+                );
+                let (stats, samples) = simulate(&regrid, visibility, visible_leaves, mode);
+                let n = stats.samples.max(1) as f64;
+                let bits = match grid {
+                    1 => 16,
+                    8 => 10,
+                    16 => 9,
+                    _ => 8,
+                };
+                let sidecar = (leaves.len() + 1) * 2
+                    + regrid.portals.len() * 2 * 2
+                    + (regrid.portals.len() * 6 * bits).div_ceil(8);
+                println!(
+                    "  [rectbox grid {grid:2}] sidecar={sidecar:6}B | admitted={af:6.1} \
+                     (p95 {p95:4}) leaves={al:5.1} projections={pp:5.1} tests={tests:6.1}",
+                    af = stats.admitted_faces as f64 / n,
+                    p95 = percentile(&samples, 0.95),
+                    al = stats.admitted_leaves_raw as f64 / n,
+                    pp = stats.portal_projections as f64 / n,
+                    tests = stats.portals_tested as f64 / n,
+                );
+            }
+            PORTAL_GRID.store(1, std::sync::atomic::Ordering::Relaxed);
+            continue;
+        }
         let (stats, samples) = simulate(&level, visibility, visible_leaves, mode);
         let n = stats.samples.max(1) as f64;
         let label = if threshold == f64::MAX {
@@ -1161,10 +1591,11 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
         );
         println!(
             "                 runtime cost proxy: pvs_leaves={pl:.1} admitted_leaves={al:.1} \
-             mark_writes={mw:.1}",
+             mark_writes={mw:.1} portal_projections={pp:.1}",
             pl = stats.pvs_leaves as f64 / n,
             al = stats.admitted_leaves_raw as f64 / n,
             mw = stats.admitted_marks_raw as f64 / n,
+            pp = stats.portal_projections as f64 / n,
         );
         }
     }
@@ -1238,6 +1669,7 @@ fn build_level_with_cells(
     let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); cell_count];
     let mut portals = Vec::new();
     let mut portal_bounds = Vec::new();
+    let mut portal_quads = Vec::new();
     for (front, back, winding, _) in open_portals {
         let (a, b) = (cell_of[*front], cell_of[*back]);
         if a == b {
@@ -1245,15 +1677,15 @@ fn build_level_with_cells(
         }
         let index = portals.len();
         portals.push(winding.clone());
+        let (wmins, wmaxs) = winding_bounds(winding);
         let mut mins = [0i16; 3];
         let mut maxs = [0i16; 3];
         for axis in 0..3 {
-            mins[axis] =
-                grid_min(leaves[*front].mins[axis]).max(grid_min(leaves[*back].mins[axis]));
-            maxs[axis] =
-                grid_max(leaves[*front].maxs[axis]).min(grid_max(leaves[*back].maxs[axis]));
+            mins[axis] = quantize_down(wmins[axis]);
+            maxs[axis] = quantize_up(wmaxs[axis]);
         }
         portal_bounds.push((mins, maxs));
+        portal_quads.push(plane_bounding_quad(winding));
         adjacency[a].push((b, index));
         adjacency[b].push((a, index));
     }
@@ -1273,6 +1705,7 @@ fn build_level_with_cells(
         adjacency,
         portals,
         portal_bounds,
+        portal_quads,
     }
 }
 
