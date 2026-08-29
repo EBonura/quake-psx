@@ -64,7 +64,8 @@ pub fn run() -> ! {
         feature = "emulator-telemetry",
         feature = "ambient-regression",
         feature = "hardware-regression",
-        feature = "perf-fixed-ticks"
+        feature = "perf-fixed-ticks",
+        feature = "perf-fixed-30hz"
     )))]
     crate::intro::show(crate::platform::boot_framebuffer());
 
@@ -186,7 +187,7 @@ pub fn run() -> ! {
     let mut pain_face = quake_core::hud::PainFaceTimer::new();
 
     loop {
-        #[cfg(not(feature = "perf-fixed-ticks"))]
+        #[cfg(not(any(feature = "perf-fixed-ticks", feature = "perf-fixed-30hz")))]
         let audio_tick = psx_rt::interrupts::vblank_count();
         // Performance benchmark: the animation clock (liquid warp phase, light
         // styles, sound scheduling) also advances three ticks per frame, so a
@@ -201,6 +202,18 @@ pub fn run() -> ! {
                 FIXED_TICK
             }
         };
+        // Thirty-Hz control: keep the route deterministic while charging the
+        // two simulation ticks a stable NTSC 30 fps frame actually advances.
+        #[cfg(feature = "perf-fixed-30hz")]
+        let audio_tick = {
+            static mut FIXED_TICK_30HZ: u32 = 0;
+            // SAFETY: the game loop is single-threaded and this is the only
+            // access.
+            unsafe {
+                FIXED_TICK_30HZ = FIXED_TICK_30HZ.wrapping_add(2);
+                FIXED_TICK_30HZ
+            }
+        };
         let elapsed_ticks = audio_tick.wrapping_sub(movement_tick).clamp(1, 4) as u16;
         // The visual oracle must sample the same simulated instant when a
         // renderer optimization changes how many VBlanks one frame spans.
@@ -212,6 +225,8 @@ pub fn run() -> ! {
         // its scene sequence identical across builds of differing speed.
         #[cfg(feature = "perf-fixed-ticks")]
         let elapsed_ticks = 3;
+        #[cfg(feature = "perf-fixed-30hz")]
+        let elapsed_ticks = 2;
         movement_tick = audio_tick;
         presentation.explosion_effects_mut().tick(elapsed_ticks);
         presentation.impact_particles_mut().tick(elapsed_ticks);

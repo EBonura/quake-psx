@@ -247,6 +247,7 @@ enum Action {
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLeaderBench,
     E1m1GpuPolygonScratchLiquidBench,
+    E1m1GpuPolygonScratchLiquid30HzBench,
     E1m1GpuPolygonLevel0RunBench,
     E1m1GpuPolygonColdAdaptiveBench,
     E1m1GpuPolygonColdLevel2Bench,
@@ -1330,6 +1331,28 @@ fn real_main() -> Result<()> {
                 &frontend,
                 &build,
                 "e1m1-gpu-polygon-scratch-liquid-bench",
+            )?;
+        }
+        Action::E1m1GpuPolygonScratchLiquid30HzBench => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-scratch-liquid-30hz-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "e1m1-chain-regression,perf-fixed-30hz,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_e1m1_chain_regression(
+                &root,
+                &frontend,
+                &build,
+                "e1m1-gpu-polygon-scratch-liquid-30hz-bench",
             )?;
         }
         Action::E1m1GpuPolygonLevel0RunBench => {
@@ -3458,6 +3481,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-leader-bench"
             | "e1m1-gpu-polygon-scratch-liquid-bench"
+            | "e1m1-gpu-polygon-scratch-liquid-30hz-bench"
             | "e1m1-gpu-polygon-level0-run-bench"
             | "e1m1-gpu-polygon-cold-adaptive-bench"
             | "e1m1-gpu-polygon-cold-level2-bench"
@@ -3571,6 +3595,9 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
                     "e1m1-gpu-polygon-scratch-liquid-bench" => {
                         Action::E1m1GpuPolygonScratchLiquidBench
+                    }
+                    "e1m1-gpu-polygon-scratch-liquid-30hz-bench" => {
+                        Action::E1m1GpuPolygonScratchLiquid30HzBench
                     }
                     "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
                     "e1m1-gpu-polygon-cold-adaptive-bench" => {
@@ -3714,6 +3741,7 @@ fn print_help() {
            e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
            e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
            e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
+           e1m1-gpu-polygon-scratch-liquid-30hz-bench  Measure the leader at a fixed two-tick 30 Hz workload\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
            gpu-polygon-scratch-liquid-disc  Build and boot-test the playable scratchpad-liquid stack\n  \
@@ -9535,6 +9563,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-gpu-polygon-leader-inline-materialize-v3-bench"
             | "build-psoxide-e1m1-gpu-polygon-leader-bench"
             | "build-psoxide-e1m1-gpu-polygon-scratch-liquid-bench"
+            | "build-psoxide-e1m1-gpu-polygon-scratch-liquid-30hz-bench"
             | "build-psoxide-e1m2-e1m3-leader-route-regression"
             | "build-psoxide-e1m2-e1m3-scratch-liquid-route-regression"
             | "build-psoxide-e1m1-gpu-polygon-level0-run-bench"

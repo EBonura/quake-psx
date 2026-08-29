@@ -82,15 +82,37 @@ only a real console can provide the final result.
 
 ### Measured E1M1 attribution
 
-The canonical fixed-step route now brackets renderer construction and the
-final tagged-packet-to-OT insertion pass in regression builds. Across 2,134
-profiled frames and 2,133 presentation intervals:
+The original 21.857 fps fixed-step route bracketed renderer construction and
+the final tagged-packet-to-OT insertion pass in regression builds. Across
+2,134 profiled frames and 2,133 presentation intervals:
 
 - renderer construction consumed 1,616,839,116 bus cycles, 48.9% of the
   measured level interval;
 - final OT insertion consumed 69,228,347 cycles, 2.09%;
-- a 30 fps cadence would require removing about 897 million cycles, 27.1% of
-  the interval or roughly 420,600 cycles per presentation interval.
+- that baseline needed about 897 million cycles removed to reach 30 fps, or
+  roughly 420,600 cycles per presentation interval.
+
+The accepted 23.856 fps stack has already removed about 278 million of those
+cycles. Its 3,028,132,969-cycle interval must fall to 2,408,071,680 cycles for
+30 fps, leaving 620,061,289 cycles in the current gap, or about 290,700 per
+presentation interval. This is 20.48% of the current interval and 38.35% of
+the original measured renderer-construction budget.
+
+A fresh profile of that exact accepted image assigns 1,278,779,887 cycles to
+the render stage, or 599,241 cycles per presentation on average. Instruction
+issue consumes 44.10% of modeled CPU cycles, ordinary RAM-load stalls 41.82%,
+I-cache refill 8.37%, and RAM stores only 3.49%. This is a load and hot-code
+problem before it is a store problem. Presentation intervals are also
+quantized around VBlank: 181 used one field, 835 two, 1,038 three, 62 four, 14
+five, and 3 six. Reducing deadline misses and variance matters in addition to
+lowering the mean.
+
+The benchmark's forced three simulation ticks per rendered frame were another
+possible source of confusion. A checked two-tick control, matching the intended
+30 Hz workload, completed two deterministic routes at 24.480 fps. It recovered
+0.624 fps, not the missing six, and changes the sampled simulation instants, so
+it is a workload diagnostic rather than a visual candidate. The remaining gap
+still requires a rendering lifetime change.
 
 Deleting OT insertion entirely would therefore supply only 7.7% of the
 required saving. A Quake II-style constant-time packet-range splice can still
@@ -460,6 +482,45 @@ E1M8 reaches 128 KiB and already overflows one view. Unselected global packets
 consume the prefix without reducing that frame's dynamic tail. Residency must
 therefore be leaf/PVS-keyed, or use independently budgeted memory; it cannot be
 a permanent map-wide allocation carved from the current arena.
+
+The first real `QRP2` conversion makes the lifetime distinction explicit. It
+encodes real cooked positions, baked UV/RGB packet words, current GT4 fan order,
+material runs, source planes, per-cell facing modes, and an explicit GT3 or
+dynamic fallback. The result round-trips through the checked no-std parser and
+the `QRS2` section directory. It is a format and memory proof, not a runtime
+speed claim.
+
+A whole-map E1M1 payload is still the wrong shape: 3,340 eligible faces become
+4,531 GT4 templates and 3,340 planar objects, but 300,881 repeated cell/object
+commands inflate the payload to 1,508 KiB and full activation to 2,012 KiB.
+One leaf-local activation is much smaller: 71/148/200 KiB P50/P95/max including
+the conservative dynamic fallback. Greedily combining consecutive BSP leaves
+under a 192 KiB target produces 84 checked sections, only three exceptional
+single-cell sections, a 5,861 KiB sidecar, and a 285 KiB worst active plus
+adjacent compact-payload preload.
+
+| Map | Whole-map QRP2 | Whole activation | Leaf-local P95/max | 192 KiB sections/oversize | Checked QRS2 sidecar | Worst active + preload |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Start | 1,555 KiB | 2,053 KiB | 152/223 KiB | 85/21 | 5,938 KiB | 293 KiB |
+| E1M1 | 1,508 KiB | 2,012 KiB | 148/200 KiB | 84/3 | 5,861 KiB | 285 KiB |
+| E1M2 | 1,653 KiB | 2,266 KiB | 135/200 KiB | 76/1 | 5,439 KiB | 296 KiB |
+| E1M3 | 1,401 KiB | 1,927 KiB | 126/167 KiB | 48/0 | 3,648 KiB | 298 KiB |
+| E1M4 | 1,955 KiB | 2,592 KiB | 154/204 KiB | 119/7 | 8,219 KiB | 299 KiB |
+| E1M5 | 1,183 KiB | 1,712 KiB | 132/187 KiB | 49/0 | 3,539 KiB | 287 KiB |
+| E1M6 | 938 KiB | 1,295 KiB | 126/221 KiB | 54/4 | 3,753 KiB | 303 KiB |
+| E1M7 | 430 KiB | 591 KiB | 144/188 KiB | 20/0 | 1,452 KiB | 273 KiB |
+| E1M8 | 1,119 KiB | 1,515 KiB | 219/267 KiB | 220/84 | 15,082 KiB | 360 KiB |
+
+This also identifies a second missing layer: object granularity. E1M1's exact
+face-object form averages 262.09 cell commands, while the retail Quake II trace
+decodes only 23.33 total scene commands and 15.16 brush commands per present.
+Quake II combines coarse collision/render cells, packed doorway skip spans, and
+multi-quad brush objects. Copying only its packet layout leaves Quake's much
+finer BSP leaves and fragmented face objects intact, so it cannot reproduce the
+same workload. The implementation target is now a bounded section resident for
+many frames, with packet templates installed on section activation and a small
+non-calling projection/cull/scatter kernel. Per-frame cache lookup around the
+old writer is not that architecture.
 
 The QRC2 selected-stream measurement makes a leaf-local candidate much more
 specific. Across 3,795 deterministic E1M1 frames, 140 visibility rebuilds mean
