@@ -456,7 +456,10 @@ pub fn registered_screen_packet_count() -> usize {
 ///
 /// `packet_start..packet_end` must be one live writable staged packet stream
 /// owned by the current build buffer.
-#[cfg(feature = "renderer-subdivision-cache")]
+#[cfg(any(
+    feature = "renderer-subdivision-cache",
+    feature = "renderer-owned-sections"
+))]
 #[inline(always)]
 pub unsafe fn gpu_insert_world_stream(packet_start: *mut u32, packet_end: *mut u32) {
     if packet_start < packet_end {
@@ -479,7 +482,10 @@ pub unsafe fn gpu_insert_world_stream(packet_start: *mut u32, packet_end: *mut u
 ///
 /// `packet` must remain live and writable through GPU completion, `otz` must
 /// be below `OT_DEPTH`, and `words` must match the packet payload.
-#[cfg(feature = "renderer-subdivision-cache")]
+#[cfg(any(
+    feature = "renderer-subdivision-cache",
+    feature = "renderer-owned-sections"
+))]
 #[inline(always)]
 pub unsafe fn gpu_insert_resident_world_packet(packet: *mut u32, otz: u16, words: u8) {
     #[cfg(not(feature = "renderer-compact-ot-256"))]
@@ -499,7 +505,10 @@ pub unsafe fn gpu_insert_resident_world_packet(packet: *mut u32, otz: u16, words
 /// # Safety
 /// `packet_start..packet_end` must be a live writable tagged packet stream in
 /// the active display pool and remain owned until GPU completion.
-#[cfg(feature = "renderer-subdivision-cache")]
+#[cfg(any(
+    feature = "renderer-subdivision-cache",
+    feature = "renderer-owned-sections"
+))]
 #[inline(always)]
 pub unsafe fn gpu_insert_resident_world_stream(packet_start: *mut u32, packet_end: *mut u32) {
     if packet_start < packet_end {

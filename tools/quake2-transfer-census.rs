@@ -8,13 +8,13 @@
 //! faces, and how much source order would they disturb?
 
 use quake_cook::{
-    encode_render_quad_payload, encode_render_sections, Bsp, BspLump, PakArchive,
+    encode_render_quad_payload, encode_resident_render_cells, Bsp, BspLump, PakArchive,
     RenderQuadCellInput, RenderQuadPayloadInput, RenderSectionInput,
 };
-use quake_formats::resident::ResidentMap;
+use quake_formats::resident::{ResidentMap, ResidentMapProfile};
 use quake_formats::{
-    LumpKind, Plane, PsbIndex, RenderQuad, RenderQuadCommand, RenderQuadCorner, RenderQuadFace,
-    RenderQuadObject, RenderQuadRun, SliceReader, Vec3I32, FACE_BACKSIDE, FACE_BAKED_LIGHT,
+    Plane, RenderQuad, RenderQuadCommand, RenderQuadCorner, RenderQuadFace, RenderQuadObject,
+    SliceReader, Vec3I32, FACE_BACKSIDE, FACE_BAKED_LIGHT,
     FACE_BAKED_UV, RENDER_QUAD_CELL_BYTES, RENDER_QUAD_CELL_WATER_PORTAL,
     RENDER_QUAD_COMMAND_BYTES, RENDER_QUAD_CORNER_BYTES, RENDER_QUAD_FACE_BACKSIDE,
     RENDER_QUAD_FACE_BAKED_LIGHT, RENDER_QUAD_FACE_BAKED_UV, RENDER_QUAD_FACE_BYTES,
@@ -22,7 +22,7 @@ use quake_formats::{
     RENDER_QUAD_OBJECT_MAX_POSITIONS, RENDER_QUAD_OBJECT_MAX_QUADS, RENDER_QUAD_OBJECT_SUBMODEL,
     RENDER_QUAD_PACKET_BYTES, RENDER_QUAD_POSITION_BYTES, RENDER_QUAD_PROJECTED_POSITION_BYTES,
     RENDER_QUAD_RECORD_BYTES, RENDER_QUAD_REFERENCE_BYTES, RENDER_QUAD_RUNTIME_FACE_BYTES,
-    RENDER_QUAD_RUN_BYTES, RENDER_QUAD_RUN_PATCH_CLUT, RENDER_SECTION_NONE,
+    RENDER_SECTION_NONE,
     RESIDENT_MAP_ARENA_BYTES, TEXTURE_INVISIBLE, TEXTURE_LAYERED_SKY, TEXTURE_LIQUID, TEXTURE_NULL,
     TEXTURE_SKY,
 };
@@ -105,7 +105,6 @@ struct Surface {
     maxs: [i16; 3],
     positions: Vec<u16>,
     corners: Vec<SurfaceCorner>,
-    tpage: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -782,50 +781,6 @@ fn percentile(values: impl IntoIterator<Item = usize>, percentile: usize) -> usi
     values[index]
 }
 
-fn packed_lump_bytes(index: &PsbIndex, lumps: &[LumpKind]) -> Option<usize> {
-    lumps.iter().try_fold(0usize, |bytes, &kind| {
-        bytes
-            .checked_add(3)
-            .map(|bytes| bytes & !3)
-            .and_then(|bytes| bytes.checked_add(index.lump(kind).len as usize))
-    })
-}
-
-fn resident_and_collision_core_bytes(index: &PsbIndex) -> Result<(usize, usize)> {
-    const RESIDENT: [LumpKind; 13] = [
-        LumpKind::ModelData,
-        LumpKind::Vertices,
-        LumpKind::Planes,
-        LumpKind::TextureInfo,
-        LumpKind::Faces,
-        LumpKind::MarkSurfaces,
-        LumpKind::Visibility,
-        LumpKind::Leaves,
-        LumpKind::Nodes,
-        LumpKind::ClipNodes,
-        LumpKind::Models,
-        LumpKind::Strings,
-        LumpKind::Entities,
-    ];
-    // Vertices, texture info, faces, mark surfaces, and PVS are replaced by
-    // the streamed render section. Nodes and leaves remain because collision,
-    // point-leaf queries, entity visibility, and submodel ownership use them.
-    const CORE: [LumpKind; 8] = [
-        LumpKind::ModelData,
-        LumpKind::Planes,
-        LumpKind::Leaves,
-        LumpKind::Nodes,
-        LumpKind::ClipNodes,
-        LumpKind::Models,
-        LumpKind::Strings,
-        LumpKind::Entities,
-    ];
-    Ok((
-        packed_lump_bytes(index, &RESIDENT).ok_or("resident lump byte count overflow")?,
-        packed_lump_bytes(index, &CORE).ok_or("resident core byte count overflow")?,
-    ))
-}
-
 fn source_leaf_bounds(bsp: &Bsp<'_>) -> Vec<LeafBounds> {
     bsp.lump(BspLump::Leaves)
         .chunks_exact(28)
@@ -839,6 +794,25 @@ fn source_leaf_bounds(bsp: &Bsp<'_>) -> Vec<LeafBounds> {
             }
         })
         .collect()
+}
+
+/// Stable spatial order for render-cell packing. BSP leaf numbers follow tree
+/// construction, not player movement, so consecutive-number sections can
+/// thrash between large CD-resident payloads while walking through one room.
+/// A 10-bit Morton key keeps nearby leaf centres and their heavily-overlapping
+/// object dictionaries in the same bounded section.
+fn leaf_morton_key(bounds: LeafBounds) -> u32 {
+    let center = core::array::from_fn::<_, 3, _>(|axis| {
+        let value = (i32::from(bounds.mins[axis]) + i32::from(bounds.maxs[axis])) / 2;
+        ((value + 32_768).clamp(0, 65_535) as u32) >> 6
+    });
+    let mut key = 0u32;
+    for bit in 0..10 {
+        key |= ((center[0] >> bit) & 1) << (bit * 3);
+        key |= ((center[1] >> bit) & 1) << (bit * 3 + 1);
+        key |= ((center[2] >> bit) & 1) << (bit * 3 + 2);
+    }
+    key
 }
 
 /// A Quake leaf is wholly contained by its authored AABB. If the supporting
@@ -984,7 +958,6 @@ fn leaf_local_quad_memory(
     let mut corner_count = 0usize;
     let mut quad_count = 0usize;
     let mut position_count = 0usize;
-    let mut run_count = 0usize;
     for command in commands {
         let object = input
             .objects
@@ -1007,9 +980,6 @@ fn leaf_local_quad_memory(
             quad_count = quad_count
                 .checked_add(face.quad_count as usize)
                 .ok_or("leaf-local QRP4 quad count overflow")?;
-            run_count = run_count
-                .checked_add(1)
-                .ok_or("leaf-local QRP4 run count overflow")?;
         }
         position_count = position_count
             .checked_add(object.position_count as usize)
@@ -1033,8 +1003,7 @@ fn leaf_local_quad_memory(
         .ok_or("leaf-local QRP4 payload overflow")?;
     let runs_offset = (positions_end + 3) & !3;
     let payload_bytes = runs_offset
-        .checked_add(run_count * RENDER_QUAD_RUN_BYTES)
-        .and_then(|bytes| bytes.checked_add(RENDER_QUAD_CELL_BYTES))
+        .checked_add(RENDER_QUAD_CELL_BYTES)
         .and_then(|bytes| bytes.checked_add(visibility_row_bytes.checked_mul(2)?))
         .and_then(|bytes| bytes.checked_add(object_count * RENDER_QUAD_COMMAND_BYTES))
         .ok_or("leaf-local QRP4 payload overflow")?;
@@ -1078,11 +1047,20 @@ fn section_quad_memory(
             *template_faces.entry(command.object).or_default() |= command.template_faces;
         }
     }
+    // The section payload is also the only renderer-owned source for moving
+    // inline BSP models. They never appear in camera-cell commands, so charge
+    // their exact fallback topology explicitly in every section.
+    for (object_index, object) in input.objects.iter().enumerate() {
+        if object.flags & RENDER_QUAD_OBJECT_SUBMODEL != 0 {
+            object_indices.insert(
+                u16::try_from(object_index).map_err(|_| "QRP4 object count exceeds u16")?,
+            );
+        }
+    }
     let mut face_count = 0usize;
     let mut corner_count = 0usize;
     let mut quad_count = 0usize;
     let mut position_count = 0usize;
-    let mut run_count = 0usize;
     for object_index in &object_indices {
         let object = input
             .objects
@@ -1106,9 +1084,6 @@ fn section_quad_memory(
             quad_count = quad_count
                 .checked_add(face.quad_count as usize)
                 .ok_or("QRP4 section quad count overflow")?;
-            run_count = run_count
-                .checked_add(1)
-                .ok_or("QRP4 section run count overflow")?;
         }
         position_count = position_count
             .checked_add(object.position_count as usize)
@@ -1132,9 +1107,6 @@ fn section_quad_memory(
         .ok_or("QRP4 section payload overflow")?;
     let positions_bytes = position_count
         .checked_mul(RENDER_QUAD_POSITION_BYTES)
-        .ok_or("QRP4 section payload overflow")?;
-    let runs_bytes = run_count
-        .checked_mul(RENDER_QUAD_RUN_BYTES)
         .ok_or("QRP4 section payload overflow")?;
     let cells_bytes = cells
         .len()
@@ -1160,8 +1132,7 @@ fn section_quad_memory(
         .and_then(|bytes| bytes.checked_add(positions_bytes))
         .ok_or("QRP4 section payload overflow")?;
     let payload_bytes = ((positions_end + 3) & !3)
-        .checked_add(runs_bytes)
-        .and_then(|bytes| bytes.checked_add(cells_bytes))
+        .checked_add(cells_bytes)
         .and_then(|bytes| bytes.checked_add(visibility_bytes))
         .and_then(|bytes| bytes.checked_add(commands_bytes))
         .ok_or("QRP4 section payload overflow")?;
@@ -1220,6 +1191,13 @@ fn masked_render_objects(
     signatures: &[Vec<u64>],
     submodel_faces: &[bool],
 ) -> Result<Vec<MaskedRenderObject>> {
+    // Keep the shipping format limit as the default while allowing the host
+    // census to size the much smaller average brush shape seen in retail.
+    let face_limit = env::var("QUAKE_PSX_RENDER_OBJECT_FACE_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value != 0 && value <= RENDER_QUAD_OBJECT_MAX_FACES)
+        .unwrap_or(RENDER_QUAD_OBJECT_MAX_FACES);
     let mut objects = Vec::new();
     let mut faces = Vec::new();
     let mut positions = BTreeSet::new();
@@ -1258,7 +1236,7 @@ fn masked_render_objects(
             .filter(|position| !positions.contains(position))
             .count();
         if !faces.is_empty()
-            && (faces.len() == RENDER_QUAD_OBJECT_MAX_FACES
+            && (faces.len() == face_limit
                 || quads + face_quads > RENDER_QUAD_OBJECT_MAX_QUADS
                 || positions.len() + added_positions > RENDER_QUAD_OBJECT_MAX_POSITIONS)
         {
@@ -1465,19 +1443,7 @@ fn build_quad_payload(
                         );
                     };
                 }
-                input.quads.push(RenderQuad {
-                    positions,
-                    invariant_words: [
-                        0x3c00_0000 | source_corners[0].color,
-                        u32::from(source_corners[0].uv),
-                        source_corners[1].color,
-                        u32::from(source_corners[1].uv) | (u32::from(surface.tpage) << 16),
-                        source_corners[2].color,
-                        u32::from(source_corners[2].uv),
-                        source_corners[3].color,
-                        u32::from(source_corners[3].uv),
-                    ],
-                });
+                input.quads.push(RenderQuad { positions });
             }
             let face_quad_count = u16::try_from(face_quad_count).unwrap();
             input.faces.push(RenderQuadFace {
@@ -1497,14 +1463,6 @@ fn build_quad_payload(
                     .map_err(|_| "QRP4 face corner count exceeds u8")?,
                 light_styles: surface.light_styles,
             });
-            if face_quad_count != 0 {
-                input.runs.push(RenderQuadRun {
-                    first_quad: face_first_quad,
-                    quad_count: face_quad_count,
-                    material: surface.material,
-                    flags: RENDER_QUAD_RUN_PATCH_CLUT,
-                });
-            }
         }
         let position_count = u16::try_from(local_positions.len())
             .map_err(|_| "QRP4 object position count exceeds u16")?;
@@ -1721,6 +1679,35 @@ fn build_quad_payload(
         });
     }
 
+    // Keep spatial neighbours together before forming bounded QRS sections.
+    // The four accounting arrays are cell-parallel and must follow the exact
+    // same permutation as the encoded command records.
+    let mut order = (0..input.cells.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&index| {
+        let leaf = input.cells[index].leaf as usize;
+        (
+            source_bounds
+                .get(leaf)
+                .copied()
+                .map(leaf_morton_key)
+                .unwrap_or(u32::MAX),
+            leaf,
+        )
+    });
+    let old_cells = core::mem::take(&mut input.cells);
+    let old_fallback = core::mem::take(&mut fallback_bytes);
+    let old_payload = core::mem::take(&mut leaf_payload_bytes);
+    let old_activation = core::mem::take(&mut leaf_activation_bytes);
+    let old_packets = core::mem::take(&mut leaf_packet_pool_bytes);
+    input.cells = order
+        .iter()
+        .map(|&index| old_cells[index].clone())
+        .collect();
+    fallback_bytes = order.iter().map(|&index| old_fallback[index]).collect();
+    leaf_payload_bytes = order.iter().map(|&index| old_payload[index]).collect();
+    leaf_activation_bytes = order.iter().map(|&index| old_activation[index]).collect();
+    leaf_packet_pool_bytes = order.iter().map(|&index| old_packets[index]).collect();
+
     let encoded = encode_render_quad_payload(&input)?;
     let parsed_payload = quake_formats::RenderQuadPayload::parse(&encoded.bytes)
         .map_err(|error| format!("cannot reparse shared QRP4 payload: {error:?}"))?;
@@ -1728,9 +1715,9 @@ fn build_quad_payload(
         .resident_object_bytes()
         .ok_or("QRP4 resident-object accounting overflow")?
         as usize;
-    let effective_resident_core_bytes = resident_core_bytes
-        .checked_add(metrics.resident_object_bytes)
-        .ok_or("QRP4 resident core accounting overflow")?;
+    // QRS5 duplicates the compact submodel fallback into each active section;
+    // it is not an additional always-resident allocation beside that section.
+    let effective_resident_core_bytes = resident_core_bytes;
     metrics.payload_bytes = encoded.bytes.len();
     metrics.activation_bytes =
         encoded.runtime_metadata_bytes as usize + encoded.projection_bytes as usize;
@@ -1904,14 +1891,14 @@ fn build_quad_payload(
             flags: 0,
         });
     }
-    let sidecar = encode_render_sections(
-        &leaf_sections,
+    let _ = (leaf_sections, section_inputs);
+    let sidecar = encode_resident_render_cells(
+        input.cells.len() + 1,
         &encoded,
-        &section_inputs,
         u32::try_from(effective_resident_core_bytes)
             .map_err(|_| "resident core exceeds QRS4 u32")?,
-        u32::try_from(metrics.section_activation_high_water_bytes)
-            .map_err(|_| "QRS4 streaming budget exceeds u32")?,
+        u32::try_from(RESIDENT_MAP_ARENA_BYTES)
+            .map_err(|_| "resident arena exceeds QRC1 u32")?,
         u32::try_from(RENDER_SECTION_PACKET_POOL_TARGET_BYTES)
             .map_err(|_| "QRS4 packet-pool budget exceeds u32")?,
     )?;
@@ -1921,15 +1908,21 @@ fn build_quad_payload(
 
 fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
     let bytes = fs::read(path)?;
-    let mut index_reader = SliceReader::new(&bytes);
-    let index = PsbIndex::read(&mut index_reader)
-        .map_err(|error| format!("cannot read {} index: {error:?}", path.display()))?;
-    let (resident_bytes, resident_core_bytes) = resident_and_collision_core_bytes(&index)?;
     let mut reader = SliceReader::new(&bytes);
     let mut resident = ResidentMap::with_capacity(RESIDENT_MAP_ARENA_BYTES);
     resident
         .load(1, &mut reader)
         .map_err(|error| format!("cannot load {}: {error:?}", path.display()))?;
+    let resident_bytes = resident.resident_bytes_len();
+    let mut core_reader = SliceReader::new(&bytes);
+    let mut core_resident = ResidentMap::with_capacity(RESIDENT_MAP_ARENA_BYTES);
+    core_resident
+        .load_with_profile(1, &mut core_reader, ResidentMapProfile::GameplayCore)
+        .map_err(|error| format!("cannot load {} gameplay core: {error:?}", path.display()))?;
+    // Take the exact post-transcode size from the same loader used by the
+    // guest. Source lump lengths are not sufficient because PSB5 leaf/node
+    // records have a different resident representation.
+    let resident_core_bytes = core_resident.resident_bytes_len();
     let indexed = resident
         .indexed_vertices()
         .ok_or_else(|| format!("{} is not an indexed PSB5 map", path.display()))?;
@@ -1991,7 +1984,6 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
                 maxs,
                 positions,
                 corners,
-                tpage: texture.texture_page,
             }
         })
         .collect::<Vec<_>>();
@@ -2183,7 +2175,7 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         quad_payload,
         masked_objects,
         resident_bytes,
-        resident_core_bytes: resident_core_bytes + quad_payload.resident_object_bytes,
+        resident_core_bytes,
         render_sections,
     })
 }
@@ -2445,7 +2437,7 @@ fn print_map(census: &MapCensus) {
         qrp.leaf_total_max_bytes / 1024,
     );
     println!(
-        "  {}: checked consecutive-leaf QRS4 CPU/fixed-pool targets {}/{} KiB -> {} sections ({} oversize), leaves p50/p95/max={}/{}/{}, CPU activation p50/p95/max={}/{}/{} KiB, fixed-pool p50/p95/max={}/{}/{} KiB, fallback candidates p50/p95/max={}/{}/{} KiB, logical staging total/shared sidecar={}/{} KiB, stop-the-world activation high-water={} KiB",
+        "  {}: checked spatial QRS5 CPU/fixed-pool targets {}/{} KiB -> {} sections ({} oversize), leaves p50/p95/max={}/{}/{}, CPU activation p50/p95/max={}/{}/{} KiB, fixed-pool p50/p95/max={}/{}/{} KiB, fallback candidates p50/p95/max={}/{}/{} KiB, logical staging total/shared sidecar={}/{} KiB, stop-the-world activation high-water={} KiB",
         census.map,
         qrp.section_cpu_target_bytes / 1024,
         RENDER_SECTION_PACKET_POOL_TARGET_BYTES / 1024,
@@ -2479,6 +2471,36 @@ fn print_map(census: &MapCensus) {
             / 1024,
         split_high_water / 1024,
         (RESIDENT_MAP_ARENA_BYTES as isize - split_high_water as isize) / 1024,
+    );
+    // QRP4 currently spends 36 bytes per fixed quad because it stores the
+    // eight invariant GT4 words verbatim. Those words are a pure function of
+    // the face's already-owned corners and material. A resident dictionary
+    // therefore needs only the four object-local position references, and no
+    // material-run table: CLUT/tpage patching happens while the active cell's
+    // bounded packet pool is installed. Keep this corpus proof beside the
+    // section measurements before committing to the next wire format.
+    let compact_dictionary_bytes = RENDER_QUAD_HEADER_BYTES
+        + qrp.objects * RENDER_QUAD_OBJECT_BYTES
+        + qrp.faces * RENDER_QUAD_FACE_BYTES
+        + qrp.corners * RENDER_QUAD_CORNER_BYTES
+        + qrp.quads * RENDER_QUAD_REFERENCE_BYTES
+        + qrp.positions * RENDER_QUAD_POSITION_BYTES;
+    let compact_active_cell_bytes = RENDER_QUAD_CELL_BYTES
+        + qrp.visibility_row_bytes * 2
+        + census.masked_objects.commands_max * RENDER_QUAD_COMMAND_BYTES;
+    let compact_directory_bytes = 64 + (census.views.len() + 2) * 4;
+    let compact_resident_high_water = census.resident_core_bytes
+        + compact_dictionary_bytes
+        + compact_active_cell_bytes
+        + compact_directory_bytes;
+    println!(
+        "  {}: proposed resident compact dictionary={} KiB + max active cell={} KiB + offset directory={} KiB; core+dictionary+cell+directory={} KiB, arena headroom={} KiB",
+        census.map,
+        compact_dictionary_bytes / 1024,
+        compact_active_cell_bytes / 1024,
+        compact_directory_bytes / 1024,
+        compact_resident_high_water / 1024,
+        (RESIDENT_MAP_ARENA_BYTES as isize - compact_resident_high_water as isize) / 1024,
     );
     let masked = census.masked_objects;
     println!(
@@ -2705,7 +2727,6 @@ mod tests {
                     color: u32::from(position),
                 })
                 .collect(),
-            tpage: material,
         }
     }
 

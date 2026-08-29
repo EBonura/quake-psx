@@ -13,9 +13,11 @@ extern crate std;
 mod sound;
 mod render_quad_payload;
 mod render_sections;
+mod render_cells;
 
 pub use render_quad_payload::*;
 pub use render_sections::*;
+pub use render_cells::*;
 pub use psx_bsp::*;
 pub use sound::*;
 

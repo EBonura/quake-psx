@@ -298,6 +298,14 @@ pub fn run() -> ! {
             entities.animate_lights(&world, audio_tick);
             renderer.set_light_styles(entities.light_styles());
             renderer.set_dynamic_lights(&dynamic_lights);
+            #[cfg(feature = "renderer-owned-sections")]
+            if world
+                .ensure_render_section_for_point(camera.origin)
+                .is_err()
+            {
+                psx_rt::tty::println("quake-psx: render section activation failed");
+                psx_rt::halt();
+            }
             let _ = renderer.draw_frame(
                 &world,
                 camera,
@@ -425,6 +433,14 @@ pub fn run() -> ! {
             entities.animate_lights(&world, audio_tick);
             renderer.set_light_styles(entities.light_styles());
             renderer.set_dynamic_lights(&dynamic_lights);
+            #[cfg(feature = "renderer-owned-sections")]
+            if world
+                .ensure_render_section_for_point(camera.origin)
+                .is_err()
+            {
+                psx_rt::tty::println("quake-psx: render section activation failed");
+                psx_rt::halt();
+            }
             let _ = renderer.draw_frame(
                 &world,
                 camera,
@@ -1110,12 +1126,6 @@ pub fn run() -> ! {
         // `CL_RelinkEntities` leaves the model-flag trails once every
         // projectile has moved, so this reads the settled origins.
         entities.emit_projectile_trails(presentation.impact_particles_mut());
-        let centerprint_text = presentation.centerprint().and_then(|active| match active {
-            CenterprintText::Cooked(offset) => world
-                .string_at(offset)
-                .and_then(|bytes| core::str::from_utf8(bytes).ok()),
-            CenterprintText::Fixed(text) => Some(text),
-        });
         presentation.screen_blend_mut().tick(elapsed_ticks);
         presentation
             .screen_blend_mut()
@@ -1187,6 +1197,20 @@ pub fn run() -> ! {
         entities.animate_lights(&world, render_light_tick);
         renderer.set_light_styles(entities.light_styles());
         renderer.set_dynamic_lights(&dynamic_lights);
+        #[cfg(feature = "renderer-owned-sections")]
+        if world
+            .ensure_render_section_for_point(render_camera.origin)
+            .is_err()
+        {
+            psx_rt::tty::println("quake-psx: render section activation failed");
+            psx_rt::halt();
+        }
+        let centerprint_text = presentation.centerprint().and_then(|active| match active {
+            CenterprintText::Cooked(offset) => world
+                .string_at(offset)
+                .and_then(|bytes| core::str::from_utf8(bytes).ok()),
+            CenterprintText::Fixed(text) => Some(text),
+        });
         let _render_stats = renderer.draw_frame(
             &world,
             render_camera,
@@ -1553,6 +1577,8 @@ fn load_level(
         psx_telemetry::emit::debug_log("quake-psx: map residency hit");
         reset_level_state(world, map, entities, audio, presentation)
     } else {
+        #[cfg(feature = "emulator-telemetry")]
+        psx_telemetry::emit::debug_log("quake-psx: map residency miss begin");
         let Some(loading_picture) = world.picture(quake_formats::GraphicsPictureId::Disc) else {
             #[cfg(feature = "hardware-performance")]
             crate::platform::hardware_performance_resume();
@@ -1561,7 +1587,14 @@ fn load_level(
         quake_core::loading::present_before_payload(
             || renderer.draw_loading(loading_picture, map),
             || {
-                let residency = world.ensure_resident(map).ok()?;
+                let residency = match world.ensure_resident(map) {
+                    Ok(residency) => residency,
+                    Err(error) => {
+                        #[cfg(feature = "emulator-telemetry")]
+                        emit_map_load_error(error);
+                        return None;
+                    }
+                };
                 debug_assert!(!residency.is_hit());
                 debug_assert_eq!(residency.generation(), world.generation());
                 #[cfg(feature = "emulator-telemetry")]
@@ -1576,6 +1609,31 @@ fn load_level(
     #[cfg(feature = "hardware-performance")]
     crate::platform::hardware_performance_resume();
     loaded
+}
+
+#[cfg(feature = "emulator-telemetry")]
+#[optimize(size)]
+fn emit_map_load_error(error: crate::asset::MapLoadError) {
+    use crate::asset::MapLoadError;
+
+    let message = match error {
+        MapLoadError::Storage(_) => "quake-psx: map residency miss error storage",
+        MapLoadError::Format => "quake-psx: map residency miss error format",
+        MapLoadError::TooLarge => "quake-psx: map residency miss error too-large",
+        MapLoadError::BadTextureData => "quake-psx: map residency miss error texture",
+        MapLoadError::BadVertexData => "quake-psx: map residency miss error vertex",
+        MapLoadError::BadAliasModels => "quake-psx: map residency miss error alias",
+        MapLoadError::VramUpload => "quake-psx: map residency miss error vram",
+        MapLoadError::BadFace(_) => "quake-psx: map residency miss error face",
+        MapLoadError::BadMarkSurface(_) => "quake-psx: map residency miss error marksurface",
+        MapLoadError::BadLeaf(_) => "quake-psx: map residency miss error leaf",
+        MapLoadError::BadNode(_) => "quake-psx: map residency miss error node",
+        MapLoadError::BadClipNode(_) => "quake-psx: map residency miss error clipnode",
+        MapLoadError::BadBrushModel(_) => "quake-psx: map residency miss error brushmodel",
+        MapLoadError::BadEntity(_) => "quake-psx: map residency miss error entity",
+        MapLoadError::MissingEntities => "quake-psx: map residency miss error entities",
+    };
+    psx_telemetry::emit::debug_log(message);
 }
 
 /// Rebuild mutable level state over immutable resident assets.

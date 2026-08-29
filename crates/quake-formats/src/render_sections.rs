@@ -1,21 +1,18 @@
 //! Checked directory for Quake II-style streamed world-render sections.
 //!
-//! `QRS4` stores one canonical `QRP4` object dictionary and partitions only
-//! its cell stream into activation sections. Objects are never duplicated on
-//! disc. A section record carries the exact compact staging, retained CPU,
-//! projected-position, fixed-packet, and dynamic-fallback candidate counts needed to
-//! gather its referenced objects from the shared dictionary. Compact staging
-//! is consumed through the guest's existing bounded CD scratch buffer during
-//! a quiescent section change, so it is not co-resident with activation data.
+//! `QRS5` stores one canonical, self-contained `QRP4` payload per activation
+//! section. Objects shared by sections are deliberately duplicated on disc:
+//! the PS1 CD-ROM can then activate a section with one uninterrupted `ReadN`
+//! stream instead of seeking across a shared dictionary while the CPU works.
 
 use core::convert::TryInto;
 
 use super::render_quad_payload::RenderQuadPayload;
 
-pub const RENDER_SECTION_MAGIC: u32 = u32::from_le_bytes(*b"QRS4");
-pub const RENDER_SECTION_VERSION: u16 = 4;
+pub const RENDER_SECTION_MAGIC: u32 = u32::from_le_bytes(*b"QRS5");
+pub const RENDER_SECTION_VERSION: u16 = 5;
 pub const RENDER_SECTION_HEADER_BYTES: usize = 48;
-pub const RENDER_SECTION_RECORD_BYTES: usize = 32;
+pub const RENDER_SECTION_RECORD_BYTES: usize = 40;
 pub const RENDER_SECTION_EDGE_BYTES: usize = 4;
 pub const RENDER_SECTION_NONE: u16 = u16::MAX;
 
@@ -54,6 +51,10 @@ pub struct RenderSectionRecord {
     /// This is not added to `packet_pool_bytes`: the active frame rejects
     /// fallback faces before writing its separately bounded dynamic tail.
     pub fallback_bytes: u32,
+    /// Absolute byte offset of this section's self-contained QRP4 payload.
+    pub payload_offset: u32,
+    /// Exact contiguous read length; equal to `staging_bytes`.
+    pub payload_bytes: u32,
     pub flags: u16,
 }
 
@@ -63,10 +64,10 @@ pub struct RenderSectionEdge {
     pub flags: u16,
 }
 
-/// Checked fixed header for a streamed `QRS4` sidecar.
+/// Checked fixed header for a streamed `QRS5` sidecar.
 ///
 /// The guest reads this record first and then allocates only the bounded
-/// leaf/section/edge prefix. The single shared QRP4 dictionary follows it.
+/// leaf/section/edge prefix. Consecutive self-contained QRP4 blobs follow it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RenderSectionHeader {
     leaf_count: u16,
@@ -246,6 +247,7 @@ impl<'a> RenderSectionIndex<'a> {
 
         let mut expected_edge = 0usize;
         let mut expected_cell = 0usize;
+        let mut expected_payload = self.header.directory_bytes();
         for section_index in 0..self.section_count() {
             let section = self
                 .section(section_index)
@@ -267,8 +269,16 @@ impl<'a> RenderSectionIndex<'a> {
                 .ok_or(RenderSectionError::BadPayloadRange)?;
             if section.activation_bytes > self.header.streaming_budget_bytes()
                 || section.packet_pool_bytes > self.header.packet_pool_budget_bytes()
+                || section.payload_bytes != section.staging_bytes
+                || section.payload_offset as usize != expected_payload
             {
                 return Err(RenderSectionError::BadMemoryBudget);
+            }
+            expected_payload = expected_payload
+                .checked_add(section.payload_bytes as usize)
+                .ok_or(RenderSectionError::BadPayloadRange)?;
+            if expected_payload > self.header.file_bytes() {
+                return Err(RenderSectionError::BadPayloadRange);
             }
             let mut mapped_leaves = 0usize;
             for leaf in 0..self.leaf_count() {
@@ -295,6 +305,7 @@ impl<'a> RenderSectionIndex<'a> {
             expected_edge = edge_end;
         }
         if expected_edge != self.edge_count()
+            || expected_payload != self.header.file_bytes()
             || expected_cell
                 != (0..self.leaf_count())
                     .filter(|leaf| u16_at(self.leaves, leaf * 2) != RENDER_SECTION_NONE)
@@ -351,7 +362,7 @@ impl<'a> RenderSectionIndex<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenderSectionDirectory<'a> {
     index: RenderSectionIndex<'a>,
-    payload: RenderQuadPayload<'a>,
+    bytes: &'a [u8],
 }
 
 impl<'a> RenderSectionDirectory<'a> {
@@ -363,29 +374,28 @@ impl<'a> RenderSectionDirectory<'a> {
                 .ok_or(RenderSectionError::BadFileSize)?,
             bytes.len(),
         )?;
-        let payload = RenderQuadPayload::parse(
-            bytes
-                .get(header.directory_bytes()..)
-                .ok_or(RenderSectionError::BadPayloadRange)?,
-        )
-        .map_err(|_| RenderSectionError::BadPayloadRange)?;
-
         let mut expected_cell = 0usize;
         for section_index in 0..index.section_count() {
             let section = index.section(section_index).unwrap();
-            let memory = payload
-                .section_memory(section.first_cell as usize, section.cell_count as usize)
+            let payload_start = section.payload_offset as usize;
+            let payload_end = payload_start
+                .checked_add(section.payload_bytes as usize)
                 .ok_or(RenderSectionError::BadPayloadRange)?;
-            if memory.staging_bytes != section.staging_bytes
-                || memory.activation_bytes != section.activation_bytes
-                || memory.packet_pool_bytes != section.packet_pool_bytes
-                || memory.projection_bytes != section.projection_bytes
+            let payload = RenderQuadPayload::parse(
+                bytes
+                    .get(payload_start..payload_end)
+                    .ok_or(RenderSectionError::BadPayloadRange)?,
+            )
+            .map_err(|_| RenderSectionError::BadPayloadRange)?;
+            if payload.cell_count() != section.cell_count as usize
+                || payload.runtime_metadata_bytes() + payload.projection_bytes()
+                    != section.activation_bytes
+                || payload.packet_pool_bytes() != section.packet_pool_bytes
+                || payload.projection_bytes() != section.projection_bytes
             {
                 return Err(RenderSectionError::BadMemoryBudget);
             }
-            for cell_index in section.first_cell as usize
-                ..section.first_cell as usize + section.cell_count as usize
-            {
+            for cell_index in 0..payload.cell_count() {
                 let cell = payload
                     .cell(cell_index)
                     .ok_or(RenderSectionError::BadPayloadRange)?;
@@ -395,10 +405,14 @@ impl<'a> RenderSectionDirectory<'a> {
             }
             expected_cell += section.cell_count as usize;
         }
-        if expected_cell != payload.cell_count() {
+        if expected_cell
+            != (0..index.leaf_count())
+                .filter(|leaf| index.leaf_section(*leaf).is_some())
+                .count()
+        {
             return Err(RenderSectionError::BadPayloadRange);
         }
-        Ok(Self { index, payload })
+        Ok(Self { index, bytes })
     }
 
     #[inline]
@@ -447,20 +461,23 @@ impl<'a> RenderSectionDirectory<'a> {
     }
 
     #[inline]
-    pub const fn payload(self) -> RenderQuadPayload<'a> {
-        self.payload
+    pub fn payload(self, section_index: usize) -> Option<RenderQuadPayload<'a>> {
+        let section = self.index.section(section_index)?;
+        let start = section.payload_offset as usize;
+        let end = start.checked_add(section.payload_bytes as usize)?;
+        RenderQuadPayload::parse(self.bytes.get(start..end)?).ok()
     }
 
     #[inline]
-    pub const fn payload_offset(self) -> usize {
-        self.index.header().directory_bytes()
+    pub fn payload_offset(self, section_index: usize) -> Option<usize> {
+        Some(self.index.section(section_index)?.payload_offset as usize)
     }
 }
 
 fn decode_section_record(bytes: &[u8], index: usize) -> Option<RenderSectionRecord> {
     let start = index.checked_mul(RENDER_SECTION_RECORD_BYTES)?;
     let bytes = bytes.get(start..start + RENDER_SECTION_RECORD_BYTES)?;
-    if u16_at(bytes, 30) != 0 {
+    if u16_at(bytes, 38) != 0 {
         return None;
     }
     Some(RenderSectionRecord {
@@ -473,7 +490,9 @@ fn decode_section_record(bytes: &[u8], index: usize) -> Option<RenderSectionReco
         packet_pool_bytes: u32_at(bytes, 16),
         projection_bytes: u32_at(bytes, 20),
         fallback_bytes: u32_at(bytes, 24),
-        flags: u16_at(bytes, 28),
+        payload_offset: u32_at(bytes, 28),
+        payload_bytes: u32_at(bytes, 32),
+        flags: u16_at(bytes, 36),
     })
 }
 

@@ -1,23 +1,27 @@
 //! Quad-native payload installed by one streamed render section.
 //!
-//! `QRP4` stores complete bounded source-order render objects. Each object owns
+//! `QRP5` stores complete bounded source-order render objects. Each object owns
 //! at most 32 consecutive faces, their fallback corners, 32 optional fixed
-//! GT4s, and 255 object-local positions. Cell commands carry exact visible,
+//! GT4 references, and 255 object-local positions. Cell commands carry exact visible,
 //! dynamic-facing, and template-eligible face masks. Activation can expand the
-//! invariant packet words into two 52-byte packet pools while fallback paths
-//! use the same streamed object instead of resident PSB render lumps.
+//! invariant packet words directly from retained corners into two 52-byte
+//! packet pools while fallback paths use the same streamed object instead of
+//! resident PSB render lumps.
 
 use core::convert::TryInto;
 
-pub const RENDER_QUAD_PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"QRP4");
-pub const RENDER_QUAD_PAYLOAD_VERSION: u16 = 4;
+pub const RENDER_QUAD_PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"QRP5");
+pub const RENDER_QUAD_PAYLOAD_VERSION: u16 = 5;
 pub const RENDER_QUAD_HEADER_BYTES: usize = 72;
 pub const RENDER_QUAD_OBJECT_BYTES: usize = 36;
 pub const RENDER_QUAD_FACE_BYTES: usize = 16;
 /// Activated face plus exact bounds derived once from its owned corners.
 pub const RENDER_QUAD_RUNTIME_FACE_BYTES: usize = 24;
 pub const RENDER_QUAD_CORNER_BYTES: usize = 8;
-pub const RENDER_QUAD_RECORD_BYTES: usize = 36;
+/// Four object-local position references. Packet colors, UVs, CLUT and tpage
+/// are reconstructed from the face's retained corners and material only when
+/// a bounded cell packet pool is installed.
+pub const RENDER_QUAD_RECORD_BYTES: usize = 4;
 pub const RENDER_QUAD_POSITION_BYTES: usize = 6;
 pub const RENDER_QUAD_RUN_BYTES: usize = 8;
 pub const RENDER_QUAD_CELL_BYTES: usize = 16;
@@ -196,10 +200,11 @@ impl RenderQuadPayloadHeader {
             return Err(RenderQuadPayloadError::NonCanonicalLayout);
         }
         if self.packet_pool_bytes() as usize
-            != self
+            > self
                 .quad_count()
                 .checked_mul(RENDER_QUAD_PACKET_BYTES)
                 .ok_or(RenderQuadPayloadError::BadMemoryAccounting)?
+            || self.packet_pool_bytes() as usize % RENDER_QUAD_PACKET_BYTES != 0
             || self.projection_bytes() as usize
                 != self
                     .position_count()
@@ -470,10 +475,6 @@ pub struct RenderQuadCorner {
 pub struct RenderQuad {
     /// Object-local u8 indices into the object's contiguous position range.
     pub positions: [u8; 4],
-    /// GT4 words 1,3,4,6,7,9,10,12. Tag and XY words are installed later;
-    /// runs marked [`RENDER_QUAD_RUN_PATCH_CLUT`] store word three's high
-    /// half as zero and receive the current CLUT during activation.
-    pub invariant_words: [u32; 8],
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -570,13 +571,8 @@ impl RenderQuad {
     #[inline]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let bytes = bytes.get(..RENDER_QUAD_RECORD_BYTES)?;
-        let mut invariant_words = [0; 8];
-        for (index, word) in invariant_words.iter_mut().enumerate() {
-            *word = u32_at(bytes, 4 + index * 4);
-        }
         Some(Self {
             positions: [bytes[0], bytes[1], bytes[2], bytes[3]],
-            invariant_words,
         })
     }
 }
@@ -658,7 +654,91 @@ pub struct RenderQuadSectionMemory {
 }
 
 impl<'a> RenderQuadPayload<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, RenderQuadPayloadError> {
+    /// Bind one QRC cell block appended behind a previously validated,
+    /// cell-free QRP5 dictionary.
+    ///
+    /// The dictionary is immutable and has already passed [`Self::parse`] at
+    /// map load. Re-running that whole object/corner/quad proof for every
+    /// camera-cell activation is both redundant and extremely expensive on
+    /// the PS1. The cell loader separately checks the newly read command and
+    /// packet ranges, so binding only needs to patch and validate the table
+    /// layout here.
+    pub fn bind_single_cell(
+        bytes: &'a mut [u8],
+        dictionary_bytes: usize,
+        visibility_row_bytes: usize,
+        packet_pool_bytes: u32,
+    ) -> Result<Self, RenderQuadPayloadError> {
+        let header = bytes
+            .get(..RENDER_QUAD_HEADER_BYTES)
+            .ok_or(RenderQuadPayloadError::BadHeaderSize)?;
+        if u32_at(header, 0) != RENDER_QUAD_PAYLOAD_MAGIC
+            || u16_at(header, 4) != RENDER_QUAD_PAYLOAD_VERSION
+            || u16_at(header, 6) as usize != RENDER_QUAD_HEADER_BYTES
+            || u32_at(header, 48) as usize != dictionary_bytes
+            || dictionary_bytes < RENDER_QUAD_HEADER_BYTES
+            || visibility_row_bytes == 0
+            || visibility_row_bytes > u16::MAX as usize
+            || packet_pool_bytes as usize % RENDER_QUAD_PACKET_BYTES != 0
+        {
+            return Err(RenderQuadPayloadError::NonCanonicalLayout);
+        }
+        let cell_start = dictionary_bytes;
+        let stream_start = cell_start
+            .checked_add(RENDER_QUAD_CELL_BYTES)
+            .and_then(|offset| offset.checked_add(visibility_row_bytes.checked_mul(2)?))
+            .ok_or(RenderQuadPayloadError::BadCellStream)?;
+        let cell = bytes
+            .get(cell_start..cell_start + RENDER_QUAD_CELL_BYTES)
+            .ok_or(RenderQuadPayloadError::BadCellStream)?;
+        let command_count = u16_at(cell, 2) as usize;
+        let expected_file_bytes = stream_start
+            .checked_add(
+                command_count
+                    .checked_mul(RENDER_QUAD_COMMAND_BYTES)
+                    .ok_or(RenderQuadPayloadError::BadCellStream)?,
+            )
+            .ok_or(RenderQuadPayloadError::BadCellStream)?;
+        if expected_file_bytes != bytes.len() {
+            return Err(RenderQuadPayloadError::BadCellStream);
+        }
+        let object_count = u16_at(header, 8) as usize;
+        let face_count = u16_at(header, 10) as usize;
+        let corner_count = u16_at(header, 12) as usize;
+        let quad_count = u16_at(header, 14) as usize;
+        let position_count = u16_at(header, 16) as usize;
+        if packet_pool_bytes as usize > quad_count * RENDER_QUAD_PACKET_BYTES {
+            return Err(RenderQuadPayloadError::BadMemoryAccounting);
+        }
+        let runtime_metadata_bytes = object_count
+            .checked_mul(RENDER_QUAD_OBJECT_BYTES)
+            .and_then(|value| value.checked_add(face_count * RENDER_QUAD_RUNTIME_FACE_BYTES))
+            .and_then(|value| value.checked_add(corner_count * RENDER_QUAD_CORNER_BYTES))
+            .and_then(|value| value.checked_add(quad_count * RENDER_QUAD_REFERENCE_BYTES))
+            .and_then(|value| value.checked_add(position_count * RENDER_QUAD_POSITION_BYTES))
+            .and_then(|value| value.checked_add(bytes.len() - dictionary_bytes))
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or(RenderQuadPayloadError::BadMemoryAccounting)?;
+
+        let file_bytes = bytes.len() as u32;
+        bytes[20..22].copy_from_slice(&1u16.to_le_bytes());
+        bytes[22..24].copy_from_slice(&(visibility_row_bytes as u16).to_le_bytes());
+        bytes[52..56].copy_from_slice(&(stream_start as u32).to_le_bytes());
+        bytes[56..60].copy_from_slice(&file_bytes.to_le_bytes());
+        bytes[60..64].copy_from_slice(&packet_pool_bytes.to_le_bytes());
+        bytes[68..72].copy_from_slice(&runtime_metadata_bytes.to_le_bytes());
+        bytes[cell_start + 4..cell_start + 8]
+            .copy_from_slice(&(stream_start as u32).to_le_bytes());
+        Self::parse_layout(bytes)
+    }
+
+    /// Bind the checked table layout without rescanning semantic relationships.
+    ///
+    /// This is the constant-time view used after a loader has already called
+    /// [`Self::parse`] on the same immutable bytes. All public record accessors
+    /// remain bounds checked, so malformed relationships cannot cause an
+    /// out-of-bounds access.
+    pub fn parse_layout(bytes: &'a [u8]) -> Result<Self, RenderQuadPayloadError> {
         let header = RenderQuadPayloadHeader::parse(bytes, bytes.len())?;
         let object_count = header.object_count();
         let face_count = header.face_count();
@@ -695,7 +775,7 @@ impl<'a> RenderQuadPayload<'a> {
             )
             .ok_or(RenderQuadPayloadError::NonCanonicalLayout)?;
 
-        let payload = Self {
+        Ok(Self {
             bytes,
             objects: bytes
                 .get(objects_offset..objects_end)
@@ -726,7 +806,19 @@ impl<'a> RenderQuadPayload<'a> {
             packet_pool_bytes: header.packet_pool_bytes(),
             projection_bytes: header.projection_bytes(),
             runtime_metadata_bytes: header.runtime_metadata_bytes(),
-        };
+        })
+    }
+
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, RenderQuadPayloadError> {
+        let payload = Self::parse_layout(bytes)?;
+        let object_count = payload.object_count();
+        let face_count = payload.face_count();
+        let corner_count = payload.corner_count();
+        let quad_count = payload.quad_count();
+        let position_count = payload.position_count();
+        let run_count = payload.run_count();
+        let cell_count = payload.cell_count();
+        let streams_offset = payload.streams_offset();
 
         let mut expected_face = 0usize;
         let mut expected_corner = 0usize;
@@ -784,7 +876,6 @@ impl<'a> RenderQuadPayload<'a> {
 
             let mut face_corner = expected_corner;
             let mut face_quad = expected_quad;
-            let mut face_run = expected_run;
             for face_index in expected_face..object_face_end {
                 let face = payload.face(face_index).unwrap();
                 if face.corner_count < 3
@@ -807,29 +898,11 @@ impl<'a> RenderQuadPayload<'a> {
                 if face_quad > object_quad_end {
                     return Err(RenderQuadPayloadError::BadFaceRange);
                 }
-                if face.quad_count != 0 {
-                    if face_run >= object_run_end {
-                        return Err(RenderQuadPayloadError::BadRunRange);
-                    }
-                    let run = payload.run(face_run).unwrap();
-                    if run.first_quad != face.first_quad
-                        || run.quad_count != face.quad_count
-                        || run.material != face.material
-                        || run.flags & !RENDER_QUAD_RUN_FLAGS != 0
-                    {
-                        return Err(RenderQuadPayloadError::BadRunRange);
-                    }
-                    face_run += 1;
-                }
                 previous_source_face = Some(face.source_face);
             }
             if face_corner != object_corner_end || face_quad != object_quad_end {
                 return Err(RenderQuadPayloadError::BadFaceRange);
             }
-            if face_run != object_run_end {
-                return Err(RenderQuadPayloadError::BadRunRange);
-            }
-
             for corner_index in expected_corner..object_corner_end {
                 let record =
                     table_record(payload.corners, corner_index, RENDER_QUAD_CORNER_BYTES).unwrap();
@@ -868,11 +941,19 @@ impl<'a> RenderQuadPayload<'a> {
             return Err(RenderQuadPayloadError::BadObjectRange);
         }
 
-        let mut previous_leaf = None;
         let mut expected_stream = streams_offset;
         for cell_index in 0..cell_count {
             let cell = payload.cell(cell_index).unwrap();
-            if previous_leaf.is_some_and(|leaf| leaf >= cell.leaf)
+            // Section packing follows spatial locality rather than BSP leaf
+            // numbering. IDs therefore need only be unique. This load-time
+            // quadratic check runs over one bounded section and keeps the
+            // frame path free of a second lookup table.
+            let duplicate_leaf = (0..cell_index).any(|previous_index| {
+                payload
+                    .cell(previous_index)
+                    .is_some_and(|previous| previous.leaf == cell.leaf)
+            });
+            if duplicate_leaf
                 || cell.stream_offset as usize != expected_stream
                 || cell.flags & !RENDER_QUAD_CELL_FLAGS != 0
                 || (cell.flags & RENDER_QUAD_CELL_WATER_PORTAL == 0
@@ -944,7 +1025,6 @@ impl<'a> RenderQuadPayload<'a> {
                 }
                 previous_object = Some(command.object);
             }
-            previous_leaf = Some(cell.leaf);
         }
         if expected_stream != bytes.len() {
             return Err(RenderQuadPayloadError::BadCellStream);
@@ -1045,16 +1125,46 @@ impl<'a> RenderQuadPayload<'a> {
         RenderQuadCorner::decode(bytes)
     }
 
+    /// Raw validated corner range for a fixed-shape guest kernel.
+    #[inline]
+    pub fn corner_bytes(self, first: usize, count: usize) -> Option<&'a [u8]> {
+        let start = first.checked_mul(RENDER_QUAD_CORNER_BYTES)?;
+        let end = start.checked_add(count.checked_mul(RENDER_QUAD_CORNER_BYTES)?)?;
+        self.corners.get(start..end)
+    }
+
+    /// Object-local position byte from one checked corner record.
+    #[inline]
+    pub fn corner_position(self, index: usize) -> Option<u8> {
+        table_record(self.corners, index, RENDER_QUAD_CORNER_BYTES).map(|bytes| bytes[0])
+    }
+
     #[inline]
     pub fn quad(self, index: usize) -> Option<RenderQuad> {
         let bytes = table_record(self.quads, index, RENDER_QUAD_RECORD_BYTES)?;
         RenderQuad::decode(bytes)
     }
 
+    /// Four object-local references without decoding the cold invariant words.
+    #[inline]
+    pub fn quad_positions(self, index: usize) -> Option<[u8; 4]> {
+        let bytes = table_record(self.quads, index, RENDER_QUAD_RECORD_BYTES)?;
+        Some([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
     #[inline]
     pub fn position(self, index: usize) -> Option<[i16; 3]> {
         let bytes = table_record(self.positions, index, RENDER_QUAD_POSITION_BYTES)?;
         Some([i16_at(bytes, 0), i16_at(bytes, 2), i16_at(bytes, 4)])
+    }
+
+    /// Raw validated contiguous position range. QRP4 positions have the same
+    /// six-byte representation as the renderer's `ClassicAffinePosition`.
+    #[inline]
+    pub fn position_bytes(self, first: usize, count: usize) -> Option<&'a [u8]> {
+        let start = first.checked_mul(RENDER_QUAD_POSITION_BYTES)?;
+        let end = start.checked_add(count.checked_mul(RENDER_QUAD_POSITION_BYTES)?)?;
+        self.positions.get(start..end)
     }
 
     #[inline]
@@ -1126,14 +1236,19 @@ impl<'a> RenderQuadPayload<'a> {
         let mut corner_count = 0usize;
         let mut quad_count = 0usize;
         let mut position_count = 0usize;
-        let mut run_count = 0usize;
         let mut command_count = 0usize;
         for cell_index in first_cell..end_cell {
             command_count =
                 command_count.checked_add(self.cell(cell_index)?.command_count as usize)?;
         }
         for object_index in 0..self.object_count() {
-            let mut referenced = false;
+            let object = self.object(object_index)?;
+            // Inline brush models are not part of a camera-cell command
+            // stream, but the active section is also the renderer's only
+            // exact fallback topology store. Charge and retain them in every
+            // section so doors, lifts, and other BSP entities remain drawable
+            // after the legacy PSB render lumps are removed.
+            let mut referenced = object.flags & RENDER_QUAD_OBJECT_SUBMODEL != 0;
             let mut template_faces = 0u32;
             for cell_index in first_cell..end_cell {
                 let cell = self.cell(cell_index)?;
@@ -1153,7 +1268,6 @@ impl<'a> RenderQuadPayload<'a> {
             if !referenced {
                 continue;
             }
-            let object = self.object(object_index)?;
             object_count = object_count.checked_add(1)?;
             face_count = face_count.checked_add(object.face_count as usize)?;
             corner_count = corner_count.checked_add(object.corner_count as usize)?;
@@ -1164,7 +1278,6 @@ impl<'a> RenderQuadPayload<'a> {
                 }
                 let face = self.face(object.first_face as usize + local_face)?;
                 quad_count = quad_count.checked_add(face.quad_count as usize)?;
-                run_count = run_count.checked_add(1)?;
             }
         }
 
@@ -1174,7 +1287,6 @@ impl<'a> RenderQuadPayload<'a> {
         let corners_bytes = corner_count.checked_mul(RENDER_QUAD_CORNER_BYTES)?;
         let quads_bytes = quad_count.checked_mul(RENDER_QUAD_RECORD_BYTES)?;
         let positions_bytes = position_count.checked_mul(RENDER_QUAD_POSITION_BYTES)?;
-        let runs_bytes = run_count.checked_mul(RENDER_QUAD_RUN_BYTES)?;
         let cells_bytes = cell_count.checked_mul(RENDER_QUAD_CELL_BYTES)?;
         let visibility_bytes = cell_count
             .checked_mul(self.visibility_row_bytes)?
@@ -1187,7 +1299,6 @@ impl<'a> RenderQuadPayload<'a> {
             .checked_add(quads_bytes)?
             .checked_add(positions_bytes)?;
         let staging_bytes = align_up_4(positions_end)
-            .checked_add(runs_bytes)?
             .checked_add(cells_bytes)?
             .checked_add(visibility_bytes)?
             .checked_add(commands_bytes)?;
