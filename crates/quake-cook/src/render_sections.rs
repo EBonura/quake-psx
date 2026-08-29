@@ -1,29 +1,49 @@
-//! Canonical host encoders for `QRS3` and its quad-native `QRP3` payloads.
+//! Canonical host encoders for `QRS4` and its complete `QRP4` render objects.
 
 use quake_formats::{
-    RenderQuad, RenderQuadCommand, RenderQuadFace, RenderQuadObject, RenderQuadPayload,
-    RenderQuadRun, RenderSectionDirectory, RENDER_QUAD_CELL_BYTES, RENDER_QUAD_COMMAND_BYTES,
-    RENDER_QUAD_FACE_BYTES, RENDER_QUAD_HEADER_BYTES, RENDER_QUAD_OBJECT_BYTES,
-    RENDER_QUAD_PACKET_BYTES, RENDER_QUAD_PAYLOAD_MAGIC, RENDER_QUAD_PAYLOAD_VERSION,
-    RENDER_QUAD_POSITION_BYTES, RENDER_QUAD_PROJECTED_POSITION_BYTES, RENDER_QUAD_RECORD_BYTES,
-    RENDER_QUAD_REFERENCE_BYTES, RENDER_QUAD_RUN_BYTES, RENDER_SECTION_EDGE_BYTES,
+    RenderQuad, RenderQuadCommand, RenderQuadCorner, RenderQuadFace, RenderQuadObject,
+    RenderQuadPayload, RenderQuadRun, RenderSectionDirectory, RENDER_QUAD_CELL_BYTES,
+    RENDER_QUAD_COMMAND_BYTES, RENDER_QUAD_CORNER_BYTES, RENDER_QUAD_FACE_BYTES,
+    RENDER_QUAD_HEADER_BYTES, RENDER_QUAD_OBJECT_BYTES, RENDER_QUAD_PACKET_BYTES,
+    RENDER_QUAD_PAYLOAD_MAGIC, RENDER_QUAD_PAYLOAD_VERSION, RENDER_QUAD_POSITION_BYTES,
+    RENDER_QUAD_PROJECTED_POSITION_BYTES, RENDER_QUAD_RECORD_BYTES, RENDER_QUAD_REFERENCE_BYTES,
+    RENDER_QUAD_RUNTIME_FACE_BYTES, RENDER_QUAD_RUN_BYTES, RENDER_SECTION_EDGE_BYTES,
     RENDER_SECTION_HEADER_BYTES, RENDER_SECTION_MAGIC, RENDER_SECTION_NONE,
     RENDER_SECTION_RECORD_BYTES, RENDER_SECTION_VERSION,
 };
 
 use super::CookError;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderQuadCellInput {
     pub leaf: u16,
     pub flags: u16,
+    pub portal_leaf: u16,
+    pub portal_plane: i16,
+    pub visibility: Vec<u8>,
+    pub portal_visibility: Vec<u8>,
     pub commands: Vec<RenderQuadCommand>,
+}
+
+impl Default for RenderQuadCellInput {
+    fn default() -> Self {
+        Self {
+            leaf: 0,
+            flags: 0,
+            portal_leaf: u16::MAX,
+            portal_plane: -1,
+            visibility: Vec::new(),
+            portal_visibility: Vec::new(),
+            commands: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RenderQuadPayloadInput {
     pub objects: Vec<RenderQuadObject>,
     pub faces: Vec<RenderQuadFace>,
+    pub corners: Vec<RenderQuadCorner>,
     pub quads: Vec<RenderQuad>,
     pub positions: Vec<[i16; 3]>,
     pub runs: Vec<RenderQuadRun>,
@@ -41,7 +61,8 @@ pub struct EncodedRenderQuadPayload {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RenderSectionInput {
     pub neighbors: Vec<u16>,
-    pub payload: EncodedRenderQuadPayload,
+    pub first_cell: u16,
+    pub cell_count: u16,
     pub fallback_bytes: u32,
     pub flags: u16,
 }
@@ -51,10 +72,21 @@ pub fn encode_render_quad_payload(
 ) -> Result<EncodedRenderQuadPayload, CookError> {
     let object_count = count_u16(input.objects.len(), "render object")?;
     let face_count = count_u16(input.faces.len(), "render face")?;
+    let corner_count = count_u16(input.corners.len(), "render corner")?;
     let quad_count = count_u16(input.quads.len(), "render quad")?;
     let position_count = count_u16(input.positions.len(), "render position")?;
     let run_count = count_u16(input.runs.len(), "render material run")?;
     let cell_count = count_u16(input.cells.len(), "render cell")?;
+    let visibility_row_bytes = input.cells.first().map_or(0, |cell| cell.visibility.len());
+    let visibility_row_bytes_u16 = count_u16(visibility_row_bytes, "render visibility row byte")?;
+    if input.cells.iter().any(|cell| {
+        cell.visibility.len() != visibility_row_bytes
+            || cell.portal_visibility.len() != visibility_row_bytes
+    }) {
+        return Err(CookError::new(
+            "render cells have inconsistent visibility row sizes",
+        ));
+    }
     let packet_pool_bytes = byte_count_u32(
         input.quads.len(),
         RENDER_QUAD_PACKET_BYTES,
@@ -76,7 +108,9 @@ pub fn encode_render_quad_payload(
     let objects_end = objects_offset + input.objects.len() * RENDER_QUAD_OBJECT_BYTES;
     let faces_offset = objects_end;
     let faces_end = faces_offset + input.faces.len() * RENDER_QUAD_FACE_BYTES;
-    let quads_offset = faces_end;
+    let corners_offset = faces_end;
+    let corners_end = corners_offset + input.corners.len() * RENDER_QUAD_CORNER_BYTES;
+    let quads_offset = corners_end;
     let quads_end = quads_offset + input.quads.len() * RENDER_QUAD_RECORD_BYTES;
     let positions_offset = quads_end;
     let positions_end = positions_offset + input.positions.len() * RENDER_QUAD_POSITION_BYTES;
@@ -84,7 +118,15 @@ pub fn encode_render_quad_payload(
     let runs_end = runs_offset + input.runs.len() * RENDER_QUAD_RUN_BYTES;
     let cells_offset = runs_end;
     let cells_end = cells_offset + input.cells.len() * RENDER_QUAD_CELL_BYTES;
-    let streams_offset = cells_end;
+    let visibility_bytes = input
+        .cells
+        .len()
+        .checked_mul(visibility_row_bytes)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or_else(|| CookError::new("render visibility rows exceed address space"))?;
+    let streams_offset = cells_end
+        .checked_add(visibility_bytes)
+        .ok_or_else(|| CookError::new("render visibility rows exceed address space"))?;
     let file_bytes = streams_offset
         .checked_add(command_count * RENDER_QUAD_COMMAND_BYTES)
         .ok_or_else(|| CookError::new("quad-native payload exceeds address space"))?;
@@ -94,10 +136,12 @@ pub fn encode_render_quad_payload(
         .objects
         .len()
         .checked_mul(RENDER_QUAD_OBJECT_BYTES)
-        .and_then(|bytes| bytes.checked_add(input.faces.len() * RENDER_QUAD_FACE_BYTES))
+        .and_then(|bytes| bytes.checked_add(input.faces.len() * RENDER_QUAD_RUNTIME_FACE_BYTES))
+        .and_then(|bytes| bytes.checked_add(input.corners.len() * RENDER_QUAD_CORNER_BYTES))
         .and_then(|bytes| bytes.checked_add(input.quads.len() * RENDER_QUAD_REFERENCE_BYTES))
         .and_then(|bytes| bytes.checked_add(input.positions.len() * RENDER_QUAD_POSITION_BYTES))
         .and_then(|bytes| bytes.checked_add(input.cells.len() * RENDER_QUAD_CELL_BYTES))
+        .and_then(|bytes| bytes.checked_add(visibility_bytes))
         .and_then(|bytes| bytes.checked_add(command_count * RENDER_QUAD_COMMAND_BYTES))
         .and_then(|bytes| u32::try_from(bytes).ok())
         .ok_or_else(|| CookError::new("quad-native runtime metadata exceeds u32"))?;
@@ -107,52 +151,66 @@ pub fn encode_render_quad_payload(
     output[6..8].copy_from_slice(&(RENDER_QUAD_HEADER_BYTES as u16).to_le_bytes());
     output[8..10].copy_from_slice(&object_count.to_le_bytes());
     output[10..12].copy_from_slice(&face_count.to_le_bytes());
-    output[12..14].copy_from_slice(&quad_count.to_le_bytes());
-    output[14..16].copy_from_slice(&position_count.to_le_bytes());
-    output[16..18].copy_from_slice(&run_count.to_le_bytes());
-    output[18..20].copy_from_slice(&cell_count.to_le_bytes());
+    output[12..14].copy_from_slice(&corner_count.to_le_bytes());
+    output[14..16].copy_from_slice(&quad_count.to_le_bytes());
+    output[16..18].copy_from_slice(&position_count.to_le_bytes());
+    output[18..20].copy_from_slice(&run_count.to_le_bytes());
+    output[20..22].copy_from_slice(&cell_count.to_le_bytes());
+    output[22..24].copy_from_slice(&visibility_row_bytes_u16.to_le_bytes());
     for (offset, value) in [
-        (20, objects_offset),
-        (24, faces_offset),
-        (28, quads_offset),
-        (32, positions_offset),
-        (36, runs_offset),
-        (40, cells_offset),
-        (44, streams_offset),
+        (24, objects_offset),
+        (28, faces_offset),
+        (32, corners_offset),
+        (36, quads_offset),
+        (40, positions_offset),
+        (44, runs_offset),
+        (48, cells_offset),
+        (52, streams_offset),
     ] {
         output[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
     }
-    output[48..52].copy_from_slice(&file_bytes_u32.to_le_bytes());
-    output[52..56].copy_from_slice(&packet_pool_bytes.to_le_bytes());
-    output[56..60].copy_from_slice(&projection_bytes.to_le_bytes());
-    output[60..64].copy_from_slice(&runtime_metadata_bytes.to_le_bytes());
+    output[56..60].copy_from_slice(&file_bytes_u32.to_le_bytes());
+    output[60..64].copy_from_slice(&packet_pool_bytes.to_le_bytes());
+    output[64..68].copy_from_slice(&projection_bytes.to_le_bytes());
+    output[68..72].copy_from_slice(&runtime_metadata_bytes.to_le_bytes());
 
     for (index, object) in input.objects.iter().enumerate() {
         let start = objects_offset + index * RENDER_QUAD_OBJECT_BYTES;
         output[start..start + 2].copy_from_slice(&object.first_face.to_le_bytes());
         output[start + 2..start + 4].copy_from_slice(&object.face_count.to_le_bytes());
-        output[start + 4..start + 6].copy_from_slice(&object.first_quad.to_le_bytes());
-        output[start + 6..start + 8].copy_from_slice(&object.quad_count.to_le_bytes());
-        output[start + 8..start + 10].copy_from_slice(&object.first_position.to_le_bytes());
-        output[start + 10..start + 12].copy_from_slice(&object.position_count.to_le_bytes());
-        output[start + 12..start + 14].copy_from_slice(&object.first_run.to_le_bytes());
-        output[start + 14..start + 16].copy_from_slice(&object.run_count.to_le_bytes());
+        output[start + 4..start + 6].copy_from_slice(&object.first_corner.to_le_bytes());
+        output[start + 6..start + 8].copy_from_slice(&object.corner_count.to_le_bytes());
+        output[start + 8..start + 10].copy_from_slice(&object.first_quad.to_le_bytes());
+        output[start + 10..start + 12].copy_from_slice(&object.quad_count.to_le_bytes());
+        output[start + 12..start + 14].copy_from_slice(&object.first_position.to_le_bytes());
+        output[start + 14..start + 16].copy_from_slice(&object.position_count.to_le_bytes());
+        output[start + 16..start + 18].copy_from_slice(&object.first_run.to_le_bytes());
+        output[start + 18..start + 20].copy_from_slice(&object.run_count.to_le_bytes());
         for axis in 0..3 {
-            output[start + 16 + axis * 2..start + 18 + axis * 2]
+            output[start + 20 + axis * 2..start + 22 + axis * 2]
                 .copy_from_slice(&object.mins[axis].to_le_bytes());
-            output[start + 22 + axis * 2..start + 24 + axis * 2]
+            output[start + 26 + axis * 2..start + 28 + axis * 2]
                 .copy_from_slice(&object.maxs[axis].to_le_bytes());
         }
-        output[start + 28..start + 30].copy_from_slice(&object.flags.to_le_bytes());
+        output[start + 32..start + 34].copy_from_slice(&object.flags.to_le_bytes());
     }
     for (index, face) in input.faces.iter().enumerate() {
         let start = faces_offset + index * RENDER_QUAD_FACE_BYTES;
         output[start..start + 2].copy_from_slice(&face.source_face.to_le_bytes());
-        output[start + 2..start + 4].copy_from_slice(&face.first_quad.to_le_bytes());
-        output[start + 4..start + 6].copy_from_slice(&face.quad_count.to_le_bytes());
-        output[start + 6..start + 8].copy_from_slice(&face.plane.to_le_bytes());
-        output[start + 8..start + 10].copy_from_slice(&face.material.to_le_bytes());
-        output[start + 10..start + 12].copy_from_slice(&face.flags.to_le_bytes());
+        output[start + 2..start + 4].copy_from_slice(&face.first_corner.to_le_bytes());
+        output[start + 4..start + 6].copy_from_slice(&face.first_quad.to_le_bytes());
+        output[start + 6..start + 8].copy_from_slice(&face.quad_count.to_le_bytes());
+        output[start + 8..start + 10].copy_from_slice(&face.plane.to_le_bytes());
+        output[start + 10..start + 12].copy_from_slice(&face.material.to_le_bytes());
+        output[start + 12] = face.flags;
+        output[start + 13] = face.corner_count;
+        output[start + 14..start + 16].copy_from_slice(&face.light_styles);
+    }
+    for (index, corner) in input.corners.iter().enumerate() {
+        let start = corners_offset + index * RENDER_QUAD_CORNER_BYTES;
+        output[start] = corner.position;
+        output[start + 1..start + 3].copy_from_slice(&corner.texture);
+        output[start + 4..start + 8].copy_from_slice(&corner.light.to_le_bytes());
     }
     for (index, quad) in input.quads.iter().enumerate() {
         let start = quads_offset + index * RENDER_QUAD_RECORD_BYTES;
@@ -183,6 +241,14 @@ pub fn encode_render_quad_payload(
         output[start + 2..start + 4].copy_from_slice(&(cell.commands.len() as u16).to_le_bytes());
         output[start + 4..start + 8].copy_from_slice(&(stream_offset as u32).to_le_bytes());
         output[start + 8..start + 10].copy_from_slice(&cell.flags.to_le_bytes());
+        output[start + 10..start + 12].copy_from_slice(&cell.portal_leaf.to_le_bytes());
+        output[start + 12..start + 14].copy_from_slice(&cell.portal_plane.to_le_bytes());
+        let visibility_start = cells_end + index * visibility_row_bytes * 2;
+        output[visibility_start..visibility_start + visibility_row_bytes]
+            .copy_from_slice(&cell.visibility);
+        output
+            [visibility_start + visibility_row_bytes..visibility_start + visibility_row_bytes * 2]
+            .copy_from_slice(&cell.portal_visibility);
         for command in &cell.commands {
             output[stream_offset..stream_offset + 2].copy_from_slice(&command.object.to_le_bytes());
             output[stream_offset + 2..stream_offset + 4]
@@ -190,7 +256,11 @@ pub fn encode_render_quad_payload(
             output[stream_offset + 4..stream_offset + 8]
                 .copy_from_slice(&command.visible_faces.to_le_bytes());
             output[stream_offset + 8..stream_offset + 12]
+                .copy_from_slice(&command.portal_faces.to_le_bytes());
+            output[stream_offset + 12..stream_offset + 16]
                 .copy_from_slice(&command.dynamic_faces.to_le_bytes());
+            output[stream_offset + 16..stream_offset + 20]
+                .copy_from_slice(&command.template_faces.to_le_bytes());
             stream_offset += RENDER_QUAD_COMMAND_BYTES;
         }
     }
@@ -208,13 +278,24 @@ pub fn encode_render_quad_payload(
 
 pub fn encode_render_sections(
     leaf_sections: &[u16],
+    payload: &EncodedRenderQuadPayload,
     sections: &[RenderSectionInput],
     resident_core_bytes: u32,
     streaming_budget_bytes: u32,
-    gpu_arena_budget_bytes: u32,
+    packet_pool_budget_bytes: u32,
 ) -> Result<Vec<u8>, CookError> {
     let leaf_count = count_u16(leaf_sections.len(), "render-section leaf")?;
     let section_count = count_u16(sections.len(), "render section")?;
+    let parsed = RenderQuadPayload::parse(&payload.bytes)
+        .map_err(|error| CookError::new(format!("shared QRP4 payload is invalid: {error:?}")))?;
+    if parsed.packet_pool_bytes() != payload.packet_pool_bytes
+        || parsed.projection_bytes() != payload.projection_bytes
+        || parsed.runtime_metadata_bytes() != payload.runtime_metadata_bytes
+    {
+        return Err(CookError::new(
+            "shared QRP4 derived memory accounting drifted",
+        ));
+    }
     for &section in leaf_sections {
         if section != RENDER_SECTION_NONE && section >= section_count {
             return Err(CookError::new(
@@ -224,39 +305,34 @@ pub fn encode_render_sections(
     }
 
     let mut neighbors = Vec::with_capacity(sections.len());
+    let mut memories = Vec::with_capacity(sections.len());
     let mut edge_count = 0usize;
-    let mut payload_bytes = 0usize;
-    let mut activation_bytes = Vec::with_capacity(sections.len());
+    let mut expected_cell = 0usize;
     for (section_index, section) in sections.iter().enumerate() {
-        let parsed = RenderQuadPayload::parse(&section.payload.bytes).map_err(|error| {
-            CookError::new(format!(
-                "render section {section_index} has invalid QRP3: {error:?}"
-            ))
-        })?;
-        if parsed.packet_pool_bytes() != section.payload.packet_pool_bytes
-            || parsed.projection_bytes() != section.payload.projection_bytes
-            || parsed.runtime_metadata_bytes() != section.payload.runtime_metadata_bytes
-        {
+        if section.cell_count == 0 || section.first_cell as usize != expected_cell {
             return Err(CookError::new(
-                "render-section derived memory accounting drifted",
+                "render sections do not canonically partition QRP4 cells",
             ));
         }
-        let active = section
-            .payload
-            .runtime_metadata_bytes
-            .checked_add(section.payload.projection_bytes)
-            .ok_or_else(|| CookError::new("render-section activation size overflow"))?;
-        if section
-            .payload
-            .packet_pool_bytes
-            .checked_add(section.fallback_bytes)
-            .is_none_or(|bytes| bytes > gpu_arena_budget_bytes)
+        let memory = parsed
+            .section_memory(section.first_cell as usize, section.cell_count as usize)
+            .ok_or_else(|| CookError::new("render section has an invalid QRP4 cell range"))?;
+        expected_cell = expected_cell
+            .checked_add(section.cell_count as usize)
+            .ok_or_else(|| CookError::new("render-section cell range overflow"))?;
+        if memory.activation_bytes > streaming_budget_bytes
+            || memory.packet_pool_bytes > packet_pool_budget_bytes
         {
-            return Err(CookError::new(
-                "render section exceeds the existing GPU packet arena",
-            ));
+            return Err(CookError::new(format!(
+                "render section {section_index} exceeds its CPU or fixed-packet arena: activation={} budget={}, packets={} packet_budget={}, fallback_candidates={}",
+                memory.activation_bytes,
+                streaming_budget_bytes,
+                memory.packet_pool_bytes,
+                packet_pool_budget_bytes,
+                section.fallback_bytes,
+            )));
         }
-        activation_bytes.push(active);
+        memories.push(memory);
         let mut list = section.neighbors.clone();
         list.sort_unstable();
         list.dedup();
@@ -270,10 +346,12 @@ pub fn encode_render_sections(
         edge_count = edge_count
             .checked_add(list.len())
             .ok_or_else(|| CookError::new("render-section edge count overflow"))?;
-        payload_bytes = payload_bytes
-            .checked_add(section.payload.bytes.len())
-            .ok_or_else(|| CookError::new("render-section payload size overflow"))?;
         neighbors.push(list);
+    }
+    if expected_cell != parsed.cell_count() {
+        return Err(CookError::new(
+            "render sections do not cover every QRP4 cell",
+        ));
     }
     let edge_count_u16 = count_u16(edge_count, "render-section edge")?;
 
@@ -285,7 +363,7 @@ pub fn encode_render_sections(
     let edge_end = edge_offset + edge_count * RENDER_SECTION_EDGE_BYTES;
     let payload_offset = align_up_4(edge_end);
     let file_bytes = payload_offset
-        .checked_add(payload_bytes)
+        .checked_add(payload.bytes.len())
         .ok_or_else(|| CookError::new("render-section file size overflow"))?;
     let file_bytes_u32 =
         u32::try_from(file_bytes).map_err(|_| CookError::new("render sections exceed u32"))?;
@@ -308,28 +386,25 @@ pub fn encode_render_sections(
     output[32..36].copy_from_slice(&file_bytes_u32.to_le_bytes());
     output[36..40].copy_from_slice(&resident_core_bytes.to_le_bytes());
     output[40..44].copy_from_slice(&streaming_budget_bytes.to_le_bytes());
-    output[44..48].copy_from_slice(&gpu_arena_budget_bytes.to_le_bytes());
+    output[44..48].copy_from_slice(&packet_pool_budget_bytes.to_le_bytes());
     for (leaf, section) in leaf_sections.iter().enumerate() {
         let start = leaf_offset + leaf * 2;
         output[start..start + 2].copy_from_slice(&section.to_le_bytes());
     }
 
     let mut first_edge = 0usize;
-    let mut section_payload = payload_offset;
     for (section_index, section) in sections.iter().enumerate() {
+        let memory = memories[section_index];
         let start = section_offset + section_index * RENDER_SECTION_RECORD_BYTES;
         output[start..start + 2].copy_from_slice(&(first_edge as u16).to_le_bytes());
         output[start + 2..start + 4]
             .copy_from_slice(&(neighbors[section_index].len() as u16).to_le_bytes());
-        output[start + 4..start + 8].copy_from_slice(&(section_payload as u32).to_le_bytes());
-        output[start + 8..start + 12]
-            .copy_from_slice(&(section.payload.bytes.len() as u32).to_le_bytes());
-        output[start + 12..start + 16]
-            .copy_from_slice(&activation_bytes[section_index].to_le_bytes());
-        output[start + 16..start + 20]
-            .copy_from_slice(&section.payload.packet_pool_bytes.to_le_bytes());
-        output[start + 20..start + 24]
-            .copy_from_slice(&section.payload.projection_bytes.to_le_bytes());
+        output[start + 4..start + 6].copy_from_slice(&section.first_cell.to_le_bytes());
+        output[start + 6..start + 8].copy_from_slice(&section.cell_count.to_le_bytes());
+        output[start + 8..start + 12].copy_from_slice(&memory.staging_bytes.to_le_bytes());
+        output[start + 12..start + 16].copy_from_slice(&memory.activation_bytes.to_le_bytes());
+        output[start + 16..start + 20].copy_from_slice(&memory.packet_pool_bytes.to_le_bytes());
+        output[start + 20..start + 24].copy_from_slice(&memory.projection_bytes.to_le_bytes());
         output[start + 24..start + 28].copy_from_slice(&section.fallback_bytes.to_le_bytes());
         output[start + 28..start + 30].copy_from_slice(&section.flags.to_le_bytes());
         for (neighbor_index, neighbor) in neighbors[section_index].iter().enumerate() {
@@ -337,15 +412,8 @@ pub fn encode_render_sections(
             output[edge..edge + 2].copy_from_slice(&neighbor.to_le_bytes());
         }
         first_edge += neighbors[section_index].len();
-        section_payload += section.payload.bytes.len();
     }
-    let mut destination = payload_offset;
-    for section in sections {
-        let end = destination + section.payload.bytes.len();
-        output[destination..end].copy_from_slice(&section.payload.bytes);
-        destination = end;
-    }
-    debug_assert_eq!(destination, output.len());
+    output[payload_offset..].copy_from_slice(&payload.bytes);
     RenderSectionDirectory::parse(&output).map_err(|error| {
         CookError::new(format!(
             "encoded render-section directory is invalid: {error:?}"
@@ -373,11 +441,13 @@ const fn align_up_4(value: usize) -> usize {
 mod tests {
     use super::*;
 
-    fn payload(seed: u32) -> EncodedRenderQuadPayload {
+    fn payload_for_leaves(seed: u32, leaves: &[u16]) -> EncodedRenderQuadPayload {
         encode_render_quad_payload(&RenderQuadPayloadInput {
             objects: vec![RenderQuadObject {
                 first_face: 0,
                 face_count: 1,
+                first_corner: 0,
+                corner_count: 4,
                 first_quad: 0,
                 quad_count: 1,
                 first_position: 0,
@@ -390,12 +460,24 @@ mod tests {
             }],
             faces: vec![RenderQuadFace {
                 source_face: 3,
+                first_corner: 0,
                 first_quad: 0,
                 quad_count: 1,
                 plane: 5,
                 material: 7,
-                flags: quake_formats::RENDER_QUAD_FACE_BACKSIDE,
+                flags: quake_formats::RENDER_QUAD_FACE_BACKSIDE
+                    | quake_formats::RENDER_QUAD_FACE_BAKED_UV
+                    | quake_formats::RENDER_QUAD_FACE_BAKED_LIGHT,
+                corner_count: 4,
+                light_styles: [0, 255],
             }],
+            corners: (0..4)
+                .map(|position| RenderQuadCorner {
+                    position,
+                    texture: [position, position + 8],
+                    light: seed + u32::from(position),
+                })
+                .collect(),
             quads: vec![RenderQuad {
                 positions: [0, 1, 2, 3],
                 invariant_words: core::array::from_fn(|index| seed + index as u32),
@@ -407,15 +489,80 @@ mod tests {
                 material: 7,
                 flags: 1,
             }],
+            cells: leaves
+                .iter()
+                .map(|leaf| RenderQuadCellInput {
+                    leaf: *leaf,
+                    flags: 0,
+                    portal_leaf: u16::MAX,
+                    portal_plane: -1,
+                    visibility: vec![1],
+                    portal_visibility: vec![0],
+                    commands: vec![RenderQuadCommand {
+                        object: 0,
+                        flags: 0,
+                        visible_faces: 1,
+                        portal_faces: 0,
+                        dynamic_faces: 1,
+                        template_faces: 1,
+                    }],
+                })
+                .collect(),
+        })
+        .unwrap()
+    }
+
+    fn payload(seed: u32) -> EncodedRenderQuadPayload {
+        payload_for_leaves(seed, &[1])
+    }
+
+    fn submodel_payload() -> EncodedRenderQuadPayload {
+        encode_render_quad_payload(&RenderQuadPayloadInput {
+            objects: vec![RenderQuadObject {
+                first_face: 0,
+                face_count: 1,
+                first_corner: 0,
+                corner_count: 4,
+                first_quad: 0,
+                quad_count: 0,
+                first_position: 0,
+                position_count: 4,
+                first_run: 0,
+                run_count: 0,
+                mins: [-8, -4, 0],
+                maxs: [8, 4, 0],
+                flags: quake_formats::RENDER_QUAD_OBJECT_SUBMODEL,
+            }],
+            faces: vec![RenderQuadFace {
+                source_face: 9,
+                first_corner: 0,
+                first_quad: 0,
+                quad_count: 0,
+                plane: 5,
+                material: 7,
+                flags: quake_formats::RENDER_QUAD_FACE_BAKED_UV
+                    | quake_formats::RENDER_QUAD_FACE_BAKED_LIGHT,
+                corner_count: 4,
+                light_styles: [0, 255],
+            }],
+            corners: (0..4)
+                .map(|position| RenderQuadCorner {
+                    position,
+                    texture: [position, position + 8],
+                    light: 0x404040,
+                })
+                .collect(),
+            quads: Vec::new(),
+            positions: vec![[-8, -4, 0], [8, -4, 0], [-8, 4, 0], [8, 4, 0]],
+            runs: Vec::new(),
             cells: vec![RenderQuadCellInput {
                 leaf: 1,
                 flags: 0,
-                commands: vec![RenderQuadCommand {
-                    object: 0,
-                    flags: 0,
-                    visible_faces: 1,
-                    dynamic_faces: 1,
-                }],
+                portal_leaf: u16::MAX,
+                portal_plane: -1,
+                visibility: vec![1],
+                portal_visibility: vec![0],
+                commands: Vec::new(),
             }],
         })
         .unwrap()
@@ -427,12 +574,16 @@ mod tests {
         let parsed = RenderQuadPayload::parse(&encoded.bytes).unwrap();
         assert_eq!(parsed.object_count(), 1);
         assert_eq!(parsed.face_count(), 1);
+        assert_eq!(parsed.corner_count(), 4);
         assert_eq!(parsed.quad_count(), 1);
         assert_eq!(parsed.position_count(), 4);
         assert_eq!(parsed.packet_pool_bytes(), 52);
         assert_eq!(parsed.projection_bytes(), 32);
-        assert_eq!(parsed.runtime_metadata_bytes(), 96);
+        assert_eq!(parsed.runtime_metadata_bytes(), 158);
+        assert_eq!(parsed.visibility(0).unwrap(), &[1]);
+        assert_eq!(parsed.portal_visibility(0).unwrap(), &[0]);
         assert_eq!(parsed.face(0).unwrap().plane, 5);
+        assert_eq!(parsed.corner(3).unwrap().texture, [3, 11]);
         assert_eq!(parsed.quad(0).unwrap().invariant_words[7], 0x1007);
         assert_eq!(
             parsed.command(parsed.cell(0).unwrap(), 0).unwrap().object,
@@ -454,36 +605,146 @@ mod tests {
     }
 
     #[test]
-    fn directory_proves_active_plus_neighbor_preload_fits() {
+    fn quad_payload_roundtrips_exact_water_portal_rows_and_masks() {
+        let mut encoded = payload(0x1810);
+        let parsed = RenderQuadPayload::parse(&encoded.bytes).unwrap();
+        let stream = parsed.streams_offset();
+        let cells = u32::from_le_bytes(encoded.bytes[48..52].try_into().unwrap()) as usize;
+        encoded.bytes[cells + 8..cells + 10]
+            .copy_from_slice(&quake_formats::RENDER_QUAD_CELL_WATER_PORTAL.to_le_bytes());
+        encoded.bytes[cells + 10..cells + 12].copy_from_slice(&2u16.to_le_bytes());
+        encoded.bytes[cells + 12..cells + 14].copy_from_slice(&5i16.to_le_bytes());
+        encoded.bytes[cells + RENDER_QUAD_CELL_BYTES + 1] = 2;
+        encoded.bytes[stream + 4..stream + 8].copy_from_slice(&0u32.to_le_bytes());
+        encoded.bytes[stream + 8..stream + 12].copy_from_slice(&1u32.to_le_bytes());
+
+        let parsed = RenderQuadPayload::parse(&encoded.bytes).unwrap();
+        let cell = parsed.cell(0).unwrap();
+        let command = parsed.command(cell, 0).unwrap();
+        assert_eq!(cell.portal_leaf, 2);
+        assert_eq!(cell.portal_plane, 5);
+        assert_eq!(parsed.visibility(0).unwrap(), &[1]);
+        assert_eq!(parsed.portal_visibility(0).unwrap(), &[2]);
+        assert_eq!(command.visible_faces, 0);
+        assert_eq!(command.portal_faces, 1);
+    }
+
+    #[test]
+    fn quad_payload_rejects_portal_faces_without_a_portal_cell() {
+        let mut encoded = payload(0x1820);
+        let stream = RenderQuadPayload::parse(&encoded.bytes)
+            .unwrap()
+            .streams_offset();
+        encoded.bytes[stream + 4..stream + 8].copy_from_slice(&0u32.to_le_bytes());
+        encoded.bytes[stream + 8..stream + 12].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            RenderQuadPayload::parse(&encoded.bytes),
+            Err(quake_formats::RenderQuadPayloadError::BadFaceMask)
+        );
+    }
+
+    #[test]
+    fn quad_payload_rejects_a_run_that_does_not_match_its_face() {
+        let mut encoded = payload(0x1830);
+        let runs = u32::from_le_bytes(encoded.bytes[44..48].try_into().unwrap()) as usize;
+        encoded.bytes[runs + 4..runs + 6].copy_from_slice(&8u16.to_le_bytes());
+        assert_eq!(
+            RenderQuadPayload::parse(&encoded.bytes),
+            Err(quake_formats::RenderQuadPayloadError::BadRunRange)
+        );
+    }
+
+    #[test]
+    fn fallback_only_section_retains_topology_without_installing_templates() {
+        let mut encoded = payload(0x1900);
+        let stream = RenderQuadPayload::parse(&encoded.bytes)
+            .unwrap()
+            .streams_offset();
+        encoded.bytes[stream + 16..stream + 20].fill(0);
+        let parsed = RenderQuadPayload::parse(&encoded.bytes).unwrap();
+        assert_eq!(parsed.face(0).unwrap().corner_count, 4);
+        assert_eq!(
+            parsed.face(0).unwrap().flags,
+            quake_formats::RENDER_QUAD_FACE_BACKSIDE
+                | quake_formats::RENDER_QUAD_FACE_BAKED_UV
+                | quake_formats::RENDER_QUAD_FACE_BAKED_LIGHT
+        );
+        assert_eq!(parsed.corner(2).unwrap().position, 2);
+        assert_eq!(
+            parsed.section_memory(0, 1).unwrap(),
+            quake_formats::RenderQuadSectionMemory {
+                staging_bytes: 218,
+                activation_bytes: 186,
+                packet_pool_bytes: 0,
+                projection_bytes: 32,
+            }
+        );
+    }
+
+    #[test]
+    fn submodel_fallback_is_resident_but_never_cell_referenced() {
+        let encoded = submodel_payload();
+        let parsed = RenderQuadPayload::parse(&encoded.bytes).unwrap();
+        assert_eq!(parsed.resident_object_bytes(), Some(116));
+        assert_eq!(parsed.object(0).unwrap().quad_count, 0);
+        assert_eq!(parsed.cell(0).unwrap().command_count, 0);
+
+        let mut invalid = encoded;
+        let stream = RenderQuadPayload::parse(&invalid.bytes)
+            .unwrap()
+            .streams_offset();
+        let cells_offset = u32::from_le_bytes(invalid.bytes[48..52].try_into().unwrap()) as usize;
+        invalid.bytes[cells_offset + 2..cells_offset + 4].copy_from_slice(&1u16.to_le_bytes());
+        invalid
+            .bytes
+            .extend_from_slice(&[0; quake_formats::RENDER_QUAD_COMMAND_BYTES]);
+        invalid.bytes[stream..stream + 2].copy_from_slice(&0u16.to_le_bytes());
+        let file_bytes = invalid.bytes.len() as u32;
+        invalid.bytes[56..60].copy_from_slice(&file_bytes.to_le_bytes());
+        let runtime_bytes =
+            invalid.runtime_metadata_bytes + quake_formats::RENDER_QUAD_COMMAND_BYTES as u32;
+        invalid.bytes[68..72].copy_from_slice(&runtime_bytes.to_le_bytes());
+        assert_eq!(
+            RenderQuadPayload::parse(&invalid.bytes),
+            Err(quake_formats::RenderQuadPayloadError::BadCellStream)
+        );
+    }
+
+    #[test]
+    fn directory_proves_windowed_staging_and_activation_budgets() {
+        let payload = payload_for_leaves(0x2000, &[1, 2]);
         let sections = [
             RenderSectionInput {
                 neighbors: vec![1],
-                payload: payload(0x2000),
+                first_cell: 0,
+                cell_count: 1,
                 fallback_bytes: 64,
                 flags: 0,
             },
             RenderSectionInput {
                 neighbors: vec![0],
-                payload: payload(0x3000),
+                first_cell: 1,
+                cell_count: 1,
                 fallback_bytes: 64,
                 flags: 0,
             },
         ];
-        let active = sections[0].payload.runtime_metadata_bytes as usize
-            + sections[0].payload.projection_bytes as usize;
-        let budget = active + sections[1].payload.bytes.len();
+        let parsed = RenderQuadPayload::parse(&payload.bytes).unwrap();
+        let memory = parsed.section_memory(0, 1).unwrap();
+        let budget = memory.activation_bytes;
         let bytes = encode_render_sections(
             &[RENDER_SECTION_NONE, 0, 1],
+            &payload,
             &sections,
             335_000,
-            budget as u32,
+            budget,
             120 * 1024,
         )
         .unwrap();
         let directory = RenderSectionDirectory::parse(&bytes).unwrap();
         assert_eq!(directory.resident_core_bytes(), 335_000);
         assert_eq!(directory.streaming_budget_bytes(), budget as u32);
-        assert_eq!(directory.gpu_arena_budget_bytes(), 120 * 1024);
+        assert_eq!(directory.packet_pool_budget_bytes(), 120 * 1024);
         assert_eq!(directory.leaf_section(0), None);
         assert_eq!(directory.leaf_section(2), Some(1));
         assert_eq!(directory.edge(0).unwrap().neighbor, 1);
@@ -492,6 +753,7 @@ mod tests {
             bytes.len(),
         )
         .unwrap();
+        assert_eq!(bytes.len(), header.directory_bytes() + payload.bytes.len());
         let index = quake_formats::RenderSectionIndex::parse_prefix(
             &bytes[..header.directory_bytes()],
             header.file_bytes(),
@@ -502,36 +764,55 @@ mod tests {
         assert_eq!(index.leaf_section(2), Some(1));
         assert_eq!(index.section(1).unwrap(), directory.section(1).unwrap());
         assert_eq!(index.edge(0).unwrap().neighbor, 1);
-        assert!(RenderQuadPayload::parse(
-            directory.payload(directory.section(0).unwrap()).unwrap()
-        )
-        .is_ok());
+        assert_eq!(directory.payload().cell_count(), 2);
     }
 
     #[test]
-    fn directory_rejects_a_neighbor_preload_over_budget() {
+    fn directory_rejects_an_activation_over_budget() {
+        let payload = payload_for_leaves(0x4000, &[0, 1]);
         let sections = [
             RenderSectionInput {
                 neighbors: vec![1],
-                payload: payload(0x4000),
+                first_cell: 0,
+                cell_count: 1,
                 ..RenderSectionInput::default()
             },
             RenderSectionInput {
                 neighbors: vec![0],
-                payload: payload(0x5000),
+                first_cell: 1,
+                cell_count: 1,
                 ..RenderSectionInput::default()
             },
         ];
-        assert!(encode_render_sections(&[0, 1], &sections, 1, 1, 1).is_err());
+        assert!(encode_render_sections(&[0, 1], &payload, &sections, 1, 1, 1).is_err());
     }
 
     #[test]
-    fn directory_rejects_an_installed_pool_and_fallback_over_gpu_budget() {
+    fn directory_caps_the_installed_pool_without_summing_fallback_candidates() {
+        let payload = payload(0x6000);
         let sections = [RenderSectionInput {
-            payload: payload(0x6000),
+            first_cell: 0,
+            cell_count: 1,
             fallback_bytes: 32,
             ..RenderSectionInput::default()
         }];
-        assert!(encode_render_sections(&[0], &sections, 1, 1024, 64).is_err());
+        assert!(encode_render_sections(
+            &[RENDER_SECTION_NONE, 0],
+            &payload,
+            &sections,
+            1,
+            1024,
+            52
+        )
+        .is_ok());
+        assert!(encode_render_sections(
+            &[RENDER_SECTION_NONE, 0],
+            &payload,
+            &sections,
+            1,
+            1024,
+            51
+        )
+        .is_err());
     }
 }

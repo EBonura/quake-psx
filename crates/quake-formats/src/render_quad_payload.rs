@@ -1,24 +1,27 @@
 //! Quad-native payload installed by one streamed render section.
 //!
-//! `QRP3` stores bounded source-order objects. Each object owns at most 32
-//! consecutive faces, 32 fixed GT4s, and 255 object-local positions. Cell
-//! commands carry exact visible and dynamic-facing face masks. Activation
-//! expands the invariant packet words into two 52-byte packet pools; a frame
-//! projects an admitted object's compact position range and lets a fixed
-//! NCLIP/scatter kernel discard masked or back-facing quads.
+//! `QRP4` stores complete bounded source-order render objects. Each object owns
+//! at most 32 consecutive faces, their fallback corners, 32 optional fixed
+//! GT4s, and 255 object-local positions. Cell commands carry exact visible,
+//! dynamic-facing, and template-eligible face masks. Activation can expand the
+//! invariant packet words into two 52-byte packet pools while fallback paths
+//! use the same streamed object instead of resident PSB render lumps.
 
 use core::convert::TryInto;
 
-pub const RENDER_QUAD_PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"QRP3");
-pub const RENDER_QUAD_PAYLOAD_VERSION: u16 = 3;
-pub const RENDER_QUAD_HEADER_BYTES: usize = 64;
-pub const RENDER_QUAD_OBJECT_BYTES: usize = 32;
-pub const RENDER_QUAD_FACE_BYTES: usize = 12;
+pub const RENDER_QUAD_PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"QRP4");
+pub const RENDER_QUAD_PAYLOAD_VERSION: u16 = 4;
+pub const RENDER_QUAD_HEADER_BYTES: usize = 72;
+pub const RENDER_QUAD_OBJECT_BYTES: usize = 36;
+pub const RENDER_QUAD_FACE_BYTES: usize = 16;
+/// Activated face plus exact bounds derived once from its owned corners.
+pub const RENDER_QUAD_RUNTIME_FACE_BYTES: usize = 24;
+pub const RENDER_QUAD_CORNER_BYTES: usize = 8;
 pub const RENDER_QUAD_RECORD_BYTES: usize = 36;
 pub const RENDER_QUAD_POSITION_BYTES: usize = 6;
 pub const RENDER_QUAD_RUN_BYTES: usize = 8;
-pub const RENDER_QUAD_CELL_BYTES: usize = 12;
-pub const RENDER_QUAD_COMMAND_BYTES: usize = 12;
+pub const RENDER_QUAD_CELL_BYTES: usize = 16;
+pub const RENDER_QUAD_COMMAND_BYTES: usize = 20;
 /// Per-quad object-local position references retained after activation.
 pub const RENDER_QUAD_REFERENCE_BYTES: usize = 4;
 pub const RENDER_QUAD_PACKET_BYTES: usize = 52;
@@ -26,10 +29,23 @@ pub const RENDER_QUAD_PROJECTED_POSITION_BYTES: usize = 8;
 pub const RENDER_QUAD_OBJECT_MAX_FACES: usize = 32;
 pub const RENDER_QUAD_OBJECT_MAX_QUADS: usize = 32;
 pub const RENDER_QUAD_OBJECT_MAX_POSITIONS: usize = 255;
+/// Always-resident exact fallback object belonging to an inline brush model.
+pub const RENDER_QUAD_OBJECT_SUBMODEL: u16 = 1 << 0;
+pub const RENDER_QUAD_OBJECT_FLAGS: u16 = RENDER_QUAD_OBJECT_SUBMODEL;
 /// The source face uses the back side of its supporting plane.
-pub const RENDER_QUAD_FACE_BACKSIDE: u16 = 1 << 0;
+pub const RENDER_QUAD_FACE_BACKSIDE: u8 = 1 << 0;
+/// Corner UV bytes already contain their final atlas coordinates.
+pub const RENDER_QUAD_FACE_BAKED_UV: u8 = 1 << 1;
+/// Corner light words already contain their final colour values.
+pub const RENDER_QUAD_FACE_BAKED_LIGHT: u8 = 1 << 2;
+pub const RENDER_QUAD_FACE_FLAGS: u8 =
+    RENDER_QUAD_FACE_BACKSIDE | RENDER_QUAD_FACE_BAKED_UV | RENDER_QUAD_FACE_BAKED_LIGHT;
+/// The cell owns one optional empty/water opposite-PVS merge.
+pub const RENDER_QUAD_CELL_WATER_PORTAL: u16 = 1 << 0;
+pub const RENDER_QUAD_CELL_FLAGS: u16 = RENDER_QUAD_CELL_WATER_PORTAL;
 /// Patch the current shared texture CLUT into word three during activation.
 pub const RENDER_QUAD_RUN_PATCH_CLUT: u16 = 1 << 0;
+pub const RENDER_QUAD_RUN_FLAGS: u16 = RENDER_QUAD_RUN_PATCH_CLUT;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderQuadPayloadError {
@@ -41,6 +57,8 @@ pub enum RenderQuadPayloadError {
     NonCanonicalLayout,
     BadObjectRange,
     BadFaceRange,
+    BadCornerRange,
+    BadCornerPosition,
     BadQuadPosition,
     BadRunRange,
     BadCellOrder,
@@ -53,6 +71,8 @@ pub enum RenderQuadPayloadError {
 pub struct RenderQuadObject {
     pub first_face: u16,
     pub face_count: u16,
+    pub first_corner: u16,
+    pub corner_count: u16,
     pub first_quad: u16,
     pub quad_count: u16,
     pub first_position: u16,
@@ -68,11 +88,22 @@ pub struct RenderQuadObject {
 pub struct RenderQuadFace {
     /// Original PSB5 face index used to merge accelerated and fallback work.
     pub source_face: u16,
+    pub first_corner: u16,
     pub first_quad: u16,
     pub quad_count: u16,
     pub plane: u16,
     pub material: u16,
-    pub flags: u16,
+    pub flags: u8,
+    pub corner_count: u8,
+    pub light_styles: [u8; 2],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RenderQuadCorner {
+    /// Object-local u8 index into the object's contiguous position range.
+    pub position: u8,
+    pub texture: [u8; 2],
+    pub light: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -99,6 +130,8 @@ pub struct RenderQuadCell {
     pub command_count: u16,
     pub stream_offset: u32,
     pub flags: u16,
+    pub portal_leaf: u16,
+    pub portal_plane: i16,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -107,8 +140,12 @@ pub struct RenderQuadCommand {
     pub flags: u16,
     /// Faces selected by exact PVS and conservative leaf-facing classification.
     pub visible_faces: u32,
+    /// Additional faces selected only when the cell's water portal is open.
+    pub portal_faces: u32,
     /// Selected faces whose plane still needs a per-frame facing test.
     pub dynamic_faces: u32,
+    /// Visible faces which may use their installed fixed GT4 templates.
+    pub template_faces: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,14 +153,29 @@ pub struct RenderQuadPayload<'a> {
     bytes: &'a [u8],
     objects: &'a [u8],
     faces: &'a [u8],
+    corners: &'a [u8],
     quads: &'a [u8],
     positions: &'a [u8],
     runs: &'a [u8],
     cells: &'a [u8],
+    visibility_rows: &'a [u8],
+    visibility_row_bytes: usize,
     streams_offset: usize,
     packet_pool_bytes: u32,
     projection_bytes: u32,
     runtime_metadata_bytes: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RenderQuadSectionMemory {
+    /// Canonical compact bytes staged while activating the section.
+    pub staging_bytes: u32,
+    /// Retained CPU metadata plus projected-position storage.
+    pub activation_bytes: u32,
+    /// Installed fixed packet bytes in one display pool.
+    pub packet_pool_bytes: u32,
+    /// Projected-position portion of `activation_bytes`.
+    pub projection_bytes: u32,
 }
 
 impl<'a> RenderQuadPayload<'a> {
@@ -140,41 +192,58 @@ impl<'a> RenderQuadPayload<'a> {
         if u16_at(header, 6) as usize != RENDER_QUAD_HEADER_BYTES {
             return Err(RenderQuadPayloadError::BadHeaderSize);
         }
-        if u32_at(header, 48) as usize != bytes.len() {
+        if u32_at(header, 56) as usize != bytes.len() {
             return Err(RenderQuadPayloadError::BadFileSize);
         }
 
         let object_count = u16_at(header, 8) as usize;
         let face_count = u16_at(header, 10) as usize;
-        let quad_count = u16_at(header, 12) as usize;
-        let position_count = u16_at(header, 14) as usize;
-        let run_count = u16_at(header, 16) as usize;
-        let cell_count = u16_at(header, 18) as usize;
-        let objects_offset = u32_at(header, 20) as usize;
-        let faces_offset = u32_at(header, 24) as usize;
-        let quads_offset = u32_at(header, 28) as usize;
-        let positions_offset = u32_at(header, 32) as usize;
-        let runs_offset = u32_at(header, 36) as usize;
-        let cells_offset = u32_at(header, 40) as usize;
-        let streams_offset = u32_at(header, 44) as usize;
-        let packet_pool_bytes = u32_at(header, 52);
-        let projection_bytes = u32_at(header, 56);
-        let runtime_metadata_bytes = u32_at(header, 60);
+        let corner_count = u16_at(header, 12) as usize;
+        let quad_count = u16_at(header, 14) as usize;
+        let position_count = u16_at(header, 16) as usize;
+        let run_count = u16_at(header, 18) as usize;
+        let cell_count = u16_at(header, 20) as usize;
+        let visibility_row_bytes = u16_at(header, 22) as usize;
+        if cell_count != 0 && visibility_row_bytes == 0 {
+            return Err(RenderQuadPayloadError::NonCanonicalLayout);
+        }
+        let objects_offset = u32_at(header, 24) as usize;
+        let faces_offset = u32_at(header, 28) as usize;
+        let corners_offset = u32_at(header, 32) as usize;
+        let quads_offset = u32_at(header, 36) as usize;
+        let positions_offset = u32_at(header, 40) as usize;
+        let runs_offset = u32_at(header, 44) as usize;
+        let cells_offset = u32_at(header, 48) as usize;
+        let streams_offset = u32_at(header, 52) as usize;
+        let packet_pool_bytes = u32_at(header, 60);
+        let projection_bytes = u32_at(header, 64);
+        let runtime_metadata_bytes = u32_at(header, 68);
         let objects_end =
             checked_table_end(objects_offset, object_count, RENDER_QUAD_OBJECT_BYTES)?;
         let faces_end = checked_table_end(faces_offset, face_count, RENDER_QUAD_FACE_BYTES)?;
+        let corners_end =
+            checked_table_end(corners_offset, corner_count, RENDER_QUAD_CORNER_BYTES)?;
         let quads_end = checked_table_end(quads_offset, quad_count, RENDER_QUAD_RECORD_BYTES)?;
         let positions_end =
             checked_table_end(positions_offset, position_count, RENDER_QUAD_POSITION_BYTES)?;
         let runs_end = checked_table_end(runs_offset, run_count, RENDER_QUAD_RUN_BYTES)?;
         let cells_end = checked_table_end(cells_offset, cell_count, RENDER_QUAD_CELL_BYTES)?;
+        let visibility_end = cells_end
+            .checked_add(
+                cell_count
+                    .checked_mul(visibility_row_bytes)
+                    .and_then(|bytes| bytes.checked_mul(2))
+                    .ok_or(RenderQuadPayloadError::NonCanonicalLayout)?,
+            )
+            .ok_or(RenderQuadPayloadError::NonCanonicalLayout)?;
         if objects_offset != RENDER_QUAD_HEADER_BYTES
             || faces_offset != objects_end
-            || quads_offset != faces_end
+            || corners_offset != faces_end
+            || quads_offset != corners_end
             || positions_offset != quads_end
             || runs_offset != align_up_4(positions_end)
             || cells_offset != runs_end
-            || streams_offset != cells_end
+            || streams_offset != visibility_end
             || streams_offset > bytes.len()
         {
             return Err(RenderQuadPayloadError::NonCanonicalLayout);
@@ -193,12 +262,16 @@ impl<'a> RenderQuadPayload<'a> {
         let stream_bytes = bytes.len() - streams_offset;
         let expected_runtime_metadata = objects_end
             .checked_sub(objects_offset)
-            .and_then(|bytes| bytes.checked_add(faces_end - faces_offset))
+            .and_then(|bytes| {
+                bytes.checked_add(face_count.checked_mul(RENDER_QUAD_RUNTIME_FACE_BYTES)?)
+            })
+            .and_then(|bytes| bytes.checked_add(corners_end - corners_offset))
             .and_then(|bytes| {
                 bytes.checked_add(quad_count.checked_mul(RENDER_QUAD_REFERENCE_BYTES)?)
             })
             .and_then(|bytes| bytes.checked_add(positions_end - positions_offset))
             .and_then(|bytes| bytes.checked_add(cells_end - cells_offset))
+            .and_then(|bytes| bytes.checked_add(visibility_end - cells_end))
             .and_then(|bytes| bytes.checked_add(stream_bytes))
             .ok_or(RenderQuadPayloadError::BadMemoryAccounting)?;
         if runtime_metadata_bytes as usize != expected_runtime_metadata {
@@ -213,6 +286,9 @@ impl<'a> RenderQuadPayload<'a> {
             faces: bytes
                 .get(faces_offset..faces_end)
                 .ok_or(RenderQuadPayloadError::BadFileSize)?,
+            corners: bytes
+                .get(corners_offset..corners_end)
+                .ok_or(RenderQuadPayloadError::BadFileSize)?,
             quads: bytes
                 .get(quads_offset..quads_end)
                 .ok_or(RenderQuadPayloadError::BadFileSize)?,
@@ -225,6 +301,10 @@ impl<'a> RenderQuadPayload<'a> {
             cells: bytes
                 .get(cells_offset..cells_end)
                 .ok_or(RenderQuadPayloadError::BadFileSize)?,
+            visibility_rows: bytes
+                .get(cells_end..visibility_end)
+                .ok_or(RenderQuadPayloadError::BadFileSize)?,
+            visibility_row_bytes,
             streams_offset,
             packet_pool_bytes,
             projection_bytes,
@@ -232,6 +312,7 @@ impl<'a> RenderQuadPayload<'a> {
         };
 
         let mut expected_face = 0usize;
+        let mut expected_corner = 0usize;
         let mut expected_quad = 0usize;
         let mut expected_position = 0usize;
         let mut expected_run = 0usize;
@@ -240,17 +321,21 @@ impl<'a> RenderQuadPayload<'a> {
             let object = payload.object(object_index).unwrap();
             if object.face_count == 0
                 || object.face_count as usize > RENDER_QUAD_OBJECT_MAX_FACES
-                || object.quad_count == 0
+                || object.corner_count == 0
                 || object.quad_count as usize > RENDER_QUAD_OBJECT_MAX_QUADS
                 || object.position_count == 0
                 || object.position_count as usize > RENDER_QUAD_OBJECT_MAX_POSITIONS
                 || object.first_face as usize != expected_face
+                || object.first_corner as usize != expected_corner
                 || object.first_quad as usize != expected_quad
                 || object.first_position as usize != expected_position
                 || object.first_run as usize != expected_run
+                || object.flags & !RENDER_QUAD_OBJECT_FLAGS != 0
+                || object.flags & RENDER_QUAD_OBJECT_SUBMODEL != 0
+                    && (object.quad_count != 0 || object.run_count != 0)
                 || u16_at(
                     payload.objects,
-                    object_index * RENDER_QUAD_OBJECT_BYTES + 30,
+                    object_index * RENDER_QUAD_OBJECT_BYTES + 34,
                 ) != 0
                 || (0..3).any(|axis| object.mins[axis] > object.maxs[axis])
             {
@@ -259,6 +344,9 @@ impl<'a> RenderQuadPayload<'a> {
             let object_face_end = expected_face
                 .checked_add(object.face_count as usize)
                 .ok_or(RenderQuadPayloadError::BadFaceRange)?;
+            let object_corner_end = expected_corner
+                .checked_add(object.corner_count as usize)
+                .ok_or(RenderQuadPayloadError::BadCornerRange)?;
             let object_quad_end = expected_quad
                 .checked_add(object.quad_count as usize)
                 .ok_or(RenderQuadPayloadError::BadObjectRange)?;
@@ -269,6 +357,7 @@ impl<'a> RenderQuadPayload<'a> {
                 .checked_add(object.run_count as usize)
                 .ok_or(RenderQuadPayloadError::BadRunRange)?;
             if object_face_end > face_count
+                || object_corner_end > corner_count
                 || object_quad_end > quad_count
                 || object_position_end > position_count
                 || object_run_end > run_count
@@ -276,15 +365,24 @@ impl<'a> RenderQuadPayload<'a> {
                 return Err(RenderQuadPayloadError::BadObjectRange);
             }
 
+            let mut face_corner = expected_corner;
             let mut face_quad = expected_quad;
+            let mut face_run = expected_run;
             for face_index in expected_face..object_face_end {
                 let face = payload.face(face_index).unwrap();
-                if face.quad_count == 0
+                if face.corner_count < 3
+                    || face.first_corner as usize != face_corner
                     || face.first_quad as usize != face_quad
-                    || face.flags & !RENDER_QUAD_FACE_BACKSIDE != 0
+                    || face.flags & !RENDER_QUAD_FACE_FLAGS != 0
                     || previous_source_face.is_some_and(|source| source >= face.source_face)
                 {
                     return Err(RenderQuadPayloadError::BadFaceRange);
+                }
+                face_corner = face_corner
+                    .checked_add(face.corner_count as usize)
+                    .ok_or(RenderQuadPayloadError::BadCornerRange)?;
+                if face_corner > object_corner_end {
+                    return Err(RenderQuadPayloadError::BadCornerRange);
                 }
                 face_quad = face_quad
                     .checked_add(face.quad_count as usize)
@@ -292,10 +390,38 @@ impl<'a> RenderQuadPayload<'a> {
                 if face_quad > object_quad_end {
                     return Err(RenderQuadPayloadError::BadFaceRange);
                 }
+                if face.quad_count != 0 {
+                    if face_run >= object_run_end {
+                        return Err(RenderQuadPayloadError::BadRunRange);
+                    }
+                    let run = payload.run(face_run).unwrap();
+                    if run.first_quad != face.first_quad
+                        || run.quad_count != face.quad_count
+                        || run.material != face.material
+                        || run.flags & !RENDER_QUAD_RUN_FLAGS != 0
+                    {
+                        return Err(RenderQuadPayloadError::BadRunRange);
+                    }
+                    face_run += 1;
+                }
                 previous_source_face = Some(face.source_face);
             }
-            if face_quad != object_quad_end {
+            if face_corner != object_corner_end || face_quad != object_quad_end {
                 return Err(RenderQuadPayloadError::BadFaceRange);
+            }
+            if face_run != object_run_end {
+                return Err(RenderQuadPayloadError::BadRunRange);
+            }
+
+            for corner_index in expected_corner..object_corner_end {
+                let record =
+                    table_record(payload.corners, corner_index, RENDER_QUAD_CORNER_BYTES).unwrap();
+                if record[3] != 0
+                    || payload.corner(corner_index).unwrap().position as usize
+                        >= object.position_count as usize
+                {
+                    return Err(RenderQuadPayloadError::BadCornerPosition);
+                }
             }
 
             for quad_index in expected_quad..object_quad_end {
@@ -310,28 +436,14 @@ impl<'a> RenderQuadPayload<'a> {
                 }
             }
 
-            let mut run_quad = expected_quad;
-            for run_index in expected_run..object_run_end {
-                let run = payload.run(run_index).unwrap();
-                if run.quad_count == 0 || run.first_quad as usize != run_quad {
-                    return Err(RenderQuadPayloadError::BadRunRange);
-                }
-                run_quad = run_quad
-                    .checked_add(run.quad_count as usize)
-                    .ok_or(RenderQuadPayloadError::BadRunRange)?;
-                if run_quad > object_quad_end {
-                    return Err(RenderQuadPayloadError::BadRunRange);
-                }
-            }
-            if run_quad != object_quad_end {
-                return Err(RenderQuadPayloadError::BadRunRange);
-            }
             expected_face = object_face_end;
+            expected_corner = object_corner_end;
             expected_quad = object_quad_end;
             expected_position = object_position_end;
             expected_run = object_run_end;
         }
         if expected_face != face_count
+            || expected_corner != corner_count
             || expected_quad != quad_count
             || expected_position != position_count
             || expected_run != run_count
@@ -345,8 +457,23 @@ impl<'a> RenderQuadPayload<'a> {
             let cell = payload.cell(cell_index).unwrap();
             if previous_leaf.is_some_and(|leaf| leaf >= cell.leaf)
                 || cell.stream_offset as usize != expected_stream
+                || cell.flags & !RENDER_QUAD_CELL_FLAGS != 0
+                || (cell.flags & RENDER_QUAD_CELL_WATER_PORTAL == 0
+                    && (cell.portal_leaf != u16::MAX || cell.portal_plane != -1))
+                || (cell.flags & RENDER_QUAD_CELL_WATER_PORTAL != 0
+                    && (cell.portal_leaf == 0
+                        || cell.portal_leaf == u16::MAX
+                        || cell.portal_leaf == cell.leaf
+                        || cell.portal_plane < 0))
             {
                 return Err(RenderQuadPayloadError::BadCellOrder);
+            }
+            if cell.flags & RENDER_QUAD_CELL_WATER_PORTAL == 0
+                && payload
+                    .portal_visibility(cell_index)
+                    .is_none_or(|row| row.iter().any(|byte| *byte != 0))
+            {
+                return Err(RenderQuadPayloadError::BadCellStream);
             }
             let stream_bytes = (cell.command_count as usize)
                 .checked_mul(RENDER_QUAD_COMMAND_BYTES)
@@ -366,17 +493,37 @@ impl<'a> RenderQuadPayload<'a> {
                 {
                     return Err(RenderQuadPayloadError::BadCellStream);
                 }
+                if payload.object(object_index).unwrap().flags & RENDER_QUAD_OBJECT_SUBMODEL != 0 {
+                    return Err(RenderQuadPayloadError::BadCellStream);
+                }
                 let face_count = payload.object(object_index).unwrap().face_count as usize;
                 let valid_mask = if face_count == 32 {
                     u32::MAX
                 } else {
                     (1u32 << face_count) - 1
                 };
-                if command.visible_faces == 0
+                let selected_faces = command.visible_faces | command.portal_faces;
+                if selected_faces == 0
                     || command.visible_faces & !valid_mask != 0
-                    || command.dynamic_faces & !command.visible_faces != 0
+                    || command.portal_faces & !valid_mask != 0
+                    || command.portal_faces & command.visible_faces != 0
+                    || command.portal_faces != 0 && cell.flags & RENDER_QUAD_CELL_WATER_PORTAL == 0
+                    || command.dynamic_faces & !selected_faces != 0
+                    || command.template_faces & !selected_faces != 0
                 {
                     return Err(RenderQuadPayloadError::BadFaceMask);
+                }
+                let object = payload.object(object_index).unwrap();
+                for local_face in 0..face_count {
+                    if command.template_faces & (1 << local_face) != 0
+                        && payload
+                            .face(object.first_face as usize + local_face)
+                            .unwrap()
+                            .quad_count
+                            == 0
+                    {
+                        return Err(RenderQuadPayloadError::BadFaceMask);
+                    }
                 }
                 previous_object = Some(command.object);
             }
@@ -396,6 +543,11 @@ impl<'a> RenderQuadPayload<'a> {
     #[inline]
     pub const fn face_count(self) -> usize {
         self.faces.len() / RENDER_QUAD_FACE_BYTES
+    }
+
+    #[inline]
+    pub const fn corner_count(self) -> usize {
+        self.corners.len() / RENDER_QUAD_CORNER_BYTES
     }
 
     #[inline]
@@ -435,21 +587,46 @@ impl<'a> RenderQuadPayload<'a> {
         self.runtime_metadata_bytes
     }
 
+    /// Compact fallback bytes kept for inline brush models independently of
+    /// the active world section. Submodel objects intentionally have no fixed
+    /// packet templates or persistent projected-position storage.
+    pub fn resident_object_bytes(self) -> Option<u32> {
+        let mut bytes = 0usize;
+        for object_index in 0..self.object_count() {
+            let object = self.object(object_index)?;
+            if object.flags & RENDER_QUAD_OBJECT_SUBMODEL == 0 {
+                continue;
+            }
+            bytes = bytes
+                .checked_add(RENDER_QUAD_OBJECT_BYTES)?
+                .checked_add(
+                    (object.face_count as usize).checked_mul(RENDER_QUAD_RUNTIME_FACE_BYTES)?,
+                )?
+                .checked_add((object.corner_count as usize).checked_mul(RENDER_QUAD_CORNER_BYTES)?)?
+                .checked_add(
+                    (object.position_count as usize).checked_mul(RENDER_QUAD_POSITION_BYTES)?,
+                )?;
+        }
+        bytes.try_into().ok()
+    }
+
     #[inline]
     pub fn object(self, index: usize) -> Option<RenderQuadObject> {
         let bytes = table_record(self.objects, index, RENDER_QUAD_OBJECT_BYTES)?;
         Some(RenderQuadObject {
             first_face: u16_at(bytes, 0),
             face_count: u16_at(bytes, 2),
-            first_quad: u16_at(bytes, 4),
-            quad_count: u16_at(bytes, 6),
-            first_position: u16_at(bytes, 8),
-            position_count: u16_at(bytes, 10),
-            first_run: u16_at(bytes, 12),
-            run_count: u16_at(bytes, 14),
-            mins: [i16_at(bytes, 16), i16_at(bytes, 18), i16_at(bytes, 20)],
-            maxs: [i16_at(bytes, 22), i16_at(bytes, 24), i16_at(bytes, 26)],
-            flags: u16_at(bytes, 28),
+            first_corner: u16_at(bytes, 4),
+            corner_count: u16_at(bytes, 6),
+            first_quad: u16_at(bytes, 8),
+            quad_count: u16_at(bytes, 10),
+            first_position: u16_at(bytes, 12),
+            position_count: u16_at(bytes, 14),
+            first_run: u16_at(bytes, 16),
+            run_count: u16_at(bytes, 18),
+            mins: [i16_at(bytes, 20), i16_at(bytes, 22), i16_at(bytes, 24)],
+            maxs: [i16_at(bytes, 26), i16_at(bytes, 28), i16_at(bytes, 30)],
+            flags: u16_at(bytes, 32),
         })
     }
 
@@ -458,11 +635,24 @@ impl<'a> RenderQuadPayload<'a> {
         let bytes = table_record(self.faces, index, RENDER_QUAD_FACE_BYTES)?;
         Some(RenderQuadFace {
             source_face: u16_at(bytes, 0),
-            first_quad: u16_at(bytes, 2),
-            quad_count: u16_at(bytes, 4),
-            plane: u16_at(bytes, 6),
-            material: u16_at(bytes, 8),
-            flags: u16_at(bytes, 10),
+            first_corner: u16_at(bytes, 2),
+            first_quad: u16_at(bytes, 4),
+            quad_count: u16_at(bytes, 6),
+            plane: u16_at(bytes, 8),
+            material: u16_at(bytes, 10),
+            flags: bytes[12],
+            corner_count: bytes[13],
+            light_styles: [bytes[14], bytes[15]],
+        })
+    }
+
+    #[inline]
+    pub fn corner(self, index: usize) -> Option<RenderQuadCorner> {
+        let bytes = table_record(self.corners, index, RENDER_QUAD_CORNER_BYTES)?;
+        Some(RenderQuadCorner {
+            position: bytes[0],
+            texture: [bytes[1], bytes[2]],
+            light: u32_at(bytes, 4),
         })
     }
 
@@ -499,7 +689,7 @@ impl<'a> RenderQuadPayload<'a> {
     #[inline]
     pub fn cell(self, index: usize) -> Option<RenderQuadCell> {
         let bytes = table_record(self.cells, index, RENDER_QUAD_CELL_BYTES)?;
-        if u16_at(bytes, 10) != 0 {
+        if u16_at(bytes, 14) != 0 {
             return None;
         }
         Some(RenderQuadCell {
@@ -507,7 +697,34 @@ impl<'a> RenderQuadPayload<'a> {
             command_count: u16_at(bytes, 2),
             stream_offset: u32_at(bytes, 4),
             flags: u16_at(bytes, 8),
+            portal_leaf: u16_at(bytes, 10),
+            portal_plane: i16_at(bytes, 12),
         })
+    }
+
+    #[inline]
+    pub fn visibility(self, cell_index: usize) -> Option<&'a [u8]> {
+        let rows = table_record(
+            self.visibility_rows,
+            cell_index,
+            self.visibility_row_bytes.checked_mul(2)?,
+        )?;
+        rows.get(..self.visibility_row_bytes)
+    }
+
+    #[inline]
+    pub fn portal_visibility(self, cell_index: usize) -> Option<&'a [u8]> {
+        let rows = table_record(
+            self.visibility_rows,
+            cell_index,
+            self.visibility_row_bytes.checked_mul(2)?,
+        )?;
+        rows.get(self.visibility_row_bytes..)
+    }
+
+    #[inline]
+    pub const fn visibility_row_bytes(self) -> usize {
+        self.visibility_row_bytes
     }
 
     #[inline]
@@ -523,6 +740,112 @@ impl<'a> RenderQuadPayload<'a> {
     pub const fn streams_offset(self) -> usize {
         self.streams_offset
     }
+
+    /// Derive the exact compact and activated footprint for a consecutive
+    /// cell range without allocating. Render objects are counted once even
+    /// when multiple cells reference them. Fallback-only objects retain their
+    /// complete topology but do not install packet templates.
+    pub fn section_memory(
+        self,
+        first_cell: usize,
+        cell_count: usize,
+    ) -> Option<RenderQuadSectionMemory> {
+        let end_cell = first_cell.checked_add(cell_count)?;
+        if cell_count == 0 || end_cell > self.cell_count() {
+            return None;
+        }
+        let mut object_count = 0usize;
+        let mut face_count = 0usize;
+        let mut corner_count = 0usize;
+        let mut quad_count = 0usize;
+        let mut position_count = 0usize;
+        let mut run_count = 0usize;
+        let mut command_count = 0usize;
+        for cell_index in first_cell..end_cell {
+            command_count =
+                command_count.checked_add(self.cell(cell_index)?.command_count as usize)?;
+        }
+        for object_index in 0..self.object_count() {
+            let mut referenced = false;
+            let mut template_faces = 0u32;
+            for cell_index in first_cell..end_cell {
+                let cell = self.cell(cell_index)?;
+                for command_index in 0..cell.command_count as usize {
+                    let command = self.command(cell, command_index)?;
+                    match (command.object as usize).cmp(&object_index) {
+                        core::cmp::Ordering::Less => {}
+                        core::cmp::Ordering::Equal => {
+                            referenced = true;
+                            template_faces |= command.template_faces;
+                            break;
+                        }
+                        core::cmp::Ordering::Greater => break,
+                    }
+                }
+            }
+            if !referenced {
+                continue;
+            }
+            let object = self.object(object_index)?;
+            object_count = object_count.checked_add(1)?;
+            face_count = face_count.checked_add(object.face_count as usize)?;
+            corner_count = corner_count.checked_add(object.corner_count as usize)?;
+            position_count = position_count.checked_add(object.position_count as usize)?;
+            for local_face in 0..object.face_count as usize {
+                if template_faces & (1 << local_face) == 0 {
+                    continue;
+                }
+                let face = self.face(object.first_face as usize + local_face)?;
+                quad_count = quad_count.checked_add(face.quad_count as usize)?;
+                run_count = run_count.checked_add(1)?;
+            }
+        }
+
+        let objects_bytes = object_count.checked_mul(RENDER_QUAD_OBJECT_BYTES)?;
+        let faces_bytes = face_count.checked_mul(RENDER_QUAD_FACE_BYTES)?;
+        let runtime_faces_bytes = face_count.checked_mul(RENDER_QUAD_RUNTIME_FACE_BYTES)?;
+        let corners_bytes = corner_count.checked_mul(RENDER_QUAD_CORNER_BYTES)?;
+        let quads_bytes = quad_count.checked_mul(RENDER_QUAD_RECORD_BYTES)?;
+        let positions_bytes = position_count.checked_mul(RENDER_QUAD_POSITION_BYTES)?;
+        let runs_bytes = run_count.checked_mul(RENDER_QUAD_RUN_BYTES)?;
+        let cells_bytes = cell_count.checked_mul(RENDER_QUAD_CELL_BYTES)?;
+        let visibility_bytes = cell_count
+            .checked_mul(self.visibility_row_bytes)?
+            .checked_mul(2)?;
+        let commands_bytes = command_count.checked_mul(RENDER_QUAD_COMMAND_BYTES)?;
+        let positions_end = RENDER_QUAD_HEADER_BYTES
+            .checked_add(objects_bytes)?
+            .checked_add(faces_bytes)?
+            .checked_add(corners_bytes)?
+            .checked_add(quads_bytes)?
+            .checked_add(positions_bytes)?;
+        let staging_bytes = align_up_4(positions_end)
+            .checked_add(runs_bytes)?
+            .checked_add(cells_bytes)?
+            .checked_add(visibility_bytes)?
+            .checked_add(commands_bytes)?;
+        let runtime_metadata_bytes = objects_bytes
+            .checked_add(runtime_faces_bytes)?
+            .checked_add(corners_bytes)?
+            .checked_add(quad_count.checked_mul(RENDER_QUAD_REFERENCE_BYTES)?)?
+            .checked_add(positions_bytes)?
+            .checked_add(cells_bytes)?
+            .checked_add(visibility_bytes)?
+            .checked_add(commands_bytes)?;
+        let projection_bytes = position_count.checked_mul(RENDER_QUAD_PROJECTED_POSITION_BYTES)?;
+        Some(RenderQuadSectionMemory {
+            staging_bytes: staging_bytes.try_into().ok()?,
+            activation_bytes: runtime_metadata_bytes
+                .checked_add(projection_bytes)?
+                .try_into()
+                .ok()?,
+            packet_pool_bytes: quad_count
+                .checked_mul(RENDER_QUAD_PACKET_BYTES)?
+                .try_into()
+                .ok()?,
+            projection_bytes: projection_bytes.try_into().ok()?,
+        })
+    }
 }
 
 fn decode_command(bytes: &[u8], index: usize) -> Option<RenderQuadCommand> {
@@ -531,7 +854,9 @@ fn decode_command(bytes: &[u8], index: usize) -> Option<RenderQuadCommand> {
         object: u16_at(bytes, 0),
         flags: u16_at(bytes, 2),
         visible_faces: u32_at(bytes, 4),
-        dynamic_faces: u32_at(bytes, 8),
+        portal_faces: u32_at(bytes, 8),
+        dynamic_faces: u32_at(bytes, 12),
+        template_faces: u32_at(bytes, 16),
     })
 }
 
