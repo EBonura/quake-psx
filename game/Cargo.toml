@@ -223,6 +223,9 @@ renderer-cell-policy = []
 # Extend the retained cell policy with one immutable liquid bit so the hot
 # selector no longer indexes the texture table for every PVS face.
 renderer-cell-liquid-policy = ["renderer-cell-policy"]
+# Stage the current liquid turbulence phase in the PS1 scratchpad once, then
+# reuse it for every visible 64x64 liquid tile in that phase.
+renderer-scratchpad-liquid-phase = []
 # Keep the exact separate near-classification pass, but execute each retained
 # face's three-product inner-support test in the otherwise-unused second light
 # matrix row left live beside the four frustum planes.
