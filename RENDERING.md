@@ -517,10 +517,27 @@ decodes only 23.33 total scene commands and 15.16 brush commands per present.
 Quake II combines coarse collision/render cells, packed doorway skip spans, and
 multi-quad brush objects. Copying only its packet layout leaves Quake's much
 finer BSP leaves and fragmented face objects intact, so it cannot reproduce the
-same workload. The implementation target is now a bounded section resident for
-many frames, with packet templates installed on section activation and a small
-non-calling projection/cull/scatter kernel. Per-frame cache lookup around the
-old writer is not that architecture.
+same workload.
+
+A source-order masked-object census closes part of that granularity gap without
+changing established OT order. It groups only consecutive eligible faces, with
+the recovered 32-face, 32-quad, and 255-position limits, while conceptually
+retaining exact per-cell face and dynamic-facing masks. On E1M1, 3,340 faces
+become 573 objects averaging 5.83 faces each. Mean commands fall from 262.09 to
+66.03, with 66/113/146 P50/P95/max. An admitted object selects 370.57 quads per
+view but projects 645.84, a 74.3% excess; position excess is 61.9%.
+
+That apparent overprojection is the architectural clue rather than an immediate
+disqualifier. Retail Quake II's recovered static kernels reject 75.04% of
+source-quad candidates before submission. Both designs exchange extra regular
+GTE projection for much less CPU-side classification, dispatch, and packet
+construction. Quake-PSX currently pays to reason about and issue faces
+individually before its much larger writer. The next implementation target is
+therefore a bounded section resident for many frames, with multi-face mask
+commands, packet templates installed on section activation, and a small
+non-calling projection/NCLIP/scatter kernel. Portal or doorway compression can
+then reduce the remaining 66 commands toward Quake II's 23. Per-frame cache
+lookup around the old writer is not that architecture.
 
 The QRC2 selected-stream measurement makes a leaf-local candidate much more
 specific. Across 3,795 deterministic E1M1 frames, 140 visibility rebuilds mean
