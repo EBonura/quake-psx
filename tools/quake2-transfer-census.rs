@@ -1186,18 +1186,29 @@ fn template_quad_count(surface: &Surface) -> usize {
     }
 }
 
+fn render_object_face_limit(map: &str) -> usize {
+    let parse = |key: &str| {
+        env::var(key)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&value| (1..=RENDER_QUAD_OBJECT_MAX_FACES).contains(&value))
+    };
+    let map_key = format!(
+        "QUAKE_PSX_RENDER_OBJECT_FACE_LIMIT_{}",
+        map.to_ascii_uppercase()
+    );
+    parse(&map_key)
+        .or_else(|| parse("QUAKE_PSX_RENDER_OBJECT_FACE_LIMIT"))
+        .unwrap_or(RENDER_QUAD_OBJECT_MAX_FACES)
+}
+
 fn masked_render_objects(
     surfaces: &[Surface],
     signatures: &[Vec<u64>],
     submodel_faces: &[bool],
+    face_limit: usize,
 ) -> Result<Vec<MaskedRenderObject>> {
-    // Keep the shipping format limit as the default while allowing the host
-    // census to size the much smaller average brush shape seen in retail.
-    let face_limit = env::var("QUAKE_PSX_RENDER_OBJECT_FACE_LIMIT")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value != 0 && value <= RENDER_QUAD_OBJECT_MAX_FACES)
-        .unwrap_or(RENDER_QUAD_OBJECT_MAX_FACES);
+    debug_assert!((1..=RENDER_QUAD_OBJECT_MAX_FACES).contains(&face_limit));
     let mut objects = Vec::new();
     let mut faces = Vec::new();
     let mut positions = BTreeSet::new();
@@ -1273,8 +1284,9 @@ fn masked_object_metrics(
     view_faces: &[Vec<usize>],
     planes: &[Plane],
     source_bounds: &[LeafBounds],
+    face_limit: usize,
 ) -> Result<MaskedObjectMetrics> {
-    let objects = masked_render_objects(surfaces, signatures, submodel_faces)?;
+    let objects = masked_render_objects(surfaces, signatures, submodel_faces, face_limit)?;
 
     let mut metrics = MaskedObjectMetrics {
         objects: objects.len(),
@@ -1344,13 +1356,14 @@ fn build_quad_payload(
     source_bounds: &[LeafBounds],
     source_positions: &[[i16; 3]],
     resident_core_bytes: usize,
+    face_limit: usize,
 ) -> Result<(QuadPayloadMetrics, Vec<u8>)> {
     let mut input = RenderQuadPayloadInput::default();
     let mut metrics = QuadPayloadMetrics::default();
     let mut leaf_payload_bytes = Vec::with_capacity(view_faces.len());
     let mut leaf_activation_bytes = Vec::with_capacity(view_faces.len());
     let mut leaf_packet_pool_bytes = Vec::with_capacity(view_faces.len());
-    let objects = masked_render_objects(surfaces, signatures, submodel_faces)?;
+    let objects = masked_render_objects(surfaces, signatures, submodel_faces, face_limit)?;
 
     for (face_index, surface) in surfaces.iter().enumerate() {
         if signature_is_empty(&signatures[face_index]) {
@@ -1923,6 +1936,7 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
     // guest. Source lump lengths are not sufficient because PSB5 leaf/node
     // records have a different resident representation.
     let resident_core_bytes = core_resident.resident_bytes_len();
+    let object_face_limit = render_object_face_limit(map);
     let indexed = resident
         .indexed_vertices()
         .ok_or_else(|| format!("{} is not an indexed PSB5 map", path.display()))?;
@@ -2141,6 +2155,7 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         &source_bounds,
         &source_positions,
         resident_core_bytes,
+        object_face_limit,
     )?;
     let masked_objects = masked_object_metrics(
         &surfaces,
@@ -2149,6 +2164,7 @@ fn load_census(path: &Path, map: &str, source: &Bsp<'_>) -> Result<MapCensus> {
         &view_faces,
         &planes,
         &source_bounds,
+        object_face_limit,
     )?;
     let pvs_faces = views.iter().map(|view| view.faces).max().unwrap_or(0);
     let visibility_classes = signatures

@@ -27,7 +27,7 @@ use quake_formats::{RenderCellDirectory, RenderCellHeader, RENDER_CELL_HEADER_BY
 use crate::platform::{self, StorageError};
 #[cfg(feature = "renderer-owned-sections")]
 use crate::render_section::{
-    load_render_cell, load_render_dictionary, GatheredRenderSection,
+    load_render_cell, load_render_dictionary, GatheredRenderSection, RenderSectionCache,
 };
 
 const EPISODE_DIRECTORY_CHUNK: u32 = 2;
@@ -375,6 +375,8 @@ pub struct ResidentMap {
     render_section_header: Option<RenderCellHeader>,
     #[cfg(feature = "renderer-owned-sections")]
     active_render_section: Option<GatheredRenderSection>,
+    #[cfg(feature = "renderer-owned-sections")]
+    render_section_cache: RenderSectionCache,
 }
 
 impl ResidentMap {
@@ -404,6 +406,8 @@ impl ResidentMap {
             render_section_header: None,
             #[cfg(feature = "renderer-owned-sections")]
             active_render_section: None,
+            #[cfg(feature = "renderer-owned-sections")]
+            render_section_cache: RenderSectionCache::new(),
         }
     }
 
@@ -468,6 +472,7 @@ impl ResidentMap {
             #[cfg(feature = "renderer-owned-sections")]
             {
                 self.active_render_section = None;
+                self.render_section_cache.clear();
             }
         }
         #[cfg(feature = "renderer-owned-sections")]
@@ -528,8 +533,8 @@ impl ResidentMap {
         let mut header_bytes = [0u8; RENDER_CELL_HEADER_BYTES];
         platform::read_chunk_exact(chunk_id, 0, &mut header_bytes)
             .map_err(MapLoadError::Storage)?;
-        let header = RenderCellHeader::parse(&header_bytes, file_bytes)
-            .map_err(|_| MapLoadError::Format)?;
+        let header =
+            RenderCellHeader::parse(&header_bytes, file_bytes).map_err(|_| MapLoadError::Format)?;
         if header.directory_bytes() > RENDER_SECTION_DIRECTORY_CAPACITY {
             #[cfg(feature = "emulator-telemetry")]
             psx_telemetry::emit::debug_log("quake-psx: QRC directory exceeds capacity");
@@ -557,13 +562,17 @@ impl ResidentMap {
             return Err(MapLoadError::TooLarge);
         }
         #[cfg(feature = "renderer-owned-sections")]
-        load_render_dictionary(
+        let cache_slots = load_render_dictionary(
             chunk_id,
             header,
             self.collision_planes.len(),
             self.render_textures.len(),
             &mut self.shared,
         )?;
+        #[cfg(feature = "renderer-owned-sections")]
+        if !self.render_section_cache.configure(cache_slots) {
+            return Err(MapLoadError::TooLarge);
+        }
         self.render_section_header = Some(header);
         Ok(())
     }
@@ -572,17 +581,15 @@ impl ResidentMap {
     #[optimize(size)]
     pub fn render_section_for_leaf(&self, leaf: usize) -> Option<usize> {
         let header = self.render_section_header?;
-        let directory = RenderCellDirectory::bind_validated_prefix(
-            &self.render_section_directory,
-            header,
-        )
-        .ok()?;
+        let directory =
+            RenderCellDirectory::bind_validated_prefix(&self.render_section_directory, header)
+                .ok()?;
         directory.cell_location(leaf).map(|(section, _)| section)
     }
 
-    /// Stop gameplay while a new renderer section is gathered from QRS5 into
-    /// the otherwise unused tail of the resident-map arena. Camera movement
-    /// inside the active section performs no storage I/O or allocation.
+    /// Gather the camera leaf from the resident QRC2 section cache. A cold
+    /// section blocks for one bounded read; a cache hit performs no storage
+    /// I/O or allocation.
     #[cfg(feature = "renderer-owned-sections")]
     #[optimize(size)]
     pub fn ensure_render_section_for_point(&mut self, point: Vec3I32) -> Result<(), MapLoadError> {
@@ -594,9 +601,6 @@ impl ResidentMap {
             return Ok(());
         }
 
-        let cached_section = self
-            .active_render_section
-            .map(|active| active.section as usize);
         let section_header = self.render_section_header.ok_or(MapLoadError::Format)?;
         let section_index_view = RenderCellDirectory::bind_validated_prefix(
             &self.render_section_directory,
@@ -607,11 +611,17 @@ impl ResidentMap {
             .cell_location(leaf)
             .map(|(section, _)| section)
             .ok_or(MapLoadError::Format)?;
+        let section = u16::try_from(section_index).map_err(|_| MapLoadError::Format)?;
+        let (cache_slot, cache_hit) = self
+            .render_section_cache
+            .select(section)
+            .ok_or(MapLoadError::TooLarge)?;
         let gathered = load_render_cell(
             self.map.render_section_chunk_id(),
             section_index_view,
             leaf,
-            cached_section,
+            cache_slot,
+            cache_hit,
             self.collision_planes.len(),
             self.render_textures.len(),
             &mut self.shared,
@@ -619,10 +629,15 @@ impl ResidentMap {
         let gathered = match gathered {
             Ok(gathered) => gathered,
             Err(error) => {
+                self.render_section_cache.invalidate(cache_slot);
                 self.active_render_section = None;
                 return Err(error);
             }
         };
+        if !cache_hit && !self.render_section_cache.commit(cache_slot, section) {
+            self.active_render_section = None;
+            return Err(MapLoadError::TooLarge);
+        }
         debug_assert_eq!(gathered.section as usize, section_index);
         self.active_render_section = Some(gathered);
         Ok(())
