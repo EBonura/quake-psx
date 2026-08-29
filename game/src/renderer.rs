@@ -6456,11 +6456,23 @@ fn quake_frustum(camera: Camera) -> [AabbClipPlane; 4] {
         clamp(multiply(multiply(cr, sp), sy) + multiply(-sr, cy)),
         clamp(multiply(cr, cp)),
     ];
+    // The horizontal half-angle really is 45 degrees: OFX 160 with a 160
+    // projection plane puts the screen edge at exactly one. The vertical one is
+    // not. OFY 120 over the same plane puts the top and bottom edges at 0.75,
+    // so `forward +- up` culls against a frustum a third taller than anything
+    // that can be drawn, and every face in that band is selected, materialized,
+    // submitted and then thrown away by the draw area. The water warp only ever
+    // lengthens the projection plane (165 +- 2) and shifts the offsets by two
+    // pixels, so 0.8 stays conservative for every configured window.
+    #[cfg(feature = "renderer-screen-frustum")]
+    let vertical = scale_normal(forward, SCREEN_FRUSTUM_VERTICAL_Q12);
+    #[cfg(not(feature = "renderer-screen-frustum"))]
+    let vertical = forward;
     let normals = [
         add_normal(forward, right),
         subtract_normal(forward, right),
-        add_normal(forward, up),
-        subtract_normal(forward, up),
+        add_normal(vertical, up),
+        subtract_normal(vertical, up),
     ];
     normals.map(|normal| {
         let distance = mul_q12_i32(camera.origin.x, normal[0] as i32)
@@ -6475,6 +6487,18 @@ fn quake_frustum(camera: Camera) -> [AabbClipPlane; 4] {
             signbits,
             distance,
         }
+    })
+}
+
+/// Tangent of the real vertical half-angle, rounded up from 120/160 so the
+/// tightened frustum can never reject something the draw area would have shown.
+#[cfg(feature = "renderer-screen-frustum")]
+const SCREEN_FRUSTUM_VERTICAL_Q12: i32 = 3_277;
+
+#[cfg(feature = "renderer-screen-frustum")]
+fn scale_normal(normal: [i16; 3], scale_q12: i32) -> [i16; 3] {
+    normal.map(|axis| {
+        ((axis as i32 * scale_q12) >> 12).clamp(i16::MIN as i32, i16::MAX as i32) as i16
     })
 }
 
@@ -7849,6 +7873,8 @@ fn select_frame_faces_blocked_plane_indexed(
     let stamps = plane_stamps.as_mut_ptr();
     let behind_values = plane_behind.as_mut_ptr();
     let mut count = 0usize;
+    #[cfg(feature = "renderer-selection-decimate")]
+    let mut kept = 0usize;
     let mut block_index = 0usize;
     let mut first = 0usize;
     while first < visible_faces.len() {
@@ -7891,7 +7917,22 @@ fn select_frame_faces_blocked_plane_indexed(
                 {
                     let entry =
                         visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
-                    unsafe { ptr::write(out.add(count), entry) };
+                    #[cfg(feature = "renderer-selection-decimate")]
+                    {
+                        let admit = if cfg!(feature = "renderer-selection-drop-world") {
+                            false
+                        } else {
+                            count & 1 == 0
+                        };
+                        if admit {
+                            unsafe { ptr::write(out.add(kept), entry) };
+                            kept += 1;
+                        }
+                    }
+                    #[cfg(not(feature = "renderer-selection-decimate"))]
+                    unsafe {
+                        ptr::write(out.add(count), entry)
+                    };
                     count += 1;
                 }
                 visible_index += 1;
@@ -7900,7 +7941,18 @@ fn select_frame_faces_blocked_plane_indexed(
         first = end;
         block_index += 1;
     }
-    unsafe { output.set_len(count) };
+    // Diagnostic ceilings: `renderer-selection-decimate` keeps every other
+    // accepted face and `renderer-selection-drop-world` keeps none, so the
+    // frame cost's sensitivity to the selected-face count can be measured
+    // directly. The image is wrong by construction.
+    #[cfg(feature = "renderer-selection-decimate")]
+    unsafe {
+        output.set_len(kept)
+    };
+    #[cfg(not(feature = "renderer-selection-decimate"))]
+    unsafe {
+        output.set_len(count)
+    };
 }
 
 /// Exact two-level selector inspired by Quake II's doorway-before-brush
