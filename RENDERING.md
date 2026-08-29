@@ -1100,6 +1100,47 @@ way to cut this pass's bandwidth is to admit fewer candidates, and every
 affordable narrowing mechanism is already closed above. Do not retry record
 packing without first removing a field the selector actually reads.
 
+### Closed: micro-optimization against the load-stall table
+
+The load-stall table above names its own targets, and four of them were tried
+directly. All four land inside the +-0.122 fps layout-noise band, and they are
+recorded so the table is not mined for them again:
+
+- **Borrow before copying in `collect_pickups`.** Both of its whole-scene scans
+  copied the 112-byte `RenderEntity` before testing the one or two bytes that
+  reject nearly every entity, twice per tick. Rewritten to reject through a
+  borrow: 24.418 fps and 2,958,442,237 cycles against 24.409 and
+  2,959,584,601, hashes exact. Kept, because it is a strictly smaller and
+  simpler loop, but it is not a measurable win.
+- **Memoizing the view-model lookup.** `submit_view_model` linear-scans the
+  alias model table every frame and decodes one cooked header per candidate to
+  find the weapon. A generation-keyed memo measured 24.414 fps. Reverted: an
+  unmeasurable cache is complexity with no payoff.
+- **Narrowing the per-face `VisibleFace` copy** in the dispatch loop to the ten
+  bytes a shipping build reads. Neutral; LLVM had already narrowed the load.
+- **Reordering `PlaneRecords` so the only variant the game constructs is first**,
+  saving one failed discriminant compare on each of the two plane distances per
+  hull node visit. Neutral, and it is shared code, so it was reverted.
+
+The pattern is consistent and worth stating plainly: at this point every change
+small enough to be safe is too small to measure, and the noise band is wider
+than any of them.
+
+### The vblank spin is genuinely free
+
+Worth recording because the load-stall table makes it look otherwise. The
+two-line spin pays 166,900 RAM load stall cycles per frame polling
+`__psx_rt_vblank_count`, which sits in main RAM - 12% of all frame cycles, and
+the single largest line in the profile. The tempting conclusion is that this
+traffic starves the GPU's DMA reads of the ordering table and could be fixed by
+moving the counter into the scratchpad.
+
+It cannot. On the PS1 the DMA controller has bus priority over the CPU: DMA
+preempts a spinning CPU, not the other way round. The spin's RAM traffic costs
+the CPU stall cycles it was going to spend waiting anyway, and delays nothing.
+Do not move the counter to the scratchpad for performance; the scratchpad is
+also already carrying the liquid turbulence phase.
+
 ### Closed: bounding the sky lattice
 
 The sky lattice *is* the sky: sky brush faces are never drawn, and 240 screen

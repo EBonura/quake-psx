@@ -1638,7 +1638,11 @@ impl EntityScene {
     ) -> PickupResult {
         let mut result = PickupResult::default();
         for index in 0..self.entities.len() {
-            let entity = self.entities[index];
+            // Reject through a borrow. `RenderEntity` is 112 bytes and this
+            // loop runs over the whole scene on every tick, so copying the
+            // record before the tests streams the entire array through a CPU
+            // with no data cache. Almost every entity fails on `pickup`.
+            let entity = &self.entities[index];
             let Some(pickup) = entity.pickup else {
                 continue;
             };
@@ -1652,6 +1656,7 @@ impl EntityScene {
             if !aabb_overlaps(player_mins, player_maxs, hull_mins, hull_maxs) {
                 continue;
             }
+            let entity = self.entities[index];
             let source = map
                 .entities()
                 .get(entity.source_index as usize)
@@ -1682,7 +1687,8 @@ impl EntityScene {
         // `item_sigil` is not an inventory item: `sigil_touch` folds its
         // spawnflags into `serverflags`, which survives every later map load.
         for index in 0..self.entities.len() {
-            let entity = self.entities[index];
+            // Same borrow-before-copy rule as the pickup scan above.
+            let entity = &self.entities[index];
             if !entity.visible {
                 continue;
             }
@@ -1692,6 +1698,7 @@ impl EntityScene {
             if !aabb_overlaps(player_mins, player_maxs, hull_mins, hull_maxs) {
                 continue;
             }
+            let entity = self.entities[index];
             let source = map
                 .entities()
                 .get(entity.source_index as usize)
