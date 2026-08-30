@@ -212,6 +212,7 @@ enum Action {
     StartRouteRegress,
     E1m1ChainRegress,
     E1m1ChainBench,
+    E1m1MonsterRouteBench,
     E1m1SelectionCacheBench,
     E1m1TopologyCacheBench,
     E1m1IndexedProjectionBench,
@@ -487,6 +488,26 @@ fn real_main() -> Result<()> {
             build_disc(&root, &build, Some("e1m1-chain-regression"), false)?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-chain-regression")?;
+        }
+        Action::E1m1MonsterRouteBench => {
+            // Same accepted stack and fixed cadence as the canonical bench,
+            // but with the monster think loop compiled in. A collision change
+            // is not measured until this route exercises it.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-monster-route-bench");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(
+                &root,
+                &build,
+                Some(
+                    "route-monsters,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                ),
+                false,
+            )?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            run_monster_route_bench(&root, &frontend, &build, "e1m1-monster-route-bench")?;
         }
         Action::E1m1ChainBench => {
             // Step the route by three ticks per frame so renderer changes do
@@ -3544,6 +3565,7 @@ fn parse_cli() -> Result<Cli> {
             | "visual-parity-regress"
             | "e1m1-chain-regress"
             | "e1m1-chain-bench"
+            | "e1m1-monster-route-bench"
             | "e1m1-selection-cache-bench"
             | "e1m1-topology-cache-bench"
             | "e1m1-indexed-projection-bench"
@@ -3646,6 +3668,7 @@ fn parse_cli() -> Result<Cli> {
                     "visual-parity-regress" => Action::VisualParityRegress,
                     "e1m1-chain-regress" => Action::E1m1ChainRegress,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
+                    "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
                     "e1m1-selection-cache-bench" => Action::E1m1SelectionCacheBench,
                     "e1m1-topology-cache-bench" => Action::E1m1TopologyCacheBench,
                     "e1m1-indexed-projection-bench" => Action::E1m1IndexedProjectionBench,
@@ -6600,6 +6623,79 @@ trigger_changelevel -> e1m2\n\
     Ok(())
 }
 
+/// Fixed-window performance route with the monster think loop compiled in.
+///
+/// The canonical chain route asserts its waypoint chain completes, and with
+/// monsters running it cannot: a live body blocks the scripted path. A
+/// performance route does not need completion, it needs determinism over a
+/// fixed window, so this runs the same disc twice for the same guest-frame
+/// budget and requires the two runs to agree on timing and both hashes.
+fn run_monster_route_bench(
+    root: &Path,
+    frontend: &Path,
+    build: &Path,
+    capture_name: &str,
+) -> Result<()> {
+    let capture = root.join("captures").join(capture_name);
+    let cue = build.join("quake-psx.cue");
+    let steps: u64 = env::var("QUAKE_PSX_MONSTER_ROUTE_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(12_000_000_000);
+    let guest_frames: u64 = env::var("QUAKE_PSX_MONSTER_ROUTE_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3_800);
+
+    let mut runs = Vec::new();
+    for name in ["run-a", "run-b"] {
+        let directory = capture.join(name);
+        fs::create_dir_all(&directory)?;
+        let output = run_frontend(frontend, &cue, &directory, steps, true, Some(guest_frames))?;
+        let log = combined_output(&output);
+        fs::write(directory.join("console.log"), &log)?;
+        let display = require_visible_display(&log, "E1M1 monster route")?;
+        let polls = final_port1_polls(&directory.join("route.csv"))?;
+        if polls == 0 {
+            return Err("E1M1 monster route observed no controller polls".into());
+        }
+        let metrics = monster_route_render_metrics(
+            &fs::read_to_string(directory.join("route.csv"))?,
+            &fs::read_to_string(directory.join("cd.csv"))?,
+        )?;
+        runs.push((
+            metrics,
+            polls,
+            parse_frontend_hash(&log, "vram_fnv1a_64=")?,
+            display.hash,
+        ));
+    }
+    if runs[0] != runs[1] {
+        return Err(format!(
+            "E1M1 monster route is nondeterministic:\nrun-a={:#?}\nrun-b={:#?}",
+            runs[0], runs[1]
+        )
+        .into());
+    }
+    let (metrics, polls, vram_hash, display_hash) = &runs[0];
+    let summary = format!(
+        "quake-psx E1M1 monster route: PASS\n\
+         deterministic_runs=2\n\
+         monster_updates=enabled\n\
+         port1_polls={polls}\n\
+         full_level_presentations={}\n\
+         full_level_elapsed_bus_cycles={}\n\
+         full_level_fps_x1000={}\n\
+         vram_fnv1a_64=0x{vram_hash:016x}\n\
+         display_fnv1a_64=0x{display_hash:016x}\n",
+        metrics.presentations, metrics.elapsed_bus_cycles, metrics.fps_x1000,
+    );
+    fs::create_dir_all(&capture)?;
+    fs::write(capture.join("summary.txt"), &summary)?;
+    print!("{summary}");
+    Ok(())
+}
+
 /// One image-free run of the E1M1 per-map route. Two of them have to agree on
 /// the complete probe, the controller poll count and both frame hashes.
 fn run_e1m1_chain_once(
@@ -8676,6 +8772,58 @@ struct FullLevelRenderMetrics {
 /// Measure rendered cadence from the first gameplay presentation until the
 /// next map begins reading. This excludes both cold loading and post-route
 /// idle time while covering the entire authored level traversal.
+/// Timing window for a route that never changes level.
+///
+/// `full_level_render_metrics` brackets the gameplay window between the end of
+/// the initial load and the start of the transition load, which it finds as the
+/// largest gap between `ReadN` commands. A route with monsters running does not
+/// reach the exit, so there is no closing session and that window collapses.
+/// Here the window opens at the last `ReadN` of the initial load and runs to the
+/// final presentation, which is deterministic for a fixed guest-frame budget.
+fn monster_route_render_metrics(route_csv: &str, cd_csv: &str) -> Result<FullLevelRenderMetrics> {
+    const PS1_BUS_CLOCK_HZ: u64 = 33_868_800;
+    let load_end = cd_csv
+        .lines()
+        .skip(1)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split(',');
+            let cycle = fields.next()?.parse::<u64>().ok()?;
+            (fields.next()? == "0x06").then_some(cycle)
+        })
+        .max()
+        .ok_or("CD log has no ReadN sessions")?;
+    let flips = route_csv
+        .lines()
+        .skip(1)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let fields = line.split(',').collect::<Vec<_>>();
+            let cycle = fields.get(3)?.parse::<u64>().ok()?;
+            (fields.get(10) == Some(&"1") && cycle > load_end).then_some(cycle)
+        })
+        .collect::<Vec<_>>();
+    if flips.len() < 2 {
+        return Err("monster route window contains fewer than two presentations".into());
+    }
+    let intervals = flips.len() as u64 - 1;
+    let elapsed_bus_cycles = flips[flips.len() - 1]
+        .checked_sub(flips[0])
+        .ok_or("monster route presentation cycles are not monotonic")?;
+    if elapsed_bus_cycles == 0 {
+        return Err("monster route presentation window has zero elapsed cycles".into());
+    }
+    let numerator = intervals
+        .checked_mul(PS1_BUS_CLOCK_HZ)
+        .and_then(|value| value.checked_mul(1_000))
+        .ok_or("monster route FPS numerator overflow")?;
+    Ok(FullLevelRenderMetrics {
+        presentations: flips.len() as u64,
+        elapsed_bus_cycles,
+        fps_x1000: numerator / elapsed_bus_cycles,
+    })
+}
+
 fn full_level_render_metrics(route_csv: &str, cd_csv: &str) -> Result<FullLevelRenderMetrics> {
     const PS1_BUS_CLOCK_HZ: u64 = 33_868_800;
     let rows = route_csv

@@ -32,6 +32,12 @@ monsterjump-regression = ["emulator-telemetry"]
 bestiary-regression = ["emulator-telemetry"]
 start-route-regression = ["emulator-telemetry"]
 e1m1-chain-regression = ["emulator-telemetry"]
+# The E1M1 chain route with the monster think loop left in. The route
+# regressions compile `update_monsters`/`update_monster_missiles` out, so no
+# canonical benchmark exercises monster movement or the solid-submodel traces
+# a collision change is supposed to make cheaper. Deterministic: the route
+# still steps on fixed ticks, monsters just run.
+route-monsters = ["e1m1-chain-regression"]
 e1m2-e1m3-route-regression = ["emulator-telemetry"]
 systems-regression = ["emulator-telemetry"]
 survival-regression = ["emulator-telemetry"]
