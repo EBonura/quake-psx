@@ -1012,6 +1012,92 @@ not a fixed overhead.
 That reframes the remaining work. It is not "remove 20% everywhere"; it is
 "stop the heavy views from costing 1.6x the light ones".
 
+### Correction: the August 2026 worker numbers were measured on a dirty SDK
+
+An independent verification of `9ba2614..c5a1ed9` could not reproduce the
+24.418 fps this document previously reported. It is wrong, and so is every
+cycle count in the tables below that predates this section. The cause is worth
+recording because the tooling reports it on every run and it was still missed.
+
+`.psoxide` is a *hydration*, and it is gitignored. The worker's tree had been
+hydrated from a local scratch checkout, `/private/tmp/psoxide-quake2-harmonize`
+at `e31ea70b`, which is a **descendant of the pinned SDK `5048fbde`**, and then
+hand-edited on top. Eight files differed from the pin, five of them in the
+guest path: `psx-bsp/collision.rs`, `psx-bsp/resident.rs`,
+`psx-engine/classic_affine.rs`, `psx-engine/lib.rs`, `psx-gpu/ot.rs`. The build
+tool printed `PSoXide existing hydration stamp: local ... at e31ea70b` every
+single run.
+
+Two consequences:
+
+1. **Commit `0c78469` does not contain the work its own title claims.** It is
+   called "Cut redundant collision, visibility and packet work", but `.psoxide`
+   is gitignored, so the collision part (a 32-bit `plane_contact` that removes
+   four `__divdi3` calls per contact) and the packet part (the GT4 pairing
+   ladder collapse) never left the untracked hydration. Only the entity broad
+   phase and the camera-leaf memo were committed. The GT4 pairing was in
+   `5048fbde` already in any case, so it was never a gain between these two
+   Quake revisions.
+2. **The accepted stack's real gain is the drawable frustum and nothing else.**
+
+Verified on a clean `c5a1ed9` against a clean `5048fbde` checkout, twice,
+byte-identical both times:
+
+```text
+9ba2614   3,029,846,768 cycles   23.843 fps
+c5a1ed9   3,021,278,457 cycles   23.911 fps
+change       -8,568,311 (-0.283%)     +0.068
+```
+
+Both revisions produce the canonical hashes. **+0.068 fps is inside the 0.122
+layout-noise band**, so the committed stack carries no defensible aggregate
+gain. The two-tick cadence figures were also stale: 24.690 fps and 59.62% of
+presentations in two fields or fewer, not 24.852 and 60.97%.
+
+**The reproducible target to beat is 23.911 fps / 3,021,278,457 cycles.**
+
+Rule that follows: never measure against `.psoxide` without checking the
+hydration stamp against `PSOXIDE_REV` first, and never describe SDK work in a
+quake-psx commit message, because the commit cannot contain it.
+
+### Fixed: the no-world diagnostic did not remove the world
+
+`renderer-selection-drop-world` had exactly one effect site, inside
+`select_frame_faces_blocked_plane_indexed`. That selector needs
+`renderer-plane-index-cache`, which `e1m1-no-world-bench` does not enable, so
+the feature was dead code in that build and the benchmark silently measured the
+every-other-face decimation ceiling instead. `select_frame_faces_blocked` now
+applies the same admission rule.
+
+Validated by an independent GPU census rather than by the fps moving, since the
+whole point is that the fps moved before while the world was still drawn:
+
+```text
+                       accepted stack     no-world
+textured quads/frame          125.3            7.4
+textured tris/frame           374.5          231.9
+GP0 commands/frame            550.7          251.3
+```
+
+The residual is the view model, HUD and dynamic entities, which is what this
+ceiling is meant to price. Hashes change by construction
+(`0xe4a6eb66c384a603` / `0xe773bf072dec7062`).
+
+**The geometry-free ceiling, measured clean:**
+
+```text
+baseline    3,021,278,457 cycles    23.911 fps
+no-world    2,186,128,663 cycles    33.045 fps
+world path    835,149,794 cycles    27.6% of the frame
+```
+
+30 fps over this route needs 2,409,200,640 cycles, so it needs 612,077,817
+cycles removed: **20.3% of the frame, which is 73% of the entire world surface
+path**, while keeping every polygon. That is the size of the problem, and it is
+now measured on a clean pinned build rather than inferred. Micro-optimization
+cannot reach it; only an architectural change to how world surfaces are
+selected, materialized and submitted can.
+
 ### The frame is memory-bound, not instruction-bound
 
 The instruction attribution above answers *what runs*. It does not answer *what

@@ -7832,7 +7832,17 @@ fn select_frame_faces_blocked(
                         visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
                     #[cfg(feature = "renderer-selection-decimate")]
                     {
-                        if count & 1 == 0 {
+                        // Same admission rule as the plane-indexed selector.
+                        // `drop-world` used to be tested only there, which the
+                        // no-world bench does not compile, so that benchmark
+                        // silently measured the every-other-face ceiling
+                        // instead of the no-world one.
+                        let admit = if cfg!(feature = "renderer-selection-drop-world") {
+                            false
+                        } else {
+                            count & 1 == 0
+                        };
+                        if admit {
                             unsafe { ptr::write(out.add(kept), entry) };
                             kept += 1;
                         }
@@ -7850,8 +7860,9 @@ fn select_frame_faces_blocked(
         block_index += 1;
     }
     // Diagnostic ceiling: `renderer-selection-decimate` keeps every other
-    // accepted face so the frame cost's sensitivity to the selected-face count
-    // can be measured directly. The image is wrong by construction.
+    // accepted face and `renderer-selection-drop-world` keeps none, so the
+    // frame cost's sensitivity to the selected-face count can be measured
+    // directly. The image is wrong by construction.
     #[cfg(feature = "renderer-selection-decimate")]
     unsafe {
         output.set_len(kept)
