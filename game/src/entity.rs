@@ -3290,20 +3290,28 @@ impl EntityScene {
             // A lift uses `plat_spawn_inside_trigger`'s own volume, built from
             // the authored raised bounds so it never moves with the deck. Every
             // other automatic mover keeps the door's proximity field.
+            //
+            // Only a lift has a volume at all, and `plat_trigger_volume`
+            // rejects everything else on its first line. Asking that question
+            // before the model is fetched keeps the record decode off the
+            // other 27 of E1M1's 29 movers: the raised bounds are a load
+            // constant, and decoding them every frame to throw them away was
+            // 96% of the frame's whole `BrushModel::decode` bill.
             let mut plat_mins = [0i32; 3];
             let mut plat_maxs = [0i32; 3];
-            let plat_trigger = map
-                .brush_models()
-                .get(entity_snapshot.model_index as usize)
-                .map(|model| {
-                    self.movers[mover_index].policy.plat_trigger_volume(
-                        [model.mins.x, model.mins.y, model.mins.z],
-                        [model.maxs.x, model.maxs.y, model.maxs.z],
-                        &mut plat_mins,
-                        &mut plat_maxs,
-                    )
-                })
-                .unwrap_or(false);
+            let plat_trigger = self.movers[mover_index].policy.is_plat()
+                && map
+                    .brush_models()
+                    .get(entity_snapshot.model_index as usize)
+                    .map(|model| {
+                        self.movers[mover_index].policy.plat_trigger_volume(
+                            [model.mins.x, model.mins.y, model.mins.z],
+                            [model.maxs.x, model.maxs.y, model.maxs.z],
+                            &mut plat_mins,
+                            &mut plat_maxs,
+                        )
+                    })
+                    .unwrap_or(false);
             let plat_touch = plat_trigger
                 && aabb_overlaps(
                     player_mins,
@@ -3522,13 +3530,22 @@ impl EntityScene {
             if moved {
                 self.place_mover(map, render_index, mover_index);
             }
-            let blocker = self.push_riders(
-                map,
-                rider,
-                ground_entity,
-                render_index,
-                subtract_vec(self.entities[render_index].origin, previous),
-            );
+            // `place_mover` is the only thing between `previous` and here that
+            // writes this entity's origin, so a mover that did not move has a
+            // zero delta by construction and `push_riders` would return `None`
+            // off its first line. Saying so here spares the call frame instead
+            // of paying it for every parked mover in the level.
+            let blocker = if moved {
+                self.push_riders(
+                    map,
+                    rider,
+                    ground_entity,
+                    render_index,
+                    subtract_vec(self.entities[render_index].origin, previous),
+                )
+            } else {
+                None
+            };
             let blocked = blocker.is_some();
             player_mins = rider.mins;
             player_maxs = rider.maxs;
@@ -3559,7 +3576,6 @@ impl EntityScene {
                 );
             }
             let state_after_tick = self.movers[mover_index].policy.state();
-            let sound_origin = bounds_center(entity_snapshot.clip_mins, entity_snapshot.clip_maxs);
             if blocked {
                 sound_count = activation_sound_count;
             }
@@ -3574,11 +3590,17 @@ impl EntityScene {
                 sounds[sound_count] = sound;
                 sound_count += 1;
             }
-            for &sound in &sounds[..sound_count] {
-                result.push_mover_sound(
-                    SoundEvent::at(sound, sound_origin)
-                        .on(entity_snapshot.source_index, crate::audio::CHAN_VOICE),
-                );
+            // The origin is only ever read by the loop below, and a silent
+            // mover never enters it.
+            if sound_count != 0 {
+                let sound_origin =
+                    bounds_center(entity_snapshot.clip_mins, entity_snapshot.clip_maxs);
+                for &sound in &sounds[..sound_count] {
+                    result.push_mover_sound(
+                        SoundEvent::at(sound, sound_origin)
+                            .on(entity_snapshot.source_index, crate::audio::CHAN_VOICE),
+                    );
+                }
             }
             if source.class_name == 0x0b
                 && state_before_tick != QuakeMoverState::Top
