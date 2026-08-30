@@ -224,7 +224,7 @@ const TEXTURE_UPLOAD_ROWS: usize = 8;
 // hardware-safe optimization.
 const TEXTURE_READ_ROWS: usize = TEXTURE_UPLOAD_ROWS * 3;
 const GRAPHICS_CHUNK: u32 = 1;
-const GRAPHICS_CLUT_BYTES: usize = 6 * 256 * 2;
+const GRAPHICS_CLUT_BYTES: usize = 8 * 256 * 2;
 const GRAPHICS_PICTURE_WIDTH: u16 = 64;
 const GRAPHICS_PICTURE_ROWS: usize = 512;
 const GRAPHICS_PICTURE_ROW_BYTES: usize = GRAPHICS_PICTURE_WIDTH as usize * 2;
@@ -506,7 +506,7 @@ impl ResidentMap {
         self.stream_scratch.resize(GRAPHICS_CLUT_BYTES, 0);
         platform::read_chunk_exact(GRAPHICS_CHUNK, 0, &mut self.stream_scratch)
             .map_err(MapLoadError::Storage)?;
-        platform::upload_vram(VramRect::new(0, 240, 256, 6), &self.stream_scratch)
+        platform::upload_vram(VramRect::new(0, 240, 256, 8), &self.stream_scratch)
             .map_err(|_| MapLoadError::VramUpload)?;
 
         // Textured PS1 semitransparency is selected per palette entry. Mirror
@@ -520,7 +520,7 @@ impl ResidentMap {
                 color.copy_from_slice(&translucent.to_le_bytes());
             }
         }
-        platform::upload_vram(VramRect::new(0, 246, 256, 6), &self.stream_scratch)
+        platform::upload_vram(VramRect::new(0, 248, 256, 8), &self.stream_scratch)
             .map_err(|_| MapLoadError::VramUpload)?;
 
         let mut count_bytes = [0u8; 2];

@@ -165,13 +165,20 @@ pub struct MenuView {
 }
 
 /// Brightness steps the Options page offers (the cooker's palette rows).
-pub const BRIGHTNESS_STEPS: u8 = 6;
-/// The default brightness step: the cooker's brightest 0.5 power row. The console
-/// picture reads far darker than the emulator's (a captured menu scene came
-/// out at a third of the emulator's mean luminance), and the original ships
-/// dark enough that everyone reached for its brightness slider anyway.
-pub const DEFAULT_BRIGHTNESS: u8 = BRIGHTNESS_STEPS - 1;
-const BRIGHTNESS_LABELS: [&str; BRIGHTNESS_STEPS as usize] = ["1", "2", "3", "4", "5", "6"];
+pub const BRIGHTNESS_STEPS: u8 = 8;
+/// The default brightness step: the 0.5 power row, which was the brightest the
+/// table offered before levels 7 and 8 were added. The console picture reads
+/// far darker than the emulator's (a captured menu scene came out at a third of
+/// the emulator's mean luminance), and the original ships dark enough that
+/// everyone reached for its brightness slider anyway.
+///
+/// Deliberately NOT `BRIGHTNESS_STEPS - 1`: the two new rows exist to give a
+/// dark CRT somewhere to go, and defaulting to 0.3 gamma would wash the
+/// emulator picture out. Retune this once a console capture says which row
+/// actually matches the reference.
+pub const DEFAULT_BRIGHTNESS: u8 = 5;
+const BRIGHTNESS_LABELS: [&str; BRIGHTNESS_STEPS as usize] =
+    ["1", "2", "3", "4", "5", "6", "7", "8"];
 /// Scaled-radial inner radii offered for both DualShock sticks.
 pub const DEADZONE_RADII: [i16; 5] = [12, 20, 28, 36, 44];
 const DEADZONE_LABELS: [&str; DEADZONE_RADII.len()] = ["12", "20", "28", "36", "44"];
