@@ -77,6 +77,16 @@ complete fixed-step E1M1 route in PSoXide, up from the 23.656 fps accepted
 predecessor, the 23.432 fps working baseline and the original 21.857 fps
 renderer baseline.
 
+> Every figure in this document was measured against PSoXide `5048fbde`, which
+> stopped being the pin in `41a0b0e`. They are still valid against each other,
+> because each was taken the same way, but they are not comparable to a number
+> measured today: on 2026-08-30 the unmodified `5048fbde` build measured 22.276
+> fps on the same `e1m1-chain-bench` route that this section records as 23.432.
+> Treat these as an ordered history of the work, not as a target to hit. The
+> `5048fbde` to `930b1201` move itself was neutral, 22.276 to 22.395 against the
+> bench's own 0.122 layout-noise floor, with byte-identical VRAM and display
+> hashes.
+
 The goal remains 30 fps. Emulator timing is useful for comparing revisions, but
 only a real console can provide the final result.
 
