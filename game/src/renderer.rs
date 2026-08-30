@@ -9,7 +9,6 @@ use core::ptr::{self, addr_of_mut};
 use psx_bsp::resident::IndexedVertices;
 #[cfg(any(
     not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")),
-    feature = "renderer-hoisted-indexed-world",
     feature = "renderer-indexed-projection"
 ))]
 use psx_engine::materialize_classic_affine_indexed_baked_vertices;
@@ -4528,7 +4527,16 @@ impl Renderer {
         let corners = &indexed.corners[first..first + output.len()];
         unsafe {
             if baked_uv && baked_light {
+                #[cfg(not(feature = "renderer-quake-baked-materialize"))]
                 materialize_classic_affine_indexed_baked_vertices(
+                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
+                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
+                    indexed.positions.len(),
+                    output.len(),
+                    output.as_mut_ptr(),
+                );
+                #[cfg(feature = "renderer-quake-baked-materialize")]
+                materialize_quake_baked_inline(
                     corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
                     indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
                     indexed.positions.len(),

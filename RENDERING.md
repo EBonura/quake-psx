@@ -1145,6 +1145,121 @@ toward monster AI, movement and submodel traces rather than heavy world views.
 Use it for collision and gameplay changes, and the canonical E1M1 route for
 renderer changes. Its 28.802 fps is not comparable to the canonical 23.911.
 
+### Accepted: hoist the indexed vertex view out of the per-face loop
+
+`renderer-hoisted-indexed-world` decodes the validated indexed vertex view once
+for the world pass instead of once per retained face. `map.indexed_vertices()`
+is an `#[optimize(size)]` method forwarding to another `#[optimize(size)]` method
+in `psx-bsp`, so every retained face paid a cross-crate out-of-line call, a
+version compare, a lump-range slice, an offset multiply, two slice
+constructions, an `Option` wrap and an `.expect()` branch, purely to rebuild a
+value that is constant for the whole frame.
+
+```text
+baseline    3,021,278,457 cycles   23.911 fps
+hoisted     2,992,145,128 cycles   24.143 fps
+delta         -29,133,329 (-0.964%)   +0.232 fps
+```
+
+Both hashes canonical. Reproduced independently on two machines-worth of runs
+(a subagent's isolated worktree and this tree) to the exact cycle. About 13,966
+cycles per frame over 2,086 frames, so roughly 35-70 cycles per retained face,
+which is the right order for the call chain removed. `ship-boot` PASS,
+`heap_free` unchanged at 57,092.
+
+**The feature was not usable as authored.** Its baked arm predates
+`renderer-quake-baked-materialize` and called the generic engine materializer
+unconditionally, so enabling it on the canonical stack would have silently
+de-specialized the hottest inner loop in the world pass while claiming to
+measure a hoist, and it would still have produced canonical hashes because the
+two materializers are numerically equivalent. Nothing would have flagged it.
+Treat every other dormant feature in `game/Cargo.toml` as carrying the same
+hazard: they were authored against older stacks and their arms may bypass
+specializations that landed since.
+
+### Closed by measurement: six dormant renderer features
+
+Measured on the clean pin against 3,021,278,457 cycles. All produced canonical
+hashes except where noted, so these are cost results, not correctness results.
+
+```text
+hoisted-indexed-world    2,992,145,128    -29,133,329   ACCEPTED
+window-coalescing        3,012,138,247     -9,140,210   noise
+static-world-reuse       3,032,703,018    +11,424,561   hashes CHANGED, diagnostic only
+plane-index-cache        3,044,699,104    +23,420,647   regression
+fused-materialize        3,209,787,053   +188,508,596   regression
+indexed-projection       3,245,775,020   +224,496,563   regression
+topology-cache           3,823,868,134   +802,589,677   regression, 26.6% worse
+```
+
+Two of these deserve a note. `fused-materialize` is bit-exact and a clean
+drop-in, and it is still 6.24% slower: fusing materialization into the
+projection loop couples a scattered cache-cold main-RAM gather directly into the
+GTE schedule, where the split path lets the submit kernel re-read
+already-materialized vertices out of the scratchpad. On a memory-bound frame,
+deleting a cheap scratchpad pass buys little and serializing a RAM gather
+against GTE latency costs a lot. `indexed-projection` fails for a related
+reason despite genuinely reducing projection count.
+
+Two features were also measured to be worth nothing at all on the current
+stack: `renderer-quake-specialized-kernel` (-364 cycles) and
+`renderer-quake-baked-materialize` (+0.082 fps, inside noise). Both are
+complexity earning zero on this bench, though the shipping build has a different
+feature set and RAM constraint, so verify there before deleting either.
+
+**Noise calibration, important.** Changing the guest recipe hash moves the build
+to a different stage directory and relinks, which alone moved a control
+configuration by 12.0 million cycles at +0.095 fps. So +-0.122 fps corresponds
+to roughly +-15 million cycles, and any raw cycle delta under about 15M is
+layout, not signal. Compare within a stage, or trust the fps band. "Compare
+total cycles first" is right for large effects and inverts for small ones.
+
+### The heavy-frame tail is collision, not rendering
+
+The tail is what blocks 30 fps: 51.85% of presentations miss the two-field
+deadline. Partitioning 1,861 clean frames by field count and attributing the
+2-field to 3-field delta:
+
+```text
+                        2 fields    3 fields     delta
+wall                   1,142,712   1,713,585
+  render stage           469,343     672,246  +202,904  (35.5%)
+  game logic+collision   394,819     704,785  +309,966  (54.3%)
+  ot_submit               36,220      46,511   +10,290  ( 1.8%)
+  vblank spin (idle)     242,330     290,043   +47,712  ( 8.4%)
+```
+
+By instructions, collision/physics grows **x3.14** and is 37.4% of the whole
+delta, the largest single contributor. Top symbols by delta: `trace_into`
++42,691, `submit_quake_classic_affine_batch` +40,012,
+`select_frame_faces_blocked` +25,988, `SceneCollision::trace` +23,614.
+
+Ruled out by measurement, with numbers:
+- **Overdraw: no.** The GPU cycle estimate grows only x1.19 while the frame
+  grows x1.50, GPU cycles per primitive FALL (529 to 497), and GPU busy share
+  falls from 50.2% to 39.8%. MMIO stall cycles go DOWN in heavy frames.
+- **Subdivision: no.** Primitives grow x1.26 while projected vertices grow
+  x1.91; primitives per projected vertex fall. Heavy views carry more, smaller
+  faces, not more finely cut ones.
+- **Liquid: no.** Negative contribution (-3,863 instructions).
+- **Sky: no.** +611 instructions, 0.2% of the delta; the lattice fires in ~10%
+  of frames.
+- **Packet construction: least elastic.** Largest single render cost in a cheap
+  frame but grows slowest (x1.31). Attacking it moves the mean, not the tail.
+
+This redirects the work. Every closed experiment in this document is
+renderer-side; **nothing has ever been aimed at collision**, which is the
+largest term in the tail. The `e1m1-monster-route-bench` added above is the
+instrument for it, because the canonical route compiles the monster loop out.
+
+Two further framings worth keeping. Mean work is 1,131,012 cycles against a
+1,142,474-cycle two-field budget, so the mean already fits by 1.0%, and perfect
+variance smoothing at today's mean would give **29.645 fps with nothing made
+faster**. And resident packet templates are now closed with exact numbers: a
+full-map pool needs 404,360 to 502,460 bytes against 48,900 usable, and every
+bounded subset fails too (48,900 bytes buys the 287 largest E1M1 faces, 7.7% of
+eligible faces).
+
 ### The frame is memory-bound, not instruction-bound
 
 The instruction attribution above answers *what runs*. It does not answer *what
