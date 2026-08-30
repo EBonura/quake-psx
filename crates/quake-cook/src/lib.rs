@@ -40,7 +40,7 @@ const WAD_ENTRY_BYTES: usize = 32;
 const WAD_NAME_BYTES: usize = 16;
 
 const CLUT_COLORS: usize = 256;
-const GAMMA_LEVELS: usize = 6;
+const GAMMA_LEVELS: usize = 8;
 const CLUT_BYTES: usize = CLUT_COLORS * GAMMA_LEVELS * 2;
 const VRAM_WIDTH_WORDS: usize = 64;
 const VRAM_HEIGHT: usize = 512;
@@ -481,7 +481,10 @@ fn validate_picture(
 
 fn make_cluts(palette: &[u8]) -> [u16; CLUT_COLORS * GAMMA_LEVELS] {
     let mut output = [0u16; CLUT_COLORS * GAMMA_LEVELS];
-    let powers = [1.0f64, 0.9, 0.8, 0.7, 0.6, 0.5];
+    // Levels 7 and 8 continue the uniform 0.1 spacing past the original
+    // brightest row. The console picture reads far darker than the emulator's,
+    // so the slider needs headroom the six-row table did not have.
+    let powers = [1.0f64, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3];
     let mut adjusted = [0u8; CLUT_COLORS * 3];
     for (level, power) in powers.into_iter().enumerate() {
         if level == 0 {

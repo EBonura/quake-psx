@@ -189,14 +189,19 @@ const MAX_VISIBILITY_BYTES: usize = 160;
 #[cfg(feature = "renderer-topology-cache")]
 const MAX_TOPOLOGY_CACHE_BATCHES: usize = 64;
 const TEXTURE_CLUT_BASE_ROW: u16 = 240;
-const LIQUID_CLUT_BASE_ROW: u16 = 246;
+const LIQUID_CLUT_BASE_ROW: u16 = 248;
 // Tuned brighter default: the cooker power is 0.8. This preserves the
 // project's intentional lift without the row-three scene's green overcast.
 const TEXTURE_GAMMA_LEVEL: u16 = 2;
 /// The cooker lays one palette row per gamma power (1.0, 0.9, 0.8, 0.7, 0.6,
-/// 0.5) under `TEXTURE_CLUT_BASE_ROW`; the Options menu's BRIGHTNESS picks
-/// the row every textured packet in the frame references.
-pub const BRIGHTNESS_LEVELS: u8 = 6;
+/// 0.5, 0.4, 0.3) under `TEXTURE_CLUT_BASE_ROW`; the Options menu's BRIGHTNESS
+/// picks the row every textured packet in the frame references.
+///
+/// Eight is the exact VRAM ceiling for this layout: the framebuffers occupy
+/// rows 0..239 and 256..495, so the sixteen rows between them are the only
+/// free block at x < 256, and each level needs one texture row plus one liquid
+/// row. A ninth level would have to move the liquid block to rows 496..511.
+pub const BRIGHTNESS_LEVELS: u8 = 8;
 static mut TEXTURE_GAMMA: u16 = TEXTURE_GAMMA_LEVEL;
 
 /// The palette CLUT word for the current brightness level.
