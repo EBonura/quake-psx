@@ -1098,6 +1098,53 @@ now measured on a clean pinned build rather than inferred. Micro-optimization
 cannot reach it; only an architectural change to how world surfaces are
 selected, materialized and submitted can.
 
+### Added: a benchmark that actually runs the monsters
+
+Every route regression, and therefore every canonical benchmark, compiles
+`update_monsters` and `update_monster_missiles` out. The comment at the `cfg`
+says why: the probes want deterministic waypoint movement. The consequence is
+that **no canonical benchmark exercised the solid-submodel collision path a
+collision change is supposed to make cheaper**, so the broad phase in `0c78469`
+was never measured by the number used to justify it.
+
+`route-monsters` compiles the monster think loop back into the E1M1 chain route.
+Two things had to change for it to work as a benchmark:
+
+- **The chain probe cannot be reused.** With monsters running the scripted route
+  cannot complete: a live body blocks the path, and the probe stops at waypoint
+  12 at `(-9, 1047, -230)`. That is not a bug, it is what the route asserts. A
+  performance route needs determinism over a fixed window, not completion, so
+  `run_monster_route_bench` requires only that two runs agree on timing and both
+  hashes.
+- **The timing window had to change.** `full_level_render_metrics` brackets
+  gameplay between the end of the initial load and the start of the transition
+  load, found as the largest gap between `ReadN` commands. With no level change
+  there is no closing session and the window collapses.
+  `monster_route_render_metrics` opens at the last `ReadN` of the initial load
+  and runs to the final presentation.
+
+```text
+cargo run --release -- e1m1-monster-route-bench --psoxide <clean 5048fbde>
+
+quake-psx E1M1 monster route: PASS
+deterministic_runs=2
+monster_updates=enabled
+full_level_presentations=3795
+full_level_elapsed_bus_cycles=4461374086
+full_level_fps_x1000=28802
+vram_fnv1a_64=0xcce4c4d5cf9173a6
+display_fnv1a_64=0xc12223e502d5df7e
+```
+
+That the same route completes without monsters and stalls at waypoint 12 with
+them is itself the proof that the monster loop is running and reaching the
+collision path.
+
+Read this benchmark for what it is: the player stalls partway, so it is weighted
+toward monster AI, movement and submodel traces rather than heavy world views.
+Use it for collision and gameplay changes, and the canonical E1M1 route for
+renderer changes. Its 28.802 fps is not comparable to the canonical 23.911.
+
 ### The frame is memory-bound, not instruction-bound
 
 The instruction attribution above answers *what runs*. It does not answer *what
