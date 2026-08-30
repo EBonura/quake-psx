@@ -65,14 +65,14 @@ See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
 The current PSoXide revision is:
 
 ```text
-bc295a055deb0b376fe24acd3deb98145f4aa070
+bb074d72dc7f4f08d1d9a33aa875aae15fc305fd
 ```
 
 Create a worktree for that revision:
 
 ```sh
 git -C /path/to/PSoXide worktree add ../PSoXide-quake \
-  bc295a055deb0b376fe24acd3deb98145f4aa070
+  bb074d72dc7f4f08d1d9a33aa875aae15fc305fd
 ```
 
 The Quake crates use local paths into an ignored `.psoxide/` directory. Hydrate
