@@ -71,6 +71,14 @@ pub fn mover_sound_events(
     before: QuakeMoverState,
     after: QuakeMoverState,
 ) -> MoverSoundEvents {
+    // Every callback below is gated on `started`, `stopped` or
+    // `secret_started`, and all three are transitions between two *different*
+    // states. A mover that ended the batch where it began therefore reaches
+    // every `return` with an empty pair, and on any given frame nearly every
+    // mover in the level is parked at one of its stops.
+    if before == after {
+        return MoverSoundEvents::default();
+    }
     let started = matches!(
         (before, after),
         (
@@ -401,6 +409,17 @@ impl QuakeMover {
 
     pub const fn state(&self) -> QuakeMoverState {
         self.state
+    }
+
+    /// Whether this mover is a lift, and therefore the only kind that owns an
+    /// inside trigger volume at all.
+    ///
+    /// This is the same question [`Self::plat_trigger_volume`] and
+    /// [`Self::plat_center_touch`] answer on their first line. Exposing it
+    /// lets a caller decide whether it is worth gathering the raised model
+    /// bounds those two need before it goes and reads them.
+    pub const fn is_plat(&self) -> bool {
+        self.plat_travel_units != 0
     }
 
     /// `plat_spawn_inside_trigger`: the volume a lift starts from.
@@ -1053,6 +1072,31 @@ mod tests {
         .iter()
         .next()
         .is_none());
+    }
+
+    /// The guard that lets the fixed-tick mover loop skip the whole callback
+    /// table for a mover that ended its batch where it began. Every callback
+    /// is gated on a transition between two different states, so this has to
+    /// hold for every class and every authored `sounds` value.
+    #[test]
+    fn a_mover_that_did_not_change_state_voices_nothing() {
+        const STATES: [QuakeMoverState; 4] = [
+            QuakeMoverState::Bottom,
+            QuakeMoverState::Top,
+            QuakeMoverState::Up,
+            QuakeMoverState::Down,
+        ];
+        for class in 0u8..=255 {
+            for sounds in -1i8..=4 {
+                for state in STATES {
+                    assert_eq!(
+                        mover_sound_events(class, sounds, state, state),
+                        MoverSoundEvents::default(),
+                        "class {class:#x} sounds {sounds} at {state:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

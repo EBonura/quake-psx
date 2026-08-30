@@ -1260,6 +1260,44 @@ full-map pool needs 404,360 to 502,460 bytes against 48,900 usable, and every
 bounded subset fails too (48,900 bytes buys the 287 largest E1M1 faces, 7.7% of
 eligible faces).
 
+### Accepted: gate the per-mover work that idle movers were paying anyway
+
+The mover loop ran four pieces of work unconditionally for every mover, every
+tick, whether or not the mover had moved or could ever need them:
+
+- the plat trigger volume fetched and DECODED the brush model before
+  `plat_trigger_volume` rejected non-plats on its first line;
+- `push_riders` ran even when the mover had not moved, returning `None` off its
+  first line;
+- the sound-origin centroid `bounds_center` was computed even when no sound was
+  emitted, its only consumer;
+- `mover_sound_events` ran its full transition analysis even when the before and
+  after states were identical, and every one of its return paths is a
+  transition between two different states.
+
+All four are provably output-neutral, and none touches physics.
+
+```text
+baseline    2,992,145,128 cycles   24.143 fps
+gated       2,938,448,260 cycles   24.585 fps
+delta         -53,696,868 (-1.79%)   +0.442 fps
+```
+
+Both hashes canonical, 3.6x the cycle and fps noise bands on both axes,
+reproduced to the exact cycle in two independent trees. The E1M1 chain probe
+still completes with `route_waypoints=60`, `player_mechanisms=0x7fff` and
+`mover_sounds=0x07`, which is the guard that gameplay did not change.
+
+**The monster route cannot confirm a CPU win, and this is worth knowing before
+anyone else uses it that way.** Bucketing its presentation intervals into fields
+gives a mean of 2.08 fields per frame with **95.28% of presentations already at
+exactly two fields**, against the canonical route's 2.70 mean and 67.77% at
+three. The monster route is vblank-limited almost everywhere, so freed CPU time
+lands in the idle spin rather than the wall clock: it measured -9.7M cycles
+(-0.218%) for this change, below the noise band. Use it as a BEHAVIOUR guard,
+where it is excellent (both hashes byte-identical across this change), not as a
+performance instrument.
+
 ### The frame is memory-bound, not instruction-bound
 
 The instruction attribution above answers *what runs*. It does not answer *what
