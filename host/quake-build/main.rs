@@ -28,7 +28,7 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Keep this in sync with the psoxide-link revision in Cargo.lock.
-const PSOXIDE_REV: &str = "930b1201f48db90dcd7f06ee19bd21390a3d0c45";
+const PSOXIDE_REV: &str = "be93eb6b512ce8cff3b2065ea7e77c8666b8c3aa";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -4566,9 +4566,16 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
         )
         .into());
     }
-    if pickup_count != 488 || floor_boundary_pickups != 320 {
+    // 320 floor-boundary pickups were the count while psx-bsp sent an
+    // on-plane point to the back child; PSoXide 74fadd57 sends it to the
+    // front child, so a pickup resting exactly on its floor plane now
+    // classifies into the open leaf and only 3 remain in leaf 0. Verified by
+    // running this census against PSoXide 011a1a13 (before the tracer's
+    // plane_contact rewrite): 488/3 there too, so the tracer change is not
+    // the cause. Display and VRAM hashes of the E1M1 route are unchanged.
+    if pickup_count != 488 || floor_boundary_pickups != 3 {
         return Err(format!(
-            "pickup visibility census drifted: {pickup_count} pickups, {floor_boundary_pickups} on floor boundaries; expected 488/320"
+            "pickup visibility census drifted: {pickup_count} pickups, {floor_boundary_pickups} on floor boundaries; expected 488/3"
         )
         .into());
     }
