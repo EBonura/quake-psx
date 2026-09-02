@@ -4,3 +4,10 @@ target = "mipsel-sony-psx"
 [unstable]
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
+
+[target.mipsel-sony-psx]
+# LLVM's MIPS delay-slot filler moves loads into branch delay slots without
+# re-checking the R3000 load-delay hazard, so the branch target (or the
+# fall-through) can read the register one instruction too early. The
+# backward search is the one that does it; keep the other two.
+rustflags = ["-C", "llvm-args=-disable-mips-df-backward-search"]
