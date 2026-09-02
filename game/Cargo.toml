@@ -20,7 +20,20 @@ codegen-units = 1
 lto = true
 
 [features]
-default = []
+# The accepted renderer stack (RENDERING.md): image-exact on the E1M1 chain
+# route (VRAM/display FNV identical to the plain build) and 24.314 fps
+# against 21.219 there on 2026-09-02, so it is what the disc ships.
+default = [
+    "renderer-selection-cache",
+    "renderer-block-frustum",
+    "renderer-gpu-polygon-clip",
+    "renderer-cell-policy",
+    "renderer-cell-liquid-policy",
+    "renderer-gte-near-classification",
+    "renderer-quake-specialized-kernel",
+    "renderer-quake-baked-materialize",
+    "renderer-scratchpad-liquid-phase",
+]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
 ambient-regression = []

@@ -5395,7 +5395,18 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         command.args(["--features", feature]);
     }
     if let Some(map) = GUEST_LINK_MAP.get() {
-        command.env("RUSTFLAGS", format!("-C link-arg=-Map={}", map.display()));
+        // An environment RUSTFLAGS replaces game/.cargo/config.toml's
+        // `target.mipsel-sony-psx.rustflags` outright, so the delay-slot
+        // filler flag from that file has to travel with the map request or
+        // every map-requesting build silently loses it (the accepted-stack
+        // bench shipped nine load-delay hazards that way).
+        command.env(
+            "RUSTFLAGS",
+            format!(
+                "-C llvm-args=-disable-mips-df-backward-search -C link-arg=-Map={}",
+                map.display()
+            ),
+        );
     }
     run(&mut command)?;
     verify_guest_stage(&stage.path, &recipe)?;

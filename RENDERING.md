@@ -1644,6 +1644,27 @@ A 20% work cut converts roughly 95% of frames to two fields; 30% is needed
 before the worst window fits. Nothing measured so far offers a single change of
 that size.
 
+### Shipped: the accepted stack is the default build (2026-09-02)
+
+The disc used to build with no renderer features at all, so every accepted
+gain above stayed in the benches. `default` in `game/Cargo.toml` is now the
+accepted stack (selection cache, block frustum, GPU polygon clip, cell and
+cell-liquid policy, GTE near classification, the Quake-specialized kernel,
+baked materialization, scratchpad liquid phase). On the E1M1 chain bench
+against PSoXide 16decb2c, with the delay-slot filler flag in both builds:
+
+| build | route fps | VRAM / display FNV |
+|---|---|---|
+| plain (former shipping) | 21.219 | 0x6af3a0dee5cd6a90 / 0x621bf7ee03f427a4 |
+| accepted stack (now default) | 24.314 | identical |
+
+Two build traps found on the way, both fixed in `host/quake-build`: an
+environment `RUSTFLAGS` (set for link maps) replaced the cargo config's
+delay-slot filler flag, so every map-requesting build carried R3000
+load-delay hazards; and the E1M1 stall at waypoint 17 was one of those
+hazards in `place_mover`, not a harness desync. `PSoXide/tools/hazard_scan.py`
+proves an image clean.
+
 ## Visual checks
 
 The fixed E1M1 camera is stored in
