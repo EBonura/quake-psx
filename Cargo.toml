@@ -30,7 +30,7 @@ path = "tools/face-merge-census.rs"
 # The hydration helper and the guest SDK resolve from the same published
 # revision. The build verifies this lockfile source before copying any SDK
 # inputs into the content-addressed guest stage.
-psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "1dce6e350f1423b96aab24ecf514d331f7f16894" }
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "16decb2ca32a3444e64f984e32b4efb79e0002df" }
 quake-cook = { path = "crates/quake-cook" }
 quake-core = { path = "crates/quake-core" }
 quake-formats = { path = "crates/quake-formats" }
