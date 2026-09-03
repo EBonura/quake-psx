@@ -1659,8 +1659,14 @@ against PSoXide 16decb2c, with the delay-slot filler flag in both builds:
 | accepted stack (now default) | 24.314 | identical |
 | plus `renderer-screen-frustum` (default since 2026-09-03) | 24.440 | identical |
 
+| plus `renderer-liquid-half-rate` (default since 2026-09-03) | 24.694 (drift build vs 24.410) | water phase differs |
+
 The screen frustum was accepted above but had been left out of the default
-list; it is in now. The chain bench also writes `quake-psx.map` next to its
+list; it is in now. The liquid half-rate feature advances the turbulence
+phase two steps every second frame instead of one step every frame: the
+same warp speed, half the 64x64 resamples (4.8% of the chain route's
+instructions before). Water animates at ten updates a second; the
+canonical hashes differ only by the phase. The chain bench also writes `quake-psx.map` next to its
 disc so PC-line profiles of the bench build can be attributed.
 
 Two build traps found on the way, both fixed in `host/quake-build`: an

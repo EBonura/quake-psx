@@ -34,6 +34,7 @@ default = [
     "renderer-quake-baked-materialize",
     "renderer-scratchpad-liquid-phase",
     "renderer-screen-frustum",
+    "renderer-liquid-half-rate",
 ]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
@@ -259,6 +260,9 @@ renderer-cell-liquid-policy = ["renderer-cell-policy"]
 # Stage the current liquid turbulence phase in the PS1 scratchpad once, then
 # reuse it for every visible 64x64 liquid tile in that phase.
 renderer-scratchpad-liquid-phase = []
+# Liquid turbulence phase advances every second frame (same speed, half the
+# 64x64 resamples).
+renderer-liquid-half-rate = []
 # Keep the exact separate near-classification pass, but execute each retained
 # face's three-product inner-support test in the otherwise-unused second light
 # matrix row left live beside the four frustum planes.
