@@ -515,6 +515,9 @@ fn real_main() -> Result<()> {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
             let build = root.join("build-psoxide-e1m1-chain-bench");
+            fs::create_dir_all(&build)?;
+            // The map only adds a linker flag; it does not change the bytes.
+            request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
                 &root,
                 &build,

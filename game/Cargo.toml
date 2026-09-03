@@ -33,6 +33,7 @@ default = [
     "renderer-quake-specialized-kernel",
     "renderer-quake-baked-materialize",
     "renderer-scratchpad-liquid-phase",
+    "renderer-screen-frustum",
 ]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
