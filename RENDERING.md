@@ -1676,6 +1676,24 @@ load-delay hazards; and the E1M1 stall at waypoint 17 was one of those
 hazards in `place_mover`, not a harness desync. `PSoXide/tools/hazard_scan.py`
 proves an image clean.
 
+### Closed: sky lattice sample cache and i32 view rays (2026-09-03)
+
+`quake_core::sky::directional_texel` is 3.2% of the chain route's
+instructions (143 rays a frame, a square root and two divides each) and
+`screen_view_ray` computed them with nine 64-bit products. Branch
+`perf/sky-samples` makes the rays i32 (exact, pinned by
+`i32_view_ray_matches_i64`) and caches the lattice on the view rotation.
+
+```text
+cycles: 2,300,946,688   (baseline 2,300,375,338)
+fps:    24.743          (baseline 24.749, noise band 0.122)
+hashes: identical
+```
+
+Neutral: the digital-pad route turns almost every frame, so the cache
+rarely hits, and the ray arithmetic is not where the sky's cycles go. Not
+shipped; the branch stays for a route with a steadier camera.
+
 ## Visual checks
 
 The fixed E1M1 camera is stored in
