@@ -1657,6 +1657,11 @@ against PSoXide 16decb2c, with the delay-slot filler flag in both builds:
 |---|---|---|
 | plain (former shipping) | 21.219 | 0x6af3a0dee5cd6a90 / 0x621bf7ee03f427a4 |
 | accepted stack (now default) | 24.314 | identical |
+| plus `renderer-screen-frustum` (default since 2026-09-03) | 24.440 | identical |
+
+The screen frustum was accepted above but had been left out of the default
+list; it is in now. The chain bench also writes `quake-psx.map` next to its
+disc so PC-line profiles of the bench build can be attributed.
 
 Two build traps found on the way, both fixed in `host/quake-build`: an
 environment `RUSTFLAGS` (set for link maps) replaced the cargo config's
