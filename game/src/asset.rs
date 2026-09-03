@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 
+use psx_bsp::CompactPlane;
 use psx_bsp::resident::{
     IndexedVertices, MapLoadError as SharedMapLoadError, ResidentMap as SharedResidentMap,
     TEXTURE_ROW_BYTES, TEXTURE_VRAM_MAX_ROWS, TEXTURE_VRAM_WIDTH, TEXTURE_VRAM_X,
@@ -329,7 +330,7 @@ pub struct ResidentMap {
     map: EpisodeMap,
     index: Option<PsbIndex>,
     shared: SharedResidentMap,
-    collision_planes: Vec<Plane>,
+    collision_planes: Vec<CompactPlane>,
     render_textures: Vec<TextureInfo>,
     liquid_textures: Vec<ResidentLiquidTexture>,
     liquid_source: Vec<u8>,
@@ -457,7 +458,12 @@ impl ResidentMap {
             .get(0)
             .ok_or(MapLoadError::Format)?;
         self.collision_planes.clear();
-        self.collision_planes.extend(packed.iter());
+        self.collision_planes.extend(packed.iter().map(|plane| CompactPlane {
+            normal: plane.normal,
+            kind: plane.kind as u8,
+            sign_bits: 0,
+            distance: plane.distance,
+        }));
         self.render_textures.clear();
         self.render_textures.extend(textures.iter());
         self.world_render_head_node = world.head_nodes[0];
@@ -661,7 +667,7 @@ impl ResidentMap {
     /// Hot collision planes decoded once when the immutable map generation is
     /// committed. Same-map residency hits retain this working set unchanged.
     #[optimize(size)]
-    pub fn collision_planes(&self) -> &[Plane] {
+    pub fn collision_planes(&self) -> &[CompactPlane] {
         &self.collision_planes
     }
 

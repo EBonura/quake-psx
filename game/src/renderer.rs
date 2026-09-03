@@ -7035,7 +7035,7 @@ unsafe fn batch_vertices_mut(
 
 fn front_facing(map: &ResidentMap, face: Face, point: Vec3I32) -> bool {
     let plane = unsafe { *map.collision_planes().get_unchecked(face.plane as usize) };
-    front_facing_plane(plane, face.flags, point)
+    front_facing_plane(plane.decoded(), face.flags, point)
 }
 
 /// Copy one list entry between two slots of the same list, as eleven word
