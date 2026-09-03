@@ -6597,6 +6597,47 @@ const _: () =
 
 /// Draw Quake's two sky layers as a bounded view-ray background.
 ///
+type SkySamples = [[[i32; 2]; SKY_FOREGROUND_COLUMNS + 1]; SKY_FOREGROUND_ROWS + 1];
+
+/// Last frame's sky lattice samples with the view rotation and layer width
+/// that produced them. The guest is single-threaded and the renderer owns the
+/// sky pass, so a plain static is the whole synchronisation story.
+static mut SKY_SAMPLE_CACHE: ([[i16; 3]; 3], u8, bool, SkySamples) = (
+    [[0; 3]; 3],
+    0,
+    false,
+    [[[0; 2]; SKY_FOREGROUND_COLUMNS + 1]; SKY_FOREGROUND_ROWS + 1],
+);
+
+/// Return the sky lattice samples for `rotation`, recomputing them only when
+/// the rotation or the layer width changed since the previous call.
+///
+/// # Safety
+/// Must not be called re-entrantly; the returned reference aliases the
+/// cache and is valid until the next call.
+unsafe fn cached_sky_samples(rotation: [[i16; 3]; 3], width: u8) -> &'static SkySamples {
+    let cache = unsafe { &mut *core::ptr::addr_of_mut!(SKY_SAMPLE_CACHE) };
+    if !(cache.2 && cache.0 == rotation && cache.1 == width) {
+        for (row, sample_row) in cache.3.iter_mut().enumerate() {
+            let y = (row * SCREEN_HEIGHT as usize / SKY_FOREGROUND_ROWS) as i16;
+            for (column, sample) in sample_row.iter_mut().enumerate() {
+                let x = (column * SCREEN_WIDTH as usize / SKY_FOREGROUND_COLUMNS) as i16;
+                let ray = quake_core::sky::screen_view_ray(
+                    [x, y],
+                    [SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2],
+                    160,
+                    rotation,
+                );
+                *sample = quake_core::sky::directional_texel(ray, width);
+            }
+        }
+        cache.0 = rotation;
+        cache.1 = width;
+        cache.2 = true;
+    }
+    &cache.3
+}
+
 /// Visible sky brushes select the material but emit no geometry. The lattice
 /// is submitted behind the world, so those brushes remain apertures through
 /// which the background is visible. Unlike per-brush adaptive subdivision,
@@ -6641,20 +6682,11 @@ unsafe fn submit_view_ray_sky_background(
     let background_material =
         TextureMaterial::opaque(clut_texture(), texture.texture_page, (0x80, 0x80, 0x80));
 
-    let mut samples = [[[0i32; 2]; SKY_FOREGROUND_COLUMNS + 1]; SKY_FOREGROUND_ROWS + 1];
-    for (row, sample_row) in samples.iter_mut().enumerate() {
-        let y = (row * SCREEN_HEIGHT as usize / SKY_FOREGROUND_ROWS) as i16;
-        for (column, sample) in sample_row.iter_mut().enumerate() {
-            let x = (column * SCREEN_WIDTH as usize / SKY_FOREGROUND_COLUMNS) as i16;
-            let ray = quake_core::sky::screen_view_ray(
-                [x, y],
-                [SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2],
-                160,
-                view.rotation.m,
-            );
-            *sample = quake_core::sky::directional_texel(ray, width);
-        }
-    }
+    // The lattice samples depend on the view rotation and the layer width
+    // only: a frame whose camera did not turn reuses the previous frame's
+    // 143 rays (a square root and two divides each) instead of recomputing
+    // them. Scroll is applied per packet below, so the cache is exact.
+    let samples = unsafe { cached_sky_samples(view.rotation.m, width) };
 
     let mut next = output;
     // The tagged stream is linked by prepending packets. Stage the reset
