@@ -370,6 +370,8 @@ pub struct CollisionHull<'a> {
 
 impl<'a> CollisionHull<'a> {
     /// Wrap canonical records while retaining Quake's Z-up query boundary.
+    /// Host tools and tests only: the guest traces resident hulls.
+    #[cfg(not(target_arch = "mips"))]
     pub fn new(
         planes: RecordSlice<'a, Plane>,
         nodes: RecordSlice<'a, ClipNode>,
@@ -380,15 +382,20 @@ impl<'a> CollisionHull<'a> {
         })
     }
 
-    /// Wrap records decoded once by the resident-map owner.
-    pub const fn new_decoded(
-        planes: &'a [Plane],
+    /// Wrap compact planes and native clip nodes decoded once by the
+    /// resident-map owner. The walk trusts every index it follows.
+    ///
+    /// # Safety
+    /// As [`SharedCollisionHull::from_native_clip_nodes`]: the node lump must
+    /// have passed the shared loader's range validation.
+    pub const unsafe fn from_native_clip_nodes(
+        planes: &'a [psx_bsp::CompactPlane],
         nodes: &'a [ClipNode],
         head_node: i16,
-    ) -> Option<Self> {
-        Some(Self {
-            shared: SharedCollisionHull::new_decoded(planes, nodes, head_node),
-        })
+    ) -> Self {
+        Self {
+            shared: unsafe { SharedCollisionHull::from_native_clip_nodes(planes, nodes, head_node) },
+        }
     }
 
     pub fn point_contents(&self, point: Vec3I32) -> Option<i16> {
