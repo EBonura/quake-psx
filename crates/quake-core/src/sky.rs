@@ -60,17 +60,22 @@ pub fn screen_view_ray(
     projection: i16,
     world_to_view_q12: [[i16; 3]; 3],
 ) -> [i32; 3] {
+    // Every term is an i16 screen offset against a Q12 rotation entry, at
+    // most 2^15 * 2^12 = 2^27 in magnitude, so the three-term sum stays
+    // under 2^29 and the whole ray fits `i32`: three hardware multiplies per
+    // axis instead of the 64-bit software products this used to take
+    // (`i32_view_ray_matches_i64` pins the equivalence).
     let camera = [
-        i64::from(screen[0] - center[0]),
-        i64::from(screen[1] - center[1]),
-        i64::from(projection),
+        i32::from(screen[0] - center[0]),
+        i32::from(screen[1] - center[1]),
+        i32::from(projection),
     ];
     let mut world = [0i32; 3];
     for axis in 0..3 {
-        let value = camera[0] * i64::from(world_to_view_q12[0][axis])
-            + camera[1] * i64::from(world_to_view_q12[1][axis])
-            + camera[2] * i64::from(world_to_view_q12[2][axis]);
-        world[axis] = (value >> 12) as i32;
+        let value = camera[0] * i32::from(world_to_view_q12[0][axis])
+            + camera[1] * i32::from(world_to_view_q12[1][axis])
+            + camera[2] * i32::from(world_to_view_q12[2][axis]);
+        world[axis] = value >> 12;
     }
     world
 }
@@ -155,6 +160,61 @@ pub fn directional_uv(
 #[cfg(test)]
 mod tests {
     use super::{directional_texel, directional_uv, packet_quad_uv, screen_view_ray};
+
+    #[test]
+    fn i32_view_ray_matches_i64() {
+        fn reference(
+            screen: [i16; 2],
+            center: [i16; 2],
+            projection: i16,
+            rotation: [[i16; 3]; 3],
+        ) -> [i32; 3] {
+            let camera = [
+                i64::from(screen[0] - center[0]),
+                i64::from(screen[1] - center[1]),
+                i64::from(projection),
+            ];
+            let mut world = [0i32; 3];
+            for axis in 0..3 {
+                let value = camera[0] * i64::from(rotation[0][axis])
+                    + camera[1] * i64::from(rotation[1][axis])
+                    + camera[2] * i64::from(rotation[2][axis]);
+                world[axis] = (value >> 12) as i32;
+            }
+            world
+        }
+        // Rotation rows at the Q12 unit extremes and a mixed general rotation,
+        // over every screen position of the 320x240 lattice plus the i16
+        // extremes the signature admits.
+        let rotations = [
+            [[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]],
+            [[-4096, 0, 0], [0, -4096, 0], [0, 0, -4096]],
+            [[2896, -2896, 0], [1448, 1448, -3547], [2048, 2048, 2896]],
+            [[-1234, 3999, -707], [3000, 1000, 2500], [-2000, -1500, 3200]],
+        ];
+        let screens = [
+            [0i16, 0i16],
+            [319, 239],
+            [160, 120],
+            [32, 200],
+            [-32768, -32768],
+            [32767, 32767],
+            [32767, -32768],
+        ];
+        for rotation in rotations {
+            for screen in screens {
+                for projection in [160i16, 128, 320, -160, 32767] {
+                    for center in [[160i16, 120i16], [0, 0], [-32768, 32767]] {
+                        assert_eq!(
+                            screen_view_ray(screen, center, projection, rotation),
+                            reference(screen, center, projection, rotation),
+                            "screen {screen:?} center {center:?} projection {projection} rotation {rotation:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn i32_projection_matches_i64() {
