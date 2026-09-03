@@ -2356,6 +2356,11 @@ impl Renderer {
     /// frustum selection. The original immutable 64x64 sources remain in the
     /// resident map; a new phase overwrites their exact atlas rectangles.
     fn update_visible_liquid_tiles(&mut self, map: &ResidentMap, tick_60hz: u32) {
+        // Half-rate turbulence: the phase advances two steps every second
+        // frame at the fixed three-tick cadence instead of one step every
+        // frame, so the same warp speed costs half the 64x64 resamples.
+        #[cfg(feature = "renderer-liquid-half-rate")]
+        let tick_60hz = tick_60hz - tick_60hz % 6;
         let liquids = map.liquid_textures();
         if liquids.is_empty() {
             return;
