@@ -1770,3 +1770,20 @@ cargo run --release -- e1m1-chain-regress --psoxide ../PSoXide-quake
 
 Compare command counts, GPU estimates, displayed frames and route progress.
 Screenshots should also be checked before accepting a speed improvement.
+
+### 2026-09-04 second shared-stack pass
+
+The shared screen-rejection helpers stop once rejection is impossible, keeping
+all existing pairwise culling semantics. The shared alias-model table now
+compares the two-byte ID during lookup and decodes only the matching header.
+Generated MIPS previously called the 68-byte header decoder for every candidate
+and again for the match. Header-decoder work fell 20,500,452 -> 12,371,562
+instructions in the full E1M1-to-E1M2 route.
+
+Against c2329be with the same frontend and isolated stages, combined work fell
+1,788,228,760 -> 1,773,821,759 (-0.806%), and bus cycles fell
+2,256,390,660 -> 2,241,538,328 (-0.658%). Both runs retained the canonical
+display/VRAM hashes, all 60 waypoints, mechanism bits 0x7fff, mover sounds 0x07,
+and the E1M2 transition. No storage layout, physics, texture, model, or
+subdivision policy changed. PSoXide 26698622 contains the retained changes;
+its docs/perf-stack-pass-2026-09-04.md records the three-game comparison.
