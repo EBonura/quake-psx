@@ -5,9 +5,13 @@ target = "mipsel-sony-psx"
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
-[target.mipsel-sony-psx]
 # LLVM's MIPS delay-slot filler moves loads into branch delay slots without
 # re-checking the R3000 load-delay hazard, so the branch target (or the
-# fall-through) can read the register one instruction too early. The
-# backward search is the one that does it; keep the other two.
-rustflags = ["-C", "llvm-args=-disable-mips-df-backward-search"]
+# fall-through) can read the register one instruction too early. This used
+# to be held off with `-C llvm-args=-disable-mips-df-backward-search`, which
+# left a nop in 98% of the image's delay slots: 8% of the E1M1 route's work
+# instructions were those nops. The filler now runs, and quake-psx-build
+# reroutes the hazards it creates through PSoXide's post-link trampoline
+# patcher (`.psoxide/tools/hazard_patch.py`, HAZARD_TRAMPOLINES in psx-rt),
+# the way Cortex and hl-psx build. QUAKE_PSX_DELAY_SLOT_NOPS=1 restores the
+# flag for an A/B.
