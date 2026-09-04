@@ -4804,10 +4804,7 @@ impl Renderer {
         stats: &mut RenderStats,
     ) {
         let models = map.alias_models();
-        let Some(model) = (0..models.len()).find_map(|index| {
-            let model = models.model_at(index)?;
-            (model.header().id == input.weapon.model_id).then_some(model)
-        }) else {
+        let Some(model) = models.get(input.weapon.model_id) else {
             stats.packet_overflow_avoided = true;
             return;
         };

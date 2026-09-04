@@ -1787,3 +1787,17 @@ display/VRAM hashes, all 60 waypoints, mechanism bits 0x7fff, mover sounds 0x07,
 and the E1M2 transition. No storage layout, physics, texture, model, or
 subdivision policy changed. PSoXide 26698622 contains the retained changes;
 its docs/perf-stack-pass-2026-09-04.md records the three-game comparison.
+
+
+## 2026-09-04: use the shared retained lookup for the view weapon
+
+The view-model path still searched by repeatedly decoding full model headers,
+even after the shared AliasModelTable::get gained ID-only scanning. Route it
+through that shared method. The selected first matching model and missing-ID
+behavior are unchanged. Fresh 60190c7 / SDK 26698622 control and candidate
+complete the E1M1-to-E1M2 route twice with identical display and VRAM hashes.
+Work instructions fall 1,773,825,096 -> 1,770,087,551 (-0.211%); bus cycles
+2,242,109,628 -> 2,235,254,601 (-0.306%). FPS 25.392 -> 25.470 is below the
+0.122-FPS layout band, so it is not the evidence for acceptance. The directly
+removed header decoding and reduced route work support retaining this change.
+Raw controls and captures: /tmp/astra-architecture-pass-20260904/quake-*.
