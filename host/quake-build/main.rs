@@ -6545,6 +6545,19 @@ change; a delta under this is code placement, not work)\n"
         .unwrap_or(3_800);
     let cue = regression.join("quake-psx.cue");
     let first = run_e1m1_chain_once(frontend, &cue, &capture.join("run-a"), steps, guest_frames)?;
+    let pc_lines = capture.join("run-a/pcline.csv");
+    let link_map = regression.join("quake-psx.map");
+    let work_note = if pc_lines.is_file() && link_map.is_file() {
+        format!(
+            "full_level_work_instructions={} (retired outside the vblank spin and CD reads; \
+the number to rank SDK and renderer work by, fps being field-quantised)\n",
+            work_instructions(&pc_lines, &link_map)?
+        )
+    } else if capture_name == "e1m1-chain-bench" {
+        "full_level_work_instructions=unmeasured (set QUAKE_PSX_PC_LINE_LOG=1)\n".to_string()
+    } else {
+        String::new()
+    };
     let second = run_e1m1_chain_once(frontend, &cue, &capture.join("run-b"), steps, guest_frames)?;
     if first != second {
         return Err(format!(
@@ -6619,6 +6632,7 @@ trigger_changelevel -> e1m2\n\
          indexed_projection_unique={}\n\
          {subdivision_cache_note}\
          {noise_note}\
+         {work_note}\
          vram_fnv1a_64=0x{vram_hash:016x}\n\
          display_fnv1a_64=0x{display_hash:016x}\n",
         probe.total_frames,
@@ -8747,7 +8761,71 @@ fn run_frontend(
     if let Some(frames) = guest_frames {
         command.arg("--guest-frames").arg(frames.to_string());
     }
+    // Opt-in exact instruction histogram, the basis of the chain bench's
+    // work-instruction line (it roughly doubles the emulation time).
+    if env::var_os("QUAKE_PSX_PC_LINE_LOG").is_some() {
+        command.arg("--pc-line-log").arg(capture.join("pcline.csv"));
+    }
     output(&mut command)
+}
+
+/// Retired guest instructions outside the vblank spin (`gpu_end_frame`) and
+/// the CD sector reads, from a frontend `--pc-line-log` and the guest link
+/// map: the chain route's work, which its fps cannot show. Frames cost whole
+/// fields, so a work change that does not move a frame across a field
+/// boundary leaves fps and elapsed cycles untouched (three different SDKs
+/// measured 24.842 fps to the digit on 2026-09-04 while their work differed
+/// by 6%).
+fn work_instructions(pc_lines: &Path, link_map: &Path) -> Result<u64> {
+    let mut ranges: Vec<(u32, u32, bool)> = Vec::new();
+    for line in fs::read_to_string(link_map)?.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let (Ok(start), Ok(size)) = (
+            u32::from_str_radix(fields[0], 16),
+            u32::from_str_radix(fields[2], 16),
+        ) else {
+            continue;
+        };
+        let name = fields[4..].join(" ");
+        if size == 0
+            || !(0x8000_0000..=0xbfff_ffff).contains(&start)
+            || name.starts_with('.')
+            || name.contains('/')
+        {
+            continue;
+        }
+        let idle = name.contains("gpu_end_frame")
+            || name.contains("read_sector")
+            || name.contains("try_read_stream_sector");
+        ranges.push((start, start.wrapping_add(size), idle));
+    }
+    ranges.sort_unstable();
+    let mut work = 0u64;
+    let pc_text = fs::read_to_string(pc_lines)?;
+    let mut lines = pc_text.lines();
+    let header: Vec<&str> = lines.next().unwrap_or("").split(',').collect();
+    let pc_column = header.iter().position(|c| *c == "line_pc").ok_or("pc-line log has no line_pc column")?;
+    let count_column = header.iter().position(|c| *c == "instructions").ok_or("pc-line log has no instructions column")?;
+    for line in lines {
+        let fields: Vec<&str> = line.split(',').collect();
+        let (Some(pc), Some(count)) = (fields.get(pc_column), fields.get(count_column)) else {
+            continue;
+        };
+        let pc = u32::from_str_radix(pc.trim_start_matches("0x"), 16)?;
+        let count: u64 = count.parse()?;
+        let index = ranges.partition_point(|range| range.0 <= pc);
+        let idle = index > 0 && {
+            let range = ranges[index - 1];
+            pc < range.1 && range.2
+        };
+        if !idle {
+            work += count;
+        }
+    }
+    Ok(work)
 }
 
 fn initial_load_metrics(route_csv: &str, cd_csv: &str) -> Result<(u64, usize)> {

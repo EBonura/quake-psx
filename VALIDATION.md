@@ -72,6 +72,7 @@ cargo run --release -- start-route-regress --psoxide ../PSoXide-quake
 cargo run --release -- visual-parity-regress --psoxide ../PSoXide-quake
 cargo run --release -- e1m1-chain-regress --psoxide ../PSoXide-quake
 cargo run --release -- e1m1-chain-bench --psoxide ../PSoXide-quake
+QUAKE_PSX_PC_LINE_LOG=1 cargo run --release -- e1m1-chain-bench --psoxide ../PSoXide-quake
 cargo run --release -- e1m2-e1m3-route-regress --psoxide ../PSoXide-quake
 cargo run --release -- combat-regress --psoxide ../PSoXide-quake
 cargo run --release -- monster-regress --psoxide ../PSoXide-quake
@@ -91,7 +92,7 @@ cargo run --release -- ambient-regress --psoxide ../PSoXide-quake
 | `start-route-regress` | Start map movement, buttons and slipgate entry |
 | `visual-parity-regress` | Fixed E1M1 camera, display hashes and GPU state |
 | `e1m1-chain-regress` | A played E1M1 route with mechanisms, combat and exit |
-| `e1m1-chain-bench` | The same E1M1 route at a fixed simulation step for comparable performance measurements |
+| `e1m1-chain-bench` | The same E1M1 route at a fixed simulation step for comparable performance measurements. Its fps and elapsed cycles are field-quantised wall numbers; with `QUAKE_PSX_PC_LINE_LOG=1` it also prints `full_level_work_instructions` (retired outside the vblank spin and CD reads), the number that ranks SDK and renderer work |
 | `e1m2-e1m3-route-regress` | Linked routes through E1M2 and E1M3 into E1M4 |
 | `combat-regress` | Shotgun firing, damage, pain, death and view-model animation |
 | `monster-regress` | Authored E1M1 monster population and basic behavior |
