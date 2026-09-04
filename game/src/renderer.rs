@@ -1790,9 +1790,12 @@ unsafe fn materialize_quake_baked_inline(
             "beq   $6, $zero, 4f",
             "lui   $15, 0xffff",
             "2:",
-            "lhu   $8, 0($4)",
+            // One word load for the corner's index+UV; the index is its low
+            // half (a separate lhu of the same address was a second RAM
+            // load per corner).
             "lw    $9, 0($4)",
             "lw    $10, 4($4)",
+            "andi  $8, $9, 0xffff",
             "sll   $11, $8, 1",
             "sll   $12, $8, 2",
             "addu  $11, $11, $12",
