@@ -5397,23 +5397,40 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     if let Some(feature) = feature {
         command.args(["--features", feature]);
     }
+    // Load-delay hazards from LLVM's delay-slot filler are rerouted through
+    // trampolines after the link (below), like Cortex and hl-psx. The old
+    // `-disable-mips-df-backward-search` flag left a nop in 98% of the delay
+    // slots, 8% of the route's work instructions; it stays available for an
+    // A/B through QUAKE_PSX_DELAY_SLOT_NOPS=1.
+    let delay_slot_nops = env::var_os("QUAKE_PSX_DELAY_SLOT_NOPS").is_some();
+    let mut rustflags = Vec::new();
+    if delay_slot_nops {
+        rustflags.push("-C llvm-args=-disable-mips-df-backward-search".to_string());
+    }
     if let Some(map) = GUEST_LINK_MAP.get() {
+        rustflags.push(format!("-C link-arg=-Map={}", map.display()));
+    }
+    if !rustflags.is_empty() {
         // An environment RUSTFLAGS replaces game/.cargo/config.toml's
-        // `target.mipsel-sony-psx.rustflags` outright, so the delay-slot
-        // filler flag from that file has to travel with the map request or
-        // every map-requesting build silently loses it (the accepted-stack
-        // bench shipped nine load-delay hazards that way).
-        command.env(
-            "RUSTFLAGS",
-            format!(
-                "-C llvm-args=-disable-mips-df-backward-search -C link-arg=-Map={}",
-                map.display()
-            ),
-        );
+        // target rustflags outright, so everything the build needs travels
+        // together here.
+        command.env("RUSTFLAGS", rustflags.join(" "));
     }
     run(&mut command)?;
     verify_guest_stage(&stage.path, &recipe)?;
     let staged_exe = game_exe(&stage.path);
+    if !delay_slot_nops {
+        // Reroute every branch whose delay-slot load the branch target (or
+        // fall-through, or jump-table target) consumes one instruction too
+        // early through psx-rt's HAZARD_TRAMPOLINES, then rescan; a hazard
+        // the patcher cannot fix fails the build.
+        // The stage carries only the SDK link closure; the tool lives in
+        // the hydrated checkout.
+        let patcher = root.join(".psoxide/tools/hazard_patch.py");
+        let mut patch = Command::new("python3");
+        patch.arg(&patcher).arg(&staged_exe);
+        run(&mut patch)?;
+    }
     audit_console_image(&staged_exe)?;
     let destination = game_exe(root);
     fs::create_dir_all(
