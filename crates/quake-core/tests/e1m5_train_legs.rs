@@ -7,9 +7,7 @@
 //! the real numbers here means the arithmetic can no longer drift silently.
 
 use quake_core::train::QuakeTrain;
-use quake_formats::{
-    BrushModel, LumpKind, MapEntity, PsbIndex, RecordSlice, SliceReader,
-};
+use quake_formats::{BrushModel, LumpKind, MapEntity, PsbIndex, RecordSlice, SliceReader};
 
 const CLASS_FUNC_TRAIN: u8 = 0x11;
 
@@ -42,8 +40,8 @@ fn every_authored_train_leg_takes_a_believable_number_of_ticks() {
         let bytes = map(name);
         let mut reader = SliceReader::new(&bytes);
         let index = PsbIndex::read(&mut reader).expect("psb index");
-        let entities =
-            RecordSlice::<MapEntity>::new(lump(&bytes, &index, LumpKind::Entities)).expect("entities");
+        let entities = RecordSlice::<MapEntity>::new(lump(&bytes, &index, LumpKind::Entities))
+            .expect("entities");
         let models =
             RecordSlice::<BrushModel>::new(lump(&bytes, &index, LumpKind::Models)).expect("models");
         for entity_index in 0..entities.len() {

@@ -25,13 +25,7 @@ pub struct TextGlyphs<'a> {
 
 impl<'a> TextGlyphs<'a> {
     #[optimize(size)]
-    pub const fn new(
-        text: &'a str,
-        x: i16,
-        y: i16,
-        glyph_width: i16,
-        glyph_height: i16,
-    ) -> Self {
+    pub const fn new(text: &'a str, x: i16, y: i16, glyph_width: i16, glyph_height: i16) -> Self {
         Self {
             bytes: text.as_bytes(),
             cursor: 0,
@@ -106,9 +100,24 @@ mod tests {
         let mut saw_phone = false;
         for glyph in TextGlyphs::new(MESSAGE, x, 96, 8, 8) {
             count += 1;
-            saw_first |= glyph == TextGlyph { character: b'T', x: 40, y: 96 };
-            saw_register |= glyph == TextGlyph { character: b'P', x: 40, y: 112 };
-            saw_phone |= glyph == TextGlyph { character: b'C', x: 40, y: 128 };
+            saw_first |= glyph
+                == TextGlyph {
+                    character: b'T',
+                    x: 40,
+                    y: 96,
+                };
+            saw_register |= glyph
+                == TextGlyph {
+                    character: b'P',
+                    x: 40,
+                    y: 112,
+                };
+            saw_phone |= glyph
+                == TextGlyph {
+                    character: b'C',
+                    x: 40,
+                    y: 128,
+                };
             assert!(glyph.x >= 0 && glyph.x + 8 <= 320);
         }
         assert_eq!(count, 64);

@@ -875,11 +875,7 @@ fn trace_segment(scene: &Scene, args: &[String]) {
         trace.normal.y,
         trace.normal.z
     );
-    let world = scene
-        .map
-        .brush_models()
-        .get(0)
-        .expect("world brush model");
+    let world = scene.map.brush_models().get(0).expect("world brush model");
     let mut render_scratch = RenderTraceScratch::default();
     let mut render_trace = Trace::default();
     let render_ok = trace_render_bsp_into(

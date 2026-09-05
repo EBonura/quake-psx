@@ -251,11 +251,11 @@ fn parse_sprite_model(bytes: &[u8]) -> Result<SpriteModel, CookError> {
         i32_at(header, 24, "sprite frame count")?,
         "sprite frame count",
     )?;
-    if max_width > u8::MAX as usize
-        || max_height > u8::MAX as usize
-        || declared_frames > MAX_FRAMES
+    if max_width > u8::MAX as usize || max_height > u8::MAX as usize || declared_frames > MAX_FRAMES
     {
-        return Err(CookError::new("sprite exceeds PSX dimensions or frame limit"));
+        return Err(CookError::new(
+            "sprite exceeds PSX dimensions or frame limit",
+        ));
     }
     let beam_length = f32_at(header, 28)?
         .round()
@@ -266,7 +266,12 @@ fn parse_sprite_model(bytes: &[u8]) -> Result<SpriteModel, CookError> {
         let frame_type = i32_at(bytes, cursor, "sprite frame type")?;
         cursor += 4;
         if frame_type == 0 {
-            frames.push(parse_sprite_frame(bytes, &mut cursor, max_width, max_height)?);
+            frames.push(parse_sprite_frame(
+                bytes,
+                &mut cursor,
+                max_width,
+                max_height,
+            )?);
             continue;
         }
         if frame_type != 1 {
@@ -291,7 +296,12 @@ fn parse_sprite_model(bytes: &[u8]) -> Result<SpriteModel, CookError> {
         }
         cursor += interval_bytes;
         for _ in 0..group_frames {
-            frames.push(parse_sprite_frame(bytes, &mut cursor, max_width, max_height)?);
+            frames.push(parse_sprite_frame(
+                bytes,
+                &mut cursor,
+                max_width,
+                max_height,
+            )?);
         }
         if frames.len() > MAX_FRAMES {
             return Err(CookError::new("sprite exceeds PSX frame limit"));
@@ -319,7 +329,10 @@ fn parse_sprite_frame(
     let header = checked_slice(bytes, *cursor, 16, "sprite frame header")?;
     let left = i32_at(header, 0, "sprite frame left")?;
     let up = i32_at(header, 4, "sprite frame up")?;
-    let width = positive_usize(i32_at(header, 8, "sprite frame width")?, "sprite frame width")?;
+    let width = positive_usize(
+        i32_at(header, 8, "sprite frame width")?,
+        "sprite frame width",
+    )?;
     let height = positive_usize(
         i32_at(header, 12, "sprite frame height")?,
         "sprite frame height",

@@ -4832,7 +4832,13 @@ impl EntityScene {
     ) -> bool {
         let Some(world) = map.brush_models().get(0).and_then(|model| {
             model.head_nodes.get(hull_index).and_then(|&head| {
-                Some(unsafe { CollisionHull::from_native_clip_nodes(map.collision_planes(), map.collision_clip_nodes(), head) })
+                Some(unsafe {
+                    CollisionHull::from_native_clip_nodes(
+                        map.collision_planes(),
+                        map.collision_clip_nodes(),
+                        head,
+                    )
+                })
             })
         }) else {
             return false;
@@ -4863,11 +4869,13 @@ impl EntityScene {
             let Some(&head_node) = model.head_nodes.get(hull_index) else {
                 return false;
             };
-            let Some(hull) = Some(unsafe { CollisionHull::from_native_clip_nodes(
-                map.collision_planes(),
-                map.collision_clip_nodes(),
-                head_node,
-            ) }) else {
+            let Some(hull) = Some(unsafe {
+                CollisionHull::from_native_clip_nodes(
+                    map.collision_planes(),
+                    map.collision_clip_nodes(),
+                    head_node,
+                )
+            }) else {
                 return false;
             };
             let mut candidate = Trace::default();
@@ -6322,11 +6330,13 @@ impl EntityScene {
             z: rider.origin.z.saturating_sub(GROUND_PROBE_Q12),
         };
         let world_model = map.brush_models().get(0)?;
-        let world = Some(unsafe { CollisionHull::from_native_clip_nodes(
-            map.collision_planes(),
-            map.collision_clip_nodes(),
-            world_model.head_nodes[1],
-        ) })?;
+        let world = Some(unsafe {
+            CollisionHull::from_native_clip_nodes(
+                map.collision_planes(),
+                map.collision_clip_nodes(),
+                world_model.head_nodes[1],
+            )
+        })?;
         let mut scratch = TraceScratch::default();
         let mut best = Trace::default();
         if !world.trace_into(&rider.origin, &below, &mut scratch, &mut best) {
@@ -6343,11 +6353,13 @@ impl EntityScene {
             let Some(model) = map.brush_models().get(entity.model_index as usize) else {
                 continue;
             };
-            let Some(hull) = Some(unsafe { CollisionHull::from_native_clip_nodes(
-                map.collision_planes(),
-                map.collision_clip_nodes(),
-                model.head_nodes[1],
-            ) }) else {
+            let Some(hull) = Some(unsafe {
+                CollisionHull::from_native_clip_nodes(
+                    map.collision_planes(),
+                    map.collision_clip_nodes(),
+                    model.head_nodes[1],
+                )
+            }) else {
                 continue;
             };
             let mut candidate = Trace::default();
@@ -8236,11 +8248,13 @@ fn player_origin_from_mins(player_mins: Vec3I32) -> Vec3I32 {
 
 fn world_point_contents(map: &ResidentMap, point: Vec3I32) -> Option<i16> {
     let world = map.brush_models().get(0)?;
-    Some(unsafe { CollisionHull::from_native_clip_nodes(
-        map.collision_planes(),
-        map.collision_clip_nodes(),
-        world.head_nodes[0],
-    ) })?
+    Some(unsafe {
+        CollisionHull::from_native_clip_nodes(
+            map.collision_planes(),
+            map.collision_clip_nodes(),
+            world.head_nodes[0],
+        )
+    })?
     .point_contents(point)
 }
 
@@ -8467,11 +8481,13 @@ impl MovementTrace for SceneCollision<'_> {
         scratch: &mut TraceScratch,
         output: &mut MovementTraceResult,
     ) -> bool {
-        let Some(world) = Some(unsafe { CollisionHull::from_native_clip_nodes(
-            self.map.collision_planes(),
-            self.map.collision_clip_nodes(),
-            self.world_head_node,
-        ) }) else {
+        let Some(world) = Some(unsafe {
+            CollisionHull::from_native_clip_nodes(
+                self.map.collision_planes(),
+                self.map.collision_clip_nodes(),
+                self.world_head_node,
+            )
+        }) else {
             return false;
         };
         let mut best = Trace::default();
@@ -8508,11 +8524,13 @@ impl MovementTrace for SceneCollision<'_> {
             let Some(model) = self.map.brush_models().get(entity.model_index as usize) else {
                 continue;
             };
-            let Some(hull) = Some(unsafe { CollisionHull::from_native_clip_nodes(
-                self.map.collision_planes(),
-                self.map.collision_clip_nodes(),
-                model.head_nodes[1],
-            ) }) else {
+            let Some(hull) = Some(unsafe {
+                CollisionHull::from_native_clip_nodes(
+                    self.map.collision_planes(),
+                    self.map.collision_clip_nodes(),
+                    model.head_nodes[1],
+                )
+            }) else {
                 continue;
             };
             let mut candidate = Trace::default();

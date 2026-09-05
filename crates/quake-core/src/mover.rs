@@ -391,8 +391,7 @@ impl QuakeMover {
             // `door_blocked` reverses exactly like `plat_crush` does, guarded
             // by `if (self.wait >= 0)`. `fd_secret_blocked` has no such branch,
             // and `func_button` has no `blocked` function at all.
-            crush_reverses: class == CLASS_FUNC_PLAT
-                || (class == CLASS_FUNC_DOOR && !hold_open),
+            crush_reverses: class == CLASS_FUNC_PLAT || (class == CLASS_FUNC_DOOR && !hold_open),
             plat_travel_units: if class == CLASS_FUNC_PLAT {
                 let travel =
                     (open_offset.z.saturating_abs() >> 12).clamp(0, i32::from(i16::MAX)) as i16;

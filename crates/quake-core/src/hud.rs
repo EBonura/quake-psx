@@ -77,12 +77,7 @@ impl PainFaceTimer {
 /// VRAM origins advance by 12 words in 8bpp mode. Keeping this calculation in
 /// texel space prevents the ammo value from drifting underneath its icon.
 #[optimize(size)]
-pub const fn right_aligned_counter_x(
-    icon_x: i16,
-    digit_width: i16,
-    gap: i16,
-    value: u16,
-) -> i16 {
+pub const fn right_aligned_counter_x(icon_x: i16, digit_width: i16, gap: i16, value: u16) -> i16 {
     let digits = if value >= 100 {
         3
     } else if value >= 10 {
@@ -98,48 +93,13 @@ impl HudView {
     pub const fn from_inventory(inventory: Inventory) -> Self {
         let (ammo_kind, ammo_label, weapon_label, uses_ammo) = match inventory.active_weapon() {
             Weapon::Axe => (None, "AXE", "AXE", false),
-            Weapon::Shotgun => (
-                Some(AmmoKind::Shells),
-                "SHELLS",
-                "SHOTGUN",
-                true,
-            ),
-            Weapon::SuperShotgun => (
-                Some(AmmoKind::Shells),
-                "SHELLS",
-                "S.SHOT",
-                true,
-            ),
-            Weapon::Nailgun => (
-                Some(AmmoKind::Nails),
-                "NAILS",
-                "NAILGUN",
-                true,
-            ),
-            Weapon::SuperNailgun => (
-                Some(AmmoKind::Nails),
-                "NAILS",
-                "S.NAIL",
-                true,
-            ),
-            Weapon::GrenadeLauncher => (
-                Some(AmmoKind::Rockets),
-                "ROCKETS",
-                "GRENADE",
-                true,
-            ),
-            Weapon::RocketLauncher => (
-                Some(AmmoKind::Rockets),
-                "ROCKETS",
-                "ROCKET",
-                true,
-            ),
-            Weapon::Lightning => (
-                Some(AmmoKind::Cells),
-                "CELLS",
-                "THUNDER",
-                true,
-            ),
+            Weapon::Shotgun => (Some(AmmoKind::Shells), "SHELLS", "SHOTGUN", true),
+            Weapon::SuperShotgun => (Some(AmmoKind::Shells), "SHELLS", "S.SHOT", true),
+            Weapon::Nailgun => (Some(AmmoKind::Nails), "NAILS", "NAILGUN", true),
+            Weapon::SuperNailgun => (Some(AmmoKind::Nails), "NAILS", "S.NAIL", true),
+            Weapon::GrenadeLauncher => (Some(AmmoKind::Rockets), "ROCKETS", "GRENADE", true),
+            Weapon::RocketLauncher => (Some(AmmoKind::Rockets), "ROCKETS", "ROCKET", true),
+            Weapon::Lightning => (Some(AmmoKind::Cells), "CELLS", "THUNDER", true),
         };
         let powerups = inventory.powerups();
         Self {

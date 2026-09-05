@@ -69,8 +69,9 @@ fn category_rate_hz(source_name: &str) -> u32 {
         // 11,025 Hz source. Spreading this tiny reduction across the local
         // bestiary bank makes room for the three original menu cues without
         // sacrificing a sound or audibly crushing one long sample.
-        "soldier" | "dog" | "ogre" | "demon" | "wizard" | "zombie" | "knight"
-        | "shambler" => 10_500,
+        "soldier" | "dog" | "ogre" | "demon" | "wizard" | "zombie" | "knight" | "shambler" => {
+            10_500
+        }
         _ => 11_025,
     }
 }
@@ -278,7 +279,9 @@ fn encode_selected(
         // needs this because its ordinary doors already occupy drclos4's
         // legacy ID with the world-variant sample, while medieval secret
         // doors require the real drclos4 on their own callback channel.
-        let pak_source_name = source_name.split_once('#').map_or(source_name.as_str(), |pair| pair.0);
+        let pak_source_name = source_name
+            .split_once('#')
+            .map_or(source_name.as_str(), |pair| pair.0);
         let wav = pak.require(pak_source_name)?;
         let loop_start = wav_cue_loop_start(wav).map_err(|error| {
             CookError::new(format!(

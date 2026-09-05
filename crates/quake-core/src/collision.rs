@@ -394,7 +394,9 @@ impl<'a> CollisionHull<'a> {
         head_node: i16,
     ) -> Self {
         Self {
-            shared: unsafe { SharedCollisionHull::from_native_clip_nodes(planes, nodes, head_node) },
+            shared: unsafe {
+                SharedCollisionHull::from_native_clip_nodes(planes, nodes, head_node)
+            },
         }
     }
 

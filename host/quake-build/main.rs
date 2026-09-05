@@ -1568,8 +1568,7 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentLevel2StreamBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-stream-bench");
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-stream-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -1591,8 +1590,7 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentLevel2ScatterBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-scatter-bench");
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-scatter-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -1614,8 +1612,8 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentLevel2ColdCacheBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build = root
-                .join("build-psoxide-e1m1-gpu-polygon-resident-level2-cold-cache-bench");
+            let build =
+                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-cold-cache-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -1659,8 +1657,7 @@ fn real_main() -> Result<()> {
         Action::E1m1GpuPolygonResidentBaseCacheFastBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-base-cache-fast-bench");
+            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-base-cache-fast-bench");
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(
@@ -8824,8 +8821,14 @@ fn work_instructions(pc_lines: &Path, link_map: &Path) -> Result<u64> {
     let pc_text = fs::read_to_string(pc_lines)?;
     let mut lines = pc_text.lines();
     let header: Vec<&str> = lines.next().unwrap_or("").split(',').collect();
-    let pc_column = header.iter().position(|c| *c == "line_pc").ok_or("pc-line log has no line_pc column")?;
-    let count_column = header.iter().position(|c| *c == "instructions").ok_or("pc-line log has no instructions column")?;
+    let pc_column = header
+        .iter()
+        .position(|c| *c == "line_pc")
+        .ok_or("pc-line log has no line_pc column")?;
+    let count_column = header
+        .iter()
+        .position(|c| *c == "instructions")
+        .ok_or("pc-line log has no instructions column")?;
     for line in lines {
         let fields: Vec<&str> = line.split(',').collect();
         let (Some(pc), Some(count)) = (fields.get(pc_column), fields.get(count_column)) else {

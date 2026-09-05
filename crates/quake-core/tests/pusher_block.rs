@@ -15,9 +15,7 @@ use quake_core::collision::TraceScratch;
 use quake_core::movement::{MovementTrace, MovementTraceResult};
 use quake_core::push::{penetrates, push_move, BlockCrush, RiderBody};
 use quake_core::train::{QuakeTrain, TrainState, TRAIN_BLOCK_COOLDOWN_TICKS};
-use quake_formats::{
-    BrushModel, LumpKind, MapEntity, PsbIndex, RecordSlice, SliceReader, Vec3I32,
-};
+use quake_formats::{BrushModel, LumpKind, MapEntity, PsbIndex, RecordSlice, SliceReader, Vec3I32};
 
 const CLASS_FUNC_TRAIN: u8 = 0x11;
 
@@ -100,8 +98,8 @@ const FRAME_TICKS: usize = 4;
 fn moving_train(bytes: &[u8]) -> (QuakeTrain, BrushModel, RecordSlice<'_, MapEntity>) {
     let mut reader = SliceReader::new(bytes);
     let index = PsbIndex::read(&mut reader).expect("psb index");
-    let entities = RecordSlice::<MapEntity>::new(lump(bytes, &index, LumpKind::Entities))
-        .expect("entities");
+    let entities =
+        RecordSlice::<MapEntity>::new(lump(bytes, &index, LumpKind::Entities)).expect("entities");
     let models =
         RecordSlice::<BrushModel>::new(lump(bytes, &index, LumpKind::Models)).expect("models");
     for entity_index in 0..entities.len() {
@@ -360,8 +358,7 @@ fn every_authored_body_a_pusher_can_carry_is_accounted_for() {
 
         for pusher_index in 0..entities.len() {
             let pusher = entities.get(pusher_index).expect("entity");
-            if pusher.model >= 0
-                || !matches!(pusher.class_name, CLASS_FUNC_PLAT | CLASS_FUNC_TRAIN)
+            if pusher.model >= 0 || !matches!(pusher.class_name, CLASS_FUNC_PLAT | CLASS_FUNC_TRAIN)
             {
                 continue;
             }
