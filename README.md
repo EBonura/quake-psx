@@ -9,8 +9,9 @@ with the [PSoXide](https://github.com/EBonura/PSoXide) SDK.
 
 The port includes Start and E1M1 through E1M8, the shareware weapons and
 monsters, BSP collision, moving brushes, triggers, audio, menus, two HUD modes,
-layered sky and turbulent water. It is playable, but still needs more
-performance work and a complete test pass on original hardware.
+layered sky and turbulent water. It has been tested extensively on original
+PlayStation hardware and in emulators. Performance work and compatibility
+improvements are ongoing.
 
 ## Lineage
 
@@ -52,7 +53,7 @@ locally.
 | Presentation | Minimal and Classic HUDs, menus, sprites, sky, water, screen blends and positional audio |
 | Target | Original PlayStation at 320x240 |
 | Performance | 30 fps goal; route measurements and their SDK revisions are recorded in [RENDERING.md](RENDERING.md) |
-| Hardware | Emulator-tested; the final physical-console pass is still pending |
+| Hardware | Extensively tested on original PlayStation hardware and in emulators |
 
 See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
 [VALIDATION.md](VALIDATION.md) for the test commands and current limits.
