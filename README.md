@@ -58,33 +58,41 @@ See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
 ### Requirements
 
 - Rust installed with [rustup](https://rustup.rs/)
-- `curl` and `unzip`
-- `7z` or `7zz`
-- a clean PSoXide checkout at the revision below
+- Host C/C++ build tools/linker for the Rust host executables
+- `curl`, `unzip`, and `7z` or `7zz` for the shareware archive
+- Git and an authenticated GitHub CLI (`gh auth login`); release builds verify
+  that the pinned PSoXide revision is reachable from its `main` branch
+- Python 3 and `mipsel-none-elf-objdump` for guest validation tools
+
+A normal build fetches its pinned dependency automatically. No sibling
+PSoXide checkout is required:
+
+```sh
+git clone https://github.com/EBonura/quake-psx.git
+cd quake-psx
+cargo run --locked --release -- build
+```
+
+The SDK, engine and audio cooker required by this release are retained at a
+validated pre-split PSoXide revision. Current SDK-only `main` cannot substitute
+for that combined source. For an explicit local source override, use a clean
+worktree at the exact revision below.
 
 The current PSoXide revision is:
 
 ```text
-c2c4b90de6f0c836803c6eba02775814a944dafa
+8df242b353b8a3664c1d2ed20622d692d1349306
 ```
 
 Create a worktree for that revision:
 
 ```sh
 git -C /path/to/PSoXide worktree add ../PSoXide-quake \
-  c2c4b90de6f0c836803c6eba02775814a944dafa
+  8df242b353b8a3664c1d2ed20622d692d1349306
 ```
 
-The Quake crates use local paths into an ignored `.psoxide/` directory. Hydrate
-it once on a fresh checkout:
-
-```sh
-cargo run --manifest-path ../PSoXide-quake/tools/psoxide-link/Cargo.toml -- \
-  --from ../PSoXide-quake \
-  --into /path/to/quake-psx/.psoxide
-```
-
-Build the standalone disc:
+The builder hydrates the selected source into ignored `.psoxide/`. Build
+the standalone disc with the explicit local override:
 
 ```sh
 cargo run --locked --release -- build --psoxide ../PSoXide-quake
