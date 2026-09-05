@@ -428,20 +428,27 @@ fn build_portals(nodes: &[Node], leaves: &[Leaf], planes: &[Plane]) -> Result<Po
             };
             let other = graph.portals[portal].nodes[1 - side];
             graph.detach(portal, other);
-            let (front_piece, back_piece) =
-                split_winding(&graph.portals[portal].winding, &plane);
+            let (front_piece, back_piece) = split_winding(&graph.portals[portal].winding, &plane);
             let front_piece = front_piece.filter(|w| !winding_is_tiny(w));
             let back_piece = back_piece.filter(|w| !winding_is_tiny(w));
             match (front_piece, back_piece) {
                 (None, None) => graph.portals[portal].dropped = true,
                 (Some(w), None) => {
                     graph.portals[portal].winding = w;
-                    let (a, b) = if side == 0 { (front, other) } else { (other, front) };
+                    let (a, b) = if side == 0 {
+                        (front, other)
+                    } else {
+                        (other, front)
+                    };
                     graph.attach(portal, a, b);
                 }
                 (None, Some(w)) => {
                     graph.portals[portal].winding = w;
-                    let (a, b) = if side == 0 { (back, other) } else { (other, back) };
+                    let (a, b) = if side == 0 {
+                        (back, other)
+                    } else {
+                        (other, back)
+                    };
                     graph.attach(portal, a, b);
                 }
                 (Some(front_w), Some(back_w)) => {
@@ -450,9 +457,17 @@ fn build_portals(nodes: &[Node], leaves: &[Leaf], planes: &[Plane]) -> Result<Po
                     copy.winding = back_w;
                     graph.portals.push(copy);
                     graph.portals[portal].winding = front_w;
-                    let (a, b) = if side == 0 { (front, other) } else { (other, front) };
+                    let (a, b) = if side == 0 {
+                        (front, other)
+                    } else {
+                        (other, front)
+                    };
                     graph.attach(portal, a, b);
-                    let (a, b) = if side == 0 { (back, other) } else { (other, back) };
+                    let (a, b) = if side == 0 {
+                        (back, other)
+                    } else {
+                        (other, back)
+                    };
                     graph.attach(clone, a, b);
                 }
             }
@@ -692,11 +707,7 @@ fn project_portal(winding: &Winding, basis: &Basis) -> Option<Rect> {
         maxs[0] = maxs[0].max(x);
         maxs[1] = maxs[1].max(y);
     }
-    Rect {
-        mins,
-        maxs,
-    }
-    .intersect(Rect::FULL)
+    Rect { mins, maxs }.intersect(Rect::FULL)
 }
 
 /// Does a portal winding's world AABB survive the four frustum planes? This is
@@ -791,7 +802,8 @@ fn plane_bounding_quad(winding: &Winding) -> Winding {
             best[2] / best_length,
         ]
     };
-    let distance = normal[0] * winding[0][0] + normal[1] * winding[0][1] + normal[2] * winding[0][2];
+    let distance =
+        normal[0] * winding[0][0] + normal[1] * winding[0][1] + normal[2] * winding[0][2];
     let dropped = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
         0
     } else if normal[1].abs() >= normal[2].abs() {
@@ -1073,7 +1085,8 @@ fn simulate_scored(
             0.5 * (leaf.mins[1] as f64 + leaf.maxs[1] as f64),
             0.5 * (leaf.mins[2] as f64 + leaf.maxs[2] as f64),
         ];
-        let row = decompress_visibility(visibility, leaf.visibility_offset as usize, visible_leaves);
+        let row =
+            decompress_visibility(visibility, leaf.visibility_offset as usize, visible_leaves);
         let mut pvs = vec![false; leaves.len()];
         pvs[index] = true;
         for (bit, &set) in row.iter().enumerate() {
@@ -1122,16 +1135,17 @@ fn simulate_scored(
                     if !matches!(
                         mode,
                         Mode::Rect | Mode::RectFlood | Mode::RectFloodAabb | Mode::RectFloodPlane
-                    )
-                        && cell_rect[neighbour].is_some()
+                    ) && cell_rect[neighbour].is_some()
                     {
                         continue;
                     }
                     if matches!(
                         mode,
-                        Mode::FloodOnly | Mode::RectFlood | Mode::RectFloodAabb | Mode::RectFloodPlane
-                    )
-                        && leaves[neighbour].contents == CONTENTS_SOLID
+                        Mode::FloodOnly
+                            | Mode::RectFlood
+                            | Mode::RectFloodAabb
+                            | Mode::RectFloodPlane
+                    ) && leaves[neighbour].contents == CONTENTS_SOLID
                     {
                         continue;
                     }
@@ -1140,12 +1154,12 @@ fn simulate_scored(
                         let cached = &mut projected[portal];
                         if cached.is_none() {
                             projections += 1;
-                            *cached = Some(if SIMPLE_NEAR.load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                project_portal_simple(&level.portal_quads[portal], &basis)
-                            } else {
-                                project_portal(&level.portal_quads[portal], &basis)
-                            });
+                            *cached =
+                                Some(if SIMPLE_NEAR.load(std::sync::atomic::Ordering::Relaxed) {
+                                    project_portal_simple(&level.portal_quads[portal], &basis)
+                                } else {
+                                    project_portal(&level.portal_quads[portal], &basis)
+                                });
                         }
                         let Some(screen) = cached.unwrap() else {
                             rejections[portal] += 1;
@@ -1390,7 +1404,9 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
     for (front, back, winding, area) in &open_portals {
         pairs.insert((*front.min(back), *front.max(back)));
         let (wmins, wmaxs) = winding_bounds(winding);
-        let flat = (0..3).filter(|&axis| wmaxs[axis] - wmins[axis] < 0.01).count();
+        let flat = (0..3)
+            .filter(|&axis| wmaxs[axis] - wmins[axis] < 0.01)
+            .count();
         if flat >= 1 {
             axial += 1;
             let mut extent = [0.0f64; 2];
@@ -1462,8 +1478,10 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
             let mut mins = [0i16; 3];
             let mut maxs = [0i16; 3];
             for axis in 0..3 {
-                mins[axis] = grid_min(leaves[*front].mins[axis]).max(grid_min(leaves[*back].mins[axis]));
-                maxs[axis] = grid_max(leaves[*front].maxs[axis]).min(grid_max(leaves[*back].maxs[axis]));
+                mins[axis] =
+                    grid_min(leaves[*front].mins[axis]).max(grid_min(leaves[*back].mins[axis]));
+                maxs[axis] =
+                    grid_max(leaves[*front].maxs[axis]).min(grid_max(leaves[*back].maxs[axis]));
             }
             portal_bounds.push((mins, maxs));
             portal_quads.push(plane_bounding_quad(winding));
@@ -1503,27 +1521,27 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
             &[(Mode::Rect, "merge/rect")]
         };
         for &(mode, mode_label) in modes {
-        if mode == Mode::RectFloodPlane {
-            for (grid, cap) in [(32i32, 0i32), (32, 1), (32, 2), (32, 4), (32, i32::MAX)] {
-                PORTAL_GRID.store(grid, std::sync::atomic::Ordering::Relaxed);
-                GROWTH_CAP.store(cap, std::sync::atomic::Ordering::Relaxed);
-                let regrid = build_level_with_cells(
-                    &leaves,
-                    &open_portals,
-                    (0..leaves.len()).collect(),
-                    leaves.len(),
-                );
-                let (stats, samples) = simulate(&regrid, visibility, visible_leaves, mode);
-                let n = stats.samples.max(1) as f64;
-                let record = match grid {
-                    32 => 6,
-                    16 => 7,
-                    _ => 10,
-                };
-                let sidecar = (leaves.len() + 1) * 2
-                    + regrid.portals.len() * 4
-                    + regrid.portals.len() * record;
-                println!(
+            if mode == Mode::RectFloodPlane {
+                for (grid, cap) in [(32i32, 0i32), (32, 1), (32, 2), (32, 4), (32, i32::MAX)] {
+                    PORTAL_GRID.store(grid, std::sync::atomic::Ordering::Relaxed);
+                    GROWTH_CAP.store(cap, std::sync::atomic::Ordering::Relaxed);
+                    let regrid = build_level_with_cells(
+                        &leaves,
+                        &open_portals,
+                        (0..leaves.len()).collect(),
+                        leaves.len(),
+                    );
+                    let (stats, samples) = simulate(&regrid, visibility, visible_leaves, mode);
+                    let n = stats.samples.max(1) as f64;
+                    let record = match grid {
+                        32 => 6,
+                        16 => 7,
+                        _ => 10,
+                    };
+                    let sidecar = (leaves.len() + 1) * 2
+                        + regrid.portals.len() * 4
+                        + regrid.portals.len() * record;
+                    println!(
                     "  [planebox g{grid:2} cap={cap:10}] sidecar={sidecar:6}B | candidates={af:6.1} \
                      (p95 {p95:4}) leaves={al:5.1} projections={pp:5.1} tests={tests:6.1}",
                     af = stats.admitted_marks_raw as f64 / n,
@@ -1532,52 +1550,52 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
                     pp = stats.portal_projections as f64 / n,
                     tests = stats.portals_tested as f64 / n,
                 );
+                }
+                PORTAL_GRID.store(32, std::sync::atomic::Ordering::Relaxed);
+                GROWTH_CAP.store(i32::MAX, std::sync::atomic::Ordering::Relaxed);
+                continue;
             }
-            PORTAL_GRID.store(32, std::sync::atomic::Ordering::Relaxed);
-            GROWTH_CAP.store(i32::MAX, std::sync::atomic::Ordering::Relaxed);
-            continue;
-        }
-        if mode == Mode::RectFloodAabb {
-            for grid in [1i32, 8, 16, 32] {
-                PORTAL_GRID.store(grid, std::sync::atomic::Ordering::Relaxed);
-                let regrid = build_level_with_cells(
-                    &leaves,
-                    &open_portals,
-                    (0..leaves.len()).collect(),
-                    leaves.len(),
-                );
-                let (stats, samples) = simulate(&regrid, visibility, visible_leaves, mode);
-                let n = stats.samples.max(1) as f64;
-                let bits = match grid {
-                    1 => 16,
-                    8 => 10,
-                    16 => 9,
-                    _ => 8,
-                };
-                let sidecar = (leaves.len() + 1) * 2
-                    + regrid.portals.len() * 2 * 2
-                    + (regrid.portals.len() * 6 * bits).div_ceil(8);
-                println!(
-                    "  [rectbox grid {grid:2}] sidecar={sidecar:6}B | admitted={af:6.1} \
+            if mode == Mode::RectFloodAabb {
+                for grid in [1i32, 8, 16, 32] {
+                    PORTAL_GRID.store(grid, std::sync::atomic::Ordering::Relaxed);
+                    let regrid = build_level_with_cells(
+                        &leaves,
+                        &open_portals,
+                        (0..leaves.len()).collect(),
+                        leaves.len(),
+                    );
+                    let (stats, samples) = simulate(&regrid, visibility, visible_leaves, mode);
+                    let n = stats.samples.max(1) as f64;
+                    let bits = match grid {
+                        1 => 16,
+                        8 => 10,
+                        16 => 9,
+                        _ => 8,
+                    };
+                    let sidecar = (leaves.len() + 1) * 2
+                        + regrid.portals.len() * 2 * 2
+                        + (regrid.portals.len() * 6 * bits).div_ceil(8);
+                    println!(
+                        "  [rectbox grid {grid:2}] sidecar={sidecar:6}B | admitted={af:6.1} \
                      (p95 {p95:4}) leaves={al:5.1} projections={pp:5.1} tests={tests:6.1}",
-                    af = stats.admitted_faces as f64 / n,
-                    p95 = percentile(&samples, 0.95),
-                    al = stats.admitted_leaves_raw as f64 / n,
-                    pp = stats.portal_projections as f64 / n,
-                    tests = stats.portals_tested as f64 / n,
-                );
+                        af = stats.admitted_faces as f64 / n,
+                        p95 = percentile(&samples, 0.95),
+                        al = stats.admitted_leaves_raw as f64 / n,
+                        pp = stats.portal_projections as f64 / n,
+                        tests = stats.portals_tested as f64 / n,
+                    );
+                }
+                PORTAL_GRID.store(1, std::sync::atomic::Ordering::Relaxed);
+                continue;
             }
-            PORTAL_GRID.store(1, std::sync::atomic::Ordering::Relaxed);
-            continue;
-        }
-        let (stats, samples) = simulate(&level, visibility, visible_leaves, mode);
-        let n = stats.samples.max(1) as f64;
-        let label = if threshold == f64::MAX {
-            mode_label.to_string()
-        } else {
-            format!("{mode_label}>={threshold:.0}")
-        };
-        println!(
+            let (stats, samples) = simulate(&level, visibility, visible_leaves, mode);
+            let n = stats.samples.max(1) as f64;
+            let label = if threshold == f64::MAX {
+                mode_label.to_string()
+            } else {
+                format!("{mode_label}>={threshold:.0}")
+            };
+            println!(
             "  [{label:>13}] cells={cells:5} doorways={doorways:5} | pvs={pv:6.1} frustum={ff:6.1} \
              | admitted={af:6.1} (p95 {p95:4}) removed={removed:5.2}% | tests/frame={tests:6.1}",
             cells = level.cell_count,
@@ -1589,14 +1607,14 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
             removed = 100.0 * (1.0 - stats.admitted_faces as f64 / stats.frustum_faces.max(1) as f64),
             tests = stats.portals_tested as f64 / n,
         );
-        println!(
-            "                 runtime cost proxy: pvs_leaves={pl:.1} admitted_leaves={al:.1} \
+            println!(
+                "                 runtime cost proxy: pvs_leaves={pl:.1} admitted_leaves={al:.1} \
              mark_writes={mw:.1} portal_projections={pp:.1}",
-            pl = stats.pvs_leaves as f64 / n,
-            al = stats.admitted_leaves_raw as f64 / n,
-            mw = stats.admitted_marks_raw as f64 / n,
-            pp = stats.portal_projections as f64 / n,
-        );
+                pl = stats.pvs_leaves as f64 / n,
+                al = stats.admitted_leaves_raw as f64 / n,
+                mw = stats.admitted_marks_raw as f64 / n,
+                pp = stats.portal_projections as f64 / n,
+            );
         }
     }
 
@@ -1605,7 +1623,13 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
     // best K as gates and merge the leaves either side of everything else.
     let mut level = build_level(&leaves, &open_portals, &vec![usize::MAX; 0]);
     let mut scores = Vec::new();
-    let _ = simulate_scored(&level, visibility, visible_leaves, Mode::FrustumOnly, &mut scores);
+    let _ = simulate_scored(
+        &level,
+        visibility,
+        visible_leaves,
+        Mode::FrustumOnly,
+        &mut scores,
+    );
     let mut order: Vec<usize> = (0..open_portals.len()).collect();
     order.sort_by_key(|&index| core::cmp::Reverse(scores[index]));
     for gates in [64usize, 128, 256, 512, 1024, 2048] {
@@ -1644,8 +1668,8 @@ fn census(name: &str, bytes: &[u8]) -> Result<()> {
             doorways = level.portals.len(),
             af = stats.admitted_faces as f64 / n,
             p95 = percentile(&samples, 0.95),
-            removed = 100.0
-                * (1.0 - stats.admitted_faces as f64 / stats.frustum_faces.max(1) as f64),
+            removed =
+                100.0 * (1.0 - stats.admitted_faces as f64 / stats.frustum_faces.max(1) as f64),
             tests = stats.portals_tested as f64 / n,
         );
     }
@@ -1657,7 +1681,12 @@ fn build_level(
     open_portals: &[(usize, usize, Winding, f64)],
     _unused: &[usize],
 ) -> Level {
-    build_level_with_cells(leaves, open_portals, (0..leaves.len()).collect(), leaves.len())
+    build_level_with_cells(
+        leaves,
+        open_portals,
+        (0..leaves.len()).collect(),
+        leaves.len(),
+    )
 }
 
 fn build_level_with_cells(

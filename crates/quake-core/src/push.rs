@@ -583,15 +583,9 @@ mod tests {
         assert!(door.crush_reverse());
         assert_eq!(door.state(), QuakeMoverState::Down);
 
-        let mut held = QuakeMover::from_entity(
-            MapEntity {
-                wait: -1,
-                ..source
-            },
-            model,
-        )
-        .unwrap()
-        .unwrap();
+        let mut held = QuakeMover::from_entity(MapEntity { wait: -1, ..source }, model)
+            .unwrap()
+            .unwrap();
         held.activate();
         held.tick();
         assert!(!held.crush_reverse());

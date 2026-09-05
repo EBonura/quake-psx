@@ -2,11 +2,11 @@
 
 use alloc::vec::Vec;
 
-use psx_bsp::CompactPlane;
 use psx_bsp::resident::{
     IndexedVertices, MapLoadError as SharedMapLoadError, ResidentMap as SharedResidentMap,
     TEXTURE_ROW_BYTES, TEXTURE_VRAM_MAX_ROWS, TEXTURE_VRAM_WIDTH, TEXTURE_VRAM_X,
 };
+use psx_bsp::CompactPlane;
 use psx_math::int32::mul_q12_i32_wide;
 use psx_vram::VramRect;
 use quake_formats::{
@@ -458,12 +458,13 @@ impl ResidentMap {
             .get(0)
             .ok_or(MapLoadError::Format)?;
         self.collision_planes.clear();
-        self.collision_planes.extend(packed.iter().map(|plane| CompactPlane {
-            normal: plane.normal,
-            kind: plane.kind as u8,
-            sign_bits: 0,
-            distance: plane.distance,
-        }));
+        self.collision_planes
+            .extend(packed.iter().map(|plane| CompactPlane {
+                normal: plane.normal,
+                kind: plane.kind as u8,
+                sign_bits: 0,
+                distance: plane.distance,
+            }));
         self.render_textures.clear();
         self.render_textures.extend(textures.iter());
         self.world_render_head_node = world.head_nodes[0];

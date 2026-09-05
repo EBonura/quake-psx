@@ -1480,13 +1480,29 @@ mod tests {
             }
             (state.origin(), state.velocity())
         };
-        assert!(level_velocity.z == 0 && level_origin.z == 256 << 12, "{level_velocity:?}");
-        assert!(up_velocity.z > 0 && up_origin.z > 256 << 12, "{up_velocity:?}");
-        assert!(down_velocity.z < 0 && down_origin.z < 256 << 12, "{down_velocity:?}");
-        assert!(down_velocity.z < drift_velocity.z, "{down_velocity:?} {drift_velocity:?}");
+        assert!(
+            level_velocity.z == 0 && level_origin.z == 256 << 12,
+            "{level_velocity:?}"
+        );
+        assert!(
+            up_velocity.z > 0 && up_origin.z > 256 << 12,
+            "{up_velocity:?}"
+        );
+        assert!(
+            down_velocity.z < 0 && down_origin.z < 256 << 12,
+            "{down_velocity:?}"
+        );
+        assert!(
+            down_velocity.z < drift_velocity.z,
+            "{down_velocity:?} {drift_velocity:?}"
+        );
         // cos(45 deg) of the level swim speed, within fixed-point rounding.
         let expected = mul_q12_i32(level_velocity.x, psx_math::cos_q12(512));
-        assert!((up_velocity.x - expected).abs() <= 2 << 12, "{} vs {expected}", up_velocity.x);
+        assert!(
+            (up_velocity.x - expected).abs() <= 2 << 12,
+            "{} vs {expected}",
+            up_velocity.x
+        );
         // Symmetric up to fixed-point rounding of the pitch basis.
         assert!(
             (up_velocity.x - down_velocity.x).abs() <= 16,

@@ -148,8 +148,8 @@ fn main() {
         linker_source.contains(stack_marker),
         "PSoXide linker stack marker changed; re-audit Quake's stack reserve"
     );
-    let quake_linker = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
-        .join("quake-psoxide.ld");
+    let quake_linker =
+        PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("quake-psoxide.ld");
     fs::write(
         &quake_linker,
         linker_source.replacen(stack_marker, "STACK_RESERVE = 0xD000;", 1),

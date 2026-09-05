@@ -190,7 +190,11 @@ mod tests {
             [[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]],
             [[-4096, 0, 0], [0, -4096, 0], [0, 0, -4096]],
             [[2896, -2896, 0], [1448, 1448, -3547], [2048, 2048, 2896]],
-            [[-1234, 3999, -707], [3000, 1000, 2500], [-2000, -1500, 3200]],
+            [
+                [-1234, 3999, -707],
+                [3000, 1000, 2500],
+                [-2000, -1500, 3200],
+            ],
         ];
         let screens = [
             [0i16, 0i16],
@@ -277,7 +281,10 @@ mod tests {
             [-1, 1, -1],
         ] {
             for layer_width in [1u8, 128, 255] {
-                assert_eq!(directional_texel(direction, layer_width), reference(direction, layer_width));
+                assert_eq!(
+                    directional_texel(direction, layer_width),
+                    reference(direction, layer_width)
+                );
             }
         }
     }

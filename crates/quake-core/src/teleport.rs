@@ -34,11 +34,7 @@ pub const TELEFRAG_MARGIN_UNITS: i32 = 1;
 /// Original `trigger_teleport` hum origin: the brush center unless SILENT.
 #[optimize(size)]
 #[inline(never)]
-pub fn teleporter_hum_origin(
-    mins: Vec3I32,
-    maxs: Vec3I32,
-    spawn_flags: u16,
-) -> Option<Vec3I32> {
+pub fn teleporter_hum_origin(mins: Vec3I32, maxs: Vec3I32, spawn_flags: u16) -> Option<Vec3I32> {
     if spawn_flags & SPAWNFLAG_TELEPORT_SILENT != 0 {
         return None;
     }
@@ -59,9 +55,7 @@ pub fn teleporter_hum_distance(listener: Vec3I32, origin: Vec3I32) -> u32 {
     // 37,837² * 3 fits in u32. Clamping each world-unit delta there gives
     // exact ordering throughout Quake's authored coordinate range and a
     // saturating priority for malformed outliers, with only native multiplies.
-    let axis = |origin: i32, listener: i32| {
-        (origin >> 12).abs_diff(listener >> 12).min(37_837)
-    };
+    let axis = |origin: i32, listener: i32| (origin >> 12).abs_diff(listener >> 12).min(37_837);
     let x = axis(origin.x, listener.x);
     let y = axis(origin.y, listener.y);
     let z = axis(origin.z, listener.z);

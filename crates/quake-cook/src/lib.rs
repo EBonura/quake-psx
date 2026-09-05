@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use quake_formats::{
-    GRAPHICS_WEAPON_ICON_BYTES, GRAPHICS_WEAPON_ICON_OFFSETS,
-    GRAPHICS_WEAPON_ICON_VARIANT_BYTES,
+    GRAPHICS_WEAPON_ICON_BYTES, GRAPHICS_WEAPON_ICON_OFFSETS, GRAPHICS_WEAPON_ICON_VARIANT_BYTES,
 };
 
 mod bsp;
@@ -356,21 +355,15 @@ pub fn cook_gfx(pak: &PakArchive<'_>, pic_map: &str) -> Result<Vec<u8>, CookErro
     // switch. No Quake artwork is checked into the repository; it is still
     // derived from the player's verified shareware PAK at cook time.
     const WEAPONS: [&str; 7] = [
-        "shotgun",
-        "sshotgun",
-        "nailgun",
-        "snailgun",
-        "rlaunch",
-        "srlaunch",
-        "lightng",
+        "shotgun", "sshotgun", "nailgun", "snailgun", "rlaunch", "srlaunch", "lightng",
     ];
     for prefix in ["inv_", "inv2_"] {
         let start = output.len();
         for (index, weapon) in WEAPONS.iter().enumerate() {
             let name = format!("{prefix}{weapon}");
             let (width, height, pixels) = load_picture(pak, &wad, &name)?;
-            let expected = GRAPHICS_WEAPON_ICON_OFFSETS[index + 1]
-                - GRAPHICS_WEAPON_ICON_OFFSETS[index];
+            let expected =
+                GRAPHICS_WEAPON_ICON_OFFSETS[index + 1] - GRAPHICS_WEAPON_ICON_OFFSETS[index];
             if width * height != expected || pixels.len() != expected || height != 16 {
                 return Err(CookError::new(format!(
                     "weapon strip picture {name} has unexpected {width}x{height} geometry"
@@ -397,8 +390,10 @@ fn crop_picture(
 ) -> Result<Vec<u8>, CookError> {
     if width == 0
         || height == 0
-        || x.checked_add(width).is_none_or(|right| right > source_width)
-        || y.checked_add(height).is_none_or(|bottom| bottom > source_height)
+        || x.checked_add(width)
+            .is_none_or(|right| right > source_width)
+        || y.checked_add(height)
+            .is_none_or(|bottom| bottom > source_height)
     {
         return Err(CookError::new(format!(
             "picture {name} crop lies outside its source"

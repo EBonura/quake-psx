@@ -203,8 +203,7 @@ fn main() -> Result<()> {
                                 f32_at(record, 8) as f64 * sign,
                             ]
                         };
-                        let Some(merged) =
-                            try_merge(&faces[a].points, &faces[b].points, normal)
+                        let Some(merged) = try_merge(&faces[a].points, &faces[b].points, normal)
                         else {
                             continue;
                         };
@@ -231,8 +230,8 @@ fn main() -> Result<()> {
              fan triangles {tri_before} -> {tri_after} ({tri_share:+.1}%)",
             removed = before - after,
             share = 100.0 * (before - after) as f64 / before as f64,
-            corner_share = 100.0 * (after_points as f64 - before_points as f64)
-                / before_points as f64,
+            corner_share =
+                100.0 * (after_points as f64 - before_points as f64) / before_points as f64,
             tri_before = before_points - 2 * before,
             tri_after = after_points - 2 * after,
             tri_share = 100.0

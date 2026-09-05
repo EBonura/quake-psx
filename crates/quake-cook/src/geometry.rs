@@ -887,8 +887,16 @@ fn cook_nodes_and_leaves(bsp: &Bsp<'_>) -> Result<(Vec<CookNode>, Vec<CookLeaf>)
             visibility_offset,
             first_mark_surface: u16_at(source, 20)?,
             mark_surface_count,
-            mins: [u16_at(source, 8)? as i16, u16_at(source, 10)? as i16, u16_at(source, 12)? as i16],
-            maxs: [u16_at(source, 14)? as i16, u16_at(source, 16)? as i16, u16_at(source, 18)? as i16],
+            mins: [
+                u16_at(source, 8)? as i16,
+                u16_at(source, 10)? as i16,
+                u16_at(source, 12)? as i16,
+            ],
+            maxs: [
+                u16_at(source, 14)? as i16,
+                u16_at(source, 16)? as i16,
+                u16_at(source, 18)? as i16,
+            ],
             light: [0; 2],
             styles: [MAX_LIGHT_STYLES as u8; 2],
         });
@@ -1155,8 +1163,16 @@ fn serialize_visibility(bsp: &Bsp<'_>, leaves: &[CookLeaf]) -> Result<Vec<u8>, C
     );
     output.extend_from_slice(bsp.lump(BspLump::Visibility));
     for leaf in leaves {
-        output.extend(leaf.mins.map(encode_leaf_bound_min).map(|value| value as u8));
-        output.extend(leaf.maxs.map(encode_leaf_bound_max).map(|value| value as u8));
+        output.extend(
+            leaf.mins
+                .map(encode_leaf_bound_min)
+                .map(|value| value as u8),
+        );
+        output.extend(
+            leaf.maxs
+                .map(encode_leaf_bound_max)
+                .map(|value| value as u8),
+        );
     }
     output.extend_from_slice(&LEAF_BOUNDS_TRAILER_MAGIC.to_le_bytes());
     output.extend_from_slice(&count.to_le_bytes());

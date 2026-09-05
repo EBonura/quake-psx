@@ -1571,9 +1571,7 @@ impl ClassicAffineSubdivisionCacheSink for ResidentSubdivisionSink<'_> {
         self.allocations = self
             .allocations
             .wrapping_add(u32::from(!acquired.logical_hit));
-        self.replacements = self
-            .replacements
-            .wrapping_add(u32::from(acquired.replaced));
+        self.replacements = self.replacements.wrapping_add(u32::from(acquired.replaced));
         self.initializations = self
             .initializations
             .wrapping_add(u32::from(!acquired.resident));
@@ -1618,9 +1616,7 @@ impl ClassicAffineSubdivisionCacheSink for ResidentSubdivisionSink<'_> {
         self.allocations = self
             .allocations
             .wrapping_add(u32::from(!acquired.logical_hit));
-        self.replacements = self
-            .replacements
-            .wrapping_add(u32::from(acquired.replaced));
+        self.replacements = self.replacements.wrapping_add(u32::from(acquired.replaced));
         self.initializations = self
             .initializations
             .wrapping_add(u32::from(!acquired.resident));
@@ -2088,9 +2084,8 @@ impl Renderer {
         stats.subdivision_cache_initializations = stats
             .subdivision_cache_initializations
             .wrapping_add(sink.initializations);
-        stats.subdivision_cache_packets = stats
-            .subdivision_cache_packets
-            .wrapping_add(sink.packets);
+        stats.subdivision_cache_packets =
+            stats.subdivision_cache_packets.wrapping_add(sink.packets);
         submitted
     }
 
@@ -5471,8 +5466,7 @@ impl Renderer {
                         // Same limit as pushing past the list's capacity:
                         // every kept entry and every new face ends up in it.
                         #[cfg(feature = "renderer-compact-cell-stream")]
-                        let plane_full =
-                            kept + new_count == self.visible_face_planes.capacity();
+                        let plane_full = kept + new_count == self.visible_face_planes.capacity();
                         #[cfg(not(feature = "renderer-compact-cell-stream"))]
                         let plane_full = false;
                         if kept + new_count == self.visible_faces.capacity()
@@ -5527,10 +5521,7 @@ impl Renderer {
                     unsafe { move_visible_face(entries.add(read), entries.add(write)) };
                     #[cfg(feature = "renderer-compact-cell-stream")]
                     unsafe {
-                        ptr::write(
-                            plane_entries.add(write),
-                            ptr::read(plane_entries.add(read)),
-                        );
+                        ptr::write(plane_entries.add(write), ptr::read(plane_entries.add(read)));
                     }
                 }
             }
@@ -6889,13 +6880,7 @@ unsafe fn flush_batch(
     }
     #[cfg(feature = "renderer-quake-specialized-kernel")]
     unsafe {
-        submit_quake_classic_affine_batch(
-            vertices,
-            vertex_count,
-            surfaces,
-            surface_count,
-            output,
-        )
+        submit_quake_classic_affine_batch(vertices, vertex_count, surfaces, surface_count, output)
     }
 }
 
@@ -7836,7 +7821,9 @@ fn select_frame_faces_blocked(
                             visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
                                 || front_facing_compact_plane(
                                     #[cfg(feature = "renderer-compact-cell-stream")]
-                                    unsafe { *visible_planes.get_unchecked(visible_index) },
+                                    unsafe {
+                                        *visible_planes.get_unchecked(visible_index)
+                                    },
                                     #[cfg(all(
                                         feature = "renderer-cell-policy",
                                         not(feature = "renderer-compact-cell-stream")
@@ -8179,11 +8166,7 @@ fn load_aabb_clip4_with_near(planes: &[AabbClipPlane; 4], near: &AabbClipPlane) 
 /// classifier schedule, selecting MAC2 after the light-matrix MVMVA.
 #[cfg(feature = "renderer-gte-near-classification")]
 #[inline(always)]
-fn aabb_reaches_behind_near_gte(
-    mins: [i16; 3],
-    maxs: [i16; 3],
-    near: &AabbClipPlane,
-) -> bool {
+fn aabb_reaches_behind_near_gte(mins: [i16; 3], maxs: [i16; 3], near: &AabbClipPlane) -> bool {
     let inner = GteVec3I16::new(
         if near.signbits & 1 != 0 {
             maxs[0]

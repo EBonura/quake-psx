@@ -1366,7 +1366,9 @@ impl MonsterRuntime {
         if !matches!(self.kind, MonsterKind::Ogre) {
             return false;
         }
-        let offset = self.frame.saturating_sub(first_frame(self.kind, self.state));
+        let offset = self
+            .frame
+            .saturating_sub(first_frame(self.kind, self.state));
         let authored = match self.state {
             MonsterState::Stand => offset == 4,
             MonsterState::Walk => offset == 2,
@@ -1379,8 +1381,7 @@ impl MonsterRuntime {
     /// run except the shambler's swings: `sham_swingl9` and `sham_swingr9`
     /// chain into the opposite swing half the time.
     fn attack_exit(&mut self, state: MonsterState) -> MonsterState {
-        if !matches!(self.kind, MonsterKind::Shambler)
-            || self.frame < last_frame(self.kind, state)
+        if !matches!(self.kind, MonsterKind::Shambler) || self.frame < last_frame(self.kind, state)
         {
             return MonsterState::Run;
         }
@@ -1986,8 +1987,14 @@ fn backpack_frame(kind: MonsterKind, state: MonsterState, frame: u16) -> Option<
         return None;
     }
     match kind {
-        MonsterKind::Soldier => Some(BackpackAmmo { shells: 5, rockets: 0 }),
-        MonsterKind::Ogre => Some(BackpackAmmo { shells: 0, rockets: 2 }),
+        MonsterKind::Soldier => Some(BackpackAmmo {
+            shells: 5,
+            rockets: 0,
+        }),
+        MonsterKind::Ogre => Some(BackpackAmmo {
+            shells: 0,
+            rockets: 2,
+        }),
         _ => None,
     }
 }
@@ -2266,7 +2273,13 @@ mod tests {
         let spit = run_until(&mut wizard, visible(300), 400, |_, action| {
             matches!(action.attack, Some(MonsterAttack::Spit { .. }))
         });
-        assert_eq!(spit.attack, Some(MonsterAttack::Spit { damage: 9, side: -14 }));
+        assert_eq!(
+            spit.attack,
+            Some(MonsterAttack::Spit {
+                damage: 9,
+                side: -14
+            })
+        );
         assert_eq!(spit.sound_id, Some(WIZARD_ATTACK_SOUND));
         // Wiz_StartFast arms two spikes; the second launches later in the
         // same attack, before the wizard returns to run.
@@ -2274,7 +2287,13 @@ mod tests {
             assert_eq!(runtime.state(), MonsterState::Missile);
             matches!(action.attack, Some(MonsterAttack::Spit { .. }))
         });
-        assert_eq!(second.attack, Some(MonsterAttack::Spit { damage: 9, side: 14 }));
+        assert_eq!(
+            second.attack,
+            Some(MonsterAttack::Spit {
+                damage: 9,
+                side: 14
+            })
+        );
 
         let mut shambler = wake(MonsterKind::Shambler, 6, 400);
         let bolt = run_until(&mut shambler, visible(400), 400, |_, action| {
@@ -2352,7 +2371,10 @@ mod tests {
             [false, true, false]
         );
         // ogre_melee: coin flip between swing and smash.
-        assert_eq!(melee_states_seen(MonsterKind::Ogre, 60), [true, true, false]);
+        assert_eq!(
+            melee_states_seen(MonsterKind::Ogre, 60),
+            [true, true, false]
+        );
         // sham_melee: smash, right swing, or left swing.
         assert_eq!(
             melee_states_seen(MonsterKind::Shambler, 60),
@@ -2372,7 +2394,13 @@ mod tests {
         // demon1_jump4: `self.velocity = v_forward * 600 + '0 0 250'`.
         assert_eq!((forward, up), (600, 250));
         assert!(demon.leaping());
-        assert_eq!(demon.advance_leap(1), Some(MonsterLeap { forward: 600, up: 250 - 13 }));
+        assert_eq!(
+            demon.advance_leap(1),
+            Some(MonsterLeap {
+                forward: 600,
+                up: 250 - 13
+            })
+        );
 
         let mut dog = wake(MonsterKind::Dog, 0, 80);
         let bite = run_until(&mut dog, visible(80), 64, |_, action| {
@@ -2802,7 +2830,11 @@ mod tests {
     /// `wait` parks it until `pause_time`, then it walks to the next goal.
     #[test]
     fn a_path_corner_goal_makes_a_resting_monster_walk() {
-        let goal = Some(Vec3I32 { x: 100 << 12, y: 0, z: 0 });
+        let goal = Some(Vec3I32 {
+            x: 100 << 12,
+            y: 0,
+            z: 0,
+        });
         let hidden = MonsterThinkInput {
             distance: 2_000,
             player_alive: true,
@@ -2827,7 +2859,13 @@ mod tests {
             assert!(!action.face_target && !action.activated);
             assert!(!runtime.active());
             // A patrolling monster still acquires the player normally.
-            let woke = next_think(&mut runtime, MonsterThinkInput { goal, ..visible(300) });
+            let woke = next_think(
+                &mut runtime,
+                MonsterThinkInput {
+                    goal,
+                    ..visible(300)
+                },
+            );
             assert!(woke.activated, "{kind:?} did not wake while patrolling");
             assert_eq!(runtime.state(), MonsterState::Run);
         }

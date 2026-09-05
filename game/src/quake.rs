@@ -1008,10 +1008,7 @@ pub fn run() -> ! {
             feature = "combat-regression",
             feature = "arsenal-regression",
             feature = "start-route-regression",
-            all(
-                feature = "e1m1-chain-regression",
-                not(feature = "route-monsters")
-            ),
+            all(feature = "e1m1-chain-regression", not(feature = "route-monsters")),
             feature = "e1m2-e1m3-route-regression",
             feature = "survival-regression",
             feature = "systems-regression"
