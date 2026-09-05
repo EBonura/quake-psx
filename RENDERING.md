@@ -59,6 +59,11 @@ so its depth ties do not expose gaps in nearby geometry.
 
 ## Performance work
 
+The dated measurements below record earlier experiments. Source 2026.09.05
+removes the unselected implementations and their benchmark commands. The
+accepted default renderer remains; use `e1m1-chain-bench`, `ship-boot` and the
+regression commands in [VALIDATION.md](VALIDATION.md) for current checks.
+
 The current renderer includes:
 
 - BSP potentially-visible-set culling;

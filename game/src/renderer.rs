@@ -5,20 +5,11 @@ use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 use core::ptr::{self, addr_of_mut};
 
-#[cfg(feature = "renderer-hoisted-indexed-world")]
-use psx_bsp::resident::IndexedVertices;
-#[cfg(any(
-    not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")),
-    feature = "renderer-indexed-projection"
-))]
+#[cfg(not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")))]
 use psx_engine::materialize_classic_affine_indexed_baked_vertices;
 #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
 use psx_engine::submit_classic_affine_batch;
-#[cfg(any(
-    feature = "renderer-fused-materialize-project",
-    feature = "renderer-indexed-projection"
-))]
-use psx_engine::submit_classic_affine_projected_batch;
+
 #[cfg(feature = "renderer-quake-specialized-kernel")]
 use psx_engine::submit_quake_classic_affine_batch;
 use psx_engine::{
@@ -37,41 +28,11 @@ use psx_engine::{
     collect_classic_affine_projected_subdivision_requests, ClassicAffineSubdivisionRequest,
     ClassicAffineTopologyCensus,
 };
-#[cfg(feature = "renderer-indexed-projection")]
-use psx_engine::{
-    collect_classic_affine_indexed_projection_slots,
-    materialize_classic_affine_indexed_baked_vertices_with_projection_slots,
-    project_classic_affine_indexed_vertices_dense,
-};
-#[cfg(feature = "renderer-fused-materialize-project")]
-use psx_engine::{
-    materialize_project_classic_affine_indexed_batch, ClassicAffineIndexedBatchSource,
-};
-#[cfg(feature = "renderer-subdivision-cache")]
-use psx_engine::{
-    submit_classic_affine_cached_subdivision_batch, ClassicAffineSubdivisionCacheSink,
-    ClassicAffineSubdivisionRootSlot,
-};
-#[cfg(feature = "renderer-topology-cache")]
-use psx_engine::{
-    submit_classic_affine_planned_resident_batch, ClassicAffinePacketPlan,
-    ClassicAffinePlannedSubmit, ClassicAffineResidentBatchSurface,
-};
+
 use psx_gpu::material::{BlendMode, TextureMaterial, TextureWindow};
 use psx_gpu::prim::{ClassicTriTextured, LineMono, QuadTextured, QuadTexturedMaterial, RectFlat};
 use psx_gte::math::{Mat3I16, Vec3I16 as GteVec3I16, Vec3I32 as GteVec3I32};
 
-#[cfg(all(
-    feature = "renderer-fused-materialize-project",
-    any(
-        feature = "renderer-indexed-projection",
-        feature = "renderer-subdivision-cache",
-        feature = "renderer-topology-cache"
-    )
-))]
-compile_error!(
-    "renderer-fused-materialize-project is an alternative ordinary-world batch submitter"
-);
 use psx_gte::scene::{self, AabbClipPlane};
 use psx_math::int32::{isqrt_i32, mul_q12_i32, mul_q12_i32_wide, square_i32_saturating};
 use psx_math::{atan2_q12, cos_q12, sin_q12};
@@ -108,41 +69,24 @@ const MAX_FACE_COUNT: usize = 6_614;
 // map exceeds this cache instead of growing the monotonic heap.
 const MAX_VISIBLE_FACE_COUNT: usize = 1_325;
 #[cfg(all(
-    any(
-        feature = "renderer-compact-cell-stream",
-        feature = "renderer-cell-policy"
-    ),
+    feature = "renderer-cell-policy",
     not(feature = "renderer-cell-liquid-policy")
 ))]
 const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x7fff;
 #[cfg(feature = "renderer-cell-liquid-policy")]
 const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x3fff;
-#[cfg(any(
-    feature = "renderer-compact-cell-stream",
-    feature = "renderer-cell-policy"
-))]
+#[cfg(feature = "renderer-cell-policy")]
 const VISIBLE_INVARIANT_FRONT_BIT: u16 = 0x8000;
 #[cfg(feature = "renderer-cell-liquid-policy")]
 const VISIBLE_LIQUID_BIT: u16 = 0x4000;
-#[cfg(any(
-    feature = "renderer-compact-cell-stream",
-    feature = "renderer-cell-policy"
-))]
+#[cfg(feature = "renderer-cell-policy")]
 const _: () = assert!(MAX_FACE_COUNT <= VISIBLE_SURFACE_INDEX_MASK as usize + 1);
-#[cfg(all(
-    feature = "renderer-block-frustum",
-    not(feature = "renderer-block-frustum-32")
-))]
+#[cfg(feature = "renderer-block-frustum")]
 const VISIBLE_FACE_BLOCK_SIZE: usize = 16;
-#[cfg(feature = "renderer-block-frustum-32")]
-const VISIBLE_FACE_BLOCK_SIZE: usize = 32;
+
 #[cfg(feature = "renderer-block-frustum")]
 const MAX_VISIBLE_FACE_BLOCKS: usize = MAX_VISIBLE_FACE_COUNT.div_ceil(VISIBLE_FACE_BLOCK_SIZE);
-#[cfg(feature = "renderer-hierarchical-block-frustum")]
-const VISIBLE_FACE_SUPER_BLOCK_SIZE: usize = 4;
-#[cfg(feature = "renderer-hierarchical-block-frustum")]
-const MAX_VISIBLE_FACE_SUPER_BLOCKS: usize =
-    MAX_VISIBLE_FACE_BLOCKS.div_ceil(VISIBLE_FACE_SUPER_BLOCK_SIZE);
+
 /// Frame face indices carry this bit when the face's bounds reach behind the
 /// near plane, so the world pass clips that face before submitting it.
 const NEAR_FACE_BIT: u16 = 0x8000;
@@ -167,17 +111,8 @@ const SUBDIVISION_SCRATCH_VERTICES: usize = 12;
 type BatchVertexStorage =
     [MaybeUninit<ClassicAffineVertex>; BATCH_MAX_VERTICES + SUBDIVISION_SCRATCH_VERTICES];
 type BatchSurfaceStorage = [MaybeUninit<ClassicAffineBatchSurface>; BATCH_MAX_SURFACES];
-#[cfg(any(feature = "renderer-census", feature = "renderer-subdivision-cache"))]
+#[cfg(feature = "renderer-census")]
 type BatchSourceSurfaceStorage = [MaybeUninit<u16>; BATCH_MAX_SURFACES];
-#[cfg(feature = "renderer-fused-materialize-project")]
-type BatchIndexedSourceStorage = [MaybeUninit<ClassicAffineIndexedBatchSource>; BATCH_MAX_SURFACES];
-#[cfg(feature = "renderer-fused-materialize-project")]
-type BatchVisibleIndexStorage = [MaybeUninit<u16>; BATCH_MAX_SURFACES];
-#[cfg(feature = "renderer-static-world-reuse")]
-const MAX_STATIC_WORLD_PACKET_SLOTS: usize = GPU_ARENA_WORDS / 10;
-#[cfg(feature = "renderer-topology-cache")]
-type ResidentBatchSurfaceStorage =
-    [MaybeUninit<ClassicAffineResidentBatchSurface>; BATCH_MAX_SURFACES];
 
 const MAX_ALIAS_VERTICES: usize = 512;
 // Mirrored from `entity`: the verified Episode 1 high-water is 373.
@@ -186,8 +121,7 @@ const MAX_RENDER_ENTITIES: usize = 384;
 // portal is merged directly into this closed-corpus row, which stays far
 // smaller than the previous generic 1,024-byte scratch allocation.
 const MAX_VISIBILITY_BYTES: usize = 160;
-#[cfg(feature = "renderer-topology-cache")]
-const MAX_TOPOLOGY_CACHE_BATCHES: usize = 64;
+
 const TEXTURE_CLUT_BASE_ROW: u16 = 240;
 const LIQUID_CLUT_BASE_ROW: u16 = 248;
 // Tuned brighter default: the cooker power is 0.8. This preserves the
@@ -722,30 +656,7 @@ pub struct RenderStats {
     pub packets: u32,
     pub hardware_triangles: u32,
     pub packet_overflow_avoided: bool,
-    #[cfg(feature = "renderer-topology-cache")]
-    pub topology_cache_hits: u32,
-    #[cfg(feature = "renderer-topology-cache")]
-    pub topology_cache_misses: u32,
-    #[cfg(feature = "renderer-topology-cache")]
-    pub topology_invariant_hit_slots: u32,
-    #[cfg(feature = "renderer-topology-cache")]
-    pub topology_invariant_miss_slots: u32,
-    #[cfg(feature = "renderer-indexed-projection")]
-    pub indexed_projection_corners: u32,
-    #[cfg(feature = "renderer-indexed-projection")]
-    pub indexed_projection_unique: u32,
-    #[cfg(feature = "renderer-subdivision-cache")]
-    pub subdivision_cache_hits: u32,
-    #[cfg(feature = "renderer-subdivision-cache")]
-    pub subdivision_cache_allocations: u32,
-    #[cfg(feature = "renderer-subdivision-cache")]
-    pub subdivision_cache_replacements: u32,
-    #[cfg(feature = "renderer-subdivision-cache")]
-    pub subdivision_cache_fallbacks: u32,
-    #[cfg(feature = "renderer-subdivision-cache")]
-    pub subdivision_cache_initializations: u32,
-    #[cfg(feature = "renderer-subdivision-cache")]
-    pub subdivision_cache_packets: u32,
+
     /// Exact high-water of this frame's double-buffered world/entity packet
     /// arena. The map-route probe retains the maximum across Episode 1.
     #[cfg(feature = "episode1-regression")]
@@ -775,16 +686,12 @@ struct HudPacketStats {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 struct VisibleFace {
-    #[cfg(not(feature = "renderer-compact-cell-stream"))]
     plane: CompactPlane,
     bounds: RetainedSurfaceBounds,
     face: CookedDrawSurface,
 }
 
-#[cfg(not(feature = "renderer-compact-cell-stream"))]
 const _: [(); 36] = [(); core::mem::size_of::<VisibleFace>()];
-#[cfg(feature = "renderer-compact-cell-stream")]
-const _: [(); 24] = [(); core::mem::size_of::<VisibleFace>()];
 
 /// Conservative union bounds for one consecutive visible-face block.
 #[cfg(feature = "renderer-block-frustum")]
@@ -1071,580 +978,7 @@ fn request_subdivision_slot(
     counters.replacements = counters.replacements.wrapping_add(u32::from(replacing));
 }
 
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_BYTES_PER_POOL: usize = 48 * 1024;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_LEVEL1_BYTES: usize = 252;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_LEVEL2_BYTES: usize = 748;
-#[cfg(all(
-    feature = "renderer-subdivision-cache",
-    not(feature = "renderer-subdivision-cache-level2")
-))]
-const RESIDENT_SUBDIVISION_LEVEL1_SLOTS: usize = 117;
-#[cfg(feature = "renderer-subdivision-cache-level2")]
-const RESIDENT_SUBDIVISION_LEVEL1_SLOTS: usize = 0;
-#[cfg(all(
-    feature = "renderer-subdivision-cache",
-    not(feature = "renderer-subdivision-cache-level2")
-))]
-const RESIDENT_SUBDIVISION_LEVEL2_SLOTS: usize = 26;
-#[cfg(all(
-    feature = "renderer-subdivision-cache-level2",
-    not(feature = "renderer-subdivision-cache-level2-small")
-))]
-const RESIDENT_SUBDIVISION_LEVEL2_SLOTS: usize =
-    RESIDENT_SUBDIVISION_BYTES_PER_POOL / RESIDENT_SUBDIVISION_LEVEL2_BYTES;
-#[cfg(feature = "renderer-subdivision-cache-level2-small")]
-const RESIDENT_SUBDIVISION_LEVEL2_SLOTS: usize = 26;
-#[cfg(all(
-    feature = "renderer-subdivision-cache",
-    not(feature = "renderer-subdivision-cache-level2")
-))]
-const RESIDENT_SUBDIVISION_LEVEL1_DIRECTORY_SLOTS: usize = 256;
-#[cfg(feature = "renderer-subdivision-cache-level2")]
-const RESIDENT_SUBDIVISION_LEVEL1_DIRECTORY_SLOTS: usize = 1;
-#[cfg(all(
-    feature = "renderer-subdivision-cache",
-    not(feature = "renderer-subdivision-cache-level2")
-))]
-const RESIDENT_SUBDIVISION_LEVEL2_DIRECTORY_SLOTS: usize = 64;
-#[cfg(all(
-    feature = "renderer-subdivision-cache-level2",
-    not(feature = "renderer-subdivision-cache-level2-small")
-))]
-const RESIDENT_SUBDIVISION_LEVEL2_DIRECTORY_SLOTS: usize = 128;
-#[cfg(feature = "renderer-subdivision-cache-level2-small")]
-const RESIDENT_SUBDIVISION_LEVEL2_DIRECTORY_SLOTS: usize = 64;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_DIRECTORY_EMPTY: u16 = u16::MAX;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_DIRECTORY_TOMBSTONE: u16 = u16::MAX - 1;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_LEVEL1_WORDS: usize = RESIDENT_SUBDIVISION_LEVEL1_BYTES / 4;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_LEVEL2_WORDS: usize = RESIDENT_SUBDIVISION_LEVEL2_BYTES / 4;
-#[cfg(feature = "renderer-resident-base-cache")]
-const RESIDENT_BASE_PACKET_SLOTS: usize = 512;
-#[cfg(not(feature = "renderer-resident-base-cache"))]
 const RESIDENT_BASE_PACKET_SLOTS: usize = 0;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_BASE_PACKET_WORDS: usize = 52 / 4;
-#[cfg(feature = "renderer-subdivision-cache")]
-const RESIDENT_SUBDIVISION_USED_WORDS: usize = RESIDENT_SUBDIVISION_LEVEL1_SLOTS
-    * RESIDENT_SUBDIVISION_LEVEL1_WORDS
-    + RESIDENT_SUBDIVISION_LEVEL2_SLOTS * RESIDENT_SUBDIVISION_LEVEL2_WORDS
-    + RESIDENT_BASE_PACKET_SLOTS * RESIDENT_BASE_PACKET_WORDS;
-// Only the address-control build deliberately retains the original 48 KiB
-// boundary. Other cache shapes must return unused slab capacity to the
-// dynamic stream: reserving the entire modelling budget for a 26-slot L2
-// cache leaves just 80 KiB for ordinary/L1/model/HUD packets and can drop the
-// view model before the first cache hit.
-#[cfg(all(
-    feature = "renderer-subdivision-cache",
-    feature = "renderer-subdivision-cache-level2-layout-control"
-))]
-const RESIDENT_SUBDIVISION_POOL_WORDS: usize = RESIDENT_SUBDIVISION_BYTES_PER_POOL / 4;
-#[cfg(all(
-    feature = "renderer-subdivision-cache",
-    not(feature = "renderer-subdivision-cache-level2-layout-control")
-))]
-const RESIDENT_SUBDIVISION_POOL_WORDS: usize = RESIDENT_SUBDIVISION_USED_WORDS;
-#[cfg(feature = "renderer-subdivision-cache")]
-const DYNAMIC_GPU_ARENA_WORDS: usize = GPU_ARENA_WORDS - RESIDENT_SUBDIVISION_POOL_WORDS;
-#[cfg(feature = "renderer-subdivision-cache")]
-const _: () = assert!(RESIDENT_SUBDIVISION_USED_WORDS <= RESIDENT_SUBDIVISION_POOL_WORDS);
-#[cfg(all(
-    feature = "renderer-subdivision-cache-level2-small",
-    not(feature = "renderer-resident-base-cache")
-))]
-const _: () = assert!(
-    DYNAMIC_GPU_ARENA_WORDS == GPU_ARENA_WORDS - 26 * (RESIDENT_SUBDIVISION_LEVEL2_BYTES / 4)
-);
-#[cfg(feature = "renderer-resident-base-cache")]
-const _: () = assert!(
-    DYNAMIC_GPU_ARENA_WORDS
-        == GPU_ARENA_WORDS
-            - 26 * (RESIDENT_SUBDIVISION_LEVEL2_BYTES / 4)
-            - RESIDENT_BASE_PACKET_SLOTS * RESIDENT_BASE_PACKET_WORDS
-);
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct ResidentSubdivisionKey {
-    material: u32,
-    source_face: u16,
-    root: u8,
-    level: u8,
-    underdraw: u8,
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct ResidentSubdivisionSlot {
-    key: ResidentSubdivisionKey,
-    last_used_frame: u32,
-    screen_z: u16,
-    initialized_pools: u8,
-    valid: bool,
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct ResidentSubdivisionCache {
-    level1: [ResidentSubdivisionSlot; RESIDENT_SUBDIVISION_LEVEL1_SLOTS],
-    level2: [ResidentSubdivisionSlot; RESIDENT_SUBDIVISION_LEVEL2_SLOTS],
-    base_packets: [ResidentSubdivisionSlot; RESIDENT_BASE_PACKET_SLOTS],
-    level1_directory: [u16; RESIDENT_SUBDIVISION_LEVEL1_DIRECTORY_SLOTS],
-    level2_directory: [u16; RESIDENT_SUBDIVISION_LEVEL2_DIRECTORY_SLOTS],
-    map_generation: u32,
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct ResidentSubdivisionAcquire {
-    class_offset_words: usize,
-    resident: bool,
-    logical_hit: bool,
-    replaced: bool,
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-impl ResidentSubdivisionCache {
-    const fn new() -> Self {
-        const EMPTY: ResidentSubdivisionSlot = ResidentSubdivisionSlot {
-            key: ResidentSubdivisionKey {
-                material: 0,
-                source_face: 0,
-                root: 0,
-                level: 0,
-                underdraw: 0,
-            },
-            last_used_frame: 0,
-            screen_z: 0,
-            initialized_pools: 0,
-            valid: false,
-        };
-        Self {
-            level1: [EMPTY; RESIDENT_SUBDIVISION_LEVEL1_SLOTS],
-            level2: [EMPTY; RESIDENT_SUBDIVISION_LEVEL2_SLOTS],
-            base_packets: [EMPTY; RESIDENT_BASE_PACKET_SLOTS],
-            level1_directory: [RESIDENT_SUBDIVISION_DIRECTORY_EMPTY;
-                RESIDENT_SUBDIVISION_LEVEL1_DIRECTORY_SLOTS],
-            level2_directory: [RESIDENT_SUBDIVISION_DIRECTORY_EMPTY;
-                RESIDENT_SUBDIVISION_LEVEL2_DIRECTORY_SLOTS],
-            map_generation: u32::MAX,
-        }
-    }
-
-    fn begin_map(&mut self, map_generation: u32) {
-        if self.map_generation != map_generation {
-            for slot in &mut self.level1 {
-                slot.valid = false;
-                slot.initialized_pools = 0;
-            }
-            for slot in &mut self.level2 {
-                slot.valid = false;
-                slot.initialized_pools = 0;
-            }
-            for slot in &mut self.base_packets {
-                slot.valid = false;
-                slot.initialized_pools = 0;
-            }
-            self.level1_directory
-                .fill(RESIDENT_SUBDIVISION_DIRECTORY_EMPTY);
-            self.level2_directory
-                .fill(RESIDENT_SUBDIVISION_DIRECTORY_EMPTY);
-            self.map_generation = map_generation;
-        }
-    }
-
-    #[cfg(feature = "renderer-resident-base-cache")]
-    #[inline(always)]
-    fn acquire_base_packet(
-        &mut self,
-        active_pool: usize,
-        frame: u32,
-        key: ResidentSubdivisionKey,
-        screen_z: u16,
-    ) -> Option<ResidentSubdivisionAcquire> {
-        const WAYS: usize = 4;
-        const SETS: usize = RESIDENT_BASE_PACKET_SLOTS / WAYS;
-        debug_assert!(SETS.is_power_of_two());
-        let first = (resident_subdivision_key_hash(key) & (SETS - 1)) * WAYS;
-        let mut hit = None;
-        let mut way = 0usize;
-        while way < WAYS {
-            let index = first + way;
-            if self.base_packets[index].valid && self.base_packets[index].key == key {
-                hit = Some(index);
-                break;
-            }
-            way += 1;
-        }
-        let pool_bit = 1u8 << active_pool;
-        if let Some(index) = hit {
-            let slot = &mut self.base_packets[index];
-            let resident = slot.initialized_pools & pool_bit != 0;
-            slot.initialized_pools |= pool_bit;
-            slot.last_used_frame = frame;
-            slot.screen_z = screen_z;
-            return Some(ResidentSubdivisionAcquire {
-                class_offset_words: RESIDENT_SUBDIVISION_LEVEL1_SLOTS
-                    * RESIDENT_SUBDIVISION_LEVEL1_WORDS
-                    + RESIDENT_SUBDIVISION_LEVEL2_SLOTS * RESIDENT_SUBDIVISION_LEVEL2_WORDS
-                    + index * RESIDENT_BASE_PACKET_WORDS,
-                resident,
-                logical_hit: true,
-                replaced: false,
-            });
-        }
-
-        let mut victim = None;
-        way = 0;
-        while way < WAYS {
-            let index = first + way;
-            let slot = &self.base_packets[index];
-            if !slot.valid {
-                victim = Some(index);
-                break;
-            }
-            if slot.last_used_frame != frame {
-                let replace = victim.is_none_or(|current: usize| {
-                    frame.wrapping_sub(slot.last_used_frame)
-                        > frame.wrapping_sub(self.base_packets[current].last_used_frame)
-                });
-                if replace {
-                    victim = Some(index);
-                }
-            }
-            way += 1;
-        }
-        // Every way in this set may already be linked in the active build
-        // buffer. In that case fallback is mandatory: replacement would
-        // mutate a packet reachable by the live ordering table.
-        let index = victim?;
-        let slot = &mut self.base_packets[index];
-        let replaced = slot.valid;
-        *slot = ResidentSubdivisionSlot {
-            key,
-            last_used_frame: frame,
-            screen_z,
-            initialized_pools: pool_bit,
-            valid: true,
-        };
-        Some(ResidentSubdivisionAcquire {
-            class_offset_words: RESIDENT_SUBDIVISION_LEVEL1_SLOTS
-                * RESIDENT_SUBDIVISION_LEVEL1_WORDS
-                + RESIDENT_SUBDIVISION_LEVEL2_SLOTS * RESIDENT_SUBDIVISION_LEVEL2_WORDS
-                + index * RESIDENT_BASE_PACKET_WORDS,
-            resident: false,
-            logical_hit: false,
-            replaced,
-        })
-    }
-
-    fn acquire(
-        &mut self,
-        active_pool: usize,
-        frame: u32,
-        key: ResidentSubdivisionKey,
-        screen_z: u16,
-    ) -> Option<ResidentSubdivisionAcquire> {
-        let (slots, directory, base_words, slot_words) = if key.level == 1 {
-            (
-                &mut self.level1[..],
-                &mut self.level1_directory[..],
-                0,
-                RESIDENT_SUBDIVISION_LEVEL1_WORDS,
-            )
-        } else {
-            (
-                &mut self.level2[..],
-                &mut self.level2_directory[..],
-                RESIDENT_SUBDIVISION_LEVEL1_SLOTS * RESIDENT_SUBDIVISION_LEVEL1_WORDS,
-                RESIDENT_SUBDIVISION_LEVEL2_WORDS,
-            )
-        };
-        let pool_bit = 1u8 << active_pool;
-        if let Some(index) = resident_subdivision_directory_find(directory, slots, key) {
-            let slot = &mut slots[index];
-            let resident = slot.initialized_pools & pool_bit != 0;
-            slot.initialized_pools |= pool_bit;
-            slot.last_used_frame = frame;
-            slot.screen_z = screen_z;
-            return Some(ResidentSubdivisionAcquire {
-                class_offset_words: base_words + index * slot_words,
-                resident,
-                logical_hit: true,
-                replaced: false,
-            });
-        }
-
-        let empty = slots.iter().position(|slot| !slot.valid);
-        let mut victim = None;
-        if empty.is_none() {
-            for (index, slot) in slots.iter().enumerate() {
-                let age = frame.wrapping_sub(slot.last_used_frame);
-                if age < 2 {
-                    continue;
-                }
-                let replace = victim.is_none_or(|current: usize| {
-                    let current_slot = &slots[current];
-                    slot.screen_z > current_slot.screen_z
-                        || (slot.screen_z == current_slot.screen_z
-                            && age > frame.wrapping_sub(current_slot.last_used_frame))
-                });
-                if replace {
-                    victim = Some(index);
-                }
-            }
-        }
-        let index = empty.or(victim)?;
-        let replaced = slots[index].valid;
-        if replaced {
-            resident_subdivision_directory_remove(directory, slots, slots[index].key, index);
-        }
-        slots[index] = ResidentSubdivisionSlot {
-            key,
-            last_used_frame: frame,
-            screen_z,
-            initialized_pools: pool_bit,
-            valid: true,
-        };
-        resident_subdivision_directory_insert(directory, key, index);
-        Some(ResidentSubdivisionAcquire {
-            class_offset_words: base_words + index * slot_words,
-            resident: false,
-            logical_hit: false,
-            replaced,
-        })
-    }
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline(always)]
-fn resident_subdivision_key_hash(key: ResidentSubdivisionKey) -> usize {
-    let mut hash = key.material
-        ^ (u32::from(key.source_face) << 8)
-        ^ (u32::from(key.root) << 24)
-        ^ (u32::from(key.level) << 4)
-        ^ u32::from(key.underdraw);
-    hash ^= hash >> 16;
-    hash ^= hash >> 7;
-    hash as usize
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline(always)]
-fn resident_subdivision_directory_find(
-    directory: &[u16],
-    slots: &[ResidentSubdivisionSlot],
-    key: ResidentSubdivisionKey,
-) -> Option<usize> {
-    debug_assert!(directory.len().is_power_of_two());
-    let mask = directory.len() - 1;
-    let mut bucket = resident_subdivision_key_hash(key) & mask;
-    let mut probes = 0usize;
-    while probes < directory.len() {
-        let entry = directory[bucket];
-        if entry == RESIDENT_SUBDIVISION_DIRECTORY_EMPTY {
-            return None;
-        }
-        if entry != RESIDENT_SUBDIVISION_DIRECTORY_TOMBSTONE {
-            let index = entry as usize;
-            if slots[index].valid && slots[index].key == key {
-                return Some(index);
-            }
-        }
-        bucket = (bucket + 1) & mask;
-        probes += 1;
-    }
-    None
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline]
-fn resident_subdivision_directory_remove(
-    directory: &mut [u16],
-    slots: &[ResidentSubdivisionSlot],
-    key: ResidentSubdivisionKey,
-    slot_index: usize,
-) {
-    debug_assert!(directory.len().is_power_of_two());
-    let mask = directory.len() - 1;
-    let mut bucket = resident_subdivision_key_hash(key) & mask;
-    let mut probes = 0usize;
-    while probes < directory.len() {
-        let entry = directory[bucket];
-        if entry == RESIDENT_SUBDIVISION_DIRECTORY_EMPTY {
-            return;
-        }
-        if entry != RESIDENT_SUBDIVISION_DIRECTORY_TOMBSTONE
-            && entry as usize == slot_index
-            && slots[slot_index].key == key
-        {
-            directory[bucket] = RESIDENT_SUBDIVISION_DIRECTORY_TOMBSTONE;
-            return;
-        }
-        bucket = (bucket + 1) & mask;
-        probes += 1;
-    }
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline]
-fn resident_subdivision_directory_insert(
-    directory: &mut [u16],
-    key: ResidentSubdivisionKey,
-    slot_index: usize,
-) {
-    debug_assert!(directory.len().is_power_of_two());
-    debug_assert!(slot_index < RESIDENT_SUBDIVISION_DIRECTORY_TOMBSTONE as usize);
-    let mask = directory.len() - 1;
-    let mut bucket = resident_subdivision_key_hash(key) & mask;
-    let mut first_tombstone = None;
-    let mut probes = 0usize;
-    while probes < directory.len() {
-        match directory[bucket] {
-            RESIDENT_SUBDIVISION_DIRECTORY_EMPTY => {
-                directory[first_tombstone.unwrap_or(bucket)] = slot_index as u16;
-                return;
-            }
-            RESIDENT_SUBDIVISION_DIRECTORY_TOMBSTONE => {
-                if first_tombstone.is_none() {
-                    first_tombstone = Some(bucket);
-                }
-            }
-            _ => {}
-        }
-        bucket = (bucket + 1) & mask;
-        probes += 1;
-    }
-    let bucket = first_tombstone.expect("directory load factor is bounded below one");
-    directory[bucket] = slot_index as u16;
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-struct ResidentSubdivisionSink<'a> {
-    cache: &'a mut ResidentSubdivisionCache,
-    pending_start: &'a mut *mut u32,
-    active_pool: usize,
-    frame: u32,
-    hits: u32,
-    allocations: u32,
-    replacements: u32,
-    fallbacks: u32,
-    initializations: u32,
-    packets: u32,
-}
-
-#[cfg(feature = "renderer-subdivision-cache")]
-impl ClassicAffineSubdivisionCacheSink for ResidentSubdivisionSink<'_> {
-    #[cfg(feature = "renderer-resident-base-cache")]
-    #[inline(always)]
-    fn acquire_base_packet(
-        &mut self,
-        source_face: u16,
-        root: u8,
-        quad: bool,
-        material: u32,
-        screen_z: u16,
-    ) -> Option<ClassicAffineSubdivisionRootSlot> {
-        let acquired = self.cache.acquire_base_packet(
-            self.active_pool,
-            self.frame,
-            ResidentSubdivisionKey {
-                material,
-                source_face,
-                root,
-                level: u8::from(quad),
-                underdraw: 0,
-            },
-            screen_z,
-        );
-        let Some(acquired) = acquired else {
-            self.fallbacks = self.fallbacks.wrapping_add(1);
-            return None;
-        };
-        self.hits = self.hits.wrapping_add(u32::from(acquired.logical_hit));
-        self.allocations = self
-            .allocations
-            .wrapping_add(u32::from(!acquired.logical_hit));
-        self.replacements = self.replacements.wrapping_add(u32::from(acquired.replaced));
-        self.initializations = self
-            .initializations
-            .wrapping_add(u32::from(!acquired.resident));
-        let pool_base = unsafe {
-            addr_of_mut!(GPU_ARENAS)
-                .cast::<u32>()
-                .add(self.active_pool * GPU_ARENA_WORDS + DYNAMIC_GPU_ARENA_WORDS)
-        };
-        Some(ClassicAffineSubdivisionRootSlot {
-            active: unsafe { pool_base.add(acquired.class_offset_words) },
-            resident: acquired.resident,
-        })
-    }
-
-    #[cfg_attr(feature = "renderer-resident-level2-cold-cache", inline(never))]
-    fn acquire_root(
-        &mut self,
-        source_face: u16,
-        root: u8,
-        level: u8,
-        underdraw: bool,
-        material: u32,
-        screen_z: u16,
-    ) -> Option<ClassicAffineSubdivisionRootSlot> {
-        let acquired = self.cache.acquire(
-            self.active_pool,
-            self.frame,
-            ResidentSubdivisionKey {
-                material,
-                source_face,
-                root,
-                level,
-                underdraw: u8::from(underdraw),
-            },
-            screen_z,
-        );
-        let Some(acquired) = acquired else {
-            self.fallbacks = self.fallbacks.wrapping_add(1);
-            return None;
-        };
-        self.hits = self.hits.wrapping_add(u32::from(acquired.logical_hit));
-        self.allocations = self
-            .allocations
-            .wrapping_add(u32::from(!acquired.logical_hit));
-        self.replacements = self.replacements.wrapping_add(u32::from(acquired.replaced));
-        self.initializations = self
-            .initializations
-            .wrapping_add(u32::from(!acquired.resident));
-        let pool_base = unsafe {
-            addr_of_mut!(GPU_ARENAS)
-                .cast::<u32>()
-                .add(self.active_pool * GPU_ARENA_WORDS + DYNAMIC_GPU_ARENA_WORDS)
-        };
-        Some(ClassicAffineSubdivisionRootSlot {
-            active: unsafe { pool_base.add(acquired.class_offset_words) },
-            resident: acquired.resident,
-        })
-    }
-
-    unsafe fn flush_dynamic_until(&mut self, end: *mut u32) {
-        unsafe { crate::platform::gpu_insert_world_stream(*self.pending_start, end) };
-        *self.pending_start = end;
-    }
-
-    unsafe fn insert_resident_packet(&mut self, packet: *mut u32, otz: u16, words: u8) {
-        unsafe { crate::platform::gpu_insert_resident_world_packet(packet, otz, words) };
-        self.packets = self.packets.wrapping_add(1);
-    }
-
-    unsafe fn insert_resident_stream(&mut self, first: *mut u32, end: *mut u32) {
-        unsafe { crate::platform::gpu_insert_resident_world_stream(first, end) };
-    }
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct WaterPortal {
@@ -1680,86 +1014,6 @@ fn dynamic_light_misses(light: DynamicLight, mins: [i16; 3], maxs: [i16; 3]) -> 
         }
     }
     false
-}
-
-#[cfg(feature = "renderer-topology-cache")]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct TopologyBatchIdentity {
-    hash_a: u32,
-    hash_b: u32,
-}
-
-#[cfg(feature = "renderer-topology-cache")]
-impl TopologyBatchIdentity {
-    const fn new(map_generation: u32) -> Self {
-        Self {
-            hash_a: 0x811c_9dc5 ^ map_generation,
-            hash_b: 0x9e37_79b9 ^ map_generation.rotate_left(16),
-        }
-    }
-
-    fn mix(&mut self, source_surface: u16, texture_page: u16, clut: u16, stable: bool) {
-        let geometry_material = u32::from(source_surface) | (u32::from(texture_page) << 16);
-        let palette_policy = u32::from(clut) | (u32::from(stable) << 31);
-        self.hash_a = (self.hash_a ^ geometry_material).wrapping_mul(0x0100_0193);
-        self.hash_a = (self.hash_a ^ palette_policy).wrapping_mul(0x0100_0193);
-        self.hash_b = self
-            .hash_b
-            .rotate_left(7)
-            .wrapping_add(geometry_material.wrapping_mul(0x85eb_ca6b));
-        self.hash_b = self
-            .hash_b
-            .rotate_left(7)
-            .wrapping_add(palette_policy.wrapping_mul(0xc2b2_ae35));
-    }
-}
-
-#[cfg(feature = "renderer-topology-cache")]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct TopologyBatchCache {
-    identity: TopologyBatchIdentity,
-    plan: ClassicAffinePacketPlan,
-    output_word_offset: u32,
-    valid: bool,
-}
-
-#[cfg(feature = "renderer-static-world-reuse")]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct StaticWorldKey {
-    camera: Camera,
-    visibility: Option<(u32, usize, u16)>,
-    water_plane: i16,
-}
-
-#[cfg(feature = "renderer-static-world-reuse")]
-struct StaticWorldCache {
-    key: Option<StaticWorldKey>,
-    world_words: u16,
-    packets: u32,
-    hardware_triangles: u32,
-    visible_faces: u16,
-    layered_sky_texture: Option<TextureInfo>,
-    tag_slots: Vec<u16>,
-}
-
-#[cfg(feature = "renderer-static-world-reuse")]
-impl StaticWorldCache {
-    fn new() -> Self {
-        Self {
-            key: None,
-            world_words: 0,
-            packets: 0,
-            hardware_triangles: 0,
-            visible_faces: 0,
-            layered_sky_texture: None,
-            tag_slots: Vec::with_capacity(MAX_STATIC_WORLD_PACKET_SLOTS),
-        }
-    }
-
-    fn invalidate(&mut self) {
-        self.key = None;
-        self.tag_slots.clear();
-    }
 }
 
 /// Expand Quake's dominant baked indexed-corner stream without leaving the
@@ -1852,14 +1106,10 @@ pub struct Renderer {
     // leaf. Iterating this list preserves legacy draw order while avoiding a
     // full face scan and repeated compact Face/Plane decoding every frame.
     visible_faces: Vec<VisibleFace>,
-    /// Plane records are a cold parallel stream in the compact-cell path.
-    /// Invariant-front faces never touch it during per-frame selection.
-    #[cfg(feature = "renderer-compact-cell-stream")]
-    visible_face_planes: Vec<CompactPlane>,
+
     #[cfg(feature = "renderer-block-frustum")]
     visible_face_blocks: Vec<VisibleFaceBlock>,
-    #[cfg(feature = "renderer-hierarchical-block-frustum")]
-    visible_face_super_blocks: Vec<VisibleFaceBlock>,
+
     // Indexes into `visible_faces` which survive the current camera frustum.
     // This keeps the projection/subdivision pass single-shot while the GTE is
     // loaded with the ordinary camera transform.
@@ -1874,14 +1124,7 @@ pub struct Renderer {
     active_water_plane: i16,
     #[cfg(feature = "renderer-selection-cache")]
     cached_frame_selection: Option<(Camera, Option<(u32, usize, u16)>, i16)>,
-    #[cfg(feature = "renderer-plane-index-cache")]
-    plane_facing_generation: u32,
-    #[cfg(feature = "renderer-plane-index-cache")]
-    plane_facing_epoch: u16,
-    #[cfg(feature = "renderer-plane-index-cache")]
-    plane_facing_stamps: Vec<u16>,
-    #[cfg(feature = "renderer-plane-index-cache")]
-    plane_facing_behind: Vec<u8>,
+
     alias_projected: Vec<ClassicAliasProjectedVertex>,
     visible_entity_indices: Vec<u16>,
     cached_frustum: Option<(Camera, [AabbClipPlane; 4])>,
@@ -1902,26 +1145,9 @@ pub struct Renderer {
     /// most one bit is set; every other slot carries its exact `inv_*` image.
     weapon_selected_mask: u8,
     active_textures: Vec<TextureInfo>,
-    #[cfg(feature = "renderer-indexed-projection")]
-    indexed_projection_generation: u32,
-    #[cfg(feature = "renderer-indexed-projection")]
-    indexed_position_slots: Vec<u8>,
-    #[cfg(feature = "renderer-indexed-projection")]
-    indexed_unique_positions: [u16; BATCH_MAX_VERTICES],
-    #[cfg(feature = "renderer-indexed-projection")]
-    indexed_corner_slots: [u8; BATCH_MAX_VERTICES],
-    #[cfg(feature = "renderer-indexed-projection")]
-    indexed_projected: [ClassicAliasProjectedVertex; BATCH_MAX_VERTICES],
-    #[cfg(feature = "renderer-indexed-projection")]
-    indexed_unique_count: usize,
-    #[cfg(feature = "renderer-topology-cache")]
-    topology_batches: [[TopologyBatchCache; MAX_TOPOLOGY_CACHE_BATCHES]; 2],
+
     #[cfg(feature = "renderer-census")]
     subdivision_slab_cache_models: [SubdivisionSlabCacheModel; SUBDIVISION_CACHE_BUDGETS_KIB.len()],
-    #[cfg(feature = "renderer-subdivision-cache")]
-    resident_subdivision_cache: ResidentSubdivisionCache,
-    #[cfg(feature = "renderer-static-world-reuse")]
-    static_world_cache: [StaticWorldCache; 2],
 }
 
 impl Renderer {
@@ -1933,12 +1159,10 @@ impl Renderer {
             face_visible: vec![0; MAX_FACE_COUNT.div_ceil(4)],
             visible_faces_generation: None,
             visible_faces: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
-            #[cfg(feature = "renderer-compact-cell-stream")]
-            visible_face_planes: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
+
             #[cfg(feature = "renderer-block-frustum")]
             visible_face_blocks: Vec::with_capacity(MAX_VISIBLE_FACE_BLOCKS),
-            #[cfg(feature = "renderer-hierarchical-block-frustum")]
-            visible_face_super_blocks: Vec::with_capacity(MAX_VISIBLE_FACE_SUPER_BLOCKS),
+
             frame_face_indices: Vec::with_capacity(MAX_VISIBLE_FACE_COUNT),
             visibility: [0; MAX_VISIBILITY_BYTES],
             visible_leaf_count: 0,
@@ -1947,14 +1171,7 @@ impl Renderer {
             active_water_plane: -1,
             #[cfg(feature = "renderer-selection-cache")]
             cached_frame_selection: None,
-            #[cfg(feature = "renderer-plane-index-cache")]
-            plane_facing_generation: u32::MAX,
-            #[cfg(feature = "renderer-plane-index-cache")]
-            plane_facing_epoch: 0,
-            #[cfg(feature = "renderer-plane-index-cache")]
-            plane_facing_stamps: Vec::new(),
-            #[cfg(feature = "renderer-plane-index-cache")]
-            plane_facing_behind: Vec::new(),
+
             alias_projected: vec![ClassicAliasProjectedVertex::default(); MAX_ALIAS_VERTICES],
             visible_entity_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             cached_frustum: None,
@@ -1976,309 +1193,12 @@ impl Renderer {
             liquid_alternate_mask: 0,
             weapon_selected_mask: 0,
             active_textures: Vec::with_capacity(MAX_RENDER_TEXTURES),
-            #[cfg(feature = "renderer-indexed-projection")]
-            indexed_projection_generation: u32::MAX,
-            #[cfg(feature = "renderer-indexed-projection")]
-            indexed_position_slots: Vec::new(),
-            #[cfg(feature = "renderer-indexed-projection")]
-            indexed_unique_positions: [0; BATCH_MAX_VERTICES],
-            #[cfg(feature = "renderer-indexed-projection")]
-            indexed_corner_slots: [0; BATCH_MAX_VERTICES],
-            #[cfg(feature = "renderer-indexed-projection")]
-            indexed_projected: [ClassicAliasProjectedVertex::default(); BATCH_MAX_VERTICES],
-            #[cfg(feature = "renderer-indexed-projection")]
-            indexed_unique_count: 0,
-            #[cfg(feature = "renderer-topology-cache")]
-            topology_batches: [[TopologyBatchCache::default(); MAX_TOPOLOGY_CACHE_BATCHES]; 2],
+
             #[cfg(feature = "renderer-census")]
             subdivision_slab_cache_models: core::array::from_fn(|index| {
                 SubdivisionSlabCacheModel::new(SUBDIVISION_CACHE_BUDGETS_KIB[index] * 1024)
             }),
-            #[cfg(feature = "renderer-subdivision-cache")]
-            resident_subdivision_cache: ResidentSubdivisionCache::new(),
-            #[cfg(feature = "renderer-static-world-reuse")]
-            static_world_cache: core::array::from_fn(|_| StaticWorldCache::new()),
         }
-    }
-
-    #[cfg(feature = "renderer-plane-index-cache")]
-    fn prepare_plane_facing_cache(&mut self, map: &ResidentMap) {
-        let plane_count = map.collision_planes().len();
-        if self.plane_facing_generation != map.generation()
-            || self.plane_facing_stamps.len() != plane_count
-        {
-            self.plane_facing_stamps.clear();
-            self.plane_facing_stamps.resize(plane_count, 0);
-            self.plane_facing_behind.clear();
-            self.plane_facing_behind.resize(plane_count, 0);
-            self.plane_facing_generation = map.generation();
-            self.plane_facing_epoch = 0;
-        }
-        self.plane_facing_epoch = self.plane_facing_epoch.wrapping_add(1);
-        if self.plane_facing_epoch == 0 {
-            self.plane_facing_stamps.fill(0);
-            self.plane_facing_epoch = 1;
-        }
-    }
-
-    #[cfg(feature = "renderer-indexed-projection")]
-    fn prepare_indexed_world_projection(&mut self, map: &ResidentMap) {
-        let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
-        if self.indexed_projection_generation != map.generation()
-            || self.indexed_position_slots.len() != indexed.positions.len()
-        {
-            self.indexed_position_slots.clear();
-            self.indexed_position_slots
-                .resize(indexed.positions.len(), u8::MAX);
-            self.indexed_projection_generation = map.generation();
-        }
-        debug_assert_eq!(self.indexed_unique_count, 0);
-    }
-
-    #[cfg(feature = "renderer-subdivision-cache")]
-    unsafe fn flush_cached_subdivision_batch(
-        &mut self,
-        vertices: *mut ClassicAffineVertex,
-        vertex_count: usize,
-        surfaces: *const ClassicAffineBatchSurface,
-        source_faces: *const u16,
-        surface_count: usize,
-        output: *mut u32,
-        pending_start: &mut *mut u32,
-        stats: &mut RenderStats,
-    ) -> ClassicAffineSubmit {
-        let mut sink = ResidentSubdivisionSink {
-            cache: &mut self.resident_subdivision_cache,
-            pending_start,
-            active_pool: self.arena,
-            frame: self.frame,
-            hits: 0,
-            allocations: 0,
-            replacements: 0,
-            fallbacks: 0,
-            initializations: 0,
-            packets: 0,
-        };
-        let submitted = unsafe {
-            submit_classic_affine_cached_subdivision_batch(
-                vertices,
-                vertex_count,
-                surfaces,
-                source_faces,
-                surface_count,
-                output,
-                ClassicAffineProfile::QUAKE_REFERENCE,
-                &mut sink,
-            )
-        };
-        stats.subdivision_cache_hits = stats.subdivision_cache_hits.wrapping_add(sink.hits);
-        stats.subdivision_cache_allocations = stats
-            .subdivision_cache_allocations
-            .wrapping_add(sink.allocations);
-        stats.subdivision_cache_replacements = stats
-            .subdivision_cache_replacements
-            .wrapping_add(sink.replacements);
-        stats.subdivision_cache_fallbacks = stats
-            .subdivision_cache_fallbacks
-            .wrapping_add(sink.fallbacks);
-        stats.subdivision_cache_initializations = stats
-            .subdivision_cache_initializations
-            .wrapping_add(sink.initializations);
-        stats.subdivision_cache_packets =
-            stats.subdivision_cache_packets.wrapping_add(sink.packets);
-        submitted
-    }
-
-    #[cfg(feature = "renderer-fused-materialize-project")]
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn flush_fused_world_batch(
-        &self,
-        map: &ResidentMap,
-        vertices: *mut ClassicAffineVertex,
-        vertex_count: usize,
-        surfaces: *const ClassicAffineBatchSurface,
-        sources: *const ClassicAffineIndexedBatchSource,
-        visible_indices: *const u16,
-        surface_count: usize,
-        output: *mut u32,
-    ) -> ClassicAffineSubmit {
-        if vertex_count == 0 || surface_count == 0 {
-            return ClassicAffineSubmit {
-                next_packet: output,
-                packets: 0,
-                hardware_triangles: 0,
-            };
-        }
-        let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
-        unsafe {
-            materialize_project_classic_affine_indexed_batch(
-                indexed
-                    .corners
-                    .as_ptr()
-                    .cast::<ClassicAffineIndexedCorner>(),
-                indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                indexed.positions.len(),
-                surfaces,
-                sources,
-                surface_count,
-                vertex_count,
-                vertices,
-            );
-        }
-        if self.frame_light.is_some() {
-            let mut surface_index = 0usize;
-            while surface_index < surface_count {
-                let surface = unsafe { ptr::read(surfaces.add(surface_index)) };
-                let visible_index = unsafe { ptr::read(visible_indices.add(surface_index)) };
-                let face_vertices = unsafe {
-                    core::slice::from_raw_parts_mut(
-                        vertices.add(surface.first_vertex as usize),
-                        surface.vertex_count as usize,
-                    )
-                };
-                self.light_face(visible_index as usize, face_vertices);
-                surface_index += 1;
-            }
-        }
-        unsafe {
-            submit_classic_affine_projected_batch(
-                vertices,
-                vertex_count,
-                surfaces,
-                surface_count,
-                output,
-                ClassicAffineProfile::QUAKE_REFERENCE,
-            )
-        }
-    }
-
-    #[cfg(feature = "renderer-indexed-projection")]
-    unsafe fn flush_indexed_world_batch(
-        &mut self,
-        map: &ResidentMap,
-        vertices: *mut ClassicAffineVertex,
-        vertex_count: usize,
-        surfaces: *const ClassicAffineBatchSurface,
-        surface_count: usize,
-        output: *mut u32,
-        stats: &mut RenderStats,
-    ) -> ClassicAffineSubmit {
-        if vertex_count == 0 || surface_count == 0 {
-            debug_assert_eq!(self.indexed_unique_count, 0);
-            return ClassicAffineSubmit {
-                next_packet: output,
-                packets: 0,
-                hardware_triangles: 0,
-            };
-        }
-
-        let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
-        unsafe {
-            project_classic_affine_indexed_vertices_dense(
-                indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                indexed.positions.len(),
-                self.indexed_unique_positions.as_ptr(),
-                self.indexed_unique_count,
-                self.indexed_projected.as_mut_ptr(),
-            );
-        }
-        let mut corner = 0usize;
-        while corner < vertex_count {
-            let slot = unsafe { *self.indexed_corner_slots.get_unchecked(corner) } as usize;
-            let projected = unsafe { *self.indexed_projected.get_unchecked(slot) };
-            unsafe {
-                (*vertices.add(corner)).screen = projected.screen;
-                (*vertices.add(corner)).depth = i32::from(projected.depth);
-            }
-            corner += 1;
-        }
-        let submitted = unsafe {
-            submit_classic_affine_projected_batch(
-                vertices,
-                vertex_count,
-                surfaces,
-                surface_count,
-                output,
-                ClassicAffineProfile::QUAKE_REFERENCE,
-            )
-        };
-
-        stats.indexed_projection_corners = stats
-            .indexed_projection_corners
-            .wrapping_add(vertex_count as u32);
-        stats.indexed_projection_unique = stats
-            .indexed_projection_unique
-            .wrapping_add(self.indexed_unique_count as u32);
-        let mut index = 0usize;
-        while index < self.indexed_unique_count {
-            let position = unsafe { *self.indexed_unique_positions.get_unchecked(index) } as usize;
-            unsafe { *self.indexed_position_slots.get_unchecked_mut(position) = u8::MAX };
-            index += 1;
-        }
-        self.indexed_unique_count = 0;
-        submitted
-    }
-
-    #[cfg(feature = "renderer-topology-cache")]
-    unsafe fn flush_resident_world_batch(
-        &mut self,
-        vertices: *mut ClassicAffineVertex,
-        vertex_count: usize,
-        surfaces: *const ClassicAffineResidentBatchSurface,
-        surface_count: usize,
-        arena_start: *mut u32,
-        output: *mut u32,
-        batch_index: usize,
-        identity: TopologyBatchIdentity,
-    ) -> ClassicAffinePlannedSubmit {
-        if vertex_count == 0 || surface_count == 0 {
-            return unsafe {
-                submit_classic_affine_planned_resident_batch(
-                    vertices,
-                    vertex_count,
-                    surfaces,
-                    surface_count,
-                    output,
-                    ClassicAffineProfile::QUAKE_REFERENCE,
-                    None,
-                )
-            };
-        }
-        let output_word_offset = unsafe { output.offset_from(arena_start) as u32 };
-        let expected = self
-            .topology_batches
-            .get(self.arena)
-            .and_then(|pool| pool.get(batch_index))
-            .filter(|cache| {
-                cache.valid
-                    && cache.identity == identity
-                    && cache.output_word_offset == output_word_offset
-            })
-            .map(|cache| &cache.plan);
-        let submitted = unsafe {
-            submit_classic_affine_planned_resident_batch(
-                vertices,
-                vertex_count,
-                surfaces,
-                surface_count,
-                output,
-                ClassicAffineProfile::QUAKE_REFERENCE,
-                expected,
-            )
-        };
-        if let Some(cache) = self
-            .topology_batches
-            .get_mut(self.arena)
-            .and_then(|pool| pool.get_mut(batch_index))
-        {
-            *cache = TopologyBatchCache {
-                identity,
-                plan: submitted.plan,
-                output_word_offset,
-                valid: submitted.plan.is_valid(),
-            };
-        }
-        submitted
     }
 
     /// Adopt the gameplay layer's `d_lightstylevalue` for this frame.
@@ -2532,20 +1452,17 @@ impl Renderer {
             self.liquid_uploaded_mask = 0;
             self.liquid_alternate_mask = 0;
         }
-        #[cfg(feature = "renderer-subdivision-cache")]
-        self.resident_subdivision_cache.begin_map(map.generation());
+
         let start = unsafe {
             addr_of_mut!(GPU_ARENAS)
                 .cast::<u32>()
                 .add(self.arena * GPU_ARENA_WORDS)
         };
-        #[cfg(not(feature = "renderer-subdivision-cache"))]
+
         let end = unsafe { start.add(GPU_ARENA_WORDS) };
-        #[cfg(feature = "renderer-subdivision-cache")]
-        let end = unsafe { start.add(DYNAMIC_GPU_ARENA_WORDS) };
+
         let mut next = start;
-        #[cfg(feature = "renderer-subdivision-cache")]
-        let mut pending_world_start = start;
+
         let mut stats = RenderStats::default();
         let mut layered_sky_texture = None;
 
@@ -2601,14 +1518,12 @@ impl Renderer {
                     near_clip_plane.as_ref().expect("near plane initialized"),
                 );
             }
-            #[cfg(feature = "renderer-plane-index-cache")]
-            self.prepare_plane_facing_cache(map);
+
             self.frame_face_indices.clear();
         }
         if visibility_valid && !selection_cached {
             #[cfg(all(
                 not(feature = "renderer-census"),
-                not(feature = "renderer-aabb-support-offsets"),
                 not(feature = "renderer-block-frustum")
             ))]
             select_frame_faces(
@@ -2619,33 +1534,10 @@ impl Renderer {
                 self.active_water_plane,
                 &mut self.frame_face_indices,
             );
-            #[cfg(all(
-                not(feature = "renderer-census"),
-                feature = "renderer-aabb-support-offsets",
-                not(feature = "renderer-block-frustum")
-            ))]
-            {
-                let supports = scene::AabbClip4SupportOffsets::new(&frustum);
-                select_frame_faces_preselected(
-                    &self.visible_faces,
-                    &self.active_textures,
-                    camera.origin,
-                    &frustum,
-                    &supports,
-                    self.active_water_plane,
-                    &mut self.frame_face_indices,
-                );
-            }
-            #[cfg(all(
-                not(feature = "renderer-census"),
-                feature = "renderer-block-frustum",
-                not(feature = "renderer-hierarchical-block-frustum"),
-                not(feature = "renderer-plane-index-cache")
-            ))]
+
+            #[cfg(all(not(feature = "renderer-census"), feature = "renderer-block-frustum"))]
             select_frame_faces_blocked(
                 &self.visible_faces,
-                #[cfg(feature = "renderer-compact-cell-stream")]
-                &self.visible_face_planes,
                 &self.visible_face_blocks,
                 #[cfg(not(feature = "renderer-cell-liquid-policy"))]
                 &self.active_textures,
@@ -2654,38 +1546,7 @@ impl Renderer {
                 self.active_water_plane,
                 &mut self.frame_face_indices,
             );
-            #[cfg(all(
-                not(feature = "renderer-census"),
-                feature = "renderer-block-frustum",
-                not(feature = "renderer-hierarchical-block-frustum"),
-                feature = "renderer-plane-index-cache"
-            ))]
-            select_frame_faces_blocked_plane_indexed(
-                &self.visible_faces,
-                &self.visible_face_blocks,
-                &self.active_textures,
-                camera.origin,
-                &frustum,
-                self.active_water_plane,
-                self.plane_facing_epoch,
-                &mut self.plane_facing_stamps,
-                &mut self.plane_facing_behind,
-                &mut self.frame_face_indices,
-            );
-            #[cfg(all(
-                not(feature = "renderer-census"),
-                feature = "renderer-hierarchical-block-frustum"
-            ))]
-            select_frame_faces_hierarchical(
-                &self.visible_faces,
-                &self.visible_face_blocks,
-                &self.visible_face_super_blocks,
-                &self.active_textures,
-                camera.origin,
-                &frustum,
-                self.active_water_plane,
-                &mut self.frame_face_indices,
-            );
+
             #[cfg(feature = "renderer-census")]
             {
                 renderer_census.selection = select_frame_faces_census(
@@ -2751,61 +1612,20 @@ impl Renderer {
             camera.angles,
         );
         self.update_visible_liquid_tiles(map, animation_tick_60hz);
-        #[cfg(feature = "renderer-static-world-reuse")]
-        let static_world_key = StaticWorldKey {
-            camera,
-            visibility: self.cached_visibility,
-            water_plane: self.active_water_plane,
-        };
-        #[cfg(feature = "renderer-static-world-reuse")]
-        let static_world_cache_hit = if visibility_valid && self.frame_light.is_none() {
-            let cache = unsafe { self.static_world_cache.get_unchecked(self.arena) };
-            if cache.key == Some(static_world_key) {
-                let cached_end = unsafe { start.add(cache.world_words as usize) };
-                if unsafe { restore_static_world_tags(start, cached_end, &cache.tag_slots) } {
-                    next = cached_end;
-                    stats.visible_faces = cache.visible_faces;
-                    stats.packets = cache.packets;
-                    stats.hardware_triangles = cache.hardware_triangles;
-                    layered_sky_texture = cache.layered_sky_texture;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        #[cfg(not(feature = "renderer-static-world-reuse"))]
+
         let static_world_cache_hit = false;
-        #[cfg(feature = "renderer-static-world-reuse")]
-        let mut static_world_cache_eligible = self.frame_light.is_none();
 
         if visibility_valid && !static_world_cache_hit {
-            #[cfg(feature = "renderer-hoisted-indexed-world")]
-            let indexed_world = map.indexed_vertices().expect("validated PSB4 vertices");
-            #[cfg(feature = "renderer-indexed-projection")]
-            self.prepare_indexed_world_projection(map);
             let batch_vertices = scratchpad_batch_vertices();
-            #[cfg(not(feature = "renderer-topology-cache"))]
+
             let mut batch_surfaces = uninit_batch_surfaces();
-            #[cfg(feature = "renderer-fused-materialize-project")]
-            let mut batch_indexed_sources = uninit_batch_indexed_sources();
-            #[cfg(feature = "renderer-fused-materialize-project")]
-            let mut batch_visible_indices = uninit_batch_visible_indices();
-            #[cfg(any(feature = "renderer-census", feature = "renderer-subdivision-cache"))]
+
+            #[cfg(feature = "renderer-census")]
             let mut batch_source_surfaces = uninit_batch_source_surfaces();
-            #[cfg(feature = "renderer-topology-cache")]
-            let mut batch_surfaces = uninit_resident_batch_surfaces();
+
             let mut batch_vertex_count = 0usize;
             let mut batch_surface_count = 0usize;
             let mut batch_worst_words = 0usize;
-            #[cfg(feature = "renderer-topology-cache")]
-            let mut topology_batch_index = 0usize;
-            #[cfg(feature = "renderer-topology-cache")]
-            let mut topology_batch_identity = TopologyBatchIdentity::new(map.generation());
 
             for frame_index in 0..self.frame_face_indices.len() {
                 // Copy before mutably borrowing `self` in the submission path.
@@ -2818,8 +1638,7 @@ impl Renderer {
                 // still needed to form the cache key below.
                 let visible = unsafe { *self.visible_faces.get_unchecked(visible_index) };
                 let face = visible.face;
-                #[cfg(feature = "renderer-topology-cache")]
-                let visible_bounds = visible.bounds;
+
                 let texture =
                     unsafe { *self.active_textures.get_unchecked(face.material as usize) };
 
@@ -2837,35 +1656,10 @@ impl Renderer {
                     continue;
                 }
                 if texture.flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 {
-                    #[cfg(feature = "renderer-static-world-reuse")]
-                    {
-                        static_world_cache_eligible = false;
-                    }
-                    #[cfg(all(
-                        feature = "renderer-census",
-                        not(feature = "renderer-topology-cache")
-                    ))]
+                    #[cfg(feature = "renderer-census")]
                     let batch_output = next;
-                    #[cfg(all(
-                        not(feature = "renderer-topology-cache"),
-                        not(feature = "renderer-indexed-projection"),
-                        not(feature = "renderer-subdivision-cache")
-                    ))]
+
                     let submitted = unsafe {
-                        #[cfg(feature = "renderer-fused-materialize-project")]
-                        {
-                            self.flush_fused_world_batch(
-                                map,
-                                batch_vertices.as_mut_ptr().cast(),
-                                batch_vertex_count,
-                                batch_surfaces.as_ptr().cast(),
-                                batch_indexed_sources.as_ptr().cast(),
-                                batch_visible_indices.as_ptr().cast(),
-                                batch_surface_count,
-                                next,
-                            )
-                        }
-                        #[cfg(not(feature = "renderer-fused-materialize-project"))]
                         {
                             flush_world_batch(
                                 batch_vertices.as_mut_ptr().cast(),
@@ -2876,56 +1670,8 @@ impl Renderer {
                             )
                         }
                     };
-                    #[cfg(feature = "renderer-subdivision-cache")]
-                    let submitted = unsafe {
-                        self.flush_cached_subdivision_batch(
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_source_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                            &mut pending_world_start,
-                            &mut stats,
-                        )
-                    };
-                    #[cfg(feature = "renderer-indexed-projection")]
-                    let submitted = unsafe {
-                        self.flush_indexed_world_batch(
-                            map,
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                            &mut stats,
-                        )
-                    };
-                    #[cfg(feature = "renderer-topology-cache")]
-                    let resident_submitted = unsafe {
-                        self.flush_resident_world_batch(
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            start,
-                            next,
-                            topology_batch_index,
-                            topology_batch_identity,
-                        )
-                    };
-                    #[cfg(feature = "renderer-topology-cache")]
-                    let submitted = resident_submitted.submit;
-                    #[cfg(feature = "renderer-topology-cache")]
-                    if batch_surface_count != 0 {
-                        record_topology_cache_submit(&mut stats, resident_submitted);
-                        topology_batch_index += 1;
-                        topology_batch_identity = TopologyBatchIdentity::new(map.generation());
-                    }
-                    #[cfg(all(
-                        feature = "renderer-census",
-                        not(feature = "renderer-topology-cache")
-                    ))]
+
+                    #[cfg(feature = "renderer-census")]
                     unsafe {
                         census_world_batch(
                             batch_vertices.as_ptr().cast(),
@@ -2957,15 +1703,9 @@ impl Renderer {
                         break;
                     }
                     let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
-                    #[cfg(not(feature = "renderer-hoisted-indexed-world"))]
+
                     self.materialize_retained_face(map, face, texture, vertices);
-                    #[cfg(feature = "renderer-hoisted-indexed-world")]
-                    self.materialize_retained_face_from_indexed(
-                        indexed_world,
-                        face,
-                        texture,
-                        vertices,
-                    );
+
                     animate_special_surface(vertices, texture, self.frame);
                     let vertex_count = if clip {
                         unsafe { clip_face_near(batch_vertices.as_mut_ptr().cast(), vertex_count) }
@@ -2975,8 +1715,7 @@ impl Renderer {
                     if vertex_count < 3 {
                         continue;
                     }
-                    #[cfg(feature = "renderer-window-range-coalescing")]
-                    let window_packet_start = next;
+
                     let submitted = unsafe {
                         submit_classic_affine_scoped_windowed_fan(
                             batch_vertices.as_mut_ptr().cast(),
@@ -3005,146 +1744,7 @@ impl Renderer {
                             mark_window_packets_translucent(next, submitted.next_packet);
                         }
                     }
-                    #[cfg(feature = "renderer-window-range-coalescing")]
-                    unsafe {
-                        crate::platform::register_world_window_packet_range(
-                            window_packet_start,
-                            submitted.next_packet,
-                        );
-                    }
-                    next = submitted.next_packet;
-                    stats.packets = stats.packets.wrapping_add(submitted.packets);
-                    stats.hardware_triangles = stats
-                        .hardware_triangles
-                        .wrapping_add(submitted.hardware_triangles);
-                    stats.visible_faces = stats.visible_faces.saturating_add(1);
-                    continue;
-                }
 
-                // Near clipping can create one interpolated vertex which has
-                // no cooked shared-position index. Keep those rare faces on
-                // the authoritative project-all path, separated by exact
-                // batch boundaries so the indexed stream remains valid.
-                #[cfg(feature = "renderer-indexed-projection")]
-                if clip {
-                    let submitted = unsafe {
-                        self.flush_indexed_world_batch(
-                            map,
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                            &mut stats,
-                        )
-                    };
-                    next = submitted.next_packet;
-                    stats.packets = stats.packets.wrapping_add(submitted.packets);
-                    stats.hardware_triangles = stats
-                        .hardware_triangles
-                        .wrapping_add(submitted.hardware_triangles);
-                    batch_vertex_count = 0;
-                    batch_surface_count = 0;
-                    batch_worst_words = 0;
-
-                    let face_worst_words = (reserve_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
-                    if !packet_capacity(next, end, face_worst_words) {
-                        stats.packet_overflow_avoided = true;
-                        break;
-                    }
-                    let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, reserve_count) };
-                    #[cfg(not(feature = "renderer-hoisted-indexed-world"))]
-                    self.materialize_retained_face(
-                        map,
-                        face,
-                        texture,
-                        &mut vertices[..vertex_count],
-                    );
-                    #[cfg(feature = "renderer-hoisted-indexed-world")]
-                    self.materialize_retained_face_from_indexed(
-                        indexed_world,
-                        face,
-                        texture,
-                        &mut vertices[..vertex_count],
-                    );
-                    if self.frame_light.is_some() {
-                        self.light_face(visible_index, &mut vertices[..vertex_count]);
-                    }
-                    let clipped_count =
-                        unsafe { clip_face_near(vertices.as_mut_ptr(), vertex_count) };
-                    if clipped_count < 3 {
-                        continue;
-                    }
-                    let surface = ClassicAffineBatchSurface {
-                        first_vertex: 0,
-                        vertex_count: clipped_count as u16,
-                        tpage: texture.texture_page,
-                        clut: clut_texture(),
-                    };
-                    let submitted = unsafe {
-                        flush_batch(vertices.as_mut_ptr(), clipped_count, &surface, 1, next)
-                    };
-                    next = submitted.next_packet;
-                    stats.packets = stats.packets.wrapping_add(submitted.packets);
-                    stats.hardware_triangles = stats
-                        .hardware_triangles
-                        .wrapping_add(submitted.hardware_triangles);
-                    stats.visible_faces = stats.visible_faces.saturating_add(1);
-                    continue;
-                }
-
-                #[cfg(feature = "renderer-fused-materialize-project")]
-                if clip {
-                    let submitted = unsafe {
-                        self.flush_fused_world_batch(
-                            map,
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_indexed_sources.as_ptr().cast(),
-                            batch_visible_indices.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                        )
-                    };
-                    next = submitted.next_packet;
-                    stats.packets = stats.packets.wrapping_add(submitted.packets);
-                    stats.hardware_triangles = stats
-                        .hardware_triangles
-                        .wrapping_add(submitted.hardware_triangles);
-                    batch_vertex_count = 0;
-                    batch_surface_count = 0;
-                    batch_worst_words = 0;
-
-                    let face_worst_words = (reserve_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
-                    if !packet_capacity(next, end, face_worst_words) {
-                        stats.packet_overflow_avoided = true;
-                        break;
-                    }
-                    let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, reserve_count) };
-                    self.materialize_retained_face(
-                        map,
-                        face,
-                        texture,
-                        &mut vertices[..vertex_count],
-                    );
-                    if self.frame_light.is_some() {
-                        self.light_face(visible_index, &mut vertices[..vertex_count]);
-                    }
-                    let clipped_count =
-                        unsafe { clip_face_near(vertices.as_mut_ptr(), vertex_count) };
-                    if clipped_count < 3 {
-                        continue;
-                    }
-                    let surface = ClassicAffineBatchSurface {
-                        first_vertex: 0,
-                        vertex_count: clipped_count as u16,
-                        tpage: texture.texture_page,
-                        clut: clut_texture(),
-                    };
-                    let submitted = unsafe {
-                        flush_batch(vertices.as_mut_ptr(), clipped_count, &surface, 1, next)
-                    };
                     next = submitted.next_packet;
                     stats.packets = stats.packets.wrapping_add(submitted.packets);
                     stats.hardware_triangles = stats
@@ -3159,31 +1759,10 @@ impl Renderer {
                     || batch_surface_count == BATCH_MAX_SURFACES
                     || !packet_capacity(next, end, batch_worst_words + face_worst_words)
                 {
-                    #[cfg(all(
-                        feature = "renderer-census",
-                        not(feature = "renderer-topology-cache")
-                    ))]
+                    #[cfg(feature = "renderer-census")]
                     let batch_output = next;
-                    #[cfg(all(
-                        not(feature = "renderer-topology-cache"),
-                        not(feature = "renderer-indexed-projection"),
-                        not(feature = "renderer-subdivision-cache")
-                    ))]
+
                     let submitted = unsafe {
-                        #[cfg(feature = "renderer-fused-materialize-project")]
-                        {
-                            self.flush_fused_world_batch(
-                                map,
-                                batch_vertices.as_mut_ptr().cast(),
-                                batch_vertex_count,
-                                batch_surfaces.as_ptr().cast(),
-                                batch_indexed_sources.as_ptr().cast(),
-                                batch_visible_indices.as_ptr().cast(),
-                                batch_surface_count,
-                                next,
-                            )
-                        }
-                        #[cfg(not(feature = "renderer-fused-materialize-project"))]
                         {
                             flush_world_batch(
                                 batch_vertices.as_mut_ptr().cast(),
@@ -3194,56 +1773,8 @@ impl Renderer {
                             )
                         }
                     };
-                    #[cfg(feature = "renderer-subdivision-cache")]
-                    let submitted = unsafe {
-                        self.flush_cached_subdivision_batch(
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_source_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                            &mut pending_world_start,
-                            &mut stats,
-                        )
-                    };
-                    #[cfg(feature = "renderer-indexed-projection")]
-                    let submitted = unsafe {
-                        self.flush_indexed_world_batch(
-                            map,
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                            &mut stats,
-                        )
-                    };
-                    #[cfg(feature = "renderer-topology-cache")]
-                    let resident_submitted = unsafe {
-                        self.flush_resident_world_batch(
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            start,
-                            next,
-                            topology_batch_index,
-                            topology_batch_identity,
-                        )
-                    };
-                    #[cfg(feature = "renderer-topology-cache")]
-                    let submitted = resident_submitted.submit;
-                    #[cfg(feature = "renderer-topology-cache")]
-                    if batch_surface_count != 0 {
-                        record_topology_cache_submit(&mut stats, resident_submitted);
-                        topology_batch_index += 1;
-                        topology_batch_identity = TopologyBatchIdentity::new(map.generation());
-                    }
-                    #[cfg(all(
-                        feature = "renderer-census",
-                        not(feature = "renderer-topology-cache")
-                    ))]
+
+                    #[cfg(feature = "renderer-census")]
                     unsafe {
                         census_world_batch(
                             batch_vertices.as_ptr().cast(),
@@ -3273,92 +1804,45 @@ impl Renderer {
                     break;
                 }
 
-                #[cfg(not(feature = "renderer-fused-materialize-project"))]
                 let vertices = unsafe {
                     batch_vertices_mut(batch_vertices, batch_vertex_count, reserve_count)
                 };
-                #[cfg(not(feature = "renderer-indexed-projection"))]
+
                 {
-                    #[cfg(all(
-                        not(feature = "renderer-fused-materialize-project"),
-                        not(feature = "renderer-hoisted-indexed-world")
-                    ))]
                     self.materialize_retained_face(
                         map,
                         face,
                         texture,
                         &mut vertices[..vertex_count],
                     );
-                    #[cfg(all(
-                        not(feature = "renderer-fused-materialize-project"),
-                        feature = "renderer-hoisted-indexed-world"
-                    ))]
-                    self.materialize_retained_face_from_indexed(
-                        indexed_world,
-                        face,
-                        texture,
-                        &mut vertices[..vertex_count],
-                    );
                 }
-                #[cfg(feature = "renderer-indexed-projection")]
-                self.materialize_indexed_world_face(
-                    map,
-                    face,
-                    texture,
-                    batch_vertex_count,
-                    &mut vertices[..vertex_count],
-                );
+
                 // Before the near clip, which interpolates the corner colours
                 // of whichever vertices it keeps.
-                #[cfg(not(feature = "renderer-fused-materialize-project"))]
+
                 if self.frame_light.is_some() {
                     self.light_face(visible_index, &mut vertices[..vertex_count]);
                 }
-                #[cfg(not(feature = "renderer-fused-materialize-project"))]
+
                 let vertex_count = if clip {
                     unsafe { clip_face_near(vertices.as_mut_ptr(), vertex_count) }
                 } else {
                     vertex_count
                 };
-                #[cfg(feature = "renderer-fused-materialize-project")]
-                let vertex_count = vertex_count;
+
                 if vertex_count < 3 {
                     continue;
                 }
-                #[cfg(not(feature = "renderer-topology-cache"))]
+
                 batch_surfaces[batch_surface_count].write(ClassicAffineBatchSurface {
                     first_vertex: batch_vertex_count as u16,
                     vertex_count: vertex_count as u16,
                     tpage: texture.texture_page,
                     clut: clut_texture(),
                 });
-                #[cfg(feature = "renderer-fused-materialize-project")]
+
+                #[cfg(feature = "renderer-census")]
                 {
-                    let face_flags = u16::from(face.flags);
-                    let format = u16::from(face_flags & FACE_BAKED_UV != 0)
-                        | (u16::from(face_flags & FACE_BAKED_LIGHT != 0) << 1);
-                    batch_indexed_sources[batch_surface_count].write(
-                        ClassicAffineIndexedBatchSource {
-                            first_corner: u32::from(face.first_corner),
-                            uv_offset: [texture.atlas.x, texture.atlas.y],
-                            format,
-                            light_weights: [
-                                self.light_styles[face.light_styles[0] as usize],
-                                self.light_styles[face.light_styles[1] as usize],
-                            ],
-                        },
-                    );
-                    batch_visible_indices[batch_surface_count].write(visible_index as u16);
-                }
-                #[cfg(any(feature = "renderer-census", feature = "renderer-subdivision-cache"))]
-                {
-                    #[cfg(feature = "renderer-subdivision-cache")]
-                    let stable = u16::from(face.flags) & (FACE_BAKED_UV | FACE_BAKED_LIGHT)
-                        == FACE_BAKED_UV | FACE_BAKED_LIGHT
-                        && self.frame_light.is_none_or(|light| {
-                            dynamic_light_misses(light, visible.bounds.mins, visible.bounds.maxs)
-                        });
-                    #[cfg(not(feature = "renderer-subdivision-cache"))]
                     let stable = true;
                     batch_source_surfaces[batch_surface_count].write(if clip || !stable {
                         u16::MAX
@@ -3366,58 +1850,17 @@ impl Renderer {
                         visible.bounds.surface_index
                     });
                 }
-                #[cfg(feature = "renderer-topology-cache")]
-                {
-                    let face_flags = u16::from(face.flags);
-                    let stable = face_flags & (FACE_BAKED_UV | FACE_BAKED_LIGHT)
-                        == FACE_BAKED_UV | FACE_BAKED_LIGHT
-                        && self.frame_light.is_none_or(|light| {
-                            dynamic_light_misses(light, visible_bounds.mins, visible_bounds.maxs)
-                        });
-                    let clut = clut_texture();
-                    batch_surfaces[batch_surface_count].write(ClassicAffineResidentBatchSurface {
-                        first_vertex: batch_vertex_count as u16,
-                        vertex_count: vertex_count as u16,
-                        tpage: texture.texture_page,
-                        clut,
-                        reuse_invariants: u8::from(stable),
-                        _padding: [0; 3],
-                    });
-                    topology_batch_identity.mix(
-                        visible_bounds.surface_index,
-                        texture.texture_page,
-                        clut,
-                        stable,
-                    );
-                }
+
                 batch_vertex_count += vertex_count;
                 batch_surface_count += 1;
                 batch_worst_words += (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
                 stats.visible_faces = stats.visible_faces.saturating_add(1);
             }
 
-            #[cfg(all(feature = "renderer-census", not(feature = "renderer-topology-cache")))]
+            #[cfg(feature = "renderer-census")]
             let batch_output = next;
-            #[cfg(all(
-                not(feature = "renderer-topology-cache"),
-                not(feature = "renderer-indexed-projection"),
-                not(feature = "renderer-subdivision-cache")
-            ))]
+
             let submitted = unsafe {
-                #[cfg(feature = "renderer-fused-materialize-project")]
-                {
-                    self.flush_fused_world_batch(
-                        map,
-                        batch_vertices.as_mut_ptr().cast(),
-                        batch_vertex_count,
-                        batch_surfaces.as_ptr().cast(),
-                        batch_indexed_sources.as_ptr().cast(),
-                        batch_visible_indices.as_ptr().cast(),
-                        batch_surface_count,
-                        next,
-                    )
-                }
-                #[cfg(not(feature = "renderer-fused-materialize-project"))]
                 {
                     flush_world_batch(
                         batch_vertices.as_mut_ptr().cast(),
@@ -3428,51 +1871,8 @@ impl Renderer {
                     )
                 }
             };
-            #[cfg(feature = "renderer-subdivision-cache")]
-            let submitted = unsafe {
-                self.flush_cached_subdivision_batch(
-                    batch_vertices.as_mut_ptr().cast(),
-                    batch_vertex_count,
-                    batch_surfaces.as_ptr().cast(),
-                    batch_source_surfaces.as_ptr().cast(),
-                    batch_surface_count,
-                    next,
-                    &mut pending_world_start,
-                    &mut stats,
-                )
-            };
-            #[cfg(feature = "renderer-indexed-projection")]
-            let submitted = unsafe {
-                self.flush_indexed_world_batch(
-                    map,
-                    batch_vertices.as_mut_ptr().cast(),
-                    batch_vertex_count,
-                    batch_surfaces.as_ptr().cast(),
-                    batch_surface_count,
-                    next,
-                    &mut stats,
-                )
-            };
-            #[cfg(feature = "renderer-topology-cache")]
-            let resident_submitted = unsafe {
-                self.flush_resident_world_batch(
-                    batch_vertices.as_mut_ptr().cast(),
-                    batch_vertex_count,
-                    batch_surfaces.as_ptr().cast(),
-                    batch_surface_count,
-                    start,
-                    next,
-                    topology_batch_index,
-                    topology_batch_identity,
-                )
-            };
-            #[cfg(feature = "renderer-topology-cache")]
-            let submitted = resident_submitted.submit;
-            #[cfg(feature = "renderer-topology-cache")]
-            if batch_surface_count != 0 {
-                record_topology_cache_submit(&mut stats, resident_submitted);
-            }
-            #[cfg(all(feature = "renderer-census", not(feature = "renderer-topology-cache")))]
+
+            #[cfg(feature = "renderer-census")]
             unsafe {
                 census_world_batch(
                     batch_vertices.as_ptr().cast(),
@@ -3493,26 +1893,6 @@ impl Renderer {
             stats.hardware_triangles = stats
                 .hardware_triangles
                 .wrapping_add(submitted.hardware_triangles);
-        }
-
-        #[cfg(feature = "renderer-static-world-reuse")]
-        if visibility_valid && !static_world_cache_hit {
-            let cache = unsafe { self.static_world_cache.get_unchecked_mut(self.arena) };
-            let world_words = unsafe { next.offset_from(start) as usize };
-            if static_world_cache_eligible
-                && !stats.packet_overflow_avoided
-                && world_words <= u16::MAX as usize
-                && unsafe { capture_static_world_tags(start, next, &mut cache.tag_slots) }
-            {
-                cache.key = Some(static_world_key);
-                cache.world_words = world_words as u16;
-                cache.packets = stats.packets;
-                cache.hardware_triangles = stats.hardware_triangles;
-                cache.visible_faces = stats.visible_faces;
-                cache.layered_sky_texture = layered_sky_texture;
-            } else {
-                cache.invalidate();
-            }
         }
 
         if visibility_valid && !stats.packet_overflow_avoided {
@@ -3632,15 +2012,9 @@ impl Renderer {
             renderer_census.packet_overflow_avoided = u32::from(stats.packet_overflow_avoided);
             emit_renderer_census(self.frame, &renderer_census);
         }
-        #[cfg(not(feature = "renderer-subdivision-cache"))]
-        unsafe {
-            crate::platform::gpu_end_frame(start, next)
-        };
-        #[cfg(feature = "renderer-subdivision-cache")]
-        unsafe {
-            crate::platform::gpu_insert_world_stream(pending_world_start, next);
-            crate::platform::gpu_end_frame(ptr::null_mut(), ptr::null_mut());
-        };
+
+        unsafe { crate::platform::gpu_end_frame(start, next) };
+
         self.arena ^= 1;
         self.frame = self.frame.wrapping_add(1);
         stats
@@ -4440,67 +2814,6 @@ impl Renderer {
         }
     }
 
-    #[cfg(feature = "renderer-indexed-projection")]
-    fn materialize_indexed_world_face(
-        &mut self,
-        map: &ResidentMap,
-        face: CookedDrawSurface,
-        texture: TextureInfo,
-        destination_first: usize,
-        output: &mut [ClassicAffineVertex],
-    ) {
-        let flags = u16::from(face.flags);
-        let baked_uv = flags & FACE_BAKED_UV != 0;
-        let baked_light = flags & FACE_BAKED_LIGHT != 0;
-        let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
-        let first = face.first_corner as usize;
-        let corners = &indexed.corners[first..first + output.len()];
-        unsafe {
-            if baked_uv && baked_light {
-                materialize_classic_affine_indexed_baked_vertices_with_projection_slots(
-                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
-                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                    indexed.positions.len(),
-                    output.len(),
-                    output.as_mut_ptr(),
-                    self.indexed_position_slots.as_mut_ptr(),
-                    self.indexed_unique_positions.as_mut_ptr(),
-                    &mut self.indexed_unique_count,
-                    BATCH_MAX_VERTICES,
-                    self.indexed_corner_slots
-                        .as_mut_ptr()
-                        .add(destination_first),
-                );
-            } else {
-                let style0 = self.light_styles[face.light_styles[0] as usize];
-                let style1 = self.light_styles[face.light_styles[1] as usize];
-                materialize_classic_affine_indexed_vertices(
-                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
-                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                    indexed.positions.len(),
-                    output.len(),
-                    output.as_mut_ptr(),
-                    [texture.atlas.x, texture.atlas.y],
-                    [style0, style1],
-                    baked_uv,
-                    baked_light,
-                );
-                collect_classic_affine_indexed_projection_slots(
-                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
-                    indexed.positions.len(),
-                    output.len(),
-                    self.indexed_position_slots.as_mut_ptr(),
-                    self.indexed_unique_positions.as_mut_ptr(),
-                    &mut self.indexed_unique_count,
-                    BATCH_MAX_VERTICES,
-                    self.indexed_corner_slots
-                        .as_mut_ptr()
-                        .add(destination_first),
-                );
-            }
-        }
-    }
-
     #[inline(always)]
     fn materialize_retained_face(
         &self,
@@ -4517,56 +2830,6 @@ impl Renderer {
             texture,
             output,
         );
-    }
-
-    #[cfg(feature = "renderer-hoisted-indexed-world")]
-    #[inline(always)]
-    fn materialize_retained_face_from_indexed(
-        &self,
-        indexed: IndexedVertices<'_>,
-        face: CookedDrawSurface,
-        texture: TextureInfo,
-        output: &mut [ClassicAffineVertex],
-    ) {
-        let flags = u16::from(face.flags);
-        let baked_uv = flags & FACE_BAKED_UV != 0;
-        let baked_light = flags & FACE_BAKED_LIGHT != 0;
-        let first = face.first_corner as usize;
-        let corners = &indexed.corners[first..first + output.len()];
-        unsafe {
-            if baked_uv && baked_light {
-                #[cfg(not(feature = "renderer-quake-baked-materialize"))]
-                materialize_classic_affine_indexed_baked_vertices(
-                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
-                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                    indexed.positions.len(),
-                    output.len(),
-                    output.as_mut_ptr(),
-                );
-                #[cfg(feature = "renderer-quake-baked-materialize")]
-                materialize_quake_baked_inline(
-                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
-                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                    indexed.positions.len(),
-                    output.len(),
-                    output.as_mut_ptr(),
-                );
-            } else {
-                let style0 = self.light_styles[face.light_styles[0] as usize];
-                let style1 = self.light_styles[face.light_styles[1] as usize];
-                materialize_classic_affine_indexed_vertices(
-                    corners.as_ptr().cast::<ClassicAffineIndexedCorner>(),
-                    indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
-                    indexed.positions.len(),
-                    output.len(),
-                    output.as_mut_ptr(),
-                    [texture.atlas.x, texture.atlas.y],
-                    [style0, style1],
-                    baked_uv,
-                    baked_light,
-                );
-            }
-        }
     }
 
     #[inline(always)]
@@ -5004,8 +3267,7 @@ impl Renderer {
                 if vertex_count < 3 {
                     continue;
                 }
-                #[cfg(feature = "renderer-window-range-coalescing")]
-                let window_packet_start = next;
+
                 let submitted = unsafe {
                     submit_classic_affine_scoped_windowed_fan(
                         batch_vertices.as_mut_ptr().cast(),
@@ -5017,13 +3279,7 @@ impl Renderer {
                         ClassicAffineProfile::QUAKE_REFERENCE,
                     )
                 };
-                #[cfg(feature = "renderer-window-range-coalescing")]
-                unsafe {
-                    crate::platform::register_world_window_packet_range(
-                        window_packet_start,
-                        submitted.next_packet,
-                    );
-                }
+
                 next = submitted.next_packet;
                 stats.packets = stats.packets.wrapping_add(submitted.packets);
                 stats.hardware_triangles = stats
@@ -5154,34 +3410,6 @@ impl Renderer {
             self.visible_face_blocks.len(),
             self.visible_faces.len().div_ceil(VISIBLE_FACE_BLOCK_SIZE)
         );
-
-        #[cfg(feature = "renderer-hierarchical-block-frustum")]
-        {
-            self.visible_face_super_blocks.clear();
-            for group in self
-                .visible_face_blocks
-                .chunks(VISIBLE_FACE_SUPER_BLOCK_SIZE)
-            {
-                let mut mins = group[0].mins;
-                let mut maxs = group[0].maxs;
-                for block in &group[1..] {
-                    let mut axis = 0usize;
-                    while axis < 3 {
-                        mins[axis] = mins[axis].min(block.mins[axis]);
-                        maxs[axis] = maxs[axis].max(block.maxs[axis]);
-                        axis += 1;
-                    }
-                }
-                self.visible_face_super_blocks
-                    .push(VisibleFaceBlock { mins, maxs });
-            }
-            debug_assert_eq!(
-                self.visible_face_super_blocks.len(),
-                self.visible_face_blocks
-                    .len()
-                    .div_ceil(VISIBLE_FACE_SUPER_BLOCK_SIZE)
-            );
-        }
     }
 
     /// Locate a PVS-resident water/empty boundary. Sampling eight units on both
@@ -5200,7 +3428,6 @@ impl Renderer {
             return None;
         }
         for (visible_index, visible) in self.visible_faces.iter().enumerate() {
-            #[cfg(not(feature = "renderer-compact-cell-stream"))]
             let _ = visible_index;
             let Some(texture) = self.active_textures.get(visible.face.material as usize) else {
                 continue;
@@ -5208,9 +3435,7 @@ impl Renderer {
             if texture.flags & TEXTURE_LIQUID == 0 {
                 continue;
             }
-            #[cfg(feature = "renderer-compact-cell-stream")]
-            let plane = unsafe { *self.visible_face_planes.get_unchecked(visible_index) };
-            #[cfg(not(feature = "renderer-compact-cell-stream"))]
+
             let plane = visible.plane;
             let center = water_face_sample(map, visible.face);
             // Axial cooked planes intentionally use `kind` as their hot
@@ -5281,11 +3506,6 @@ impl Renderer {
         point: Vec3I32,
         portal_leaf: Option<u16>,
     ) -> bool {
-        #[cfg(feature = "renderer-compact-cell-stream")]
-        if self.visible_face_planes.len() != self.visible_faces.len() {
-            self.visible_face_planes.clear();
-            self.visible_faces.clear();
-        }
         let faces = map.faces();
         if faces.len() > self.face_visible.len() * 4 {
             self.visible_faces.clear();
@@ -5310,8 +3530,7 @@ impl Renderer {
         // Entries decoded from another map cannot be carried over.
         if self.visible_faces_generation != Some(map.generation()) {
             self.visible_faces.clear();
-            #[cfg(feature = "renderer-compact-cell-stream")]
-            self.visible_face_planes.clear();
+
             self.visible_faces_generation = Some(map.generation());
         }
         let face_words = faces.len().div_ceil(4);
@@ -5398,10 +3617,7 @@ impl Renderer {
                     .bounds
                     .surface_index
             };
-            #[cfg(any(
-                feature = "renderer-compact-cell-stream",
-                feature = "renderer-cell-policy"
-            ))]
+            #[cfg(feature = "renderer-cell-policy")]
             {
                 face_index &= VISIBLE_SURFACE_INDEX_MASK;
             }
@@ -5409,20 +3625,11 @@ impl Renderer {
                 if kept != old_index {
                     let entries = self.visible_faces.as_mut_ptr();
                     unsafe { move_visible_face(entries.add(old_index), entries.add(kept)) };
-                    #[cfg(feature = "renderer-compact-cell-stream")]
-                    unsafe {
-                        let planes = self.visible_face_planes.as_mut_ptr();
-                        ptr::write(planes.add(kept), ptr::read(planes.add(old_index)));
-                    }
                 }
                 kept += 1;
             }
         }
         unsafe { self.visible_faces.set_len(kept) };
-        #[cfg(feature = "renderer-compact-cell-stream")]
-        unsafe {
-            self.visible_face_planes.set_len(kept)
-        };
 
         // Newly marked faces, ascending, in the frame index scratch (free
         // until `draw_frame` refills it after this call). A word of four
@@ -5452,10 +3659,7 @@ impl Renderer {
                                 .bounds
                                 .surface_index
                         };
-                        #[cfg(any(
-                            feature = "renderer-compact-cell-stream",
-                            feature = "renderer-cell-policy"
-                        ))]
+                        #[cfg(feature = "renderer-cell-policy")]
                         {
                             kept_face &= VISIBLE_SURFACE_INDEX_MASK;
                         }
@@ -5463,11 +3667,6 @@ impl Renderer {
                     if kept_cursor < kept && kept_face as usize == face_index {
                         kept_cursor += 1;
                     } else {
-                        // Same limit as pushing past the list's capacity:
-                        // every kept entry and every new face ends up in it.
-                        #[cfg(feature = "renderer-compact-cell-stream")]
-                        let plane_full = kept + new_count == self.visible_face_planes.capacity();
-                        #[cfg(not(feature = "renderer-compact-cell-stream"))]
                         let plane_full = false;
                         if kept + new_count == self.visible_faces.capacity()
                             || plane_full
@@ -5492,13 +3691,9 @@ impl Renderer {
         // Backward merge: the write cursor never passes the read cursor
         // because everything still to be placed lies at or below it.
         unsafe { self.visible_faces.set_len(total) };
-        #[cfg(feature = "renderer-compact-cell-stream")]
-        unsafe {
-            self.visible_face_planes.set_len(total)
-        };
+
         let entries = self.visible_faces.as_mut_ptr();
-        #[cfg(feature = "renderer-compact-cell-stream")]
-        let plane_entries = self.visible_face_planes.as_mut_ptr();
+
         let mut write = total;
         let mut read = kept;
         let mut new_index = new_count;
@@ -5506,10 +3701,7 @@ impl Renderer {
             let new_face = unsafe { ptr::read(new_faces.add(new_index - 1)) } as usize;
             while read > 0 && {
                 let mut old_face = unsafe { (*entries.add(read - 1)).bounds.surface_index };
-                #[cfg(any(
-                    feature = "renderer-compact-cell-stream",
-                    feature = "renderer-cell-policy"
-                ))]
+                #[cfg(feature = "renderer-cell-policy")]
                 {
                     old_face &= VISIBLE_SURFACE_INDEX_MASK;
                 }
@@ -5519,10 +3711,6 @@ impl Renderer {
                 read -= 1;
                 if write != read {
                     unsafe { move_visible_face(entries.add(read), entries.add(write)) };
-                    #[cfg(feature = "renderer-compact-cell-stream")]
-                    unsafe {
-                        ptr::write(plane_entries.add(write), ptr::read(plane_entries.add(read)));
-                    }
                 }
             }
             write -= 1;
@@ -5559,7 +3747,7 @@ impl Renderer {
                             corner_count: face.vertex_count as u8,
                             light_styles: face.light_styles,
                         },
-                        #[cfg(not(feature = "renderer-compact-cell-stream"))]
+
                         plane: compact_plane,
                         bounds: RetainedSurfaceBounds {
                             surface_index: new_face as u16,
@@ -5568,16 +3756,11 @@ impl Renderer {
                         },
                     },
                 );
-                #[cfg(feature = "renderer-compact-cell-stream")]
-                ptr::write(plane_entries.add(write), compact_plane);
             };
             new_index -= 1;
         }
         debug_assert_eq!(write, read);
-        #[cfg(any(
-            feature = "renderer-compact-cell-stream",
-            feature = "renderer-cell-policy"
-        ))]
+        #[cfg(feature = "renderer-cell-policy")]
         self.retain_cell_faces(map, leaf_index);
         #[cfg(feature = "renderer-block-frustum")]
         self.rebuild_visible_face_blocks();
@@ -5590,10 +3773,7 @@ impl Renderer {
     /// Ordinary invariant backs disappear here; invariant fronts keep no hot
     /// dependency on their parallel plane record. Liquids remain dynamic so
     /// the opposite-PVS water override retains its established semantics.
-    #[cfg(any(
-        feature = "renderer-compact-cell-stream",
-        feature = "renderer-cell-policy"
-    ))]
+    #[cfg(feature = "renderer-cell-policy")]
     #[inline(never)]
     fn retain_cell_faces(&mut self, map: &ResidentMap, leaf_index: usize) {
         let Some(bounds) = map.leaf_bounds(leaf_index) else {
@@ -5601,8 +3781,7 @@ impl Renderer {
         };
         let textures = map.render_textures();
         let faces = self.visible_faces.as_mut_ptr();
-        #[cfg(feature = "renderer-compact-cell-stream")]
-        let planes = self.visible_face_planes.as_mut_ptr();
+
         let mut write = 0usize;
         for read in 0..self.visible_faces.len() {
             let visible = unsafe { &mut *faces.add(read) };
@@ -5611,12 +3790,8 @@ impl Renderer {
             if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
                 continue;
             }
-            #[cfg(feature = "renderer-compact-cell-stream")]
-            let plane = unsafe { ptr::read(planes.add(read)) };
-            #[cfg(all(
-                feature = "renderer-cell-policy",
-                not(feature = "renderer-compact-cell-stream")
-            ))]
+
+            #[cfg(feature = "renderer-cell-policy")]
             let plane = visible.plane;
             #[cfg(feature = "renderer-cell-liquid-policy")]
             if texture.flags & TEXTURE_LIQUID != 0 {
@@ -5642,18 +3817,10 @@ impl Renderer {
             }
             if write != read {
                 unsafe { move_visible_face(faces.add(read), faces.add(write)) };
-                #[cfg(feature = "renderer-compact-cell-stream")]
-                unsafe {
-                    ptr::write(planes.add(write), plane);
-                }
             }
             write += 1;
         }
         unsafe { self.visible_faces.set_len(write) };
-        #[cfg(feature = "renderer-compact-cell-stream")]
-        unsafe {
-            self.visible_face_planes.set_len(write);
-        }
     }
 }
 
@@ -6803,56 +4970,6 @@ fn packet_capacity(next: *mut u32, end: *mut u32, needed_words: usize) -> bool {
     remaining >= 0 && needed_words <= remaining as usize
 }
 
-/// Capture the staged ordering-table slot carried by every world packet.
-/// The final OT linker overwrites those low bits with a DMA address, while
-/// retaining the packet word count in the tag's high byte.
-#[cfg(feature = "renderer-static-world-reuse")]
-unsafe fn capture_static_world_tags(start: *mut u32, end: *mut u32, slots: &mut Vec<u16>) -> bool {
-    slots.clear();
-    let mut packet = start;
-    while packet < end && slots.len() < MAX_STATIC_WORLD_PACKET_SLOTS {
-        let tag = unsafe { ptr::read(packet) };
-        slots.push(tag as u16);
-        let packet_words = ((tag >> 24) as usize).wrapping_add(1);
-        if packet_words <= 1 {
-            slots.clear();
-            return false;
-        }
-        packet = unsafe { packet.add(packet_words) };
-    }
-    if packet != end {
-        slots.clear();
-        return false;
-    }
-    true
-}
-
-/// Restore staged OT slots in an otherwise immutable same-camera packet
-/// stream. Packet payloads, projected coordinates, depth order, and stream
-/// layout remain those produced by the authoritative writer in this arena's
-/// prior frame.
-#[cfg(feature = "renderer-static-world-reuse")]
-unsafe fn restore_static_world_tags(start: *mut u32, end: *mut u32, slots: &[u16]) -> bool {
-    let mut packet = start;
-    let mut slot_index = 0usize;
-    while packet < end && slot_index < slots.len() {
-        let linked_tag = unsafe { ptr::read(packet) };
-        let packet_words = ((linked_tag >> 24) as usize).wrapping_add(1);
-        if packet_words <= 1 {
-            return false;
-        }
-        unsafe {
-            ptr::write(
-                packet,
-                (linked_tag & 0xff00_0000) | u32::from(*slots.get_unchecked(slot_index)),
-            );
-        }
-        packet = unsafe { packet.add(packet_words) };
-        slot_index += 1;
-    }
-    packet == end && slot_index == slots.len()
-}
-
 unsafe fn flush_batch(
     vertices: *mut ClassicAffineVertex,
     vertex_count: usize,
@@ -6993,45 +5110,10 @@ fn uninit_batch_surfaces() -> BatchSurfaceStorage {
     [const { MaybeUninit::uninit() }; BATCH_MAX_SURFACES]
 }
 
-#[cfg(feature = "renderer-fused-materialize-project")]
-#[inline]
-fn uninit_batch_indexed_sources() -> BatchIndexedSourceStorage {
-    [const { MaybeUninit::uninit() }; BATCH_MAX_SURFACES]
-}
-
-#[cfg(feature = "renderer-fused-materialize-project")]
-#[inline]
-fn uninit_batch_visible_indices() -> BatchVisibleIndexStorage {
-    [const { MaybeUninit::uninit() }; BATCH_MAX_SURFACES]
-}
-
-#[cfg(any(feature = "renderer-census", feature = "renderer-subdivision-cache"))]
+#[cfg(feature = "renderer-census")]
 #[inline]
 fn uninit_batch_source_surfaces() -> BatchSourceSurfaceStorage {
     [const { MaybeUninit::uninit() }; BATCH_MAX_SURFACES]
-}
-
-#[cfg(feature = "renderer-topology-cache")]
-#[inline]
-fn uninit_resident_batch_surfaces() -> ResidentBatchSurfaceStorage {
-    [const { MaybeUninit::uninit() }; BATCH_MAX_SURFACES]
-}
-
-#[cfg(feature = "renderer-topology-cache")]
-#[inline(always)]
-fn record_topology_cache_submit(stats: &mut RenderStats, submitted: ClassicAffinePlannedSubmit) {
-    stats.topology_cache_hits = stats
-        .topology_cache_hits
-        .wrapping_add(u32::from(submitted.topology_hit));
-    stats.topology_cache_misses = stats
-        .topology_cache_misses
-        .wrapping_add(u32::from(!submitted.topology_hit));
-    stats.topology_invariant_hit_slots = stats
-        .topology_invariant_hit_slots
-        .wrapping_add(submitted.invariant_hit_slots);
-    stats.topology_invariant_miss_slots = stats
-        .topology_invariant_miss_slots
-        .wrapping_add(submitted.invariant_miss_slots);
 }
 
 /// View only the prefix/range that the caller immediately initializes.
@@ -7642,7 +5724,6 @@ fn emit_renderer_census(frame: u32, census: &RendererCensus) {
 
 #[cfg(all(
     not(feature = "renderer-census"),
-    not(feature = "renderer-aabb-support-offsets"),
     not(feature = "renderer-block-frustum")
 ))]
 #[inline(never)]
@@ -7658,8 +5739,7 @@ fn select_frame_faces(
     debug_assert!(output.capacity() >= visible_faces.len());
     let out = output.as_mut_ptr();
     let mut count = 0usize;
-    #[cfg(feature = "renderer-plane-run-cache")]
-    let mut plane_cache = FrontFacingCache::EMPTY;
+
     let mut visible_index = 0usize;
     while visible_index < visible_faces.len() {
         let visible = unsafe { visible_faces.get_unchecked(visible_index) };
@@ -7668,74 +5748,11 @@ fn select_frame_faces(
             texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
         if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0
             && (water_blend || {
-                #[cfg(feature = "renderer-plane-run-cache")]
-                {
-                    plane_cache.test(visible, origin)
-                }
-                #[cfg(not(feature = "renderer-plane-run-cache"))]
                 {
                     front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
                 }
             })
             && !scene::aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f)
-        {
-            let entry = visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
-            unsafe { ptr::write(out.add(count), entry) };
-            count += 1;
-        }
-        visible_index += 1;
-    }
-    unsafe { output.set_len(count) };
-}
-
-/// Exact selector variant with the AABB support-point decisions hoisted once
-/// per camera. The policy, backface test, four GTE plane dots, output order,
-/// and water marker are otherwise identical to [`select_frame_faces`].
-#[cfg(all(
-    not(feature = "renderer-census"),
-    feature = "renderer-aabb-support-offsets",
-    not(feature = "renderer-block-frustum")
-))]
-#[inline(never)]
-fn select_frame_faces_preselected(
-    visible_faces: &[VisibleFace],
-    active_textures: &[TextureInfo],
-    origin: Vec3I32,
-    frustum: &[AabbClipPlane; 4],
-    supports: &scene::AabbClip4SupportOffsets,
-    water_plane: i16,
-    output: &mut Vec<u16>,
-) {
-    output.clear();
-    debug_assert!(output.capacity() >= visible_faces.len());
-    let out = output.as_mut_ptr();
-    let mut count = 0usize;
-    #[cfg(feature = "renderer-plane-run-cache")]
-    let mut plane_cache = FrontFacingCache::EMPTY;
-    let mut visible_index = 0usize;
-    while visible_index < visible_faces.len() {
-        let visible = unsafe { visible_faces.get_unchecked(visible_index) };
-        let texture = unsafe { active_textures.get_unchecked(visible.face.material as usize) };
-        let water_blend =
-            texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
-        if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0
-            && (water_blend || {
-                #[cfg(feature = "renderer-plane-run-cache")]
-                {
-                    plane_cache.test(visible, origin)
-                }
-                #[cfg(not(feature = "renderer-plane-run-cache"))]
-                {
-                    front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
-                }
-            })
-            && !unsafe {
-                scene::aabb_outside_clip4_preselected(
-                    visible.bounds.mins.as_ptr(),
-                    frustum,
-                    supports,
-                )
-            }
         {
             let entry = visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
             unsafe { ptr::write(out.add(count), entry) };
@@ -7753,7 +5770,7 @@ fn select_frame_faces_preselected(
 #[inline(never)]
 fn select_frame_faces_blocked(
     visible_faces: &[VisibleFace],
-    #[cfg(feature = "renderer-compact-cell-stream")] visible_planes: &[CompactPlane],
+
     visible_blocks: &[VisibleFaceBlock],
     #[cfg(not(feature = "renderer-cell-liquid-policy"))] active_textures: &[TextureInfo],
     origin: Vec3I32,
@@ -7763,8 +5780,7 @@ fn select_frame_faces_blocked(
 ) {
     output.clear();
     debug_assert!(output.capacity() >= visible_faces.len());
-    #[cfg(feature = "renderer-compact-cell-stream")]
-    debug_assert_eq!(visible_faces.len(), visible_planes.len());
+
     debug_assert_eq!(
         visible_blocks.len(),
         visible_faces.len().div_ceil(VISIBLE_FACE_BLOCK_SIZE)
@@ -7773,16 +5789,13 @@ fn select_frame_faces_blocked(
     let mut count = 0usize;
     #[cfg(feature = "renderer-selection-decimate")]
     let mut kept = 0usize;
-    #[cfg(feature = "renderer-plane-run-cache")]
-    let mut plane_cache = FrontFacingCache::EMPTY;
+
     let mut block_index = 0usize;
     let mut first = 0usize;
     while first < visible_faces.len() {
         let block = unsafe { visible_blocks.get_unchecked(block_index) };
         let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
-        #[cfg(feature = "renderer-block-clip-flags")]
-        let block_clip_flags = scene::classify_aabb_clip4(block.mins, block.maxs, frustum, 0x0f);
-        #[cfg(not(feature = "renderer-block-clip-flags"))]
+
         let block_clip_flags = if scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
             -1
         } else {
@@ -7801,55 +5814,24 @@ fn select_frame_faces_blocked(
                 #[cfg(feature = "renderer-cell-liquid-policy")]
                 let water_blend = visible.bounds.surface_index & VISIBLE_LIQUID_BIT != 0
                     && visible.face.plane as i16 == water_plane;
-                #[cfg(any(
-                    feature = "renderer-compact-cell-stream",
-                    feature = "renderer-cell-policy"
-                ))]
+                #[cfg(feature = "renderer-cell-policy")]
                 let policy_visible = true;
-                #[cfg(not(any(
-                    feature = "renderer-compact-cell-stream",
-                    feature = "renderer-cell-policy"
-                )))]
+                #[cfg(not(feature = "renderer-cell-policy"))]
                 let policy_visible = texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0;
                 if policy_visible
                     && (water_blend || {
-                        #[cfg(any(
-                            feature = "renderer-compact-cell-stream",
-                            feature = "renderer-cell-policy"
-                        ))]
+                        #[cfg(feature = "renderer-cell-policy")]
                         {
                             visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
                                 || front_facing_compact_plane(
-                                    #[cfg(feature = "renderer-compact-cell-stream")]
-                                    unsafe {
-                                        *visible_planes.get_unchecked(visible_index)
-                                    },
-                                    #[cfg(all(
-                                        feature = "renderer-cell-policy",
-                                        not(feature = "renderer-compact-cell-stream")
-                                    ))]
+                                    #[cfg(feature = "renderer-cell-policy")]
                                     visible.plane,
                                     u16::from(visible.face.flags),
                                     origin,
                                 )
                         }
-                        #[cfg(all(
-                            not(any(
-                                feature = "renderer-compact-cell-stream",
-                                feature = "renderer-cell-policy"
-                            )),
-                            feature = "renderer-plane-run-cache"
-                        ))]
-                        {
-                            plane_cache.test(visible, origin)
-                        }
-                        #[cfg(all(
-                            not(any(
-                                feature = "renderer-compact-cell-stream",
-                                feature = "renderer-cell-policy"
-                            )),
-                            not(feature = "renderer-plane-run-cache")
-                        ))]
+
+                        #[cfg(not(feature = "renderer-cell-policy"))]
                         {
                             front_facing_compact_plane(
                                 visible.plane,
@@ -7908,214 +5890,6 @@ fn select_frame_faces_blocked(
     unsafe {
         output.set_len(count)
     };
-}
-
-/// Block-frustum selector with an exact direct-index memo of the camera side
-/// of every BSP plane touched this frame. Faces keep source order and their
-/// own backside flag; only repeated `normal.dot(origin)-distance` arithmetic
-/// is removed.
-#[cfg(all(
-    not(feature = "renderer-census"),
-    feature = "renderer-block-frustum",
-    feature = "renderer-plane-index-cache",
-    not(feature = "renderer-hierarchical-block-frustum")
-))]
-#[inline(never)]
-fn select_frame_faces_blocked_plane_indexed(
-    visible_faces: &[VisibleFace],
-    visible_blocks: &[VisibleFaceBlock],
-    active_textures: &[TextureInfo],
-    origin: Vec3I32,
-    frustum: &[AabbClipPlane; 4],
-    water_plane: i16,
-    epoch: u16,
-    plane_stamps: &mut [u16],
-    plane_behind: &mut [u8],
-    output: &mut Vec<u16>,
-) {
-    output.clear();
-    debug_assert!(output.capacity() >= visible_faces.len());
-    debug_assert_eq!(plane_stamps.len(), plane_behind.len());
-    debug_assert_eq!(
-        visible_blocks.len(),
-        visible_faces.len().div_ceil(VISIBLE_FACE_BLOCK_SIZE)
-    );
-    let out = output.as_mut_ptr();
-    let stamps = plane_stamps.as_mut_ptr();
-    let behind_values = plane_behind.as_mut_ptr();
-    let mut count = 0usize;
-    #[cfg(feature = "renderer-selection-decimate")]
-    let mut kept = 0usize;
-    let mut block_index = 0usize;
-    let mut first = 0usize;
-    while first < visible_faces.len() {
-        let block = unsafe { visible_blocks.get_unchecked(block_index) };
-        let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
-        if !scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
-            let mut visible_index = first;
-            while visible_index < end {
-                let visible = unsafe { visible_faces.get_unchecked(visible_index) };
-                let texture =
-                    unsafe { active_textures.get_unchecked(visible.face.material as usize) };
-                let water_blend =
-                    texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
-                let plane_index = visible.face.plane as usize;
-                debug_assert!(plane_index < plane_stamps.len());
-                let facing = if water_blend {
-                    true
-                } else {
-                    let stamp = unsafe { ptr::read(stamps.add(plane_index)) };
-                    let behind = if stamp == epoch {
-                        unsafe { ptr::read(behind_values.add(plane_index)) != 0 }
-                    } else {
-                        let behind = compact_plane_distance(visible.plane, origin) < 0;
-                        unsafe {
-                            ptr::write(stamps.add(plane_index), epoch);
-                            ptr::write(behind_values.add(plane_index), u8::from(behind));
-                        }
-                        behind
-                    };
-                    behind == (u16::from(visible.face.flags) & FACE_BACKSIDE != 0)
-                };
-                if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0
-                    && facing
-                    && !scene::aabb_outside_clip4(
-                        visible.bounds.mins,
-                        visible.bounds.maxs,
-                        frustum,
-                        0x0f,
-                    )
-                {
-                    let entry =
-                        visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
-                    #[cfg(feature = "renderer-selection-decimate")]
-                    {
-                        let admit = if cfg!(feature = "renderer-selection-drop-world") {
-                            false
-                        } else {
-                            count & 1 == 0
-                        };
-                        if admit {
-                            unsafe { ptr::write(out.add(kept), entry) };
-                            kept += 1;
-                        }
-                    }
-                    #[cfg(not(feature = "renderer-selection-decimate"))]
-                    unsafe {
-                        ptr::write(out.add(count), entry)
-                    };
-                    count += 1;
-                }
-                visible_index += 1;
-            }
-        }
-        first = end;
-        block_index += 1;
-    }
-    // Diagnostic ceilings: `renderer-selection-decimate` keeps every other
-    // accepted face and `renderer-selection-drop-world` keeps none, so the
-    // frame cost's sensitivity to the selected-face count can be measured
-    // directly. The image is wrong by construction.
-    #[cfg(feature = "renderer-selection-decimate")]
-    unsafe {
-        output.set_len(kept)
-    };
-    #[cfg(not(feature = "renderer-selection-decimate"))]
-    unsafe {
-        output.set_len(count)
-    };
-}
-
-/// Exact two-level selector inspired by Quake II's doorway-before-brush
-/// funnel. A conservative union covers four consecutive 16-face blocks. A
-/// rejected super-block skips all of its descendants; an admitted one runs
-/// the established block and per-face tests without changing output order.
-#[cfg(all(
-    not(feature = "renderer-census"),
-    feature = "renderer-hierarchical-block-frustum"
-))]
-#[inline(never)]
-fn select_frame_faces_hierarchical(
-    visible_faces: &[VisibleFace],
-    visible_blocks: &[VisibleFaceBlock],
-    visible_super_blocks: &[VisibleFaceBlock],
-    active_textures: &[TextureInfo],
-    origin: Vec3I32,
-    frustum: &[AabbClipPlane; 4],
-    water_plane: i16,
-    output: &mut Vec<u16>,
-) {
-    output.clear();
-    debug_assert!(output.capacity() >= visible_faces.len());
-    debug_assert_eq!(
-        visible_blocks.len(),
-        visible_faces.len().div_ceil(VISIBLE_FACE_BLOCK_SIZE)
-    );
-    debug_assert_eq!(
-        visible_super_blocks.len(),
-        visible_blocks.len().div_ceil(VISIBLE_FACE_SUPER_BLOCK_SIZE)
-    );
-    let out = output.as_mut_ptr();
-    let mut count = 0usize;
-    #[cfg(feature = "renderer-plane-run-cache")]
-    let mut plane_cache = FrontFacingCache::EMPTY;
-    let mut block_index = 0usize;
-    let mut super_index = 0usize;
-    while super_index < visible_super_blocks.len() {
-        let super_block = unsafe { visible_super_blocks.get_unchecked(super_index) };
-        let block_end = (block_index + VISIBLE_FACE_SUPER_BLOCK_SIZE).min(visible_blocks.len());
-        if !scene::aabb_outside_clip4(super_block.mins, super_block.maxs, frustum, 0x0f) {
-            while block_index < block_end {
-                let block = unsafe { visible_blocks.get_unchecked(block_index) };
-                let first = block_index * VISIBLE_FACE_BLOCK_SIZE;
-                let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
-                if !scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
-                    let mut visible_index = first;
-                    while visible_index < end {
-                        let visible = unsafe { visible_faces.get_unchecked(visible_index) };
-                        let texture = unsafe {
-                            active_textures.get_unchecked(visible.face.material as usize)
-                        };
-                        let water_blend = texture.flags & TEXTURE_LIQUID != 0
-                            && visible.face.plane as i16 == water_plane;
-                        if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0
-                            && (water_blend || {
-                                #[cfg(feature = "renderer-plane-run-cache")]
-                                {
-                                    plane_cache.test(visible, origin)
-                                }
-                                #[cfg(not(feature = "renderer-plane-run-cache"))]
-                                {
-                                    front_facing_compact_plane(
-                                        visible.plane,
-                                        u16::from(visible.face.flags),
-                                        origin,
-                                    )
-                                }
-                            })
-                            && !scene::aabb_outside_clip4(
-                                visible.bounds.mins,
-                                visible.bounds.maxs,
-                                frustum,
-                                0x0f,
-                            )
-                        {
-                            let entry = visible_index as u16
-                                | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
-                            unsafe { ptr::write(out.add(count), entry) };
-                            count += 1;
-                        }
-                        visible_index += 1;
-                    }
-                }
-                block_index += 1;
-            }
-        } else {
-            block_index = block_end;
-        }
-        super_index += 1;
-    }
-    unsafe { output.set_len(count) };
 }
 
 /// Set [`NEAR_FACE_BIT`] on every selected face whose bounds reach behind
@@ -8359,10 +6133,7 @@ fn front_facing_compact_plane(plane: CompactPlane, face_flags: u16, point: Vec3I
 
 /// Return the exact facing result when a supporting plane cannot cross the
 /// outward-quantized source-leaf AABB. This is a cold leaf-transition test.
-#[cfg(any(
-    feature = "renderer-compact-cell-stream",
-    feature = "renderer-cell-policy"
-))]
+#[cfg(feature = "renderer-cell-policy")]
 fn leaf_invariant_facing(
     plane: CompactPlane,
     face_flags: u16,
@@ -8390,37 +6161,6 @@ fn leaf_invariant_facing(
         return None;
     };
     Some(behind == (face_flags & FACE_BACKSIDE != 0))
-}
-
-/// One-entry exact memo for the camera-side result of a BSP plane. Cooked
-/// visible faces are kept in source order, where adjacent faces commonly
-/// share both the plane index and `FACE_BACKSIDE` side. The camera is fixed
-/// for the whole selection pass, so those tests are mathematically identical.
-#[cfg(feature = "renderer-plane-run-cache")]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct FrontFacingCache {
-    key: u32,
-    value: bool,
-}
-
-#[cfg(feature = "renderer-plane-run-cache")]
-impl FrontFacingCache {
-    const EMPTY: Self = Self {
-        key: u32::MAX,
-        value: false,
-    };
-
-    #[inline(always)]
-    fn test(&mut self, visible: &VisibleFace, point: Vec3I32) -> bool {
-        let side = u32::from(u16::from(visible.face.flags) & FACE_BACKSIDE);
-        let key = u32::from(visible.face.plane) | side << 16;
-        if self.key != key {
-            self.key = key;
-            self.value =
-                front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), point);
-        }
-        self.value
-    }
 }
 
 /// Signed Q20.12 distance of `point` from `plane`. World points against unit

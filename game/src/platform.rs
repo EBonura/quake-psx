@@ -1,11 +1,3 @@
-//! PSoXide-backed PlayStation services for the Rust Quake runtime.
-//!
-//! This module deliberately exposes Rust APIs only. The retired native game
-//! implementation remains available through Git history, never through the
-//! shipping build or a compatibility ABI.
-
-#[cfg(feature = "renderer-window-range-coalescing")]
-use core::ptr;
 use core::ptr::{addr_of, addr_of_mut};
 
 use psx_gpu::framebuf::FrameBuffer;
@@ -19,15 +11,13 @@ use psx_vram::VramRect;
 const WIDTH: u16 = 320;
 const HEIGHT: u16 = 240;
 const BACK_BUFFER_Y: u16 = 256;
-#[cfg(not(feature = "renderer-compact-ot-256"))]
+
 const OT_DEPTH: usize = 2048;
-#[cfg(feature = "renderer-compact-ot-256")]
-const OT_DEPTH: usize = 256;
+
 // Menu and HUD glyphs share this late-command list. On PS1 the metadata is
 // three KiB and packet storage remains double-buffered in the renderer.
 const MAX_SCREEN_COMMANDS: usize = 384;
-#[cfg(feature = "renderer-window-range-coalescing")]
-const MAX_WINDOW_PACKET_RANGES: usize = 128;
+
 const ASSET_COUNT: usize = 12;
 // Two sectors keep small Quake reads coalesced while leaving the largest
 // Episode 1 map enough resident heap beside the double-buffered GPU arenas.
@@ -44,11 +34,7 @@ static mut OTS: [OrderingTable<OT_DEPTH>; 2] = [OrderingTable::new(), OrderingTa
 static mut FRAME_BUFFER: FrameBuffer = FrameBuffer::new_strided(WIDTH, HEIGHT, BACK_BUFFER_Y);
 static mut SCREEN_COMMANDS: [usize; MAX_SCREEN_COMMANDS * 2] = [0; MAX_SCREEN_COMMANDS * 2];
 static mut SCREEN_COMMAND_COUNT: usize = 0;
-#[cfg(feature = "renderer-window-range-coalescing")]
-static mut WINDOW_PACKET_RANGES: [usize; MAX_WINDOW_PACKET_RANGES * 2] =
-    [0; MAX_WINDOW_PACKET_RANGES * 2];
-#[cfg(feature = "renderer-window-range-coalescing")]
-static mut WINDOW_PACKET_RANGE_COUNT: usize = 0;
+
 static mut BUILD_BUFFER: usize = 0;
 static mut GPU_SUBMISSION_PENDING: bool = false;
 
@@ -241,10 +227,7 @@ pub fn gpu_init_before_interrupts() {
         (&mut *addr_of_mut!(OTS).cast::<OrderingTable<OT_DEPTH>>()).clear();
         (&mut *addr_of_mut!(OTS).cast::<OrderingTable<OT_DEPTH>>().add(1)).clear();
         SCREEN_COMMAND_COUNT = 0;
-        #[cfg(feature = "renderer-window-range-coalescing")]
-        {
-            WINDOW_PACKET_RANGE_COUNT = 0;
-        }
+
         #[cfg(feature = "hardware-performance")]
         {
             hardware_perf_reset();
@@ -345,68 +328,6 @@ pub fn gpu_begin_frame() {
         BUILD_BUFFER ^= 1;
         build_ot().clear();
         SCREEN_COMMAND_COUNT = 0;
-        #[cfg(feature = "renderer-window-range-coalescing")]
-        {
-            WINDOW_PACKET_RANGE_COUNT = 0;
-        }
-    }
-}
-
-/// Register one contiguous sequence of scoped-window packets for a narrow
-/// post-link pass. Overflow only leaves redundant E2 commands in place.
-#[cfg(feature = "renderer-window-range-coalescing")]
-#[inline(always)]
-pub unsafe fn register_world_window_packet_range(first: *mut u32, end: *mut u32) {
-    if first >= end || unsafe { WINDOW_PACKET_RANGE_COUNT } == MAX_WINDOW_PACKET_RANGES {
-        return;
-    }
-    let index = unsafe { WINDOW_PACKET_RANGE_COUNT } * 2;
-    unsafe {
-        WINDOW_PACKET_RANGES[index] = first as usize;
-        WINDOW_PACKET_RANGES[index + 1] = end as usize;
-        WINDOW_PACKET_RANGE_COUNT += 1;
-    }
-}
-
-#[cfg(feature = "renderer-window-range-coalescing")]
-#[inline(never)]
-unsafe fn coalesce_registered_world_windows(world_first: *mut u32, world_end: *mut u32) {
-    const ADDRESS_MASK: u32 = 0x00ff_ffff;
-    const E2_MASK: u32 = 0xff00_0000;
-    const E2: u32 = 0xe200_0000;
-    let address_high = world_first as usize & !(ADDRESS_MASK as usize);
-    let mut range_index = 0usize;
-    while range_index < unsafe { WINDOW_PACKET_RANGE_COUNT } {
-        let range = range_index * 2;
-        let mut packet = unsafe { WINDOW_PACKET_RANGES[range] as *mut u32 };
-        let end = unsafe { WINDOW_PACKET_RANGES[range + 1] as *mut u32 };
-        while packet < end {
-            let tag = unsafe { ptr::read(packet) };
-            let words = (tag >> 24) as usize;
-            let physical_next = unsafe { packet.add(words + 1) };
-            let selector = unsafe { ptr::read(packet.add(1)) };
-            let old = (address_high | (tag & ADDRESS_MASK) as usize) as *mut u32;
-            if selector & E2_MASK == E2
-                && selector != E2
-                && old >= world_first
-                && old < packet
-                && old < world_end
-                && unsafe { ptr::read(old.add(1)) } == selector
-            {
-                let old_tag = unsafe { ptr::read(old) };
-                debug_assert!(old_tag >> 24 > 1);
-                unsafe {
-                    ptr::write(old.add(1), old_tag.wrapping_sub(1 << 24));
-                    ptr::write(
-                        packet,
-                        ((tag.wrapping_sub(1 << 24)) & !ADDRESS_MASK)
-                            | (((old as u32).wrapping_add(4)) & ADDRESS_MASK),
-                    );
-                }
-            }
-            packet = physical_next;
-        }
-        range_index += 1;
     }
 }
 
@@ -444,71 +365,6 @@ pub fn registered_screen_packet_count() -> usize {
     unsafe { SCREEN_COMMAND_COUNT }
 }
 
-/// Link a completed prefix of the current world packet stream immediately.
-///
-/// Persistent subdivision packets can then be inserted at their exact source
-/// position without copying their invariant payload back into that stream.
-///
-/// # Safety
-///
-/// `packet_start..packet_end` must be one live writable staged packet stream
-/// owned by the current build buffer.
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline(always)]
-pub unsafe fn gpu_insert_world_stream(packet_start: *mut u32, packet_end: *mut u32) {
-    if packet_start < packet_end {
-        unsafe {
-            #[cfg(not(feature = "renderer-compact-ot-256"))]
-            build_ot().insert_tagged_packet_stream_unchecked(packet_start, packet_end);
-            #[cfg(feature = "renderer-compact-ot-256")]
-            build_ot().insert_tagged_packet_stream_shifted_unchecked::<3>(packet_start, packet_end);
-        }
-        #[cfg(feature = "renderer-window-range-coalescing")]
-        unsafe {
-            coalesce_registered_world_windows(packet_start, packet_end);
-        }
-    }
-}
-
-/// Insert one fixed resident packet into the current world ordering table.
-///
-/// # Safety
-///
-/// `packet` must remain live and writable through GPU completion, `otz` must
-/// be below `OT_DEPTH`, and `words` must match the packet payload.
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline(always)]
-pub unsafe fn gpu_insert_resident_world_packet(packet: *mut u32, otz: u16, words: u8) {
-    #[cfg(not(feature = "renderer-compact-ot-256"))]
-    let slot = otz as usize;
-    #[cfg(feature = "renderer-compact-ot-256")]
-    let slot = usize::from(otz) >> 3;
-    debug_assert!(slot < OT_DEPTH);
-    unsafe {
-        build_ot().insert_unchecked_tag_high(slot, packet, u32::from(words) << 24);
-    }
-}
-
-/// Link one contiguous resident subdivision root whose tags contain staged
-/// OT slots. This shares the SDK's compact MIPS stream linker with ordinary
-/// output while leaving the fixed packet block in its destination pool.
-///
-/// # Safety
-/// `packet_start..packet_end` must be a live writable tagged packet stream in
-/// the active display pool and remain owned until GPU completion.
-#[cfg(feature = "renderer-subdivision-cache")]
-#[inline(always)]
-pub unsafe fn gpu_insert_resident_world_stream(packet_start: *mut u32, packet_end: *mut u32) {
-    if packet_start < packet_end {
-        unsafe {
-            #[cfg(not(feature = "renderer-compact-ot-256"))]
-            build_ot().insert_tagged_packet_stream_unchecked(packet_start, packet_end);
-            #[cfg(feature = "renderer-compact-ot-256")]
-            build_ot().insert_tagged_packet_stream_shifted_unchecked::<3>(packet_start, packet_end);
-        }
-    }
-}
-
 /// Finish and asynchronously submit one staged classic-affine packet stream.
 ///
 /// # Safety
@@ -519,18 +375,9 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_begin(psx_telemetry::stage::OT_SUBMIT);
         unsafe {
-            #[cfg(not(feature = "renderer-compact-ot-256"))]
             build_ot().insert_tagged_packet_stream_unchecked(packet_start, packet_end);
-            #[cfg(feature = "renderer-compact-ot-256")]
-            build_ot().insert_tagged_packet_stream_shifted_unchecked::<3>(packet_start, packet_end);
         }
-        #[cfg(feature = "renderer-window-range-coalescing")]
-        unsafe {
-            // Only the explicitly registered scoped-window packet ranges are
-            // inspected. The ordinary tagged-stream linker above therefore
-            // remains its compact, proven implementation for every packet.
-            coalesce_registered_world_windows(packet_start, packet_end);
-        }
+
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_end(psx_telemetry::stage::OT_SUBMIT);
     }
@@ -569,13 +416,7 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
             SCREEN_COMMAND_COUNT,
         );
     }
-    #[cfg(feature = "renderer-window-run-coalescing")]
-    unsafe {
-        // This pass runs only after both world and screen packets have their
-        // final OT links. It removes the interior E2 reset/selector pair from
-        // same-window runs while retaining the exact entry/exit GPU state.
-        let _ = ot.coalesce_scoped_texture_windows();
-    }
+
     ot.submit_async();
     unsafe {
         GPU_SUBMISSION_PENDING = true;

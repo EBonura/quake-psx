@@ -1,5 +1,9 @@
 # quake-psx
 
+Start with the [PSoXide Demo Disc](https://bonnie-studios.itch.io/psoxide-demo-disc): it includes Quake-PSX
+and the other Bonnie Studios PlayStation demos. Standalone downloads are available
+for testing just this project.
+
 A Rust port of Quake's shareware episode for the original PlayStation, built
 with the [PSoXide](https://github.com/EBonura/PSoXide) SDK.
 
@@ -47,7 +51,7 @@ locally.
 | World | Doors, lifts, buttons, trains, teleporters, secrets and scripted targets |
 | Presentation | Minimal and Classic HUDs, menus, sprites, sky, water, screen blends and positional audio |
 | Target | Original PlayStation at 320x240 |
-| Performance | 30 fps goal; feature-gated Quake II transfer stack measures 23.432 fps on the canonical fixed-step E1M1 route in PSoXide |
+| Performance | 30 fps goal; route measurements and their SDK revisions are recorded in [RENDERING.md](RENDERING.md) |
 | Hardware | Emulator-tested; the final physical-console pass is still pending |
 
 See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
@@ -64,12 +68,13 @@ See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
   that the pinned PSoXide revision is reachable from its `main` branch
 - Python 3 and `mipsel-none-elf-objdump` for guest validation tools
 
-A normal build fetches its pinned dependency automatically. No sibling
-PSoXide checkout is required:
+Bootstrap the pinned SDK before compiling the builder. No sibling PSoXide
+checkout is required:
 
 ```sh
 git clone https://github.com/EBonura/quake-psx.git
 cd quake-psx
+cargo run --locked --manifest-path psoxide-pin/Cargo.toml
 cargo run --locked --release -- build
 ```
 
@@ -209,3 +214,8 @@ Quake is a trademark of ZeniMax Media Inc. PlayStation is a trademark or
 registered trademark of Sony Interactive Entertainment Inc. This is an
 unofficial project and is not affiliated with or endorsed by id Software,
 Bethesda, ZeniMax or Sony.
+
+## Recent changes
+
+Source snapshot **2026.09.05**: Removed unselected renderer experiments and their obsolete benchmark commands.
+See the [changelog](CHANGELOG.md) for the remaining changes and published download versions.

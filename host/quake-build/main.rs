@@ -214,33 +214,14 @@ enum Action {
     E1m1ChainBench,
     E1m1MonsterRouteBench,
     E1m1SelectionCacheBench,
-    E1m1TopologyCacheBench,
-    E1m1IndexedProjectionBench,
-    E1m1AabbOffsetsBench,
-    E1m1RelaxedQuadPairingBench,
-    E1m1SharedSubdivisionEdgesBench,
-    E1m1Level0FastPathBench,
-    E1m1SpeculativeLevel0Bench,
-    E1m1DepthOnlySubdivisionBench,
-    E1m1GteOtzBench,
-    E1m1CompactSubdivisionEmittersBench,
-    E1m1CompactSubdivisionKernelsBench,
-    E1m1CompactLevel2KernelBench,
-    E1m1CompactWorldLevel2KernelBench,
+
     E1m1GpuLatticeClipBench,
     E1m1GpuPolygonClipBench,
-    E1m1GpuPolygonDepthOnlyBench,
-    E1m1GpuPolygonCompactOtBench,
-    E1m1GpuPolygonFusedProjectionBench,
-    E1m1GpuPolygonPlaneIndexBench,
-    E1m1GpuPolygonWindowRunsBench,
-    E1m1GpuPolygonWindowInsertBench,
-    E1m1GpuPolygonWindowRangeBench,
-    E1m1GpuPolygonCellStreamBench,
+
     E1m1GpuPolygonCellPolicyBench,
     E1m1GpuPolygonGteNearBench,
     E1m1GpuPolygonCellLiquidBench,
-    E1m1GpuPolygonBlockClipFlagsBench,
+
     E1m1GpuPolygonBakedMaterializeBench,
     GpuPolygonCellPolicyDisc,
     GpuPolygonLeaderDisc,
@@ -251,32 +232,11 @@ enum Action {
     E1m1SelectionDecimateBench,
     E1m1NoWorldBench,
     E1m1ScreenFrustumBench,
-    E1m1CollisionBroadPhaseBench,
-    E1m1CompactCellStreamBench,
+
     E1m130hzCadenceBench,
-    E1m1GpuPolygonLevel0RunBench,
-    E1m1GpuPolygonColdAdaptiveBench,
-    E1m1GpuPolygonColdLevel2Bench,
-    E1m1GpuPolygonResidentStreamBench,
-    E1m1GpuPolygonResidentLevel2StreamBench,
-    E1m1GpuPolygonResidentLevel2ScatterBench,
-    E1m1GpuPolygonResidentLevel2ColdCacheBench,
-    E1m1GpuPolygonResidentBaseCacheBench,
-    E1m1GpuPolygonResidentBaseCacheFastBench,
-    E1m1GpuSurfaceClipBench,
-    E1m1StaticWorldReuseBench,
-    E1m1HoistedIndexedWorldBench,
-    E1m1FixedFanQuadsBench,
-    E1m1FixedFanGuardedBench,
-    E1m1FixedFanLevel2Bench,
-    E1m1SubdivisionCacheBench,
-    E1m1SubdivisionCacheLevel2Bench,
-    E1m1SubdivisionCacheLevel2SmallBench,
-    E1m1SubdivisionCacheLevel2LayoutControlBench,
+
     E1m1BlockFrustumBench,
-    E1m1HierarchicalBlockFrustumBench,
-    E1m1BlockFrustum32Bench,
-    E1m1PlaneRunCacheBench,
+
     BlockFrustumRegress,
     GpuPolygonClipRegress,
     SelectionCacheRegress,
@@ -540,286 +500,7 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-selection-cache-bench")?;
         }
-        Action::E1m1TopologyCacheBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-topology-cache-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-topology-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-topology-cache-bench")?;
-        }
-        Action::E1m1IndexedProjectionBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-indexed-projection-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-indexed-projection",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-indexed-projection-bench")?;
-        }
-        Action::E1m1AabbOffsetsBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-aabb-offsets-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-aabb-support-offsets",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-aabb-offsets-bench")?;
-        }
-        Action::E1m1RelaxedQuadPairingBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-relaxed-quad-pairing-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-relaxed-quad-pairing",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-relaxed-quad-pairing-bench")?;
-        }
-        Action::E1m1SharedSubdivisionEdgesBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-shared-subdivision-edges-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-shared-subdivision-edges",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-shared-subdivision-edges-bench",
-            )?;
-        }
-        Action::E1m1Level0FastPathBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-level0-fast-path-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-level0-fast-path",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-level0-fast-path-bench")?;
-        }
-        Action::E1m1SpeculativeLevel0Bench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-speculative-level0-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-speculative-level0",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-speculative-level0-bench")?;
-        }
-        Action::E1m1StaticWorldReuseBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-static-world-reuse-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-static-world-reuse",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-static-world-reuse-bench")?;
-        }
-        Action::E1m1HoistedIndexedWorldBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-hoisted-indexed-world-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-hoisted-indexed-world",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-hoisted-indexed-world-bench",
-            )?;
-        }
-        Action::E1m1DepthOnlySubdivisionBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-depth-only-subdivision-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-depth-only-subdivision",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-depth-only-subdivision-bench",
-            )?;
-        }
-        Action::E1m1GteOtzBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gte-otz-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gte-otz",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gte-otz-bench")?;
-        }
-        Action::E1m1CompactSubdivisionEmittersBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-compact-subdivision-emitters-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-compact-subdivision-emitters",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-compact-subdivision-emitters-bench",
-            )?;
-        }
-        Action::E1m1CompactSubdivisionKernelsBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-compact-subdivision-kernels-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-compact-subdivision-kernels",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-compact-subdivision-kernels-bench",
-            )?;
-        }
-        Action::E1m1CompactLevel2KernelBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-compact-level2-kernel-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-compact-level2-kernel",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-compact-level2-kernel-bench",
-            )?;
-        }
-        Action::E1m1CompactWorldLevel2KernelBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-compact-world-level2-kernel-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-compact-world-level2-kernel",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-compact-world-level2-kernel-bench",
-            )?;
-        }
+
         Action::E1m1GpuLatticeClipBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -837,96 +518,7 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gpu-lattice-clip-bench")?;
         }
-        Action::E1m1FixedFanQuadsBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-fixed-fan-quads-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-fixed-fan-quads",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-fixed-fan-quads-bench")?;
-        }
-        Action::E1m1FixedFanGuardedBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-fixed-fan-guarded-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-fixed-fan-guarded",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-fixed-fan-guarded-bench")?;
-        }
-        Action::E1m1FixedFanLevel2Bench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-fixed-fan-level2-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-fixed-fan-level2",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-fixed-fan-level2-bench")?;
-        }
-        Action::E1m1SubdivisionCacheBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-subdivision-cache-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-subdivision-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-subdivision-cache-bench")?;
-        }
-        Action::E1m1SubdivisionCacheLevel2Bench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-subdivision-cache-level2-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-subdivision-cache-level2",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-subdivision-cache-level2-bench",
-            )?;
-        }
+
         Action::E1m1GpuPolygonClipBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -944,204 +536,7 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gpu-polygon-clip-bench")?;
         }
-        Action::E1m1GpuPolygonDepthOnlyBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-depth-only-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-depth-only-subdivision",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-depth-only-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonCompactOtBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-compact-ot-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-compact-ot-256",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-compact-ot-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonFusedProjectionBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-fused-projection-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-fused-materialize-project",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-fused-projection-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonPlaneIndexBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-plane-index-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-plane-index-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-plane-index-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonWindowRunsBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-window-runs-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-window-run-coalescing",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-window-runs-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonWindowInsertBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-window-insert-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-window-insert-coalescing",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-window-insert-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonWindowRangeBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-window-range-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-window-range-coalescing",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-window-range-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonCellStreamBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-cell-stream-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-compact-cell-stream",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-cell-stream-bench",
-            )?;
-        }
-        Action::E1m1SubdivisionCacheLevel2SmallBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-subdivision-cache-level2-small-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-subdivision-cache-level2-small",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-subdivision-cache-level2-small-bench",
-            )?;
-        }
+
         Action::E1m1GpuPolygonCellPolicyBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1203,28 +598,7 @@ fn real_main() -> Result<()> {
                 "e1m1-gpu-polygon-cell-liquid-bench",
             )?;
         }
-        Action::E1m1GpuPolygonBlockClipFlagsBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-block-clip-flags-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-block-clip-flags,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-block-clip-flags-bench",
-            )?;
-        }
+
         Action::E1m1GpuPolygonBakedMaterializeBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1379,48 +753,7 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-30hz-cadence-bench")?;
         }
-        Action::E1m1CompactCellStreamBench => {
-            // The selection pass streams the whole retained face array every
-            // frame and its cost tracks the bytes read, not the faces kept.
-            // This prices splitting the plane out of the 36-byte record.
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-compact-cell-stream-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum,renderer-compact-cell-stream",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-compact-cell-stream-bench")?;
-        }
-        Action::E1m1CollisionBroadPhaseBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-collision-broad-phase-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum,renderer-hoisted-indexed-world",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-collision-broad-phase-bench",
-            )?;
-        }
+
         Action::E1m1ScreenFrustumBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1477,245 +810,7 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-selection-decimate-bench")?;
         }
-        Action::E1m1GpuPolygonLevel0RunBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-level0-run-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-quake-level0-run",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-level0-run-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonColdAdaptiveBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-cold-adaptive-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-quake-cold-adaptive",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-cold-adaptive-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonColdLevel2Bench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-cold-level2-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-quake-cold-level2",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-cold-level2-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonResidentStreamBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-stream-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-subdivision-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-resident-stream-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonResidentLevel2StreamBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-stream-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-subdivision-cache-level2-small",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-resident-level2-stream-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonResidentLevel2ScatterBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-scatter-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-resident-level2-scatter",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-resident-level2-scatter-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonResidentLevel2ColdCacheBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-gpu-polygon-resident-level2-cold-cache-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-resident-level2-cold-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-resident-level2-cold-cache-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonResidentBaseCacheBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-base-cache-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-resident-base-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-resident-base-cache-bench",
-            )?;
-        }
-        Action::E1m1GpuPolygonResidentBaseCacheFastBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-polygon-resident-base-cache-fast-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-resident-base-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-gpu-polygon-resident-base-cache-fast-bench",
-            )?;
-        }
-        Action::E1m1GpuSurfaceClipBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-gpu-surface-clip-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-surface-clip",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-gpu-surface-clip-bench")?;
-        }
-        Action::E1m1SubdivisionCacheLevel2LayoutControlBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build =
-                root.join("build-psoxide-e1m1-subdivision-cache-level2-layout-control-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-subdivision-cache-level2-layout-control",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-subdivision-cache-level2-layout-control-bench",
-            )?;
-        }
+
         Action::E1m1BlockFrustumBench => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -1733,58 +828,7 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-block-frustum-bench")?;
         }
-        Action::E1m1HierarchicalBlockFrustumBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-hierarchical-block-frustum-bench");
-            fs::create_dir_all(&build)?;
-            request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-hierarchical-block-frustum",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(
-                &root,
-                &frontend,
-                &build,
-                "e1m1-hierarchical-block-frustum-bench",
-            )?;
-        }
-        Action::E1m1BlockFrustum32Bench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-block-frustum-32-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum-32",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-block-frustum-32-bench")?;
-        }
-        Action::E1m1PlaneRunCacheBench => {
-            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
-            cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-e1m1-plane-run-cache-bench");
-            build_disc(
-                &root,
-                &build,
-                Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-plane-run-cache",
-                ),
-                false,
-            )?;
-            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
-            run_e1m1_chain_regression(&root, &frontend, &build, "e1m1-plane-run-cache-bench")?;
-        }
+
         Action::BlockFrustumRegress => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
@@ -3115,7 +2159,7 @@ const GUEST_MAX_TELEPORTS: usize = 32;
 const GUEST_MAX_TRAINS: usize = 8;
 const GUEST_MAX_FIREBALL_EMITTERS: usize = 16;
 const GUEST_MAX_FIREBALLS: usize = 32;
-const GUEST_MAX_CHANGE_LEVELS: usize = 4;
+
 const GUEST_MAX_TARGET_ACTIONS: usize = 128;
 const GUEST_MAX_PLAYER_ACTIVATIONS: usize = 8;
 const GUEST_NAIL_POOL_CAPACITY: usize = 60;
@@ -3567,33 +2611,11 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-chain-bench"
             | "e1m1-monster-route-bench"
             | "e1m1-selection-cache-bench"
-            | "e1m1-topology-cache-bench"
-            | "e1m1-indexed-projection-bench"
-            | "e1m1-aabb-offsets-bench"
-            | "e1m1-relaxed-quad-pairing-bench"
-            | "e1m1-shared-subdivision-edges-bench"
-            | "e1m1-level0-fast-path-bench"
-            | "e1m1-speculative-level0-bench"
-            | "e1m1-depth-only-subdivision-bench"
-            | "e1m1-gte-otz-bench"
-            | "e1m1-compact-subdivision-emitters-bench"
-            | "e1m1-compact-subdivision-kernels-bench"
-            | "e1m1-compact-level2-kernel-bench"
-            | "e1m1-compact-world-level2-kernel-bench"
             | "e1m1-gpu-lattice-clip-bench"
             | "e1m1-gpu-polygon-clip-bench"
-            | "e1m1-gpu-polygon-depth-only-bench"
-            | "e1m1-gpu-polygon-compact-ot-bench"
-            | "e1m1-gpu-polygon-fused-projection-bench"
-            | "e1m1-gpu-polygon-plane-index-bench"
-            | "e1m1-gpu-polygon-window-runs-bench"
-            | "e1m1-gpu-polygon-window-insert-bench"
-            | "e1m1-gpu-polygon-window-range-bench"
-            | "e1m1-gpu-polygon-cell-stream-bench"
             | "e1m1-gpu-polygon-cell-policy-bench"
             | "e1m1-gpu-polygon-gte-near-bench"
             | "e1m1-gpu-polygon-cell-liquid-bench"
-            | "e1m1-gpu-polygon-block-clip-flags-bench"
             | "e1m1-gpu-polygon-baked-materialize-bench"
             | "gpu-polygon-cell-policy-disc"
             | "gpu-polygon-leader-disc"
@@ -3604,32 +2626,8 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-selection-decimate-bench"
             | "e1m1-no-world-bench"
             | "e1m1-screen-frustum-bench"
-            | "e1m1-collision-broad-phase-bench"
-            | "e1m1-compact-cell-stream-bench"
             | "e1m1-30hz-cadence-bench"
-            | "e1m1-gpu-polygon-level0-run-bench"
-            | "e1m1-gpu-polygon-cold-adaptive-bench"
-            | "e1m1-gpu-polygon-cold-level2-bench"
-            | "e1m1-gpu-polygon-resident-stream-bench"
-            | "e1m1-gpu-polygon-resident-level2-stream-bench"
-            | "e1m1-gpu-polygon-resident-level2-scatter-bench"
-            | "e1m1-gpu-polygon-resident-level2-cold-cache-bench"
-            | "e1m1-gpu-polygon-resident-base-cache-bench"
-            | "e1m1-gpu-polygon-resident-base-cache-fast-bench"
-            | "e1m1-gpu-surface-clip-bench"
-            | "e1m1-static-world-reuse-bench"
-            | "e1m1-hoisted-indexed-world-bench"
-            | "e1m1-fixed-fan-quads-bench"
-            | "e1m1-fixed-fan-guarded-bench"
-            | "e1m1-fixed-fan-level2-bench"
-            | "e1m1-subdivision-cache-bench"
-            | "e1m1-subdivision-cache-level2-bench"
-            | "e1m1-subdivision-cache-level2-small-bench"
-            | "e1m1-subdivision-cache-level2-layout-control-bench"
             | "e1m1-block-frustum-bench"
-            | "e1m1-hierarchical-block-frustum-bench"
-            | "e1m1-block-frustum-32-bench"
-            | "e1m1-plane-run-cache-bench"
             | "block-frustum-regress"
             | "gpu-polygon-clip-regress"
             | "selection-cache-regress"
@@ -3670,47 +2668,14 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
                     "e1m1-selection-cache-bench" => Action::E1m1SelectionCacheBench,
-                    "e1m1-topology-cache-bench" => Action::E1m1TopologyCacheBench,
-                    "e1m1-indexed-projection-bench" => Action::E1m1IndexedProjectionBench,
-                    "e1m1-aabb-offsets-bench" => Action::E1m1AabbOffsetsBench,
-                    "e1m1-relaxed-quad-pairing-bench" => Action::E1m1RelaxedQuadPairingBench,
-                    "e1m1-shared-subdivision-edges-bench" => {
-                        Action::E1m1SharedSubdivisionEdgesBench
-                    }
-                    "e1m1-level0-fast-path-bench" => Action::E1m1Level0FastPathBench,
-                    "e1m1-speculative-level0-bench" => Action::E1m1SpeculativeLevel0Bench,
-                    "e1m1-depth-only-subdivision-bench" => Action::E1m1DepthOnlySubdivisionBench,
-                    "e1m1-gte-otz-bench" => Action::E1m1GteOtzBench,
-                    "e1m1-compact-subdivision-emitters-bench" => {
-                        Action::E1m1CompactSubdivisionEmittersBench
-                    }
-                    "e1m1-compact-subdivision-kernels-bench" => {
-                        Action::E1m1CompactSubdivisionKernelsBench
-                    }
-                    "e1m1-compact-level2-kernel-bench" => Action::E1m1CompactLevel2KernelBench,
-                    "e1m1-compact-world-level2-kernel-bench" => {
-                        Action::E1m1CompactWorldLevel2KernelBench
-                    }
+
                     "e1m1-gpu-lattice-clip-bench" => Action::E1m1GpuLatticeClipBench,
                     "e1m1-gpu-polygon-clip-bench" => Action::E1m1GpuPolygonClipBench,
-                    "e1m1-gpu-polygon-depth-only-bench" => Action::E1m1GpuPolygonDepthOnlyBench,
-                    "e1m1-gpu-polygon-compact-ot-bench" => Action::E1m1GpuPolygonCompactOtBench,
-                    "e1m1-gpu-polygon-fused-projection-bench" => {
-                        Action::E1m1GpuPolygonFusedProjectionBench
-                    }
-                    "e1m1-gpu-polygon-plane-index-bench" => Action::E1m1GpuPolygonPlaneIndexBench,
-                    "e1m1-gpu-polygon-window-runs-bench" => Action::E1m1GpuPolygonWindowRunsBench,
-                    "e1m1-gpu-polygon-window-insert-bench" => {
-                        Action::E1m1GpuPolygonWindowInsertBench
-                    }
-                    "e1m1-gpu-polygon-window-range-bench" => Action::E1m1GpuPolygonWindowRangeBench,
-                    "e1m1-gpu-polygon-cell-stream-bench" => Action::E1m1GpuPolygonCellStreamBench,
+
                     "e1m1-gpu-polygon-cell-policy-bench" => Action::E1m1GpuPolygonCellPolicyBench,
                     "e1m1-gpu-polygon-gte-near-bench" => Action::E1m1GpuPolygonGteNearBench,
                     "e1m1-gpu-polygon-cell-liquid-bench" => Action::E1m1GpuPolygonCellLiquidBench,
-                    "e1m1-gpu-polygon-block-clip-flags-bench" => {
-                        Action::E1m1GpuPolygonBlockClipFlagsBench
-                    }
+
                     "e1m1-gpu-polygon-baked-materialize-bench" => {
                         Action::E1m1GpuPolygonBakedMaterializeBench
                     }
@@ -3725,54 +2690,11 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-selection-decimate-bench" => Action::E1m1SelectionDecimateBench,
                     "e1m1-no-world-bench" => Action::E1m1NoWorldBench,
                     "e1m1-screen-frustum-bench" => Action::E1m1ScreenFrustumBench,
-                    "e1m1-compact-cell-stream-bench" => Action::E1m1CompactCellStreamBench,
-                    "e1m1-collision-broad-phase-bench" => Action::E1m1CollisionBroadPhaseBench,
+
                     "e1m1-30hz-cadence-bench" => Action::E1m130hzCadenceBench,
-                    "e1m1-gpu-polygon-level0-run-bench" => Action::E1m1GpuPolygonLevel0RunBench,
-                    "e1m1-gpu-polygon-cold-adaptive-bench" => {
-                        Action::E1m1GpuPolygonColdAdaptiveBench
-                    }
-                    "e1m1-gpu-polygon-cold-level2-bench" => Action::E1m1GpuPolygonColdLevel2Bench,
-                    "e1m1-gpu-polygon-resident-stream-bench" => {
-                        Action::E1m1GpuPolygonResidentStreamBench
-                    }
-                    "e1m1-gpu-polygon-resident-level2-stream-bench" => {
-                        Action::E1m1GpuPolygonResidentLevel2StreamBench
-                    }
-                    "e1m1-gpu-polygon-resident-level2-scatter-bench" => {
-                        Action::E1m1GpuPolygonResidentLevel2ScatterBench
-                    }
-                    "e1m1-gpu-polygon-resident-level2-cold-cache-bench" => {
-                        Action::E1m1GpuPolygonResidentLevel2ColdCacheBench
-                    }
-                    "e1m1-gpu-polygon-resident-base-cache-bench" => {
-                        Action::E1m1GpuPolygonResidentBaseCacheBench
-                    }
-                    "e1m1-gpu-polygon-resident-base-cache-fast-bench" => {
-                        Action::E1m1GpuPolygonResidentBaseCacheFastBench
-                    }
-                    "e1m1-gpu-surface-clip-bench" => Action::E1m1GpuSurfaceClipBench,
-                    "e1m1-static-world-reuse-bench" => Action::E1m1StaticWorldReuseBench,
-                    "e1m1-hoisted-indexed-world-bench" => Action::E1m1HoistedIndexedWorldBench,
-                    "e1m1-fixed-fan-quads-bench" => Action::E1m1FixedFanQuadsBench,
-                    "e1m1-fixed-fan-guarded-bench" => Action::E1m1FixedFanGuardedBench,
-                    "e1m1-fixed-fan-level2-bench" => Action::E1m1FixedFanLevel2Bench,
-                    "e1m1-subdivision-cache-bench" => Action::E1m1SubdivisionCacheBench,
-                    "e1m1-subdivision-cache-level2-bench" => {
-                        Action::E1m1SubdivisionCacheLevel2Bench
-                    }
-                    "e1m1-subdivision-cache-level2-small-bench" => {
-                        Action::E1m1SubdivisionCacheLevel2SmallBench
-                    }
-                    "e1m1-subdivision-cache-level2-layout-control-bench" => {
-                        Action::E1m1SubdivisionCacheLevel2LayoutControlBench
-                    }
+
                     "e1m1-block-frustum-bench" => Action::E1m1BlockFrustumBench,
-                    "e1m1-hierarchical-block-frustum-bench" => {
-                        Action::E1m1HierarchicalBlockFrustumBench
-                    }
-                    "e1m1-block-frustum-32-bench" => Action::E1m1BlockFrustum32Bench,
-                    "e1m1-plane-run-cache-bench" => Action::E1m1PlaneRunCacheBench,
+
                     "block-frustum-regress" => Action::BlockFrustumRegress,
                     "gpu-polygon-clip-regress" => Action::GpuPolygonClipRegress,
                     "selection-cache-regress" => Action::SelectionCacheRegress,
@@ -3841,58 +2763,18 @@ fn print_help() {
            e1m1-chain-regress  Walk E1M1's authored three-button door chain headlessly\n  \
            e1m1-chain-bench  The same route at a fixed sim step, for ranking performance work\n  \
            e1m1-selection-cache-bench  A/B exact-key selected-face reuse\n  \
-           e1m1-topology-cache-bench  A/B resident adaptive packet topology\n  \
-           e1m1-indexed-projection-bench  A/B dense shared-position world projection\n  \
-           e1m1-aabb-offsets-bench  A/B hoisted exact AABB support selectors\n  \
-           e1m1-relaxed-quad-pairing-bench  A/B native GT4 pairing across adjacent OT slots\n  \
-           e1m1-shared-subdivision-edges-bench  A/B omit duplicate same-level radial underdraw\n  \
-           e1m1-level0-fast-path-bench  A/B isolate common level-zero fans from lattice fallback\n  \
-           e1m1-speculative-level0-bench  A/B one-pass level-zero emit with exact adaptive rollback\n  \
-           e1m1-depth-only-subdivision-bench  A/B compile Quake's exact OTZ-only selector\n  \
-           e1m1-gte-otz-bench  A/B replace cached-depth MIPS OTZ math with GTE AVSZ3\n  \
-           e1m1-compact-subdivision-emitters-bench  A/B share exact adaptive GT3/GT4 kernels\n  \
-           e1m1-compact-subdivision-kernels-bench  A/B share complete exact L1/L2 lattices\n  \
-           e1m1-compact-level2-kernel-bench  A/B share only the rare exact L2 lattice\n  \
-           e1m1-compact-world-level2-kernel-bench  A/B share ordinary-world L2 only\n  \
            e1m1-gpu-lattice-clip-bench  A/B PS1 draw-area clipping versus per-packet CPU rejects\n  \
            e1m1-gpu-polygon-clip-bench  A/B draw-area clipping for every admitted world GT3/GT4\n  \
-           e1m1-gpu-polygon-depth-only-bench  Combine GPU clip ownership with compact subdivision depth scratch\n  \
-           e1m1-gpu-polygon-compact-ot-bench  Quantise final world DMA buckets into a 256-slot OT\n  \
-           e1m1-gpu-polygon-fused-projection-bench  Fuse indexed materialisation with GTE projection\n  \
-           e1m1-gpu-polygon-plane-index-bench  Memoize BSP plane sides by direct cooked index\n  \
-           e1m1-gpu-polygon-window-runs-bench  Coalesce final GPU-order liquid window state runs\n  \
-           e1m1-gpu-polygon-window-insert-bench  Coalesce liquid state inside the existing OT linker\n  \
-           e1m1-gpu-polygon-cell-stream-bench  Compact leaf-local draw records and prune invariant backs\n  \
            e1m1-gpu-polygon-cell-policy-bench  Reproduce the selected 23.432 fixed-step renderer stack\n  \
            e1m1-gpu-polygon-gte-near-bench  A/B classify selected near faces in a live GTE row\n  \
            e1m1-gpu-polygon-cell-liquid-bench  A/B remove hot selector texture lookups\n  \
-           e1m1-gpu-polygon-block-clip-flags-bench  A/B propagate exact block clip flags\n  \
            e1m1-gpu-polygon-baked-materialize-bench  A/B fixed baked-corner MIPS gather\n  \
            e1m1-gpu-polygon-leader-bench  Reproduce the exact 23.656 renderer stack\n  \
            e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
            gpu-polygon-scratch-liquid-disc  Build and boot-test the playable scratchpad-liquid stack\n  \
-           e1m1-gpu-surface-clip-bench  A/B remove the projected scan after PVS/frustum admission\n  \
-           e1m1-static-world-reuse-bench  A/B reuse exact same-camera ordinary world packets\n  \
-           e1m1-hoisted-indexed-world-bench  A/B decode PSB5 indexed view once per world frame\n  \
-           e1m1-fixed-fan-quads-bench  Measure Quake II-style fixed GT4 world ceiling\n  \
-           e1m1-fixed-fan-guarded-bench  Fixed fans with screen-spanning adaptive fallback\n  \
-           e1m1-fixed-fan-level2-bench  Fixed packets retaining closest-band subdivision\n  \
-           e1m1-subdivision-cache-bench  A/B resident exact adaptive subdivision packets\n  \
-           e1m1-subdivision-cache-level2-bench  A/B persist only large level-two roots\n  \
-           e1m1-subdivision-cache-level2-small-bench  Control with only 26 resident level-two roots\n  \
-           e1m1-gpu-polygon-resident-stream-bench  Exact GPU-clip plus fixed resident-root stream linking\n  \
-           e1m1-gpu-polygon-resident-level2-stream-bench  Exact bounded L2 resident-root stream linking\n  \
-           e1m1-gpu-polygon-resident-level2-scatter-bench  Position-only fixed L2 resident XY scatter\n  \
-           e1m1-gpu-polygon-resident-level2-cold-cache-bench  Scatter with cold miss/replacement paths\n  \
-           e1m1-gpu-polygon-resident-base-cache-bench  Direct-map resident L0 GT3/GT4 packets\n  \
-           e1m1-gpu-polygon-resident-base-cache-fast-bench  Resident L0 with batch-folded counters\n  \
-           e1m1-subdivision-cache-level2-layout-control-bench  Control with original slab addresses\n  \
            e1m1-block-frustum-bench  A/B cached 16-face conservative frustum blocks\n  \
-           e1m1-hierarchical-block-frustum-bench  A/B conservative 64-to-16-face hierarchy\n  \
-           e1m1-block-frustum-32-bench  A/B cached 32-face conservative frustum blocks\n  \
-           e1m1-plane-run-cache-bench  A/B exact repeated BSP-plane side tests\n  \
            block-frustum-regress  Visual, route and shipping validation of 16-face blocks\n  \
            gpu-polygon-clip-regress  Visual, route and shipping validation of GPU clip ownership\n  \
            selection-cache-regress  Visual and E1M2/E1M3 validation of selected-face reuse\n  \
@@ -5944,101 +4826,6 @@ fn frontend_from_checkout(source: &Path) -> Result<PathBuf> {
     .into())
 }
 
-fn run_regression(root: &Path, frontend: &Path, shipping: &Path, regression: &Path) -> Result<()> {
-    let captures = root.join("captures");
-    let shipping_capture = captures.join("shipping-smoke");
-    let gameplay_capture = captures.join("episode1-regression");
-    fs::create_dir_all(&shipping_capture)?;
-    fs::create_dir_all(&gameplay_capture)?;
-
-    let shipping_output = run_frontend(
-        frontend,
-        &shipping.join("quake-psx.cue"),
-        &shipping_capture,
-        850_000_000,
-        false,
-        None,
-    )?;
-    let shipping_log = combined_output(&shipping_output);
-    fs::write(shipping_capture.join("console.log"), &shipping_log)?;
-    let shipping_display = require_visible_display(&shipping_log, "shipping smoke")?;
-    let shipping_polls = final_port1_polls(&shipping_capture.join("route.csv"))?;
-    if shipping_polls == 0 {
-        return Err("shipping smoke observed no controller polls".into());
-    }
-
-    let steps = env::var("QUAKE_PSX_REGRESSION_STEPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8_000_000_000);
-    let guest_frames = env::var("QUAKE_PSX_REGRESSION_FRAMES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3_500);
-    let gameplay_output = run_frontend(
-        frontend,
-        &regression.join("quake-psx.cue"),
-        &gameplay_capture,
-        steps,
-        true,
-        Some(guest_frames),
-    )?;
-    let gameplay_log = combined_output(&gameplay_output);
-    fs::write(gameplay_capture.join("console.log"), &gameplay_log)?;
-    const MISSING_SOUND: &[u8] = b"Snd_FindSound: sound";
-    if gameplay_log
-        .windows(MISSING_SOUND.len())
-        .any(|window| window == MISSING_SOUND)
-    {
-        return Err("Episode 1 requested a sound missing from its cooked SPU bank".into());
-    }
-    let gameplay_display = require_visible_display(&gameplay_log, "Episode 1 run")?;
-    let gameplay_polls = final_port1_polls(&gameplay_capture.join("route.csv"))?;
-    let probe = read_probe(&gameplay_capture.join("ram.bin"))?;
-    validate_probe(&probe)?;
-    if gameplay_polls == 0 {
-        return Err("Episode 1 run observed no controller polls".into());
-    }
-
-    let summary = format!(
-        "quake-psx PSoXide regression: PASS\n\
-         shipping_display_fnv1a_64=0x{:016x}\n\
-         shipping_port1_polls={shipping_polls}\n\
-         episode1_display_fnv1a_64=0x{:016x}\n\
-         episode1_port1_polls={gameplay_polls}\n\
-         episode1_frames={}\n\
-         episode1_map_loads={}\n\
-         episode1_maps=0x{:03x}\n\
-         episode1_transitions=0x{:03x}\n\
-         episode1_weapons=0x{:02x}\n\
-         episode1_weapon_acquisition=0x{:02x}\n\
-         episode1_target_edges={}\n\
-         episode1_monsters=0x{:03x}\n\
-         episode1_monster_states={}/{}\n\
-         episode1_boss=0x{:03x}\n\
-         episode1_boss_shocks={}\n\
-         episode1_health={}\n",
-        shipping_display.hash,
-        gameplay_display.hash,
-        probe.total_frames,
-        probe.map_loads,
-        probe.maps_loaded,
-        probe.transitions,
-        probe.weapon_fired,
-        probe.weapon_pickups,
-        probe.target_edges,
-        probe.monster_present,
-        probe.valid_state_ranges,
-        probe.state_ranges,
-        probe.boss,
-        probe.shock_count,
-        probe.last_health,
-    );
-    fs::write(gameplay_capture.join("summary.txt"), &summary)?;
-    print!("{summary}");
-    Ok(())
-}
-
 fn run_map_regression(root: &Path, frontend: &Path, regression: &Path) -> Result<()> {
     let capture = root.join("captures/map-regression");
     fs::create_dir_all(&capture)?;
@@ -6597,30 +5384,6 @@ the number to rank SDK and renderer work by, fps being field-quantised)\n",
         )
         .into());
     }
-    let subdivision_cache_note = if capture_name.contains("subdivision-cache")
-        || capture_name.contains("resident-stream")
-        || capture_name.contains("resident-level2-stream")
-        || capture_name.contains("resident-level2-scatter")
-        || capture_name.contains("resident-level2-cold-cache")
-        || capture_name.contains("resident-base-cache")
-    {
-        format!(
-            "subdivision_cache_hits={}\n\
-             subdivision_cache_allocations={}\n\
-             subdivision_cache_replacements={}\n\
-             subdivision_cache_fallbacks={}\n\
-             subdivision_cache_initializations={}\n\
-             subdivision_cache_packets={}\n",
-            probe.monster_present,
-            probe.monster_animated,
-            probe.monster_state_bounds,
-            probe.monster_attack,
-            probe.monster_pain,
-            probe.monster_death,
-        )
-    } else {
-        String::new()
-    };
     let summary = format!(
         "quake-psx canonical E1M1 per-map route: PASS\n\
          deterministic_runs=2\n\
@@ -6638,13 +5401,6 @@ trigger_changelevel -> e1m2\n\
          full_level_presentations={}\n\
          full_level_elapsed_bus_cycles={}\n\
          full_level_fps_x1000={}\n\
-         topology_cache_batch_hits={}\n\
-         topology_cache_batch_misses={}\n\
-         topology_invariant_hit_slots={}\n\
-         topology_invariant_miss_slots={}\n\
-         indexed_projection_corners={}\n\
-         indexed_projection_unique={}\n\
-         {subdivision_cache_note}\
          {noise_note}\
          {work_note}\
          vram_fnv1a_64=0x{vram_hash:016x}\n\
@@ -6660,12 +5416,6 @@ trigger_changelevel -> e1m2\n\
         first_performance.presentations,
         first_performance.elapsed_bus_cycles,
         first_performance.fps_x1000,
-        probe.monster_present,
-        probe.monster_animated,
-        probe.monster_state_bounds,
-        probe.monster_attack,
-        probe.monster_pain,
-        probe.monster_death,
     );
     fs::write(capture.join("summary.txt"), &summary)?;
     print!("{summary}");
@@ -9399,57 +8149,6 @@ fn validate_e1m2_route_probe(probe: &Probe) -> Result<()> {
             probe.valid_state_ranges as i32,
         )
         .into());
-    }
-    Ok(())
-}
-
-fn validate_probe(probe: &Probe) -> Result<()> {
-    if probe.version != 3 {
-        return Err(format!("unsupported probe version {}", probe.version).into());
-    }
-    if probe.failure_code != 0 {
-        return Err(format!(
-            "Episode 1 failed: code={} map={} entity={} detail=0x{:08x} phase={} route={} stage_frames={} intermission={} player=0x{:08x}",
-            probe.failure_code, probe.failure_map, probe.failure_entity, probe.failure_detail,
-            probe.phase, probe.route_index, probe.stage_frames, probe.intermission_state, probe.player_state,
-        ).into());
-    }
-    if probe.complete != 1 {
-        return Err(format!(
-            "Episode 1 did not finish: phase={} map={} route={} frames={} maps=0x{:03x} transitions=0x{:03x} weapons=0x{:02x} monsters=0x{:03x} boss=0x{:03x}",
-            probe.phase, probe.current_map, probe.route_index, probe.total_frames, probe.maps_loaded,
-            probe.transitions, probe.weapon_fired, probe.monster_present, probe.boss,
-        ).into());
-    }
-    for (label, actual, expected) in [
-        ("maps loaded", probe.maps_loaded, 0x01ff),
-        ("maps validated", probe.maps_validated, 0x01ff),
-        ("transitions", probe.transitions, 0x03ff),
-        ("weapons selected", probe.weapon_selected, 0x00ff),
-        ("weapons fired", probe.weapon_fired, 0x00ff),
-        ("weapons animated", probe.weapon_animated, 0x00ff),
-        ("monsters present", probe.monster_present, 0x01ff),
-        ("monsters animated", probe.monster_animated, 0x01ff),
-        ("monster state bounds", probe.monster_state_bounds, 0x01ff),
-        ("monster attacks", probe.monster_attack, 0x01ff),
-        ("monster pain", probe.monster_pain, 0x01ff),
-        ("monster deaths", probe.monster_death, 0x01ff),
-        ("boss encounter", probe.boss, 0x01ff),
-        ("weapon acquisition", probe.weapon_pickups, 0x007f),
-    ] {
-        if actual != expected {
-            return Err(format!("{label}: 0x{actual:03x}, expected 0x{expected:03x}").into());
-        }
-    }
-    if probe.state_ranges == 0 || probe.state_ranges != probe.valid_state_ranges {
-        return Err(format!(
-            "animation ranges: {} total, {} valid",
-            probe.state_ranges, probe.valid_state_ranges
-        )
-        .into());
-    }
-    if probe.target_edges == 0 {
-        return Err("regression validated no progression target edges".into());
     }
     Ok(())
 }

@@ -1,0 +1,10 @@
+[package]
+name = "quake-psoxide-pin"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "5fa8c351c0b168ba6fea78d27e7134f668dab137" }

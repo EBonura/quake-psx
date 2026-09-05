@@ -85,170 +85,22 @@ renderer-selection-decimate = []
 # Harder form of the same ceiling: submit no world faces at all, pricing
 # everything the frame does apart from the world surface path.
 renderer-selection-drop-world = ["renderer-selection-decimate"]
-renderer-compact-cell-stream = ["renderer-block-frustum"]
-# Feature-gated Quake II transfer experiment: retain invariant compact packet
-# fields when an exact selected batch and adaptive topology recur in the same
-# display pool. Misses keep the authoritative full materialization path.
-renderer-topology-cache = []
-# Feature-gated Quake II transfer experiment: project each distinct cooked
-# world position once per bounded ordinary batch, then scatter its screen/depth
-# result into the per-corner UV/light stream before packet assembly.
-renderer-indexed-projection = []
-# Feature-gated exact A/B: hoist four frustum-plane AABB support selectors out
-# of the per-face loop while retaining identical GTE dots and rejection order.
-renderer-aabb-support-offsets = []
-# Feature-gated Quake II transfer experiment: combine adjacent level-zero fan
-# triangles into native GT4 packets using a four-vertex OT depth even when the
-# original triangle depth keys round to neighbouring slots.
-renderer-relaxed-quad-pairing = ["psx-engine/classic-affine-relaxed-quad-pairing"]
-# Feature-gated exact-lattice A/B: adjacent fan roots at the same subdivision
-# level share their radial midpoint chain and omit only duplicate internal
-# crack-sealing underdraw.
-renderer-shared-subdivision-edges = ["psx-engine/classic-affine-shared-subdivision-edges"]
-# Feature-gated I-cache experiment: keep the common level-zero fan emitter
-# separate from the complete subdivision fallback.
-renderer-level0-fast-path = ["psx-engine/classic-affine-level0-fast-path"]
-# Exact successor to the rejected two-pass preflight: the common fixed fan is
-# written once and the unlinked packet cursor rolls back only on subdivision.
-renderer-speculative-level0 = ["psx-engine/classic-affine-speculative-level0"]
-# Exact Quake profile specialization: compile only the historical two OTZ
-# bands and leave the unused general affine-error estimator out of hot roots.
-renderer-depth-only-subdivision = ["psx-engine/classic-affine-depth-only-subdivision"]
-# Exact PS1 A/B: use GTE AVSZ3 for cached triangle depth keys instead of the
-# measured MIPS shift/add sequence in the classic-affine world writer.
-renderer-gte-otz = ["psx-engine/classic-affine-gte-otz"]
-# Exact Quake II-style compact-kernel experiment: adaptive topology stays
-# authoritative, but every lattice shares one GT3 and one GT4 constructor.
-renderer-compact-subdivision-emitters = [
-    "psx-engine/classic-affine-compact-subdivision-emitters",
-]
-# Exact narrower form: only the complete L1/L2 lattice bodies are shared;
-# packet writes remain local to those kernels.
-renderer-compact-subdivision-kernels = [
-    "psx-engine/classic-affine-compact-subdivision-kernels",
-]
-# Exact hybrid matching the measured root distribution: keep frequent L1
-# local and share only the large, rare L2 lattice body.
-renderer-compact-level2-kernel = ["psx-engine/classic-affine-compact-level2-kernel"]
-# Exact writer-specialized form: share only the ordinary-world L2 kernel;
-# special/windowed and resident writers retain local code.
-renderer-compact-world-level2-kernel = [
-    "psx-engine/classic-affine-compact-world-level2-kernel",
-]
 # Visual-exact CPU/GPU trade: retain conservative whole-face rejection, then
 # let the PS1 draw area clip individual lattice packets outside the viewport.
 renderer-gpu-lattice-clip = ["psx-engine/classic-affine-gpu-lattice-clip"]
 # Broader form which also delegates level-zero GT3/GT4 clipping to the GPU.
 renderer-gpu-polygon-clip = ["psx-engine/classic-affine-gpu-polygon-clip"]
-# Full form for faces already admitted by the retained PVS/frustum selector.
-renderer-gpu-surface-clip = ["psx-engine/classic-affine-gpu-surface-clip"]
 # Specialize the ordinary world kernel around QUAKE_REFERENCE rather than
 # carrying a runtime profile through every root and packet decision.
 renderer-quake-specialized-kernel = [
     "psx-engine/classic-affine-quake-specialized-kernel",
 ]
-# Exact common-case island: one call owns each maximal run of level-zero roots
-# and the established adaptive lattice handles the remaining L1/L2 roots.
-renderer-quake-level0-run = [
-    "renderer-quake-specialized-kernel",
-    "psx-engine/classic-affine-quake-level0-run",
-]
-# Keep the common L0 root path in the batch and outline only actual L1/L2
-# roots, the inverse of the per-run experiment above.
-renderer-quake-cold-adaptive = [
-    "renderer-quake-specialized-kernel",
-    "psx-engine/classic-affine-quake-cold-adaptive",
-]
-# Preserve L1 locality and move only the rare, large L2 schedule out of the
-# hot batch body.
-renderer-quake-cold-level2 = [
-    "renderer-quake-specialized-kernel",
-    "psx-engine/classic-affine-quake-cold-level2",
-]
-# Quake II transfer experiment: retain the classic 0..2047 depth verdicts but
-# quantise final DMA buckets to a 256-slot OT, matching the retail engine's
-# aggressively compact ordering structure without dropping geometry.
-renderer-compact-ot-256 = []
-# Exact memory-schedule experiment: gather indexed positions, issue GTE
-# projection, and materialize UV/colour into the final scratch record during
-# the same source pass. Packet topology and every adaptive decision remain
-# unchanged.
-renderer-fused-materialize-project = []
 # Quake's dominant baked-corner gather as one fixed inline MIPS schedule.
 # Dynamic light-style and UV-offset faces retain the authoritative generic path.
 renderer-quake-baked-materialize = []
-# Exact Quake II-style visibility hierarchy: test a conservative union of four
-# accepted 16-face blocks before descending to the existing block/face gates.
-renderer-hierarchical-block-frustum = ["renderer-block-frustum"]
-# Exact same-camera working-set experiment. A world stream containing only
-# static ordinary/layered-sky faces can be reused when the same arena's full
-# camera/visibility key recurs; only its destructive DMA tags are restored.
-renderer-static-world-reuse = []
-# Exact materialisation experiment: decode the validated indexed vertex view
-# once for the world pass instead of once per retained face.
-renderer-hoisted-indexed-world = []
-# Deliberately non-parity architectural ceiling: fixed GT4 fan pairs remove
-# the adaptive subdivision/underdraw writer from ordinary world geometry.
-renderer-fixed-fan-quads = ["psx-engine/classic-affine-fixed-fan-quads"]
-# Quake II-style fixed fans with exact adaptive fallback only when a face
-# spans the viewport while every original corner remains outside it.
-renderer-fixed-fan-guarded = ["psx-engine/classic-affine-fixed-fan-guarded"]
-# Deliberately non-parity quality ladder: preserve full subdivision for the
-# closest depth band while using fixed fan packets for level zero and one.
-renderer-fixed-fan-level2 = ["psx-engine/classic-affine-fixed-fan-level2"]
-# Exact Quake II-style transfer: keep adaptive subdivision roots in fixed
-# dual-pool packet slabs and patch only camera-dependent tag/XY words on hits.
-renderer-subdivision-cache = ["psx-engine/classic-affine-subdivision-cache"]
-# Large-root-only successor to the full cache A/B. All 48 KiB per display pool
-# becomes level-two slabs; level-one roots retain the compact dynamic writer.
-renderer-subdivision-cache-level2 = [
-    "renderer-subdivision-cache",
-    "psx-engine/classic-affine-subdivision-cache-level2-only",
-]
-# Bounded large-root-only cache: retain the original 26 level-two slots, keep
-# level-one roots dynamic, and return the unused modelling budget to the
-# dynamic packet arena.
-renderer-subdivision-cache-level2-small = ["renderer-subdivision-cache-level2"]
-# Quake II-style cache-hit kernel: project only the twelve L2 geometry
-# midpoints, scatter XY/tag words into the resident packet block, then link
-# the whole staged root once.
-renderer-resident-level2-scatter = [
-    "renderer-subdivision-cache-level2-small",
-    "psx-engine/classic-affine-resident-level2-scatter",
-]
-# Binary-shape successor: keep cache replacement and the rare packet
-# initializer out of the hot scatter caller.
-renderer-resident-level2-cold-cache = [
-    "renderer-resident-level2-scatter",
-    "psx-engine/classic-affine-resident-level2-cold-init",
-]
-# Direct-mapped resident cache for the dominant level-zero GT3/GT4 roots.
-renderer-resident-base-cache = [
-    "renderer-resident-level2-cold-cache",
-    "psx-engine/classic-affine-resident-base-cache",
-]
-# Preserve the exact full-cache slab layout and addresses, but make the engine
-# route level-one roots through the dynamic writer. This isolates layout from
-# mixed dynamic/resident submission correctness.
-renderer-subdivision-cache-level2-layout-control = [
-    "renderer-subdivision-cache",
-    "psx-engine/classic-affine-subdivision-cache-level2-only",
-]
 # Feature-gated exact A/B: cache one conservative union AABB per 16 adjacent
 # PVS faces and reject wholly off-frustum blocks before individual tests.
 renderer-block-frustum = []
-# Quake-style hierarchical clip flags: classify each accepted 16-face union
-# once and test its faces only against planes that still intersect the union.
-renderer-block-clip-flags = ["renderer-block-frustum"]
-# Diagnostic sizing variant for the conservative block gate.
-renderer-block-frustum-32 = ["renderer-block-frustum"]
-# Feature-gated exact A/B: remember the last tested BSP plane/side result so
-# consecutive coplanar surfaces do not repeat the same camera-plane dot.
-renderer-plane-run-cache = []
-# Exact Quake II-style plane-table transfer: memoize the camera side of each
-# BSP plane by its direct cooked index for one selection pass. Face order,
-# backside flags, block/AABB tests, and near classification remain unchanged.
-renderer-plane-index-cache = ["renderer-block-frustum"]
 # Compile the PVS list against the current BSP leaf bounds: discard ordinary
 # faces whose plane can never front-face anywhere in the cell and tag faces
 # whose plane can never back-face. Unlike the compact-stream experiment this
@@ -267,16 +119,6 @@ renderer-liquid-half-rate = []
 # face's three-product inner-support test in the otherwise-unused second light
 # matrix row left live beside the four frustum planes.
 renderer-gte-near-classification = ["renderer-block-frustum"]
-# Exact final-GPU-order state optimization: adjacent scoped liquid packets
-# with the same GP0(E2) selector share one selector/reset pair at run bounds.
-# Polygon bytes, OT order, and state at every non-windowed command stay fixed.
-renderer-window-run-coalescing = []
-# Coalesce same-window packets while the existing tagged-stream linker is
-# already touching their final OT slot, avoiding a second 2,048-node walk.
-renderer-window-insert-coalescing = ["psx-gpu/ot-window-insert-coalescing"]
-# Preserve the original linker for ordinary packets and revisit only ranges
-# emitted by scoped-window fans after their final OT links are known.
-renderer-window-range-coalescing = []
 hardware-performance = []
 hardware-regression = ["hardware-performance"]
 
