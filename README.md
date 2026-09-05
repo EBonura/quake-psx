@@ -217,5 +217,5 @@ Bethesda, ZeniMax or Sony.
 
 ## Recent changes
 
-Source snapshot **2026.09.05**: Removed unselected renderer experiments and their obsolete benchmark commands.
+Source snapshot **2026.09.05.1**: Removed unselected renderer experiments and their obsolete benchmark commands.
 See the [changelog](CHANGELOG.md) for the remaining changes and published download versions.

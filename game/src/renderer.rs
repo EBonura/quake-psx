@@ -1613,9 +1613,7 @@ impl Renderer {
         );
         self.update_visible_liquid_tiles(map, animation_tick_60hz);
 
-        let static_world_cache_hit = false;
-
-        if visibility_valid && !static_world_cache_hit {
+        if visibility_valid {
             let batch_vertices = scratchpad_batch_vertices();
 
             let mut batch_surfaces = uninit_batch_surfaces();
@@ -1633,9 +1631,6 @@ impl Renderer {
                 let visible_index = (frame_entry & FRAME_FACE_INDEX_MASK) as usize;
                 let near = frame_entry & NEAR_FACE_BIT != 0;
                 let water_blend = frame_entry & WATER_BLEND_FACE_BIT != 0;
-                // Keep this local by value: resident subdivision submission
-                // mutably borrows the renderer while the face metadata is
-                // still needed to form the cache key below.
                 let visible = unsafe { *self.visible_faces.get_unchecked(visible_index) };
                 let face = visible.face;
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Source 2026.09.05.1
+
+Tagged `source-2026.09.05.1`. Removed a constant cache-miss condition and its
+stale comment left after deleting the unused renderer cache.
+
 ## Source 2026.09.05
 
 This source snapshot is tagged `source-2026.09.05`. Download versions are
