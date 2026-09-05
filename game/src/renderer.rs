@@ -126,7 +126,7 @@ const TEXTURE_CLUT_BASE_ROW: u16 = 240;
 const LIQUID_CLUT_BASE_ROW: u16 = 248;
 // Tuned brighter default: the cooker power is 0.8. This preserves the
 // project's intentional lift without the row-three scene's green overcast.
-const TEXTURE_GAMMA_LEVEL: u16 = 2;
+const TEXTURE_GAMMA_LEVEL: u16 = quake_core::menu::DEFAULT_BRIGHTNESS as u16;
 /// The cooker lays one palette row per gamma power (1.0, 0.9, 0.8, 0.7, 0.6,
 /// 0.5, 0.4, 0.3) under `TEXTURE_CLUT_BASE_ROW`; the Options menu's BRIGHTNESS
 /// picks the row every textured packet in the frame references.

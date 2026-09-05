@@ -166,17 +166,8 @@ pub struct MenuView {
 
 /// Brightness steps the Options page offers (the cooker's palette rows).
 pub const BRIGHTNESS_STEPS: u8 = 8;
-/// The default brightness step: the 0.5 power row, which was the brightest the
-/// table offered before levels 7 and 8 were added. The console picture reads
-/// far darker than the emulator's (a captured menu scene came out at a third of
-/// the emulator's mean luminance), and the original ships dark enough that
-/// everyone reached for its brightness slider anyway.
-///
-/// Deliberately NOT `BRIGHTNESS_STEPS - 1`: the two new rows exist to give a
-/// dark CRT somewhere to go, and defaulting to 0.3 gamma would wash the
-/// emulator picture out. Retune this once a console capture says which row
-/// actually matches the reference.
-pub const DEFAULT_BRIGHTNESS: u8 = 5;
+/// Default to displayed level 2; palette rows are indexed from zero.
+pub const DEFAULT_BRIGHTNESS: u8 = 1;
 const BRIGHTNESS_LABELS: [&str; BRIGHTNESS_STEPS as usize] =
     ["1", "2", "3", "4", "5", "6", "7", "8"];
 /// Scaled-radial inner radii offered for both DualShock sticks.
@@ -778,7 +769,7 @@ mod tests {
             menu.update(right);
         }
         assert_eq!(menu.view().brightness, BRIGHTNESS_STEPS - 1);
-        assert_eq!(menu.view().row(3).and_then(|row| row.value), Some("6"));
+        assert_eq!(menu.view().row(3).and_then(|row| row.value), Some("8"));
         let left = MenuInput {
             left: true,
             ..MenuInput::default()
