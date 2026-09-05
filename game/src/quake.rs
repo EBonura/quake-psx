@@ -1218,15 +1218,7 @@ pub fn run() -> ! {
         crate::arsenal_regression::observe_render(_render_stats, weapon.view());
         #[cfg(feature = "visual-parity-regression")]
         crate::visual_parity_regression::observe_render(_render_stats);
-        #[cfg(all(
-            feature = "e1m1-chain-regression",
-            any(
-                feature = "renderer-topology-cache",
-                feature = "renderer-indexed-projection",
-                feature = "renderer-subdivision-cache"
-            )
-        ))]
-        crate::e1m1_chain_regression::observe_render(_render_stats);
+
         #[cfg(feature = "episode1-regression")]
         crate::regression::observe_render(_render_stats);
     }

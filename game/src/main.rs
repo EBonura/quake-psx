@@ -52,12 +52,6 @@ mod systems_regression;
 mod visual_parity_regression;
 
 #[cfg(all(
-    feature = "renderer-topology-cache",
-    feature = "renderer-indexed-projection"
-))]
-compile_error!("renderer topology-cache and indexed-projection experiments are mutually exclusive");
-
-#[cfg(all(
     feature = "visual-parity-regression",
     any(
         feature = "episode1-regression",
