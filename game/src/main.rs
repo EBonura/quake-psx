@@ -27,6 +27,7 @@ mod e1m2_e1m3_route_regression;
 mod entity;
 #[cfg(feature = "episode1-route-regression")]
 mod episode1_regression;
+mod forward_chunk_reader;
 mod input;
 mod input_policy;
 mod intro;

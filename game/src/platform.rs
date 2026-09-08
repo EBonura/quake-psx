@@ -800,6 +800,11 @@ pub enum StorageError {
     ReadFailed,
 }
 
+/// Last CD failure snapshot for the on-screen loading error.
+pub fn storage_diag() -> u32 {
+    unsafe { (&*addr_of!(READER)).diag() }
+}
+
 #[optimize(size)]
 pub fn chunk_size(chunk_id: u32) -> Result<u32, StorageError> {
     unsafe { entry_for(chunk_id).map(|entry| entry.byte_size) }.ok_or(StorageError::MissingChunk)
