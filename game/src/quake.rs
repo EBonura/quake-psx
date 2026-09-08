@@ -105,7 +105,7 @@ pub fn run() -> ! {
         psx_rt::halt();
     };
     let global_audio = quake_core::loading::present_before_payload(
-        || renderer.draw_loading(loading_picture, boot_map),
+        || renderer.draw_loading_status(loading_picture, boot_map, "GLOBAL SOUND"),
         || {
             let mut stream_scratch = world.take_stream_scratch();
             let result = audio.load_global(&mut stream_scratch);
@@ -115,6 +115,8 @@ pub fn run() -> ! {
     );
     if global_audio.is_err() {
         psx_rt::tty::println("quake-psx: Rust global sound load failed");
+        let status = alloc::format!("SOUND ERROR {:08X}", crate::platform::storage_diag());
+        renderer.draw_loading_status(loading_picture, boot_map, &status);
         psx_rt::halt();
     }
     let Some(mut player) = load_level(
@@ -1559,6 +1561,12 @@ fn load_level(
         )
     };
 
+    if loaded.is_none() {
+        if let Some(disc) = world.picture(quake_formats::GraphicsPictureId::Disc) {
+            let status = alloc::format!("LEVEL ERROR {:08X}", crate::platform::storage_diag());
+            renderer.draw_loading_status(disc, map, &status);
+        }
+    }
     music.resume_after_load(psx_rt::interrupts::vblank_count());
 
     #[cfg(feature = "hardware-performance")]

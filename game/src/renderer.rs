@@ -2121,6 +2121,12 @@ impl Renderer {
     /// Draw and expose one complete loading frame before a blocking CD read.
     #[optimize(size)]
     pub fn draw_loading(&mut self, disc: GraphicsPicture, map: EpisodeMap) {
+        self.draw_loading_status(disc, map, "MAP DATA");
+    }
+
+    /// Keep hardware load failures visible even without a connected TTY.
+    #[optimize(size)]
+    pub fn draw_loading_status(&mut self, disc: GraphicsPicture, map: EpisodeMap, status: &str) {
         crate::platform::gpu_begin_frame();
         let packets = &mut self.menu_packets[self.arena];
         packets.clear();
@@ -2133,6 +2139,7 @@ impl Renderer {
         );
         push_centered_text(packets, 102, "LOADING", (0x80, 0x64, 0x38));
         push_centered_text(packets, 118, map.display_name(), (0x80, 0x80, 0x80));
+        push_centered_text(packets, 142, status, (0x80, 0x64, 0x38));
         unsafe {
             crate::platform::register_screen_packets(
                 packets.as_mut_ptr().cast::<u32>(),
