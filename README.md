@@ -79,30 +79,21 @@ cargo run --locked --manifest-path psoxide-pin/Cargo.toml
 cargo run --locked --release -- build
 ```
 
-The SDK, engine and audio cooker required by this release are retained at a
-validated pre-split PSoXide revision. Current SDK-only `main` cannot substitute
-for that combined source. For an explicit local source override, use a clean
-worktree at the exact revision below.
+`components.lock.json` pins the SDK, emulator support crates, and editor/engine
+sources independently. The SDK is `08a55f36`, the emulator is `d366cd0e`, and
+the editor is `9a3e3f87`; the lock records their full immutable revisions.
+The bootstrap verifies imported file hashes before reuse. No external firmware
+is loaded by PSoXide.
 
-The current PSoXide revision is:
-
-```text
-8df242b353b8a3664c1d2ed20622d692d1349306
-```
-
-Create a worktree for that revision:
+For a local override, use a clean, bootstrapped PSoXide-editor checkout at the
+locked editor revision:
 
 ```sh
-git -C /path/to/PSoXide worktree add ../PSoXide-quake \
-  8df242b353b8a3664c1d2ed20622d692d1349306
+cargo run --locked --release -- build --psoxide /path/to/PSoXide-editor
 ```
 
-The builder hydrates the selected source into ignored `.psoxide/`. Build
-the standalone disc with the explicit local override:
-
-```sh
-cargo run --locked --release -- build --psoxide ../PSoXide-quake
-```
+Set `QUAKE_PSX_FRONTEND` to the standalone PSoXide-emulator frontend executable
+for regression commands. The shipping provenance records all three components.
 
 The output is written to `dist/`:
 
@@ -121,7 +112,7 @@ To build from an existing Quake installation, pass its directory explicitly:
 
 ```sh
 cargo run --locked --release -- build \
-  --psoxide ../PSoXide-quake \
+  --psoxide /path/to/PSoXide-editor \
   --quake-dir /path/to/Quake/id1
 ```
 
@@ -137,7 +128,7 @@ cargo run --release -- disc        # rebuild the standalone disc
 cargo run --release -- --help      # list regression commands
 ```
 
-Pass `--psoxide ../PSoXide-quake` when using the explicit SDK worktree.
+Pass `--psoxide /path/to/PSoXide-editor` when using the explicit SDK worktree.
 
 ## Controls
 
@@ -183,7 +174,7 @@ cargo test
 (cd crates/quake-cook && cargo test)
 (cd crates/quake-core && cargo test)
 (cd crates/quake-formats && cargo test)
-cargo run --release -- check --psoxide ../PSoXide-quake
+cargo run --release -- check --psoxide /path/to/PSoXide-editor
 ```
 
 The emulator regressions cover map loading, combat, monsters, mechanisms,
