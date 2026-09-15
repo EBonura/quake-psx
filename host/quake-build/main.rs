@@ -28,7 +28,8 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Keep this in sync with the psoxide-link revision in Cargo.lock.
-const PSOXIDE_REV: &str = "8df242b353b8a3664c1d2ed20622d692d1349306";
+const PSOXIDE_REV: &str = "9a3e3f874d33a3b5e1809b907656c6962e2a0464";
+const PSOXIDE_SDK_REV: &str = "08a55f36f5de62dbff4cc000cb1752233631d9ab";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -38,6 +39,7 @@ const SHIPPING_CARGO_HOME: &str = "/tmp/quake-psx-cargo-home-v1";
 const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
 const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
 const GUEST_RECIPE_PATHS: &[&str] = &[
+    "components.lock.json",
     "rust-toolchain.toml",
     "game",
     "tools/visual-parity-cameras.json",
@@ -45,7 +47,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     "crates/quake-formats",
     ".psoxide/sdk/psoxide.ld",
     ".psoxide/crates/psx-hw",
-    ".psoxide/editor/crates/psxed-format",
+    ".psoxide/crates/psxed-format",
     ".psoxide/engine/crates/psx-bsp",
     ".psoxide/engine/crates/psx-engine",
     ".psoxide/engine/crates/psx-level",
@@ -70,7 +72,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
 // Editor, emulator and unrelated tool packages are not copied into the stage.
 const PSOXIDE_ROOT_WORKSPACE: &str = r#"[workspace]
 resolver = "2"
-members = ["crates/psx-hw", "editor/crates/psxed-format"]
+members = ["crates/psx-hw", "crates/psxed-format"]
 
 [workspace.package]
 edition = "2021"
@@ -2956,11 +2958,23 @@ fn hydrate_psoxide(
             return Err(format!("{} is not a PSoXide checkout or frontend", path.display()).into())
         }
         None => {
-            // hydrate_pinned copies the revision compiled into psoxide-link.
-            // Refuse a mismatched pin before writing the destination.
+            // The helper crate and the SDK component must resolve the same source.
             let linked = linked_psoxide_link_rev()?;
-            let rev = default_hydration_plan(&linked, PSOXIDE_REV)?;
-            psoxide_link::hydrate_pinned(&destination, &rev, true)?;
+            default_hydration_plan(&linked, PSOXIDE_SDK_REV)?;
+            let lock = root.join("components.lock.json");
+            let components: serde_json::Value = serde_json::from_slice(&fs::read(&lock)?)?;
+            if components["components"]["sdk"]["revision"].as_str() != Some(PSOXIDE_SDK_REV)
+                || components["components"]["editor"]["revision"].as_str() != Some(PSOXIDE_REV)
+            {
+                return Err("component lock and build-driver source pins disagree".into());
+            }
+            run(Command::new("python3")
+                .arg(root.join("tools/bootstrap-components.py"))
+                .arg("--root")
+                .arg(&destination)
+                .arg("--lock")
+                .arg(&lock))?;
+            let rev = PSOXIDE_REV.to_string();
             let source = PsoxideSource::Pinned { rev };
             write_hydration_stamp(&destination, &source)?;
             source
@@ -4478,7 +4492,7 @@ fn verify_psoxide_rev_on_main() -> Result<()> {
     let output = Command::new("gh")
         .args([
             "api",
-            &format!("repos/EBonura/PSoXide/compare/{PSOXIDE_REV}...main"),
+            &format!("repos/EBonura/PSoXide-editor/compare/{PSOXIDE_REV}...main"),
             "--jq",
             ".status",
         ])
@@ -4502,6 +4516,23 @@ fn verify_psoxide_rev_on_main() -> Result<()> {
         )
         .into()),
     }
+}
+
+fn verify_component_inputs(root: &Path, local: Option<&Path>) -> Result<()> {
+    let expected: serde_json::Value = serde_json::from_slice(&fs::read(root.join("components.lock.json"))?)?;
+    let lock = local.map(|path| path.join("components.lock.json"))
+        .unwrap_or_else(|| root.join("components.lock.json"));
+    let actual: serde_json::Value = serde_json::from_slice(&fs::read(&lock)?)?;
+    for name in ["sdk", "emulator"] {
+        if actual["components"][name] != expected["components"][name] {
+            return Err(format!("PSoXide {name} component differs from the game lock").into());
+        }
+    }
+    run(Command::new("python3")
+        .arg(root.join("tools/bootstrap-components.py"))
+        .arg("--root").arg(root.join(".psoxide"))
+        .arg("--lock").arg(lock).arg("--check"))?;
+    Ok(())
 }
 
 fn capture_shipping_inputs(root: &Path, sdk: &PsoxideSource, pak: &Path) -> Result<ShippingInputs> {
@@ -4530,6 +4561,7 @@ fn capture_shipping_inputs(root: &Path, sdk: &PsoxideSource, pak: &Path) -> Resu
         None => declared_revision.to_string(),
     };
 
+    verify_component_inputs(root, local_checkout)?;
     let expected_stamp = sdk.describe();
     let actual_stamp = fs::read_to_string(root.join(".psoxide").join(HYDRATION_STAMP))
         .map_err(|_| "shipping provenance requires a verified PSoXide hydration stamp")?;
@@ -4741,6 +4773,13 @@ fn write_shipping_provenance(
         exe.sha256,
         exe.bytes,
     );
+    let mut document: serde_json::Value = serde_json::from_str(&json)?;
+    document["psoxide"]["repository"] = "EBonura/PSoXide-editor".into();
+    document["psoxide"]["components"] =
+        serde_json::from_str::<serde_json::Value>(include_str!("../../components.lock.json"))?
+            ["components"]
+            .clone();
+    let json = serde_json::to_string_pretty(&document)? + "\n";
     let temporary = path.with_file_name(format!(".{PROVENANCE_FILE}.tmp"));
     if temporary.exists() {
         fs::remove_file(&temporary)?;
@@ -4770,6 +4809,13 @@ fn write_shipping_provenance(
 /// Do not fall back to a sibling checkout: that could test a different SDK
 /// revision from the one used to build the disc.
 fn resolve_frontend(root: &Path, requested: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = env::var_os("QUAKE_PSX_FRONTEND") {
+        let path = PathBuf::from(path);
+        if !is_runnable(&path) {
+            return Err(format!("QUAKE_PSX_FRONTEND is not runnable: {}", path.display()).into());
+        }
+        return Ok(path);
+    }
     let source = match requested {
         Some(path) => {
             if path.is_file() {
@@ -10059,6 +10105,29 @@ mod source_contract_tests {
     use super::*;
 
     #[test]
+    fn component_receipt_rejects_changed_imports() {
+        let root = env::temp_dir().join(format!("quake-components-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("tools")).unwrap();
+        fs::create_dir_all(root.join(".psoxide/sdk")).unwrap();
+        let lock = include_str!("../../components.lock.json");
+        fs::write(root.join("components.lock.json"), lock).unwrap();
+        fs::write(root.join("tools/bootstrap-components.py"), include_str!("../../tools/bootstrap-components.py")).unwrap();
+        let input = root.join(".psoxide/sdk/psoxide.ld");
+        fs::write(&input, "SECTIONS {}\n").unwrap();
+        let receipt = serde_json::json!({
+            "schema": 1,
+            "lock_sha256": sha256_path(&root.join("components.lock.json")).unwrap(),
+            "files": {"sdk/psoxide.ld": sha256_path(&input).unwrap()}
+        });
+        fs::write(root.join(".psoxide/.components-receipt.json"), receipt.to_string()).unwrap();
+        verify_component_inputs(&root, None).expect("matching imports pass");
+        fs::write(&input, "modified linker script").unwrap();
+        assert!(verify_component_inputs(&root, None).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn embedded_lockfile_resolves_psoxide_link_to_a_commit() {
         let rev = linked_psoxide_link_rev().expect("lockfile parses");
         assert_eq!(rev.len(), 40);
@@ -10084,17 +10153,17 @@ mod source_contract_tests {
 
     #[test]
     fn matched_link_revision_hydrates_and_stamps_that_exact_revision() {
-        let rev = default_hydration_plan(PSOXIDE_REV, PSOXIDE_REV).expect("match allows");
-        assert_eq!(rev, PSOXIDE_REV);
+        let rev = default_hydration_plan(PSOXIDE_SDK_REV, PSOXIDE_SDK_REV).expect("match allows");
+        assert_eq!(rev, PSOXIDE_SDK_REV);
     }
 
     /// Default hydration follows the psoxide-link revision in Cargo.lock.
     #[test]
     fn live_phase_gate_matches_the_lockfile() {
         let linked = linked_psoxide_link_rev().expect("lockfile parses");
-        let plan = default_hydration_plan(&linked, PSOXIDE_REV);
-        if linked == PSOXIDE_REV {
-            assert_eq!(plan.expect("published phase allows"), PSOXIDE_REV);
+        let plan = default_hydration_plan(&linked, PSOXIDE_SDK_REV);
+        if linked == PSOXIDE_SDK_REV {
+            assert_eq!(plan.expect("published phase allows"), PSOXIDE_SDK_REV);
         } else {
             let message = plan.expect_err("local-only phase refuses").to_string();
             assert!(
@@ -10178,6 +10247,7 @@ mod provenance_tests {
         ] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
+        fs::write(root.join("components.lock.json"), include_str!("../../components.lock.json")).unwrap();
         fs::write(root.join("rust-toolchain.toml"), b"channel = 'pinned'\n").unwrap();
         fs::write(root.join("game/Cargo.toml"), b"[package]\nname='game'\n").unwrap();
         fs::write(root.join("game/Cargo.lock"), b"version = 4\n").unwrap();
