@@ -80,8 +80,8 @@ cargo run --locked --release -- build
 ```
 
 `components.lock.json` pins the SDK, emulator support crates, and editor/engine
-sources independently. The SDK is `08a55f36`, the emulator is `d366cd0e`, and
-the editor is `9a3e3f87`; the lock records their full immutable revisions.
+sources independently. The SDK is `08a55f36`, the emulator is `d16168e9`, and
+the editor is `c0ae6e3a`; the lock records their full immutable revisions.
 The bootstrap verifies imported file hashes before reuse. No external firmware
 is loaded by PSoXide.
 

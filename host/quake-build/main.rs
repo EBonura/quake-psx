@@ -28,7 +28,7 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Keep this in sync with the psoxide-link revision in Cargo.lock.
-const PSOXIDE_REV: &str = "9a3e3f874d33a3b5e1809b907656c6962e2a0464";
+const PSOXIDE_REV: &str = "c0ae6e3a71153e31822538389db1900174be638a";
 const PSOXIDE_SDK_REV: &str = "08a55f36f5de62dbff4cc000cb1752233631d9ab";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
