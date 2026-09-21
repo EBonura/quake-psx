@@ -33,6 +33,7 @@ jobs:
         working-directory: quake
     env:
       ITCH_TARGET: bonnie-studios/quake-psx:psx
+      OBJDUMP: mipsel-linux-gnu-objdump
 
     steps:
       - name: Check out the release source
@@ -105,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes 7zip unzip
+          sudo apt-get install --yes 7zip unzip binutils-mipsel-linux-gnu
           toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
           test -n "$toolchain"
           rustup toolchain install "$toolchain" --profile minimal \
