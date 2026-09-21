@@ -37,4 +37,3 @@ pub mod trigger;
 pub mod view;
 pub mod view_model;
 pub mod waterwarp;
-pub mod world_batch;
