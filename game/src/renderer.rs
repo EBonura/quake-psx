@@ -184,27 +184,11 @@ const ANIMATION_FRAMES_PER_SECOND: u32 = 30;
 const LEGACY_SKY_SCROLL_TEXELS_PER_SECOND: u32 = 4;
 const SKY_BACKGROUND_CYCLE_SECONDS: u32 = 16;
 const SKY_FOREGROUND_CYCLE_SECONDS: u32 = 8;
-// The masked cloud layer carries the sharp silhouette, so match the original
-// renderer's 32-pixel horizontal span as closely as the PS1 budget permits.
-// The sharp layer uses 32x20-pixel cells; the solid, slower background is
-// deliberately half-resolution in each direction. This removes the visible
-// dome folds without doubling the cost of both layers.
+// Both sky layers share the engine's fixed 10 by 12 packet lattice.
 const SKY_FOREGROUND_COLUMNS: usize = 10;
 const SKY_FOREGROUND_ROWS: usize = 12;
-const SKY_FOREGROUND_CELLS: usize = SKY_FOREGROUND_COLUMNS * SKY_FOREGROUND_ROWS;
-// The opaque layer must use the same direction sampling density as the
-// transparent cloud layer.  A coarser background mesh is visible through the
-// foreground's transparent texels and turns the dome's non-linear projection
-// into large affine fans (most noticeably as a streak below screen centre).
-const SKY_BACKGROUND_COLUMNS: usize = SKY_FOREGROUND_COLUMNS;
-const SKY_BACKGROUND_ROWS: usize = SKY_FOREGROUND_ROWS;
-const SKY_BACKGROUND_CELLS: usize = SKY_BACKGROUND_COLUMNS * SKY_BACKGROUND_ROWS;
 const SKY_OT_SLOT: u32 = 2047;
-const SKY_QUAD_WORDS: usize = 10;
-const SKY_WINDOW_PACKET_WORDS: usize = 2;
-const SKY_WINDOW_PACKET_COUNT: usize = 3;
-const SKY_BACKGROUND_WORDS: usize = (SKY_FOREGROUND_CELLS + SKY_BACKGROUND_CELLS) * SKY_QUAD_WORDS
-    + SKY_WINDOW_PACKET_COUNT * SKY_WINDOW_PACKET_WORDS;
+const SKY_BACKGROUND_WORDS: usize = psx_bsp::sky::VIEW_RAY_SKY_PACKET_WORDS;
 // Every page that draws into this arena is a fixed string set with a bounded
 // digit count. The peak is the Levels page plus the longest now-playing banner
 // at 228 quads; 232 leaves four packets of measured margin. Each arena entry is
@@ -4732,32 +4716,7 @@ fn animate_special_surface(vertices: &mut [ClassicAffineVertex], texture: Textur
     }
 }
 
-/// One staged GP0(E2) command for a complete sky layer.
-#[repr(C, align(4))]
-struct SkyWindowPacket {
-    tag: u32,
-    command: u32,
-}
-
-impl SkyWindowPacket {
-    const fn new(command: u32) -> Self {
-        Self {
-            tag: (1 << 24) | SKY_OT_SLOT,
-            command,
-        }
-    }
-}
-
-const _: () = assert!(
-    core::mem::size_of::<SkyWindowPacket>()
-        == SKY_WINDOW_PACKET_WORDS * core::mem::size_of::<u32>()
-);
-const _: () =
-    assert!(core::mem::size_of::<QuadTextured>() == SKY_QUAD_WORDS * core::mem::size_of::<u32>());
-
-/// Draw Quake's two sky layers as a bounded view-ray background.
-///
-type SkySamples = [[[i32; 2]; SKY_FOREGROUND_COLUMNS + 1]; SKY_FOREGROUND_ROWS + 1];
+type SkySamples = psx_bsp::sky::LayeredSkySamples;
 
 /// Last frame's sky lattice samples with the view rotation and layer width
 /// that produced them. The guest is single-threaded and the renderer owns the
@@ -4816,14 +4775,6 @@ unsafe fn submit_view_ray_sky_background(
     debug_assert!(texture.atlas.y.is_multiple_of(height));
     debug_assert!(texture.atlas.x as u16 + width as u16 * 2 <= 256);
     debug_assert!(texture.atlas.y as u16 + height as u16 <= 256);
-    let foreground_window =
-        TextureWindow::power_of_two_tile(texture.atlas.x, texture.atlas.y, width, height);
-    let background_window = TextureWindow::power_of_two_tile(
-        texture.atlas.x.wrapping_add(width),
-        texture.atlas.y,
-        width,
-        height,
-    );
     let scroll = |cycle_seconds: u32| {
         ((u64::from(frame) * u64::from(width)
             / u64::from(ANIMATION_FRAMES_PER_SECOND * cycle_seconds))
@@ -4837,106 +4788,25 @@ unsafe fn submit_view_ray_sky_background(
         scroll(SKY_BACKGROUND_CYCLE_SECONDS),
         scroll(SKY_BACKGROUND_CYCLE_SECONDS),
     ];
-    let foreground_material =
-        TextureMaterial::opaque(clut_texture(), texture.texture_page, (0x80, 0x80, 0x80));
-    let background_material =
-        TextureMaterial::opaque(clut_texture(), texture.texture_page, (0x80, 0x80, 0x80));
-
     // The lattice samples depend on the view rotation and the layer width
     // only: a frame whose camera did not turn reuses the previous frame's
     // 143 rays (a square root and two divides each) instead of recomputing
     // them. Scroll is applied per packet below, so the cache is exact.
     let samples = unsafe { cached_sky_samples(view.rotation.m, width) };
 
-    let mut next = output;
-    // The tagged stream is linked by prepending packets. Stage the reset
-    // first so it executes after both layer passes and before world geometry.
     unsafe {
-        next.cast::<SkyWindowPacket>()
-            .write(SkyWindowPacket::new(TextureWindow::NONE.word()));
-        next = next.add(SKY_WINDOW_PACKET_WORDS);
-    }
-    // Every packet targets one prepend-only OT slot. Emit the foreground
-    // first so all subsequently emitted background cells execute behind it.
-    for row in 0..SKY_FOREGROUND_ROWS {
-        let y0 = (row * SCREEN_HEIGHT as usize / SKY_FOREGROUND_ROWS) as i16;
-        let y1 = ((row + 1) * SCREEN_HEIGHT as usize / SKY_FOREGROUND_ROWS) as i16;
-        for column in 0..SKY_FOREGROUND_COLUMNS {
-            let x0 = (column * SCREEN_WIDTH as usize / SKY_FOREGROUND_COLUMNS) as i16;
-            let x1 = ((column + 1) * SCREEN_WIDTH as usize / SKY_FOREGROUND_COLUMNS) as i16;
-            let vertices = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
-            let cell_samples = [
-                samples[row][column],
-                samples[row][column + 1],
-                samples[row + 1][column],
-                samples[row + 1][column + 1],
-            ];
-
-            let foreground_uv = quake_core::sky::packet_quad_uv(
-                cell_samples,
-                [texture.atlas.x, texture.atlas.y],
-                [width, height],
-                foreground_scroll,
-            )
-            .map(|[u, v]| (u, v));
-            unsafe {
-                let mut quad =
-                    QuadTextured::with_material(vertices, foreground_uv, foreground_material);
-                quad.tag = ((QuadTextured::WORDS as u32) << 24) | SKY_OT_SLOT;
-                next.cast::<QuadTextured>().write(quad);
-                next = next.add(SKY_QUAD_WORDS);
-            }
-        }
-    }
-    unsafe {
-        next.cast::<SkyWindowPacket>()
-            .write(SkyWindowPacket::new(foreground_window.word()));
-        next = next.add(SKY_WINDOW_PACKET_WORDS);
-    }
-
-    const COLUMN_STEP: usize = SKY_FOREGROUND_COLUMNS / SKY_BACKGROUND_COLUMNS;
-    const ROW_STEP: usize = SKY_FOREGROUND_ROWS / SKY_BACKGROUND_ROWS;
-    for row in 0..SKY_BACKGROUND_ROWS {
-        let y0 = (row * SCREEN_HEIGHT as usize / SKY_BACKGROUND_ROWS) as i16;
-        let y1 = ((row + 1) * SCREEN_HEIGHT as usize / SKY_BACKGROUND_ROWS) as i16;
-        let sample_row = row * ROW_STEP;
-        for column in 0..SKY_BACKGROUND_COLUMNS {
-            let x0 = (column * SCREEN_WIDTH as usize / SKY_BACKGROUND_COLUMNS) as i16;
-            let x1 = ((column + 1) * SCREEN_WIDTH as usize / SKY_BACKGROUND_COLUMNS) as i16;
-            let vertices = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
-            let sample_column = column * COLUMN_STEP;
-            let cell_samples = [
-                samples[sample_row][sample_column],
-                samples[sample_row][sample_column + COLUMN_STEP],
-                samples[sample_row + ROW_STEP][sample_column],
-                samples[sample_row + ROW_STEP][sample_column + COLUMN_STEP],
-            ];
-            let background_uv = quake_core::sky::packet_quad_uv(
-                cell_samples,
-                [texture.atlas.x.wrapping_add(width), texture.atlas.y],
-                [width, height],
-                background_scroll,
-            )
-            .map(|[u, v]| (u, v));
-            unsafe {
-                let mut quad =
-                    QuadTextured::with_material(vertices, background_uv, background_material);
-                quad.tag = ((QuadTextured::WORDS as u32) << 24) | SKY_OT_SLOT;
-                next.cast::<QuadTextured>().write(quad);
-                next = next.add(SKY_QUAD_WORDS);
-            }
-        }
-    }
-    unsafe {
-        next.cast::<SkyWindowPacket>()
-            .write(SkyWindowPacket::new(background_window.word()));
-        next = next.add(SKY_WINDOW_PACKET_WORDS);
-    }
-
-    ClassicAffineSubmit {
-        next_packet: next,
-        packets: (SKY_FOREGROUND_CELLS + SKY_BACKGROUND_CELLS + SKY_WINDOW_PACKET_COUNT) as u32,
-        hardware_triangles: ((SKY_FOREGROUND_CELLS + SKY_BACKGROUND_CELLS) * 2) as u32,
+        psx_bsp::sky::submit_layered_sky_samples_to_slot(
+            texture.texture_page,
+            clut_texture(),
+            [texture.atlas.x, texture.atlas.y],
+            [width, height],
+            [SCREEN_WIDTH, SCREEN_HEIGHT],
+            samples,
+            foreground_scroll,
+            background_scroll,
+            SKY_OT_SLOT as u16,
+            output,
+        )
     }
 }
 
@@ -6196,55 +6066,12 @@ fn compact_plane_distance(plane: CompactPlane, point: Vec3I32) -> i32 {
 }
 
 fn decompress_visibility(input: &[u8], offset: usize, output: &mut [u8]) -> bool {
-    let mut source = offset;
-    let mut destination = 0usize;
-    while destination < output.len() {
-        let Some(&value) = input.get(source) else {
-            return false;
-        };
-        source += 1;
-        if value != 0 {
-            output[destination] = value;
-            destination += 1;
-            continue;
-        }
-        let Some(&run) = input.get(source) else {
-            return false;
-        };
-        source += 1;
-        if run == 0 || destination + run as usize > output.len() {
-            return false;
-        }
-        output[destination..destination + run as usize].fill(0);
-        destination += run as usize;
-    }
-    true
+    psx_bsp::visibility::decode_strict(input, offset, output)
 }
 
 /// OR one Quake RLE visibility row into an already decompressed row without a
 /// third scratch buffer. Zero runs only advance the destination.
 #[optimize(size)]
 fn merge_visibility(input: &[u8], offset: usize, output: &mut [u8]) -> bool {
-    let mut source = offset;
-    let mut destination = 0usize;
-    while destination < output.len() {
-        let Some(&value) = input.get(source) else {
-            return false;
-        };
-        source += 1;
-        if value != 0 {
-            output[destination] |= value;
-            destination += 1;
-            continue;
-        }
-        let Some(&run) = input.get(source) else {
-            return false;
-        };
-        source += 1;
-        if run == 0 || destination + run as usize > output.len() {
-            return false;
-        }
-        destination += run as usize;
-    }
-    true
+    psx_bsp::visibility::merge_strict(input, offset, output)
 }
