@@ -164,22 +164,26 @@ unsafe fn warp_tile_64_mips(source: *const u8, destination: *mut u8, offsets: *c
             "addiu $9, $zero, 32",
             "3:",
             "lbu   $12, 0($11)",
+            "nop", // R3000 load delay: the next instruction consumes this value.
             "addu  $13, $8, $12",
             "andi  $13, $13, 63",
             "sll   $13, $13, 6",
             "or    $13, $13, $10",
             "addu  $15, $4, $13",
             "lbu   $14, 0($15)",
+            "nop", // R3000 load delay: the next instruction consumes this value.
             "sb    $14, 0($5)",
             "addiu $10, $10, 1",
             "andi  $10, $10, 63",
             "lbu   $12, 1($11)",
+            "nop", // R3000 load delay: the next instruction consumes this value.
             "addu  $13, $8, $12",
             "andi  $13, $13, 63",
             "sll   $13, $13, 6",
             "or    $13, $13, $10",
             "addu  $15, $4, $13",
             "lbu   $14, 0($15)",
+            "nop", // R3000 load delay: the next instruction consumes this value.
             "sb    $14, 1($5)",
             "addiu $10, $10, 1",
             "andi  $10, $10, 63",

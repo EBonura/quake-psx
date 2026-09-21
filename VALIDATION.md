@@ -37,6 +37,25 @@ These tests cover checked file parsing, BSP conversion, collision, movement,
 movers, combat, monsters, loading, menus, input and fixed-capacity runtime
 state.
 
+## MIPS liquid load-delay regression
+
+Host tests use the scalar implementation, so also execute the actual MIPS inline
+assembly when changing liquid rendering or its instruction schedule:
+
+```sh
+python3 tools/test-liquid-mips.py \
+  --frontend ../PSoXide-editor/target/release/frontend \
+  --out /tmp/quake-liquid-mips-check
+```
+
+This assembles the checked-in routine with GNU MIPS binutils, runs synthetic
+constant and patterned tiles through the headless emulator, and requires every
+output texel to match an independent scalar reference. It records the frontend
+hash and rejects the previous immediate load-use schedule. No game assets or
+diagnostic guest features are required. Set `MIPS_AS` and `MIPS_OBJCOPY` for a
+different GNU tool prefix (for example `mipsel-linux-gnu-as` and
+`mipsel-linux-gnu-objcopy`).
+
 ## Build checks
 
 Use the hydrated PSoXide worktree described in the README:
