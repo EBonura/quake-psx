@@ -42,15 +42,6 @@ jobs:
           path: quake
           persist-credentials: false
 
-      - name: Check out the pinned PSoXide SDK
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: EBonura/PSoXide
-          ref: f894437986e1c0148ad39eaa38134ab09185312d
-          fetch-depth: 1
-          path: psoxide
-          persist-credentials: false
-
       - name: Resolve and validate the release version
         id: release
         shell: bash
@@ -128,16 +119,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo run --locked \
-            --manifest-path ../psoxide/tools/psoxide-link/Cargo.toml -- \
-            --from ../psoxide \
-            --into .psoxide
+          python3 tools/bootstrap-components.py \
+            --root .psoxide --lock components.lock.json
 
       - name: Build the provenance-grade standalone disc
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cargo run --locked --release -- build --psoxide ../psoxide
+        run: cargo run --locked --release -- build
 
       - name: Verify and stage the flat release
         id: package

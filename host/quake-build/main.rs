@@ -28,8 +28,8 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Keep this in sync with the psoxide-link revision in Cargo.lock.
-const PSOXIDE_REV: &str = "c0ae6e3a71153e31822538389db1900174be638a";
-const PSOXIDE_SDK_REV: &str = "08a55f36f5de62dbff4cc000cb1752233631d9ab";
+const PSOXIDE_REV: &str = "107adad2f143f942b9d43501d83ef8e5e1fd690e";
+const PSOXIDE_SDK_REV: &str = "a67052ac61b1e9caf078f570dbf238011d3958b6";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -4519,8 +4519,10 @@ fn verify_psoxide_rev_on_main() -> Result<()> {
 }
 
 fn verify_component_inputs(root: &Path, local: Option<&Path>) -> Result<()> {
-    let expected: serde_json::Value = serde_json::from_slice(&fs::read(root.join("components.lock.json"))?)?;
-    let lock = local.map(|path| path.join("components.lock.json"))
+    let expected: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("components.lock.json"))?)?;
+    let lock = local
+        .map(|path| path.join("components.lock.json"))
         .unwrap_or_else(|| root.join("components.lock.json"));
     let actual: serde_json::Value = serde_json::from_slice(&fs::read(&lock)?)?;
     for name in ["sdk", "emulator"] {
@@ -4530,8 +4532,11 @@ fn verify_component_inputs(root: &Path, local: Option<&Path>) -> Result<()> {
     }
     run(Command::new("python3")
         .arg(root.join("tools/bootstrap-components.py"))
-        .arg("--root").arg(root.join(".psoxide"))
-        .arg("--lock").arg(lock).arg("--check"))?;
+        .arg("--root")
+        .arg(root.join(".psoxide"))
+        .arg("--lock")
+        .arg(lock)
+        .arg("--check"))?;
     Ok(())
 }
 
@@ -10112,7 +10117,11 @@ mod source_contract_tests {
         fs::create_dir_all(root.join(".psoxide/sdk")).unwrap();
         let lock = include_str!("../../components.lock.json");
         fs::write(root.join("components.lock.json"), lock).unwrap();
-        fs::write(root.join("tools/bootstrap-components.py"), include_str!("../../tools/bootstrap-components.py")).unwrap();
+        fs::write(
+            root.join("tools/bootstrap-components.py"),
+            include_str!("../../tools/bootstrap-components.py"),
+        )
+        .unwrap();
         let input = root.join(".psoxide/sdk/psoxide.ld");
         fs::write(&input, "SECTIONS {}\n").unwrap();
         let receipt = serde_json::json!({
@@ -10120,7 +10129,11 @@ mod source_contract_tests {
             "lock_sha256": sha256_path(&root.join("components.lock.json")).unwrap(),
             "files": {"sdk/psoxide.ld": sha256_path(&input).unwrap()}
         });
-        fs::write(root.join(".psoxide/.components-receipt.json"), receipt.to_string()).unwrap();
+        fs::write(
+            root.join(".psoxide/.components-receipt.json"),
+            receipt.to_string(),
+        )
+        .unwrap();
         verify_component_inputs(&root, None).expect("matching imports pass");
         fs::write(&input, "modified linker script").unwrap();
         assert!(verify_component_inputs(&root, None).is_err());
@@ -10247,7 +10260,11 @@ mod provenance_tests {
         ] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
-        fs::write(root.join("components.lock.json"), include_str!("../../components.lock.json")).unwrap();
+        fs::write(
+            root.join("components.lock.json"),
+            include_str!("../../components.lock.json"),
+        )
+        .unwrap();
         fs::write(root.join("rust-toolchain.toml"), b"channel = 'pinned'\n").unwrap();
         fs::write(root.join("game/Cargo.toml"), b"[package]\nname='game'\n").unwrap();
         fs::write(root.join("game/Cargo.lock"), b"version = 4\n").unwrap();
