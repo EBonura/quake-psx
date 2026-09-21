@@ -28,7 +28,7 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Editor revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "3871ab9dd6c49819c048579c57a80d6f87745219";
+const PSOXIDE_REV: &str = "8e95de524d26f35ae8561f62bbd67711107cd9d1";
 // Keep this SDK revision in sync with psoxide-link in Cargo.lock.
 const PSOXIDE_SDK_REV: &str = "477d3ad6a5af71ae24fcede639e6c3873ba9fff5";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
@@ -3032,7 +3032,7 @@ fn default_hydration_plan(linked: &str, expected: &str) -> Result<String> {
         "default hydration is disabled: PSoXide {expected} is not published and the \
          compiled hydration library resolves {linked}, so hydrating would copy the \
          {linked} sources mislabeled as {expected}. Supply the pinned local worktree \
-         instead: --psoxide ../PSoXide-rc1-pin"
+         instead: --psoxide /path/to/PSoXide-editor"
     )
     .into())
 }
@@ -10157,7 +10157,7 @@ mod source_contract_tests {
         .expect_err("mismatch must refuse default hydration");
         let message = error.to_string();
         assert!(
-            message.contains("--psoxide ../PSoXide-rc1-pin"),
+            message.contains("--psoxide /path/to/PSoXide-editor"),
             "{message}"
         );
         assert!(message.contains("aaaaaaaa"), "{message}");
@@ -10181,7 +10181,7 @@ mod source_contract_tests {
         } else {
             let message = plan.expect_err("local-only phase refuses").to_string();
             assert!(
-                message.contains("--psoxide ../PSoXide-rc1-pin"),
+                message.contains("--psoxide /path/to/PSoXide-editor"),
                 "{message}"
             );
         }
