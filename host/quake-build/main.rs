@@ -27,8 +27,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/quake106.zip";
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
-// Keep this in sync with the psoxide-link revision in Cargo.lock.
+// Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "107adad2f143f942b9d43501d83ef8e5e1fd690e";
+// Keep this SDK revision in sync with psoxide-link in Cargo.lock.
 const PSOXIDE_SDK_REV: &str = "a67052ac61b1e9caf078f570dbf238011d3958b6";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
