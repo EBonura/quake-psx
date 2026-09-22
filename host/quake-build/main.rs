@@ -4270,6 +4270,31 @@ fn request_guest_link_map(map: PathBuf) -> Result<()> {
         .map_err(|_| "the guest link map was already requested".into())
 }
 
+/// The SDK's delay-slot filler switches, `PSX_DELAY_SLOT_FLAGS` in the
+/// hydrated `tools/sdk-examples.mk`: besides the default backward search,
+/// search the successor block and past calls. Read rather than copied so every
+/// guest builds with one set; the hazards those searches can create are
+/// patched after the link like any other.
+fn sdk_delay_slot_flags(root: &Path) -> Result<Vec<String>> {
+    let path = root.join(".psoxide/tools/sdk-examples.mk");
+    let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let flags = text
+        .lines()
+        .find_map(|line| line.strip_prefix("PSX_DELAY_SLOT_FLAGS"))
+        .map(|value| {
+            value
+                .split(|c: char| c.is_whitespace() || c == ',' || c == '"')
+                .filter(|word| word.starts_with("-C"))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if flags.is_empty() {
+        return Err(format!("no PSX_DELAY_SLOT_FLAGS in {}", path.display()).into());
+    }
+    Ok(flags)
+}
+
 fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<()> {
     let recipe = guest_recipe(root)?;
     let stage = prepare_guest_stage(root, &recipe)?;
@@ -4295,11 +4320,15 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     // trampolines after the link (below), like Cortex and hl-psx. The old
     // `-disable-mips-df-backward-search` flag left a nop in 98% of the delay
     // slots, 8% of the route's work instructions; it stays available for an
-    // A/B through QUAKE_PSX_DELAY_SLOT_NOPS=1.
+    // A/B through QUAKE_PSX_DELAY_SLOT_NOPS=1. Otherwise the filler also
+    // searches the successor block and past calls, with the SDK's switches
+    // (every guest builds with the same set).
     let delay_slot_nops = env::var_os("QUAKE_PSX_DELAY_SLOT_NOPS").is_some();
     let mut rustflags = Vec::new();
     if delay_slot_nops {
         rustflags.push("-C llvm-args=-disable-mips-df-backward-search".to_string());
+    } else {
+        rustflags.extend(sdk_delay_slot_flags(root)?);
     }
     if let Some(map) = GUEST_LINK_MAP.get() {
         rustflags.push(format!("-C link-arg=-Map={}", map.display()));
