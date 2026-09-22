@@ -28,7 +28,7 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Editor revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "713afb34ed177543ff1311736abb9cd3936d1f4d";
+const PSOXIDE_REV: &str = "a03b8fa9a9bc841a9e11d6ea978e9b896c8900b9";
 // Keep this SDK revision in sync with psoxide-link in Cargo.lock.
 const PSOXIDE_SDK_REV: &str = "d8f2d8758cd10d25db65745245982ead584b3b96";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
