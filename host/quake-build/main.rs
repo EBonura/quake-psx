@@ -8659,6 +8659,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | ".codex"
             | ".psoxide"
             | ".quakepsx"
+            | "local"
             | "target"
             | "build"
             | "build-regression"
