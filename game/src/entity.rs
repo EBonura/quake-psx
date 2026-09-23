@@ -3437,19 +3437,6 @@ impl EntityScene {
                     64,
                     16,
                 );
-            // USE stands in for walking into a door's proximity field, so a
-            // `func_door` admits it exactly when its chain has one. A leaf's
-            // own empty `targetname` is not enough: its named partner makes
-            // the whole chain trigger-fired.
-            let directly_usable = if source.class_name == 0x0c {
-                self.movers[mover_index].policy.automatic()
-            } else {
-                quake_core::mover::mover_admits_use(
-                    source.class_name,
-                    self.movers[mover_index].max_health,
-                    source.target_name,
-                )
-            };
             if message_touch
                 || used
                     && source.class_name == 0x0c
@@ -3514,7 +3501,10 @@ impl EntityScene {
                 result.record_player_activation(entity_snapshot.source_index);
             }
             if !plat_trigger
-                && (automatic_touch || direct_touch || shot_open || used && directly_usable)
+                && (automatic_touch
+                    || direct_touch
+                    || shot_open
+                    || used && mover_admits_use(source, &self.movers[mover_index]))
                 && door::door_key_bit(source.spawn_flags) == 0
                 && state_admits_activation
             {
@@ -7821,6 +7811,18 @@ struct TeleportTrigger {
 /// `func_button`'s authored `health`, and only a button's. The spawn rule
 /// itself lives in `quake_core::mover` so it is host-tested: E1M2, E1M3 and
 /// E1M4 are the shareware maps that author a shootable one, all at health 1.
+/// Whether the player's USE key activates this mover. USE stands in for
+/// walking into a door's proximity field, so a `func_door` admits it exactly
+/// when its chain has one: a leaf's own empty `targetname` is not enough when
+/// a named partner makes the whole chain trigger-fired.
+fn mover_admits_use(source: MoverSource, mover: &SceneMover) -> bool {
+    if source.class_name == 0x0c {
+        mover.policy.automatic()
+    } else {
+        quake_core::mover::mover_admits_use(source.class_name, mover.max_health, source.target_name)
+    }
+}
+
 #[optimize(size)]
 fn button_health(source: MapEntity) -> i16 {
     if quake_core::mover::button_is_shootable(source.class_name, source.health) {
