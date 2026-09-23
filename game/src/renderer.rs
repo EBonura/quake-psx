@@ -2336,6 +2336,10 @@ impl Renderer {
     }
 
     /// `BecomeExplosion`: the six-frame `progs/s_explod.spr` billboard.
+    ///
+    /// Kept out of line: inlined, it cost the hot face loops of `draw_frame`
+    /// three instructions each in register allocation (chain bench +9.3M).
+    #[inline(never)]
     fn draw_explosion_effects(
         &self,
         map: &ResidentMap,
@@ -2346,6 +2350,11 @@ impl Renderer {
         end: *mut u32,
         stats: &mut RenderStats,
     ) -> *mut u32 {
+        // Most frames have no explosion; skip the model-table scan for them.
+        let mut effects = effects.peekable();
+        if effects.peek().is_none() {
+            return output;
+        }
         let Some(model) = map.alias_models().get(EXPLOSION_SPRITE_MODEL_ID) else {
             return output;
         };
@@ -2388,10 +2397,14 @@ impl Renderer {
         const FLAT_PACKET_WORDS: usize = RectFlat::WORDS as usize + 1;
         scene::load_rotation(&view.rotation);
         scene::load_translation(view.translation);
-        let bubble_model = map.alias_models().get(BUBBLE_SPRITE_MODEL_ID);
+        // Looked up on the first bubble only: most frames have none, and the
+        // sprites sit at the end of the model table.
+        let mut bubble_model = None;
         for particle in particles {
             if particle.is_bubble() {
-                if let Some(model) = bubble_model {
+                if let Some(model) = *bubble_model
+                    .get_or_insert_with(|| map.alias_models().get(BUBBLE_SPRITE_MODEL_ID))
+                {
                     let submitted = draw_sprite_model(
                         model,
                         particle.bubble_frame(),
