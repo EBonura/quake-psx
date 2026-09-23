@@ -223,6 +223,8 @@ pub struct EntityScene {
     movers: Vec<SceneMover>,
     /// One `spawn_field` per `LinkDoors` chain that has one.
     door_fields: Vec<door::DoorField>,
+    /// Chains a `door_killed` fired since the last mover pass, one bit each.
+    shot_door_chains: u64,
     trains: Vec<SceneTrain>,
     triggers: Vec<Trigger>,
     teleports: Vec<TeleportTrigger>,
@@ -848,6 +850,7 @@ impl EntityScene {
             collision_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             movers: Vec::with_capacity(MAX_MOVERS),
             door_fields: Vec::with_capacity(MAX_DOOR_FIELDS),
+            shot_door_chains: 0,
             trains: Vec::with_capacity(MAX_TRAINS),
             triggers: Vec::with_capacity(MAX_TRIGGERS),
             teleports: Vec::with_capacity(MAX_TELEPORTS),
@@ -988,6 +991,7 @@ impl EntityScene {
         self.collision_indices.clear();
         self.movers.clear();
         self.door_fields.clear();
+        self.shot_door_chains = 0;
         self.trains.clear();
         self.triggers.clear();
         self.teleports.clear();
@@ -1523,6 +1527,7 @@ impl EntityScene {
     ///
     /// A chain that keeps its field gets exactly one, over the union of its
     /// members' closed bounds. It never moves with the doors.
+    #[inline(never)]
     #[optimize(size)]
     fn link_doors(&mut self, map: &ResidentMap) -> Result<(), EntityLoadError> {
         self.link_door_chains(map);
@@ -1599,6 +1604,8 @@ impl EntityScene {
     /// USE stands in for walking into the field, so a USE within reach of an
     /// unlocked automatic leaf touches that leaf's field. A monster's touch
     /// was admitted during the monster pass and fires here.
+    #[inline(never)]
+    #[optimize(size)]
     fn fire_door_fields(
         &mut self,
         player_mins: Vec3I32,
@@ -1650,16 +1657,11 @@ impl EntityScene {
             }
         }
         // `door_killed` runs `door_use` on the master, which walks the chain.
-        for index in 0..self.movers.len() {
-            if self.movers[index].shot_open && self.movers[index].source.class_name == 0x0c {
-                self.movers[index].shot_open = false;
-                let group = self.movers[index].link_group;
-                fired |= 1u64 << group;
-                for mover in self
-                    .movers
-                    .iter_mut()
-                    .filter(|mover| mover.link_group == group)
-                {
+        let shot = core::mem::take(&mut self.shot_door_chains);
+        if shot != 0 {
+            fired |= shot;
+            for mover in &mut self.movers {
+                if shot & (1u64 << mover.link_group) != 0 {
                     mover.activator = TargetActivator::Player;
                 }
             }
@@ -1670,6 +1672,8 @@ impl EntityScene {
     /// A living monster tried a step or flew a frame of a leap, which is when
     /// the original relinks it with touches: every door field its box reaches
     /// is touched, and fires with the next mover pass.
+    #[inline(never)]
+    #[optimize(size)]
     fn touch_door_fields(&mut self, index: usize) {
         let entity = &self.entities[index];
         if self.door_fields.is_empty() || entity.health <= 0 {
@@ -2071,8 +2075,13 @@ impl EntityScene {
         if mover.health <= 0 || mover.source.class_name == 0x0d {
             // `button_killed` and `door_killed` restore the authored health
             // and fire; `fd_secret_use` resets the 10000 before it opens.
+            // `door_killed` fires the whole chain with the next mover pass.
             mover.health = mover.max_health;
-            mover.shot_open = true;
+            if mover.source.class_name == 0x0c {
+                self.shot_door_chains |= 1u64 << mover.link_group;
+            } else {
+                mover.shot_open = true;
+            }
             result.killed_targets = result.killed_targets.saturating_add(1);
         }
         result.last_source_index = self
@@ -3165,10 +3174,58 @@ impl EntityScene {
             trigger_index += 1;
         }
 
-        // Shootable brush movers are in `findradius` as well. `CanDamage`
-        // treats a `MOVETYPE_PUSH` target by tracing to the middle of its
-        // bounds: the blast counts when the trace arrives or stops on the
-        // mover itself, which a rocket against a secret wall always does.
+        self.splash_shootable_movers(map, impact, splash_damage, result)?;
+
+        // `T_RadiusDamage`'s `ignore` argument: a lava ball that hit the
+        // player directly leaves them out of its splash.
+        let Some(player_origin) = player_origin else {
+            return Some(());
+        };
+        let player_distance = distance_units(impact, player_origin);
+        let mut player_scratch = TraceScratch::default();
+        let mut player_trace = Trace::default();
+        if !self.trace_point(
+            map,
+            &impact,
+            &player_origin,
+            &mut player_scratch,
+            &mut player_trace,
+        ) {
+            return None;
+        }
+        let player_points = explosion_splash_points(
+            splash_damage,
+            player_distance,
+            true,
+            player_trace.fraction == 1 << 12,
+            false,
+        );
+        if player_points > 0 {
+            let taken = weapon.take_damage(player_points);
+            result.self_damage = result.self_damage.saturating_add(taken as u16);
+            // `T_Damage`: the push uses the points before armour, and the
+            // player's own rocket pushes just the same (rocket jumping).
+            result.player_impulse = add_vec(
+                result.player_impulse,
+                knockback_impulse(player_origin, impact, player_points),
+            );
+        }
+        Some(())
+    }
+
+    /// Shootable brush movers are in `findradius` as well. `CanDamage`
+    /// treats a `MOVETYPE_PUSH` target by tracing to the middle of its
+    /// bounds: the blast counts when the trace arrives or stops on the mover
+    /// itself, which a rocket against a secret wall always does.
+    #[inline(never)]
+    #[optimize(size)]
+    fn splash_shootable_movers(
+        &mut self,
+        map: &ResidentMap,
+        impact: Vec3I32,
+        splash_damage: i16,
+        result: &mut RocketResult,
+    ) -> Option<()> {
         let mut mover_index = 0usize;
         while mover_index < self.movers.len() {
             let mover = self.movers[mover_index];
@@ -3220,41 +3277,6 @@ impl EntityScene {
                 result.splash_hits = result.splash_hits.saturating_add(damage.damaged_targets);
                 merge_rocket_damage(result, damage);
             }
-        }
-
-        // `T_RadiusDamage`'s `ignore` argument: a lava ball that hit the
-        // player directly leaves them out of its splash.
-        let Some(player_origin) = player_origin else {
-            return Some(());
-        };
-        let player_distance = distance_units(impact, player_origin);
-        let mut player_scratch = TraceScratch::default();
-        let mut player_trace = Trace::default();
-        if !self.trace_point(
-            map,
-            &impact,
-            &player_origin,
-            &mut player_scratch,
-            &mut player_trace,
-        ) {
-            return None;
-        }
-        let player_points = explosion_splash_points(
-            splash_damage,
-            player_distance,
-            true,
-            player_trace.fraction == 1 << 12,
-            false,
-        );
-        if player_points > 0 {
-            let taken = weapon.take_damage(player_points);
-            result.self_damage = result.self_damage.saturating_add(taken as u16);
-            // `T_Damage`: the push uses the points before armour, and the
-            // player's own rocket pushes just the same (rocket jumping).
-            result.player_impulse = add_vec(
-                result.player_impulse,
-                knockback_impulse(player_origin, impact, player_points),
-            );
         }
         Some(())
     }
