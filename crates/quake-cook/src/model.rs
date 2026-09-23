@@ -116,8 +116,6 @@ struct SpriteModel {
     kind: u8,
     radius: f32,
     beam_length: i16,
-    max_width: usize,
-    max_height: usize,
     frames: Vec<SpriteFrame>,
 }
 
@@ -173,7 +171,14 @@ fn cook_models(
     let mut alias_models = 0usize;
     let mut brush_models = 0usize;
     let mut loaded = BTreeSet::new();
-    for (id, source_name) in selected {
+    // Sprite sheets can be laid out in several shapes and alias skins cannot,
+    // so the sheets are packed after every skin. The explosion sheet is the
+    // largest texture in the global list; packed first, it took the gap
+    // E1M5 needs for a 148x70 skin.
+    let (sprites, others): (Vec<_>, Vec<_>) = selected
+        .into_iter()
+        .partition(|(_, source_name)| source_name.ends_with(".spr"));
+    for (id, source_name) in others.into_iter().chain(sprites) {
         if loaded.contains(&id) {
             continue;
         }
@@ -227,6 +232,40 @@ fn cook_models(
         },
         data,
     })
+}
+
+/// The frame shrunk to its non-transparent pixels, with its origin moved to
+/// match. A frame with no visible pixel is kept whole.
+fn crop_sprite_frame(frame: &SpriteFrame) -> SpriteFrame {
+    const TRANSPARENT: u8 = 255;
+    let visible = |x: usize, y: usize| frame.pixels[y * frame.width + x] != TRANSPARENT;
+    let columns: Vec<usize> = (0..frame.width)
+        .filter(|&x| (0..frame.height).any(|y| visible(x, y)))
+        .collect();
+    let rows: Vec<usize> = (0..frame.height)
+        .filter(|&y| (0..frame.width).any(|x| visible(x, y)))
+        .collect();
+    let (Some(&x0), Some(&x1), Some(&y0), Some(&y1)) =
+        (columns.first(), columns.last(), rows.first(), rows.last())
+    else {
+        return frame.clone();
+    };
+    let width = x1 - x0 + 1;
+    let height = y1 - y0 + 1;
+    let pixels = (y0..=y1)
+        .flat_map(|y| {
+            frame.pixels[y * frame.width + x0..y * frame.width + x0 + width]
+                .iter()
+                .copied()
+        })
+        .collect();
+    SpriteFrame {
+        left: frame.left + x0 as i16,
+        up: frame.up - y0 as i16,
+        width,
+        height,
+        pixels,
+    }
 }
 
 fn parse_sprite_model(bytes: &[u8]) -> Result<SpriteModel, CookError> {
@@ -314,8 +353,6 @@ fn parse_sprite_model(bytes: &[u8]) -> Result<SpriteModel, CookError> {
         kind: kind as u8,
         radius,
         beam_length,
-        max_width,
-        max_height,
         frames,
     })
 }
@@ -827,16 +864,39 @@ fn cook_sprite_model(
     atlas: &mut TextureAtlas,
     model_data: &mut Vec<u8>,
 ) -> Result<CookedHeader, CookError> {
-    let cell_width = (model.max_width + 1) & !1;
-    let max_columns = (256 / cell_width).min(model.frames.len());
-    let columns = (1..=max_columns)
-        .rev()
-        .find(|columns| model.frames.len().div_ceil(*columns) * model.max_height <= 256)
-        .ok_or_else(|| CookError::new("sprite sheet does not fit one texture page"))?;
-    let rows = model.frames.len().div_ceil(columns);
-    let sheet_width = columns * cell_width;
-    let sheet_height = rows * model.max_height;
-    let (base, tpage, x, y) = atlas.fit(sheet_width, sheet_height)?;
+    // Transparent borders (palette index 255) cost atlas space and draw
+    // nothing. Every frame record carries its own size and origin, so the
+    // cropped frame covers exactly the same picture.
+    let frames: Vec<SpriteFrame> = model.frames.iter().map(crop_sprite_frame).collect();
+    // Stack the frames top-down in as few columns as fit a 256-row texture
+    // page, each column as wide as its widest frame. The narrowest sheet goes
+    // first: E1M5 and E1M6 have no room left for a 56x112-word block.
+    let mut placed = None;
+    let mut last_error = CookError::new("sprite sheet does not fit one texture page");
+    for columns in 1..=frames.len() {
+        let per_column = frames.len().div_ceil(columns);
+        let groups = frames.chunks(per_column);
+        let sheet_height = groups
+            .clone()
+            .map(|group| group.iter().map(|frame| frame.height).sum::<usize>())
+            .max()
+            .unwrap_or(0);
+        if sheet_height > 256 {
+            continue;
+        }
+        let column_widths: Vec<usize> = groups
+            .map(|group| (group.iter().map(|frame| frame.width).max().unwrap_or(0) + 1) & !1)
+            .collect();
+        let sheet_width = column_widths.iter().sum::<usize>();
+        match atlas.fit(sheet_width, sheet_height) {
+            Ok(fit) => {
+                placed = Some((per_column, column_widths, fit));
+                break;
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    let (per_column, column_widths, (base, tpage, x, y)) = placed.ok_or(last_error)?;
 
     align_model_data(model_data);
     let triangle_offset = model_data.len() as u32;
@@ -855,14 +915,23 @@ fn cook_sprite_model(
         model_data.extend_from_slice(&offset.to_le_bytes());
     }
     let frame_offset = model_data.len() as u32;
-    for (index, frame) in model.frames.iter().enumerate() {
-        let column = index % columns;
-        let row = index / columns;
-        let frame_x = x + column * cell_width / 2;
-        let frame_y = y + row * model.max_height;
-        atlas.store(frame_x, frame_y, frame.width, frame.height, &frame.pixels);
-        let u = base[0].wrapping_add((column * cell_width) as u8);
-        let v = base[1].wrapping_add((row * model.max_height) as u8);
+    let mut column_x = 0usize;
+    let mut row_y = 0usize;
+    for (index, frame) in frames.iter().enumerate() {
+        if index != 0 && index % per_column == 0 {
+            column_x += column_widths[index / per_column - 1];
+            row_y = 0;
+        }
+        atlas.store(
+            x + column_x / 2,
+            y + row_y,
+            frame.width,
+            frame.height,
+            &frame.pixels,
+        );
+        let u = base[0].wrapping_add(column_x as u8);
+        let v = base[1].wrapping_add(row_y as u8);
+        row_y += frame.height;
         model_data.extend_from_slice(&[u, v, frame.width as u8, frame.height as u8]);
         model_data.extend_from_slice(&frame.left.to_le_bytes());
         model_data.extend_from_slice(&frame.up.to_le_bytes());
@@ -1301,13 +1370,33 @@ mod tests {
     }
 
     #[test]
+    fn sprite_frames_crop_to_their_visible_pixels_without_moving_the_picture() {
+        // A 4x3 frame whose only visible pixels are the 2x2 block at (1, 1).
+        let frame = SpriteFrame {
+            left: -2,
+            up: 1,
+            width: 4,
+            height: 3,
+            pixels: vec![255, 255, 255, 255, 255, 7, 8, 255, 255, 9, 10, 255],
+        };
+        let cropped = crop_sprite_frame(&frame);
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!((cropped.left, cropped.up), (-1, 0));
+        assert_eq!(cropped.pixels, vec![7, 8, 9, 10]);
+
+        let empty = SpriteFrame {
+            pixels: vec![255; 12],
+            ..frame
+        };
+        assert_eq!(crop_sprite_frame(&empty).width, 4);
+    }
+
+    #[test]
     fn cooked_sprite_uses_a_valid_alias_table_and_twelve_byte_frames() {
         let sprite = SpriteModel {
             kind: 2,
             radius: 12.0,
             beam_length: 0,
-            max_width: 16,
-            max_height: 16,
             frames: vec![
                 SpriteFrame {
                     left: -8,

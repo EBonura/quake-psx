@@ -6,10 +6,16 @@
 
 use quake_formats::{Vec3I16, Vec3I32};
 
-/// Maximum simultaneous explosion flashes retained by the guest.
+/// Maximum simultaneous explosion sprites retained by the guest.
 pub const MAX_EXPLOSION_EFFECTS: usize = 4;
-/// Lifetime at the fixed 60 Hz simulation clock: three tenths of a second.
-pub const EXPLOSION_EFFECT_TICKS: u16 = 18;
+/// Retained Quake model ID for `progs/s_explod.spr`, which `BecomeExplosion`
+/// puts on every rocket, grenade and exploding box.
+pub const EXPLOSION_SPRITE_MODEL_ID: i16 = 0x5e;
+/// `s_explode1` .. `s_explode6` each hold one frame for 0.1 seconds, six
+/// ticks of the fixed 60 Hz simulation clock.
+pub const EXPLOSION_FRAME_TICKS: u16 = 6;
+/// `s_explode6` hands over to `SUB_Remove`: six frames, six tenths of a second.
+pub const EXPLOSION_EFFECT_TICKS: u16 = 6 * EXPLOSION_FRAME_TICKS;
 /// Maximum individual world particles retained by the guest.
 ///
 /// The worst frame is a rocket in flight (two trail particles per frame over
@@ -28,8 +34,7 @@ pub const BUBBLE_SPRITE_MODEL_ID: i16 = 0x5d;
 pub const IMPACT_PARTICLE_TICKS: u8 = 12;
 /// Particles one `spawn_trail` call may emit however far the projectile flew.
 const MAX_TRAIL_PARTICLES: i32 = 2;
-/// Radius of the explosion ring, which starts where the renderer's expanding
-/// star does so the two read as one burst.
+/// Radius of the decimated `R_ParticleExplosion` ring around the sprite.
 pub const EXPLOSION_RING_UNITS: i32 = 16;
 
 /// Live `cl_dlights` this port keeps at once.
@@ -447,7 +452,7 @@ impl Default for ImpactParticles {
     }
 }
 
-/// One expanding impact flash.
+/// One `BecomeExplosion` sprite.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ExplosionEffect {
     /// World-space Q20.12 origin reported by the damage path.
@@ -468,16 +473,9 @@ impl ExplosionEffect {
         self.age_ticks
     }
 
-    /// Expanding star radius in Quake world units.
-    pub const fn radius_units(self) -> i32 {
-        8 + self.age_ticks as i32 * 2
-    }
-
-    /// Warm color which fades without alpha blending.
-    pub const fn color(self) -> (u8, u8, u8) {
-        let remaining = EXPLOSION_EFFECT_TICKS.saturating_sub(self.age_ticks) as u32;
-        let fade = (remaining * 128 / EXPLOSION_EFFECT_TICKS as u32) as u8;
-        (fade, ((fade as u16 * 3) / 4) as u8, fade / 4)
+    /// The `s_explod.spr` frame `s_explode1` .. `s_explode6` is showing.
+    pub const fn sprite_frame(self) -> usize {
+        (self.age_ticks / EXPLOSION_FRAME_TICKS) as usize
     }
 }
 
@@ -746,22 +744,23 @@ mod tests {
     }
 
     #[test]
-    fn explosions_expand_fade_and_expire_on_the_simulation_clock() {
+    fn explosions_step_the_six_sprite_frames_and_expire_on_the_simulation_clock() {
         let mut effects = ExplosionEffects::new();
         effects.enter_map(1);
         effects.spawn(point(7));
         let born = effects.active().next().expect("spawned effect");
         assert_eq!(born.age_ticks(), 0);
-        assert_eq!(born.radius_units(), 8);
+        assert_eq!(born.sprite_frame(), 0);
 
-        effects.tick(5);
-        let older = effects.active().next().expect("live effect");
-        assert_eq!(older.age_ticks(), 5);
-        assert!(older.radius_units() > born.radius_units());
-        assert!(older.color().0 < born.color().0);
-        assert!(older.color().1 < born.color().1);
+        effects.tick(EXPLOSION_FRAME_TICKS - 1);
+        assert_eq!(effects.active().next().unwrap().sprite_frame(), 0);
+        effects.tick(1);
+        assert_eq!(effects.active().next().unwrap().sprite_frame(), 1);
+        effects.tick(4 * EXPLOSION_FRAME_TICKS + EXPLOSION_FRAME_TICKS - 1);
+        let last = effects.active().next().expect("s_explode6 still showing");
+        assert_eq!(last.sprite_frame(), 5);
 
-        effects.tick(EXPLOSION_EFFECT_TICKS - 5);
+        effects.tick(1);
         assert_eq!(effects.active().count(), 0);
     }
 
