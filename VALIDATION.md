@@ -15,7 +15,7 @@ c2c4b90de6f0c836803c6eba02775814a944dafa
 The project contains several independent Cargo workspaces. Run each suite:
 
 ```sh
-cargo test
+cargo test --manifest-path host/quake-build/Cargo.toml
 (cd crates/quake-cook && cargo test)
 (cd crates/quake-core && cargo test)
 (cd crates/quake-formats && cargo test)
@@ -25,7 +25,7 @@ The last pre-release run completed:
 
 | Suite | Result |
 | --- | ---: |
-| Root builder tests | 59 passed |
+| Builder tests (`host/quake-build`) | 59 passed |
 | Input policy integration tests | 8 passed |
 | Pusher integration tests | 4 passed |
 | `quake-cook` | 30 passed |
@@ -61,9 +61,9 @@ different GNU tool prefix (for example `mipsel-linux-gnu-as` and
 Use the hydrated PSoXide worktree described in the README:
 
 ```sh
-cargo run --locked --release -- check --psoxide ../PSoXide-quake
-cargo run --locked --release -- build --psoxide ../PSoXide-quake
-cargo run --locked --release -- ship-boot --psoxide ../PSoXide-quake
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- check --psoxide ../PSoXide-quake
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build --psoxide ../PSoXide-quake
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- ship-boot --psoxide ../PSoXide-quake
 ```
 
 The build tool checks:
@@ -86,23 +86,23 @@ Every regression builds a separate executable feature and runs it through the
 PSoXide frontend. The generated discs and captures are ignored by Git.
 
 ```sh
-cargo run --release -- map-regress --psoxide ../PSoXide-quake
-cargo run --release -- start-route-regress --psoxide ../PSoXide-quake
-cargo run --release -- visual-parity-regress --psoxide ../PSoXide-quake
-cargo run --release -- e1m1-chain-regress --psoxide ../PSoXide-quake
-cargo run --release -- e1m1-chain-bench --psoxide ../PSoXide-quake
-QUAKE_PSX_PC_LINE_LOG=1 cargo run --release -- e1m1-chain-bench --psoxide ../PSoXide-quake
-cargo run --release -- e1m2-e1m3-route-regress --psoxide ../PSoXide-quake
-cargo run --release -- combat-regress --psoxide ../PSoXide-quake
-cargo run --release -- monster-regress --psoxide ../PSoXide-quake
-cargo run --release -- monsterjump-regress --psoxide ../PSoXide-quake
-cargo run --release -- bestiary-regress --psoxide ../PSoXide-quake
-cargo run --release -- systems-regress --psoxide ../PSoXide-quake
-cargo run --release -- arsenal-regress --psoxide ../PSoXide-quake
-cargo run --release -- survival-regress --psoxide ../PSoXide-quake
-cargo run --release -- episode1-regress --psoxide ../PSoXide-quake
-cargo run --release -- audio-regress --psoxide ../PSoXide-quake
-cargo run --release -- ambient-regress --psoxide ../PSoXide-quake
+cargo quake-build map-regress --psoxide ../PSoXide-quake
+cargo quake-build start-route-regress --psoxide ../PSoXide-quake
+cargo quake-build visual-parity-regress --psoxide ../PSoXide-quake
+cargo quake-build e1m1-chain-regress --psoxide ../PSoXide-quake
+cargo quake-build e1m1-chain-bench --psoxide ../PSoXide-quake
+QUAKE_PSX_PC_LINE_LOG=1 cargo quake-build e1m1-chain-bench --psoxide ../PSoXide-quake
+cargo quake-build e1m2-e1m3-route-regress --psoxide ../PSoXide-quake
+cargo quake-build combat-regress --psoxide ../PSoXide-quake
+cargo quake-build monster-regress --psoxide ../PSoXide-quake
+cargo quake-build monsterjump-regress --psoxide ../PSoXide-quake
+cargo quake-build bestiary-regress --psoxide ../PSoXide-quake
+cargo quake-build systems-regress --psoxide ../PSoXide-quake
+cargo quake-build arsenal-regress --psoxide ../PSoXide-quake
+cargo quake-build survival-regress --psoxide ../PSoXide-quake
+cargo quake-build episode1-regress --psoxide ../PSoXide-quake
+cargo quake-build audio-regress --psoxide ../PSoXide-quake
+cargo quake-build ambient-regress --psoxide ../PSoXide-quake
 ```
 
 | Regression | What it checks |

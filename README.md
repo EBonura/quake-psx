@@ -76,7 +76,7 @@ checkout is required:
 git clone https://github.com/EBonura/quake-psx.git
 cd quake-psx
 cargo run --locked --manifest-path psoxide-pin/Cargo.toml
-cargo run --locked --release -- build
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build
 ```
 
 `components.lock.json` pins the SDK, emulator support crates, and editor/engine
@@ -89,7 +89,7 @@ For a local override, use a clean, bootstrapped PSoXide-editor checkout at the
 locked editor revision:
 
 ```sh
-cargo run --locked --release -- build --psoxide /path/to/PSoXide-editor
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build --psoxide /path/to/PSoXide-editor
 ```
 
 Set `QUAKE_PSX_FRONTEND` to the standalone PSoXide-emulator frontend executable
@@ -111,7 +111,7 @@ understands CUE sheets.
 To build from an existing Quake installation, pass its directory explicitly:
 
 ```sh
-cargo run --locked --release -- build \
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build \
   --psoxide /path/to/PSoXide-editor \
   --quake-dir /path/to/Quake/id1
 ```
@@ -120,12 +120,19 @@ The builder still requires the known Quake 1.06 shareware `PAK0.PAK` digest.
 
 ## Useful commands
 
+The repository root is the PS1 game's Cargo workspace, so every crate the
+image links is hashed by a path relative to it and the image doesn't depend on
+where the repository is checked out. The builder is a separate workspace in
+`host/quake-build/`; from the repository root, `cargo quake-build` (an alias
+in `.cargo/config.toml`) is short for
+`cargo run --release --manifest-path host/quake-build/Cargo.toml --`.
+
 ```sh
-cargo run --release -- check       # check tools, source data and SDK revision
-cargo run --release -- assets      # recook Episode 1 assets
-cargo run --release -- compile     # rebuild the PS1 executable
-cargo run --release -- disc        # rebuild the standalone disc
-cargo run --release -- --help      # list regression commands
+cargo quake-build check       # check tools, source data and SDK revision
+cargo quake-build assets      # recook Episode 1 assets
+cargo quake-build compile     # rebuild the PS1 executable
+cargo quake-build disc        # rebuild the standalone disc
+cargo quake-build --help      # list regression commands
 ```
 
 Pass `--psoxide /path/to/PSoXide-editor` when using the explicit SDK worktree.
@@ -170,11 +177,11 @@ build; it is not a second game runtime.
 Run the host suites from their individual workspaces:
 
 ```sh
-cargo test
+cargo test --manifest-path host/quake-build/Cargo.toml
 (cd crates/quake-cook && cargo test)
 (cd crates/quake-core && cargo test)
 (cd crates/quake-formats && cargo test)
-cargo run --release -- check --psoxide /path/to/PSoXide-editor
+cargo quake-build check --psoxide /path/to/PSoXide-editor
 ```
 
 The emulator regressions cover map loading, combat, monsters, mechanisms,

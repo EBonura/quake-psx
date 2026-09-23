@@ -29,7 +29,7 @@ const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "6eebb2d8667cfa9a5b65cb7aeeeabcff189fe78e";
-// Keep this SDK revision in sync with psoxide-link in Cargo.lock.
+// Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
 const PSOXIDE_SDK_REV: &str = "810f917623ed98bc8bbe069504b3b4e71c1757d9";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
@@ -40,6 +40,10 @@ const SHIPPING_CARGO_HOME: &str = "/tmp/quake-psx-cargo-home-v1";
 const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
 const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
 const GUEST_RECIPE_PATHS: &[&str] = &[
+    // The guest's workspace root: its manifest carries the release profile
+    // and its lockfile is the guest's.
+    "Cargo.toml",
+    "Cargo.lock",
     "components.lock.json",
     "rust-toolchain.toml",
     "game",
@@ -353,6 +357,15 @@ struct PpmImage {
     rgb: Vec<u8>,
 }
 
+/// The repository root: the builder's own manifest sits at host/quake-build.
+fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the builder lives at <repo>/host/quake-build")
+        .to_path_buf()
+}
+
 fn main() {
     if let Err(error) = real_main() {
         eprintln!("quake-psx-build: {error}");
@@ -362,7 +375,7 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let cli = parse_cli()?;
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = repository_root();
     audit_sources(&root)?;
     let sdk = hydrate_psoxide(&root, cli.psoxide.as_deref(), cli.allow_psoxide_drift)?;
     println!("PSoXide SDK: {}", sdk.describe());
@@ -2752,7 +2765,9 @@ fn next_path<I: Iterator<Item = OsString>>(args: &mut I, flag: &str) -> Result<P
 fn print_help() {
     println!(
         "quake-psx-build\n\n\
-         Usage: cargo run --release -- [ACTION] [OPTIONS]\n\n\
+         Usage: cargo quake-build [ACTION] [OPTIONS]\n\
+         from the repository root; `cargo quake-build` is an alias for\n  \
+           cargo run --release --manifest-path host/quake-build/Cargo.toml --\n\n\
          Actions:\n  \
            build     Download/cook shareware, build the PSoXide disc, package dist (default)\n  \
            assets    Force a complete Episode 1 recook\n  \
@@ -2995,7 +3010,7 @@ fn hydrate_psoxide(
 /// Resolved commit of the psoxide-link dependency this binary was compiled
 /// with, parsed from the embedded lockfile fragment.
 fn linked_psoxide_link_rev() -> Result<String> {
-    parse_psoxide_link_rev(include_str!("../../Cargo.lock"))
+    parse_psoxide_link_rev(include_str!("Cargo.lock"))
 }
 
 fn parse_psoxide_link_rev(lock: &str) -> Result<String> {
@@ -3964,7 +3979,7 @@ fn audit_rust_only_guest_lock(stage: &Path) -> Result<()> {
         "pkg-config",
         "vcpkg",
     ];
-    let lock = stage.join("game/Cargo.lock");
+    let lock = stage.join("Cargo.lock");
     let text = fs::read_to_string(&lock)?;
     for line in text.lines() {
         let Some(name) = line
@@ -10154,7 +10169,7 @@ mod tests {
 
     #[test]
     fn tracked_visual_camera_pins_the_owner_e1m1_coordinates_and_regions() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = repository_root();
         let text = fs::read_to_string(root.join("tools/visual-parity-cameras.json")).unwrap();
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         let camera = &json["cameras"][0];
@@ -10234,7 +10249,8 @@ mod source_contract_tests {
         assert_eq!(rev, PSOXIDE_SDK_REV);
     }
 
-    /// Default hydration follows the psoxide-link revision in Cargo.lock.
+    /// Default hydration follows the psoxide-link revision in the builder's
+    /// Cargo.lock.
     #[test]
     fn live_phase_gate_matches_the_lockfile() {
         let linked = linked_psoxide_link_rev().expect("lockfile parses");
@@ -10330,8 +10346,9 @@ mod provenance_tests {
         )
         .unwrap();
         fs::write(root.join("rust-toolchain.toml"), b"channel = 'pinned'\n").unwrap();
+        fs::write(root.join("Cargo.toml"), b"[workspace]\nmembers=['game']\n").unwrap();
+        fs::write(root.join("Cargo.lock"), b"version = 4\n").unwrap();
         fs::write(root.join("game/Cargo.toml"), b"[package]\nname='game'\n").unwrap();
-        fs::write(root.join("game/Cargo.lock"), b"version = 4\n").unwrap();
         fs::write(root.join("game/src/main.rs"), b"fn main() {}\n").unwrap();
         fs::write(
             root.join("tools/visual-parity-cameras.json"),
@@ -10848,7 +10865,7 @@ mod provenance_tests {
 
         fs::remove_file(native_source).unwrap();
         fs::write(
-            directory.0.join("game/Cargo.lock"),
+            directory.0.join("Cargo.lock"),
             b"version = 4\n\n[[package]]\nname = \"cc\"\nversion = \"1.2.0\"\n",
         )
         .unwrap();
@@ -10860,7 +10877,7 @@ mod provenance_tests {
 
     #[test]
     fn pinned_guest_recipe_paths_match_the_resolved_psoxide_dependency_closure() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = repository_root();
         let output = Command::new("cargo")
             .current_dir(&root)
             .args([
@@ -10879,6 +10896,27 @@ mod provenance_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let metadata: Value = serde_json::from_slice(&output.stdout).expect("metadata JSON");
+        // Cargo hashes a path package outside the workspace root by its
+        // absolute path, and that hash seeds the crate disambiguators, so one
+        // such package makes the image depend on where it was built.
+        let workspace_root = PathBuf::from(metadata["workspace_root"].as_str().unwrap());
+        assert_eq!(
+            workspace_root.canonicalize().unwrap(),
+            root.canonicalize().unwrap(),
+            "the guest's workspace root must be the repository root"
+        );
+        let outside = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|package| package["source"].is_null())
+            .filter_map(|package| package["manifest_path"].as_str())
+            .filter(|manifest| !Path::new(manifest).starts_with(&workspace_root))
+            .collect::<Vec<_>>();
+        assert!(
+            outside.is_empty(),
+            "guest path packages outside the workspace root: {outside:?}"
+        );
         let psoxide = root.join(".psoxide").canonicalize().unwrap();
         let mut resolved = metadata["packages"]
             .as_array()

@@ -127,7 +127,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cargo run --locked --release -- build
+        run: cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build
 
       - name: Verify and stage the flat release
         id: package

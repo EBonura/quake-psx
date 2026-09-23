@@ -1772,7 +1772,12 @@ fn resolve_pak(root: &Path) -> Result<PathBuf> {
 }
 
 fn main() -> Result<()> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Built by host/quake-build; the repository root is two levels up.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("built from <repo>/host/quake-build")
+        .to_path_buf();
     let requested: Vec<String> = env::args().skip(1).collect();
     let pak_bytes = fs::read(resolve_pak(&root)?)?;
     let pak = PakArchive::parse(&pak_bytes)?;

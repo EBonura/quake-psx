@@ -427,7 +427,7 @@ persistent and cheap as Quake II does.
 Reproduce the current census with:
 
 ```sh
-cargo run --release -- e1m1-gpu-census \
+cargo quake-build e1m1-gpu-census \
   --psoxide ../PSoXide/target/release/frontend
 python3 tools/analyze_psoxide_gpu.py \
   captures/e1m1-gpu-census/gpu.csv \
@@ -579,7 +579,7 @@ camera, with eviction or fallback under pressure. Reproduce the corpus bound
 with:
 
 ```sh
-cargo run --release --bin fixed-quad-tessellation-census
+cargo run --release --manifest-path host/quake-build/Cargo.toml --bin fixed-quad-tessellation-census
 ```
 
 The next implementation is therefore a cooker/runtime contract, not another
@@ -725,11 +725,11 @@ Reproduce the leader or build its non-regression playable disc using only
 PSoXide:
 
 ```sh
-cargo run --release -- e1m1-gpu-polygon-scratch-liquid-bench \
+cargo quake-build e1m1-gpu-polygon-scratch-liquid-bench \
   --psoxide ../PSoXide/target/release/frontend
-cargo run --release -- gpu-polygon-scratch-liquid-disc \
+cargo quake-build gpu-polygon-scratch-liquid-disc \
   --psoxide ../PSoXide/target/release/frontend
-cargo run --release -- e1m2-e1m3-scratch-liquid-route-regress \
+cargo quake-build e1m2-e1m3-scratch-liquid-route-regress \
   --psoxide ../PSoXide/target/release/frontend
 ```
 
@@ -742,7 +742,7 @@ into E1M4, VRAM hash `0x4c2b7b22ffcc6780`, and display hash
 Run the PSoXide-only census and analyzer with:
 
 ```sh
-cargo run --release -- e1m1-renderer-census \
+cargo quake-build e1m1-renderer-census \
   --psoxide ../PSoXide/target/release/frontend
 python3 tools/analyze_renderer_census.py \
   captures/e1m1-renderer-census/run-a/console.log \
@@ -752,7 +752,7 @@ python3 tools/analyze_renderer_census.py \
 Run the static transfer census with:
 
 ```sh
-cargo run --release --bin quake2-transfer-census
+cargo run --release --manifest-path host/quake-build/Cargo.toml --bin quake2-transfer-census
 ```
 
 The action never invokes DuckStation. `tools/analyze_renderer_census.py`
@@ -762,11 +762,11 @@ net block-test costs rather than gross rejected faces.
 Re-run the accepted selection-cache gates with:
 
 ```sh
-cargo run --release -- e1m1-selection-cache-bench \
+cargo quake-build e1m1-selection-cache-bench \
   --psoxide ../PSoXide/target/release/frontend
-cargo run --release -- selection-cache-regress \
+cargo quake-build selection-cache-regress \
   --psoxide ../PSoXide/target/release/frontend
-cargo run --release -- selection-cache-ship-boot \
+cargo quake-build selection-cache-ship-boot \
   --psoxide ../PSoXide/target/release/frontend
 ```
 
@@ -1139,7 +1139,7 @@ Two things had to change for it to work as a benchmark:
   and runs to the final presentation.
 
 ```text
-cargo run --release -- e1m1-monster-route-bench --psoxide <clean 5048fbde>
+cargo quake-build e1m1-monster-route-bench --psoxide <clean 5048fbde>
 
 quake-psx E1M1 monster route: PASS
 deterministic_runs=2
@@ -1705,7 +1705,7 @@ The fixed E1M1 camera is stored in
 `tools/visual-parity-cameras.json`. Run:
 
 ```sh
-cargo run --release -- visual-parity-regress \
+cargo quake-build visual-parity-regress \
   --psoxide ../PSoXide/target/release/frontend
 ```
 
@@ -1737,13 +1737,13 @@ A fixed-tick E1M1 route is available for comparing renderer changes without
 allowing simulation speed to alter the path:
 
 ```sh
-cargo run --release -- e1m1-chain-bench --psoxide ../PSoXide-quake
+cargo quake-build e1m1-chain-bench --psoxide ../PSoXide-quake
 ```
 
 The canonical accepted-stack benchmark is:
 
 ```sh
-cargo run --locked --release -- e1m1-gpu-polygon-scratch-liquid-bench \
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- e1m1-gpu-polygon-scratch-liquid-bench \
   --psoxide /path/to/PSoXide/target/run-fast/frontend
 ```
 
@@ -1751,8 +1751,8 @@ Two diagnostics answer "how much would this be worth" before an optimization is
 written. Both change the image and must never be shipped:
 
 ```sh
-cargo run --locked --release -- e1m1-selection-decimate-bench --psoxide ...
-cargo run --locked --release -- portal-census e1m1
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- e1m1-selection-decimate-bench --psoxide ...
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml --bin portal-census -- e1m1
 ```
 
 `e1m1-selection-decimate-bench` halves the selected world faces and prices the
@@ -1770,7 +1770,7 @@ baseline.
 For a shipping-cadence result, use:
 
 ```sh
-cargo run --release -- e1m1-chain-regress --psoxide ../PSoXide-quake
+cargo quake-build e1m1-chain-regress --psoxide ../PSoXide-quake
 ```
 
 Compare command counts, GPU estimates, displayed frames and route progress.

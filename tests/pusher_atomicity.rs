@@ -81,7 +81,11 @@ fn lump<'a>(bytes: &'a [u8], index: &PsbIndex, kind: LumpKind) -> &'a [u8] {
 }
 
 fn map(name: &str) -> Vec<u8> {
-    let path = format!("{}/id1psx/maps/{name}.psb", env!("CARGO_MANIFEST_DIR"));
+    // Built by host/quake-build; the cooked maps are at the repository root.
+    let path = format!(
+        "{}/../../id1psx/maps/{name}.psb",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 

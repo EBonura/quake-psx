@@ -114,7 +114,12 @@ fn try_merge(a: &[[f64; 3]], b: &[[f64; 3]], normal: [f64; 3]) -> Option<Vec<[f6
 }
 
 fn main() -> Result<()> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Built by host/quake-build; the repository root is two levels up.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("built from <repo>/host/quake-build")
+        .to_path_buf();
     let requested: Vec<String> = env::args().skip(1).collect();
     let pak_bytes = fs::read(root.join(".quakepsx/cache/shareware/ID1/PAK0.PAK"))?;
     let pak = PakArchive::parse(&pak_bytes)?;

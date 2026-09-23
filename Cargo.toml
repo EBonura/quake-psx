@@ -1,43 +1,40 @@
-[package]
-name = "quake-psx-build"
-version = "0.1.0"
-edition = "2021"
-license = "GPL-2.0-only"
-description = "End-to-end shareware demo builder and PSoXide regression runner for quake-psx"
-default-run = "quake-psx-build"
+# `trim-paths` is still a nightly cargo feature; the game is nightly-pinned
+# anyway (bare-metal MIPS needs build-std), so the gate costs nothing.
+cargo-features = ["trim-paths"]
 
-[[bin]]
-name = "quake-psx-build"
-path = "host/quake-build/main.rs"
-
-[[bin]]
-name = "quake2-transfer-census"
-path = "tools/quake2-transfer-census.rs"
-
-[[bin]]
-name = "fixed-quad-tessellation-census"
-path = "tools/fixed-quad-tessellation-census.rs"
-
-[[bin]]
-name = "portal-census"
-path = "tools/portal-census.rs"
-
-[[bin]]
-name = "face-merge-census"
-path = "tools/face-merge-census.rs"
-
-[dependencies]
-# The hydration helper and the guest SDK resolve from the same published
-# revision. The build verifies this lockfile source before copying any SDK
-# inputs into the content-addressed guest stage.
-psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "810f917623ed98bc8bbe069504b3b4e71c1757d9" }
-quake-cook = { path = "crates/quake-cook" }
-quake-core = { path = "crates/quake-core" }
-quake-formats = { path = "crates/quake-formats" }
-sha2 = "0.10"
-
-serde_json = "1"
+# The PS1 game's workspace. Its root is the repository root, not game/, so
+# every path dependency (crates/quake-core, crates/quake-formats and the
+# hydrated .psoxide crates) sits inside it. Cargo hashes a path package by its
+# path relative to the workspace root when it can and by its absolute path
+# otherwise, and that hash seeds every crate disambiguator. With the root at
+# game/, the image's symbols and layout changed with the directory the guest
+# was built in: the checkout for a direct build, and the content-addressed
+# stage (whose name is the recipe hash) for the builder's.
+#
+# The host builder is its own workspace, host/quake-build, run with
+# `cargo quake-build ...` (.cargo/config.toml). The PS1 target config stays
+# in game/.cargo/config.toml, so it only applies to builds run from game/, as
+# the builder's are.
+[workspace]
+resolver = "2"
+members  = ["game"]
+# .psoxide is a generated tree with its own workspaces. The crates/ packages
+# keep their own lockfiles and host test suites, and the rest are host tools
+# with their own workspaces. Excluded path dependencies are still hashed by
+# their path relative to this root.
+exclude  = [
+    ".psoxide",
+    "crates",
+    "host",
+    "psoxide-pin",
+    "tools",
+]
 
 [profile.release]
+# Keep absolute host paths out of the shipped binary. rustc records the
+# source path of every panic/assert site (core::panic::Location) as a string
+# in .rodata, which on the PS1 occupies console RAM and ships on the disc.
+trim-paths    = "all"
+panic         = "abort"
 codegen-units = 1
-lto = "thin"
+lto           = true
