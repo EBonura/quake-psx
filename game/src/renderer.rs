@@ -3339,11 +3339,11 @@ impl Renderer {
     /// an unbounded face-cache allocation or a partially rendered frame.
     #[inline(never)]
     fn prepare_visibility(&mut self, map: &ResidentMap, camera: Camera, water_alpha: bool) -> bool {
-        // SAFETY: nothing is live in the scratchpad (see SelectionStack), and
+        // SAFETY: nothing is live in the scratchpad (see RendererStack), and
         // stack_guard.py proves the call tree fits after the link.
         #[cfg(feature = "renderer-scratchpad-stack")]
         return unsafe {
-            SelectionStack::run(|| self.prepare_visibility_in_place(map, camera, water_alpha))
+            RendererStack::run(|| self.prepare_visibility_in_place(map, camera, water_alpha))
         };
         #[cfg(not(feature = "renderer-scratchpad-stack"))]
         self.prepare_visibility_in_place(map, camera, water_alpha)
@@ -4778,6 +4778,10 @@ unsafe fn cached_sky_samples(rotation: [[i16; 3]; 3], width: u8) -> &'static Sky
 /// is submitted behind the world, so those brushes remain apertures through
 /// which the background is visible. Unlike per-brush adaptive subdivision,
 /// packet and CPU cost are constant even when the camera touches a sky face.
+///
+/// Out of line so its scratchpad stack switch leaves `draw_frame`'s own code
+/// unchanged.
+#[inline(never)]
 unsafe fn submit_view_ray_sky_background(
     texture: TextureInfo,
     view: QuakeViewTransform,
@@ -4811,7 +4815,7 @@ unsafe fn submit_view_ray_sky_background(
     // them. Scroll is applied per packet below, so the cache is exact.
     let samples = unsafe { cached_sky_samples(view.rotation.m, width) };
 
-    unsafe {
+    let submit = || unsafe {
         psx_bsp::sky::submit_layered_sky_samples_to_slot(
             texture.texture_page,
             clut_texture(),
@@ -4824,7 +4828,13 @@ unsafe fn submit_view_ray_sky_background(
             SKY_OT_SLOT as u16,
             output,
         )
-    }
+    };
+    // SAFETY: the sky is submitted after the last batch (see RendererStack),
+    // and stack_guard.py proves the call tree fits after the link.
+    #[cfg(feature = "renderer-scratchpad-stack")]
+    return unsafe { RendererStack::run(submit) };
+    #[cfg(not(feature = "renderer-scratchpad-stack"))]
+    submit()
 }
 
 fn special_texture_window(texture: TextureInfo) -> TextureWindow {
@@ -4989,17 +4999,19 @@ unsafe fn census_world_batch(
 /// touches the shared scratchpad reservation, and no DMA reads these vertices.
 const _: () = assert!(core::mem::size_of::<BatchVertexStorage>() <= psx_engine::scratchpad::SIZE);
 
-/// The PVS pass and frame-face selection run with their frames on the whole
-/// scratchpad. The game's other scratchpad users, the batch vertices above
-/// and the liquid pass's phase offsets (`update_visible_liquid_tiles`), are
-/// transient within later phases of the frame, so nothing else is live
-/// around these calls. Their loops keep more live values than there are
+/// The PVS pass, frame-face selection and the sky lattice run with their
+/// frames on the whole scratchpad. The game's other scratchpad users, the
+/// batch vertices above (world and brush-entity batches) and the liquid
+/// pass's phase offsets (`update_visible_liquid_tiles`), are transient
+/// within other phases of the frame: selection runs before both, and the sky
+/// after the last batch has been flushed, so nothing else is live around
+/// these calls. Their loops keep more live values than there are
 /// callee-saved registers (selection spills eight loop-invariant frustum
 /// selectors), and a spill reload from DRAM stalls about six cycles where
 /// the scratchpad answers in one. `tools/stack_guard.py` proves the linked
 /// call trees fit after every link.
 #[cfg(feature = "renderer-scratchpad-stack")]
-type SelectionStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;
+type RendererStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;
 
 #[inline]
 fn scratchpad_batch_vertices() -> &'static mut BatchVertexStorage {
@@ -5690,11 +5702,11 @@ fn select_frame_faces_blocked(
             output,
         )
     };
-    // SAFETY: nothing is live in the scratchpad (see SelectionStack), and
+    // SAFETY: nothing is live in the scratchpad (see RendererStack), and
     // stack_guard.py proves the call tree fits after the link.
     #[cfg(feature = "renderer-scratchpad-stack")]
     unsafe {
-        SelectionStack::run(select)
+        RendererStack::run(select)
     };
     #[cfg(not(feature = "renderer-scratchpad-stack"))]
     select();
