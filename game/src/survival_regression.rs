@@ -159,6 +159,8 @@ struct Waypoint {
     radius: i32,
     jump: bool,
     use_press: bool,
+    /// Turn to face this point once the waypoint is reached, then fire.
+    shoot_at: Option<(i32, i32)>,
     /// Frames to stand on the waypoint before advancing. A player who has just
     /// set an authored mover going waits for it exactly like a human does; the
     /// alternative is walking into the shaft the mover has not filled yet.
@@ -174,6 +176,7 @@ const fn waypoint(x: i32, y: i32) -> Waypoint {
         radius: 20,
         jump: false,
         use_press: false,
+        shoot_at: None,
         dwell: 0,
         require: 0,
     }
@@ -188,6 +191,22 @@ const fn wait_for_mover(x: i32, y: i32, radius: i32, dwell: u32, use_press: bool
         radius,
         jump: false,
         use_press,
+        shoot_at: None,
+        dwell,
+        require: 0,
+    }
+}
+
+/// Stand still, turn to face `target` and shoot it, then wait out `dwell`.
+const fn shoot_from(x: i32, y: i32, radius: i32, dwell: u32, target: (i32, i32)) -> Waypoint {
+    Waypoint {
+        x,
+        y,
+        z: i32::MIN,
+        radius,
+        jump: false,
+        use_press: false,
+        shoot_at: Some(target),
         dwell,
         require: 0,
     }
@@ -201,6 +220,7 @@ const fn station(x: i32, y: i32, radius: i32, require: u32) -> Waypoint {
         radius,
         jump: false,
         use_press: false,
+        shoot_at: None,
         dwell: 0,
         require,
     }
@@ -228,6 +248,7 @@ const LOWER_LEVEL_APPROACH: &[Waypoint] = &[
         radius: 4,
         jump: false,
         use_press: false,
+        shoot_at: None,
         dwell: 0,
         require: 0,
     },
@@ -238,6 +259,7 @@ const LOWER_LEVEL_APPROACH: &[Waypoint] = &[
         radius: 8,
         jump: true,
         use_press: true,
+        shoot_at: None,
         dwell: 50,
         require: 0,
     },
@@ -248,6 +270,7 @@ const LOWER_LEVEL_APPROACH: &[Waypoint] = &[
         radius: 12,
         jump: false,
         use_press: false,
+        shoot_at: None,
         dwell: 0,
         require: 0,
     },
@@ -258,6 +281,7 @@ const LOWER_LEVEL_APPROACH: &[Waypoint] = &[
         radius: 16,
         jump: true,
         use_press: false,
+        shoot_at: None,
         dwell: 0,
         require: DESCENDED | FALL_DAMAGE,
     },
@@ -275,6 +299,7 @@ static mut LAST_X: i32 = i32::MIN;
 static mut LAST_Y: i32 = i32::MIN;
 static mut STUCK_FRAMES: u32 = 0;
 static mut DWELL_FRAMES: u32 = 0;
+static mut AIMED_FRAMES: u32 = 0;
 
 /// Frames of no progress before the route stops pushing straight at a
 /// waypoint and slides along the obstacle instead. Quake corridors are full
@@ -361,14 +386,15 @@ fn stage_route(stage: usize) -> &'static [Waypoint] {
     // E1M1's secret chamber. The chamber has two authored entrances and this
     // route takes the walkable one: the east passage at y 2480, behind
     // `func_door` #32 (opened by `trigger_once` #33, a plate the corridor leg
-    // crosses) and `func_door_secret` #28 (no targetname, so the shipping use
-    // press opens it).
+    // crosses) and `func_door_secret` #28 (no targetname, so it is shot open:
+    // `th_pain = fd_secret_use`).
     //
     // The other entrance is the one the plate at (449..455, 2001..2031) serves:
     // `trigger_multiple` #31 raises `func_door` #30, a 64 unit bridge whose
     // raised top is 65 above the walkway beside it. Nothing but riding it up
     // reaches that top, and this port has no `SV_PushMove` rider, so that
     // entrance stays shut whether or not the plate can be shot.
+    const SECRET_DOOR_28: (i32, i32) = (760, 2480);
     const QUAD: [Waypoint; 23] = [
         NORTH_CORRIDOR[0],
         NORTH_CORRIDOR[1],
@@ -398,11 +424,11 @@ fn stage_route(stage: usize) -> &'static [Waypoint] {
         waypoint(800, 2736),
         waypoint(848, 2544),
         // `func_door_secret` #28 at (753..767, 2433..2527) travels 86 units at
-        // speed 50, so the first press waits out the travel. The second press
+        // speed 50, so the first shot waits out the travel. The second stop
         // is on the door's own face: the secret holds open for five seconds and
-        // then shuts, and a player who arrives after that just opens it again.
-        wait_for_mover(800, 2480, 16, 120, true),
-        wait_for_mover(786, 2480, 14, 40, true),
+        // then shuts, and a player who arrives after that just shoots it again.
+        shoot_from(800, 2480, 16, 150, SECRET_DOOR_28),
+        shoot_from(786, 2480, 14, 60, SECRET_DOOR_28),
         station(
             544,
             2480,
@@ -444,6 +470,7 @@ pub fn map_loaded(map: EpisodeMap) {
         LAST_Y = i32::MIN;
         STUCK_FRAMES = 0;
         DWELL_FRAMES = 0;
+        AIMED_FRAMES = 0;
         // `DESCENDED` is this route's proof that the authored lift carried
         // the player into the lower level on THIS load, not an accumulated
         // survival outcome, so it re-arms here. Left sticky it let stage 1
@@ -603,6 +630,9 @@ pub fn controls(map: EpisodeMap, player: &Player, weapon: &WeaponState) -> Input
                 DWELL_FRAMES < target.dwell || mechanisms & target.require != target.require;
             if waiting {
                 DWELL_FRAMES = DWELL_FRAMES.saturating_add(1);
+                if let Some(aim) = target.shoot_at {
+                    return shoot_input(player, x, y, aim);
+                }
                 return if target.use_press {
                     InputFrame {
                         pressed: button::SQUARE,
@@ -643,9 +673,42 @@ fn route_cursor() -> Option<(&'static [Waypoint], usize)> {
     }
 }
 
+/// Turn toward `aim` and, once facing it, fire for a moment: long enough for
+/// one shotgun blast, short enough not to empty the shells into an open door.
+unsafe fn shoot_input(player: &Player, x: i32, y: i32, aim: (i32, i32)) -> InputFrame {
+    const FIRE_FRAMES: u32 = 12;
+    let want = psx_math::atan2_q12(aim.1.saturating_sub(y), aim.0.saturating_sub(x)) as i32;
+    let diff = ((want - i32::from(player.view_angles[1]) + 2048) & 0x0fff) - 2048;
+    if diff.abs() > 24 {
+        // Four ticks of turn at most per frame, 32 units a tick at full stick.
+        let look = (diff * 127 / 128).clamp(-127, 127);
+        let look = if look.abs() < 16 {
+            16 * look.signum()
+        } else {
+            look
+        };
+        return InputFrame {
+            look: [look as i16, 0],
+            ..InputFrame::default()
+        };
+    }
+    unsafe {
+        AIMED_FRAMES = AIMED_FRAMES.saturating_add(1);
+        if AIMED_FRAMES <= FIRE_FRAMES {
+            return InputFrame {
+                held: button::R2,
+                pressed: if AIMED_FRAMES == 1 { button::R2 } else { 0 },
+                ..InputFrame::default()
+            };
+        }
+    }
+    InputFrame::default()
+}
+
 unsafe fn advance() {
     ROUTE_INDEX += 1;
     DWELL_FRAMES = 0;
+    AIMED_FRAMES = 0;
     // Reaching a waypoint is progress, and standing on a mover's control on
     // purpose is not being stuck. Carrying the count across the boundary made
     // the route slide sideways off a dwell instead of walking the leg it had

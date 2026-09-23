@@ -4251,6 +4251,12 @@ impl EntityScene {
                                     QuakeMoverState::Bottom | QuakeMoverState::Down
                                 )
                             {
+                                // `door_go_up` on a door standing open restarts
+                                // its wait; a trigger held by the player keeps
+                                // it open exactly as the field does.
+                                if source.class_name == 0x0c {
+                                    self.movers[linked].policy.fire_door();
+                                }
                                 continue;
                             }
                             let linked_source = self.movers[linked].source;
@@ -6518,7 +6524,7 @@ impl EntityScene {
     #[optimize(size)]
     #[allow(clippy::too_many_arguments)]
     fn soldier_attack_damage(
-        &self,
+        &mut self,
         map: &ResidentMap,
         shooter_index: usize,
         player_origin: Vec3I32,
@@ -6546,6 +6552,9 @@ impl EntityScene {
             z: shooter.hit_mins.z.saturating_add(muzzle_height),
         };
         let mut hits = 0i16;
+        // `FireBullets` hands a pellet to whatever it reaches first, and a
+        // shootable secret door is as good a target as the player.
+        let mut mover_hit: Option<(usize, i16)> = None;
         for [up_random, right_random] in spread {
             let random_up = mul_q12_i32(i32::from(up_random), SPREAD_Q12);
             let random_right = mul_q12_i32(i32::from(right_random), SPREAD_Q12);
@@ -6568,10 +6577,10 @@ impl EntityScene {
                 y: start.y.saturating_add(direction.y.saturating_mul(RANGE)),
                 z: start.z.saturating_add(direction.z.saturating_mul(RANGE)),
             };
-            let Some(player_fraction) = segment_aabb_fraction(start, end, player_mins, player_maxs)
-            else {
+            let player_fraction = segment_aabb_fraction(start, end, player_mins, player_maxs);
+            if player_fraction.is_none() && !self.movers.iter().any(|mover| mover.health > 0) {
                 continue;
-            };
+            }
             let mut scratch = TraceScratch::default();
             let mut world = Trace::default();
             if !self.trace_point(map, &start, &end, &mut scratch, &mut world) {
@@ -6592,9 +6601,20 @@ impl EntityScene {
                     blocking_fraction = blocking_fraction.min(fraction);
                 }
             }
-            if player_fraction < blocking_fraction {
+            if player_fraction.is_some_and(|fraction| fraction < blocking_fraction) {
                 hits += 1;
+            } else if let Some((index, _)) = self.shootable_mover_hit(start, end, blocking_fraction)
+            {
+                let pellets = match mover_hit {
+                    Some((hit, count)) if hit == index => count + 1,
+                    _ => 1,
+                };
+                mover_hit = Some((index, pellets));
             }
+        }
+        if let Some((index, pellets)) = mover_hit {
+            let mut damage = DamageResult::default();
+            self.damage_mover(index, pellets.saturating_mul(4), &mut damage);
         }
         Some(hits.saturating_mul(4))
     }
