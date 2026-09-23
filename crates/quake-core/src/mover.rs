@@ -1890,16 +1890,19 @@ pub const fn button_admits_touch(class_name: u8, health: i16) -> bool {
 
 /// Whether the player's USE key can activate this mover directly.
 ///
-/// `func_button` has no use function in the original at all: a plain one is
-/// opened by `button_touch`, and one with health only by `button_killed`. A
-/// door or lift with no `targetname` is the mover a player can walk into and
-/// use, which is what the `target_name == 0` arm carries.
+/// USE stands in for walking into a mover, so it admits exactly what touch
+/// admits. `func_button` has no use function in the original at all: a plain
+/// one is opened by `button_touch`, and one with health only by
+/// `button_killed`. A door or lift with no `targetname` is the mover a player
+/// can walk into, which is what the `target_name == 0` arm carries. A
+/// `func_door_secret` is never opened by touch (`secret_touch` only prints its
+/// message): it is shot open, or fired by a trigger.
 ///
 /// The shootable arm matters because every authored shareware shootable
 /// button is UNNAMED: without this the `target_name == 0` arm reached them
 /// and USE opened all four, which made their damage path decoration.
 pub const fn mover_admits_use(class_name: u8, health: i16, target_name: u16) -> bool {
-    if button_is_shootable(class_name, health) {
+    if button_is_shootable(class_name, health) || class_name == CLASS_FUNC_DOOR_SECRET {
         return false;
     }
     button_admits_touch(class_name, health) || target_name == 0
@@ -2032,6 +2035,8 @@ mod button_tests {
         // exactly the case every authored shareware one falls into.
         assert!(!mover_admits_use(CLASS_FUNC_BUTTON, 1, 0));
         assert!(!mover_admits_use(CLASS_FUNC_BUTTON, 1, 42));
+        // An unnamed secret door is shot open, never walked or USEd open.
+        assert!(!mover_admits_use(CLASS_FUNC_DOOR_SECRET, 0, 0));
     }
 
     #[test]

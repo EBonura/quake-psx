@@ -2451,7 +2451,11 @@ impl Renderer {
                 (particle.origin.z >> 12).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             );
             let projected = scene::project_vertex(point);
-            if projected.sz == 0 {
+            // `R_DrawParticles` depth-tests every dot, so a closer wall hides
+            // it: the dot takes the ordering-table slot of its own depth, the
+            // same quarter-of-screen-Z key the sprites and alias triangles use.
+            let otz = u32::from(projected.sz) >> 2;
+            if otz == 0 || otz >= u32::from(ClassicAffineProfile::QUAKE_REFERENCE.ot_depth) {
                 continue;
             }
             let color = particle.color();
@@ -2465,7 +2469,7 @@ impl Renderer {
                 color.1,
                 color.2,
             );
-            rect.tag = u32::from(RectFlat::WORDS) << 24;
+            rect.tag = (u32::from(RectFlat::WORDS) << 24) | otz;
             unsafe { output.cast::<RectFlat>().write(rect) };
             output = unsafe { output.add(FLAT_PACKET_WORDS) };
             stats.impact_particle_packets = stats.impact_particle_packets.saturating_add(1);
