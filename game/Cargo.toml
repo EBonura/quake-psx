@@ -35,6 +35,7 @@ default = [
     "renderer-scratchpad-liquid-phase",
     "renderer-screen-frustum",
     "renderer-liquid-half-rate",
+    "renderer-scratchpad-stack",
 ]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
@@ -115,6 +116,11 @@ renderer-scratchpad-liquid-phase = []
 # Liquid turbulence phase advances every second frame (same speed, half the
 # 64x64 resamples).
 renderer-liquid-half-rate = []
+# Run the camera PVS pass and frame-face selection with their frames on the
+# CPU scratchpad (psx-rt ScratchpadStack), so their spills load in one cycle.
+# Nothing else is live in the scratchpad then; tools/stack_guard.py proves
+# the call trees fit after every link.
+renderer-scratchpad-stack = []
 # Keep the exact separate near-classification pass, but execute each retained
 # face's three-product inner-support test in the otherwise-unused second light
 # matrix row left live beside the four frustum planes.
