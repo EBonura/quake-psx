@@ -1629,6 +1629,10 @@ impl EntityScene {
 
     /// Consume each overlapping implemented pickup at most once for the
     /// lifetime of this resident map. Shareware single player has no respawn.
+    ///
+    /// Out of line: inlined into `quake::run`, its loops reloaded their
+    /// invariants from run's 20 KB frame on every entity.
+    #[inline(never)]
     pub fn collect_pickups(
         &mut self,
         map: &ResidentMap,
@@ -3150,6 +3154,10 @@ impl EntityScene {
     /// `rider` is the player body every pusher may carry. It is lent mutably
     /// because `SV_PushMove` is a move, not a collision: a lift that rises
     /// under a standing player takes the player with it.
+    ///
+    /// Out of line for the same reason as `collect_pickups`: its mover loop
+    /// reloaded 61 values per mover from `quake::run`'s frame.
+    #[inline(never)]
     pub fn update_gameplay(
         &mut self,
         map: &ResidentMap,
