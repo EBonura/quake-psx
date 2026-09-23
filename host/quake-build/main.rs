@@ -30,7 +30,7 @@ const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402d
 // Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "6eebb2d8667cfa9a5b65cb7aeeeabcff189fe78e";
 // Keep this SDK revision in sync with psoxide-link in Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "6da88d92de183cb5fd092be181bdbc5b81868480";
+const PSOXIDE_SDK_REV: &str = "810f917623ed98bc8bbe069504b3b4e71c1757d9";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -4140,6 +4140,27 @@ fn prepare_guest_stage(root: &Path, recipe: &GuestRecipe) -> Result<PreparedGues
     prepare_guest_stage_at(root, recipe, Path::new(GUEST_STAGE_ROOT))
 }
 
+/// Delete the guest's linked executables (the uplifted one and every feature
+/// set's copy in `deps`) so the next cargo build links and rewrites the map.
+fn force_guest_relink(stage: &Path) -> Result<()> {
+    let release = stage.join("game/target/mipsel-sony-psx/release");
+    let uplifted = release.join("quake-psx.exe");
+    if uplifted.exists() {
+        fs::remove_file(&uplifted)?;
+    }
+    let deps = release.join("deps");
+    if deps.is_dir() {
+        for entry in fs::read_dir(&deps)? {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            if name.starts_with("quake_psx-") && name.ends_with(".exe") {
+                fs::remove_file(&path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn reset_guest_target(stage: &Path) -> Result<()> {
     let target = stage.join("game/target");
     if target.exists() {
@@ -4330,15 +4351,19 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     } else {
         rustflags.extend(sdk_delay_slot_flags(root)?);
     }
-    if let Some(map) = GUEST_LINK_MAP.get() {
-        rustflags.push(format!("-C link-arg=-Map={}", map.display()));
-    }
-    if !rustflags.is_empty() {
-        // An environment RUSTFLAGS replaces game/.cargo/config.toml's
-        // target rustflags outright, so everything the build needs travels
-        // together here.
-        command.env("RUSTFLAGS", rustflags.join(" "));
-    }
+    // Every link writes a map: the hazard patcher proves jump tables from it
+    // and the stack guard needs it. It lives in the stage's target, so the
+    // flag (and with it every crate's fingerprint) is fixed per stage.
+    let map = stage.path.join("game/target/quake-psx.map");
+    rustflags.push(format!("-C link-arg=-Map={}", map.display()));
+    // An environment RUSTFLAGS replaces game/.cargo/config.toml's target
+    // rustflags outright, so everything the build needs travels together
+    // here.
+    command.env("RUSTFLAGS", rustflags.join(" "));
+    // The map is only rewritten by a link, and cargo re-uplifts an earlier
+    // feature set's executable without linking, which would leave another
+    // build's map beside it. Remove the linked outputs so this build links.
+    force_guest_relink(&stage.path)?;
     run(&mut command)?;
     verify_guest_stage(&stage.path, &recipe)?;
     let staged_exe = game_exe(&stage.path);
@@ -4346,13 +4371,21 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         // Reroute every branch whose delay-slot load the branch target (or
         // fall-through, or jump-table target) consumes one instruction too
         // early through psx-rt's HAZARD_TRAMPOLINES, then rescan; a hazard
-        // the patcher cannot fix fails the build.
+        // the patcher cannot fix fails the build. With the map each switch's
+        // jump table is proven and bounded to its function.
         // The stage carries only the SDK link closure; the tool lives in
         // the hydrated checkout.
         let patcher = root.join(".psoxide/tools/hazard_patch.py");
         let mut patch = Command::new("python3");
-        patch.arg(&patcher).arg(&staged_exe);
+        patch.arg(&patcher).arg(&staged_exe).arg("--map").arg(&map);
         run(&mut patch)?;
+    }
+    // Prove every psx-rt scratchpad stack call tree fits its region (and,
+    // in an image without one, that none is linked).
+    let guard = root.join(".psoxide/tools/stack_guard.py");
+    run(Command::new("python3").arg(&guard).arg(&staged_exe).arg(&map))?;
+    if let Some(requested) = GUEST_LINK_MAP.get() {
+        fs::copy(&map, requested)?;
     }
     audit_console_image(&staged_exe)?;
     let destination = game_exe(root);
