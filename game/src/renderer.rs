@@ -573,7 +573,18 @@ fn draw_sprite_model(
         scene::project_vertex(vertex(corner(i32::from(frame.left), down))),
         scene::project_vertex(vertex(corner(right_edge, down))),
     ];
-    if projected.iter().any(|vertex| vertex.sz == 0) {
+    // `R_DrawSprite` depth-tests the poster like any other surface, so a
+    // closer wall hides it. The ordering table holds one depth per packet:
+    // the classic average-Z key (a quarter of the mean screen Z) of the four
+    // corners, which is the sprite origin's own depth for every kind that
+    // faces the view, and is rejected outside the table exactly like an
+    // alias triangle.
+    let depth_sum: u32 = projected.iter().map(|vertex| u32::from(vertex.sz)).sum();
+    let otz = depth_sum >> 4;
+    if projected.iter().any(|vertex| vertex.sz == 0)
+        || otz == 0
+        || otz >= u32::from(ClassicAffineProfile::QUAKE_REFERENCE.ot_depth)
+    {
         return SpriteSubmit {
             next: output,
             drawn: false,
@@ -594,7 +605,7 @@ fn draw_sprite_model(
         header.skins[0].texture_page,
         (0x80, 0x80, 0x80),
     );
-    packet.tag = u32::from(QuadTextured::WORDS) << 24;
+    packet.tag = (u32::from(QuadTextured::WORDS) << 24) | otz;
     unsafe { output.cast::<QuadTextured>().write(packet) };
     SpriteSubmit {
         next: unsafe { output.add(PACKET_WORDS) },
