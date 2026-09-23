@@ -1806,3 +1806,69 @@ Work instructions fall 1,773,825,096 -> 1,770,087,551 (-0.211%); bus cycles
 0.122-FPS layout band, so it is not the evidence for acceptance. The directly
 removed header decoding and reduced route work support retaining this change.
 Raw controls and captures: /tmp/astra-architecture-pass-20260904/quake-*.
+
+## 2026-09-23: scratchpad stacks
+
+SDK 810f91762 gives psx-rt a `ScratchpadStack`: `run(f)` calls `f` with `$sp`
+in a scratchpad region, so its spills reload in one cycle instead of the six or
+seven a DRAM load stalls on the chain route (453.7M stack-load stall cycles over
+66.8M stack loads at the start of this pass). `tools/stack_guard.py`, now run
+after every guest link, proves each call tree fits its region and fails the
+build otherwise; every link also writes a map, which the hazard patcher uses to
+prove jump tables.
+
+Quake has no persistent scratchpad data. The batch vertices (world and
+brush-entity batches) and the liquid phase offsets are transient inside
+`draw_frame`, so the PVS pass, frame-face selection, the sky lattice (after the
+last batch), scene collision traces and the pickup hull scan each run on the
+whole scratchpad (`renderer-scratchpad-stack`, `collision-scratchpad-stack`,
+`gameplay-scratchpad-stack`, all default). Out of line, `update_gameplay` and
+`collect_pickups` stopped reloading their loop state from `quake::run`'s
+22 KB frame.
+
+E1M1 chain bench, frozen frontend `PSoXide-perf/baseline-2026-09-22`, exact
+per-word attribution from the `work/exact-attrib` frontend (work excludes
+`gpu_end_frame` and the CD reads). Every row keeps the route probe, 3808 polls,
+the VRAM and display hashes and all 3796 per-frame GPU draw hashes:
+
+| build | fps | work instructions | stack load stalls | all RAM-load stalls | I-cache stalls | instr + RAM + I-cache |
+|---|---|---|---|---|---|---|
+| 3b09728 | 25.729 | 1,768,958,859 | 453.7M | 1579.3M | 292.0M | 3640.3M |
+| SDK 810f91762 | 25.709 | 1,768,957,382 | 459.1M | 1587.6M | 297.0M | 3653.5M |
+| + PVS and selection | 25.916 | 1,769,405,940 | 430.2M | 1555.4M | 307.6M | 3632.4M |
+| + collision traces | 26.494 | 1,775,466,704 | 374.9M | 1486.6M | 306.5M | 3568.6M |
+| + gameplay out of line | 26.529 | 1,759,267,288 | 322.3M | 1467.4M | 316.4M | 3543.1M |
+| + pickup hull scan | 26.764 | 1,748,255,750 | 302.9M | 1422.3M | 310.4M | 3481.0M |
+| + sky lattice | 26.793 | 1,748,116,374 | 287.6M | 1380.9M | 327.3M | 3456.3M |
+
+Layout noise is larger than the 0.122 fps band suggests. Two byte-neutral
+controls on the pickup build (a called 32-byte and 1 KB nop pad) measured
+26.757 and 26.558 fps against 26.764, with I-cache stalls +3.7M and +54.4M and
+the three-way cycle sum +0.20% and +1.82%. Instructions and stack-load stalls
+barely move under layout (+1.6M and +1.8M), so they are the evidence for each
+step; fps and I-cache stalls are not, one step at a time. The monster route
+(`e1m1-monster-route-bench`) on the final build against the SDK bump: same
+3807 polls, hashes and 3796 draw hashes; 28.835 fps against 28.736, work
+instructions 1,360,362,641 against 1,379,017,907, stack-load stalls -90.8M,
+three-way cycle sum -5.6%.
+
+Closed in this pass:
+
+- Wrapping the calls inside `draw_frame` perturbs its face loop (+4.8M
+  instructions, +7.7M stack-load stalls there). Every switch now lives inside
+  an out-of-line callee.
+- The sky switch inlined into `draw_frame` measured 26.459 fps with I-cache
+  stalls +86M in `draw_frame` and `materialize_surface`: a placement collision
+  of the size the 1 KB control shows. Out of line it is the row above.
+- The whole player update does not fit (2,144 of 1,004 bytes), and neither
+  does the whole pickup pass (6,000: `fire_pickup_targets` has a 2 KB frame);
+  only the hull scan runs on the stack. The trace fits after its 514-byte
+  `BodyBlockers` set moved from the frame to one RAM static (792 to 336 bytes).
+- `materialize_surface` has no stack loads; its 190M stall cycles are the
+  corner and position streams. Forcing it inline into the face loop cut 14.5M
+  instructions but added 24M stack-load stalls to `draw_frame`; reverted.
+- `draw_frame`'s face loop (about 95M stack-load stalls, eleven reloads a face)
+  and the engine's batch writer cannot use a stack: the batch vertices hold
+  1,020 of the 1,024 bytes while they run. The next stack-load cost in
+  Quake's own code is `update_gameplay` (43.6M, about half of it the mover
+  loop), whose 5,384-byte frame does not fit either.
