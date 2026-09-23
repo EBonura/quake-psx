@@ -474,6 +474,15 @@ impl QuakeMover {
         self.automatic
     }
 
+    /// Withdraw the proximity field `from_entity` granted on this door's own
+    /// fields. `LinkDoors` decides the field for a whole chain: it copies any
+    /// member's `targetname` and `health` onto the master and spawns no field
+    /// when the master then has either, or a key. A `DOOR_DONT_LINK` door
+    /// returns before `spawn_field` and never has one.
+    pub fn withdraw_proximity_field(&mut self) {
+        self.automatic = false;
+    }
+
     /// `plat_center_touch` for the fixed mover state machine.
     ///
     /// An unnamed platform starts low and the touch sends it up. A named

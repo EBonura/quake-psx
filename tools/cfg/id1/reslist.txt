@@ -32,6 +32,8 @@ ent worldspawn
   mdl progs/gib3.mdl
   # `DeathBubbles` needs the original two-frame billboard on every map.
   mdl progs/s_bubble.spr
+  # `BecomeExplosion`: rockets, grenades and exploding boxes on every map.
+  mdl progs/s_explod.spr
   sfx sound/misc/secret.wav
   sfx sound/misc/talk.wav
   sfx sound/misc/outwater.wav

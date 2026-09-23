@@ -1166,7 +1166,7 @@ pub fn run() -> ! {
             // no longer flashes the whole view.
             dynamic_lights.spawn_explosion(impact);
             presentation.explosion_effects_mut().spawn(impact);
-            // `R_ParticleExplosion` around the same star, heavily decimated.
+            // `R_ParticleExplosion` around the same sprite, heavily decimated.
             presentation.impact_particles_mut().spawn_ring(
                 impact,
                 quake_core::effects::ParticleKind::Fire,

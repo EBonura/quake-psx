@@ -770,6 +770,11 @@ enum MonsterMissileKind {
     LavaBall,
     /// A thrown gib chunk (`ThrowGib`): bounces, hurts nothing, times out.
     Debris,
+    /// A gibbed monster's head in flight (`ThrowHead`): bounces like a chunk
+    /// but never times out in the original. When it comes to rest the slot
+    /// hands the head back to the corpse entity it came from (`owner`), which
+    /// keeps it for the rest of the level, and the slot is free again.
+    Head,
     /// `DropBackpack`: tossed, settles where it lands, picked up by the
     /// player, gone after two minutes.
     Backpack(BackpackAmmo),
@@ -779,14 +784,14 @@ impl MonsterMissileKind {
     const fn ballistic(self) -> bool {
         matches!(
             self,
-            Self::Grenade | Self::Gib | Self::Debris | Self::Backpack(_)
+            Self::Grenade | Self::Gib | Self::Debris | Self::Head | Self::Backpack(_)
         )
     }
 
     /// Kinds that hurt whoever they touch; debris flies through everyone and
     /// the backpack only ever meets the player, tested separately.
     const fn touches_player(self) -> bool {
-        !matches!(self, Self::Debris | Self::Backpack(_))
+        !matches!(self, Self::Debris | Self::Head | Self::Backpack(_))
     }
 }
 
@@ -1495,8 +1500,37 @@ impl EntityScene {
     /// `LinkDoors`: merge every pair of `func_door` bodies whose closed bounds
     /// touch, unless either carries `DOOR_DONT_LINK`. Episode 1 authors each
     /// key lock as two half-doors, so a key opens both leaves at once.
+    ///
+    /// The proximity field belongs to the chain, not to a leaf: `LinkDoors`
+    /// copies every member's `targetname` and `health` onto the master and
+    /// spawns no field when the master then has either, or a key, and a
+    /// `DOOR_DONT_LINK` door never gets one. Eighteen shareware chains pair a
+    /// named leaf with an unnamed one (both of Start's registered-only episode
+    /// gates among them), and the unnamed leaf must stay shut until the
+    /// trigger fires the chain.
     #[optimize(size)]
     fn link_doors(&mut self, map: &ResidentMap) {
+        self.link_door_chains(map);
+        for index in 0..self.movers.len() {
+            let source = self.movers[index].source;
+            if source.class_name != 0x0c || !self.movers[index].policy.automatic() {
+                continue;
+            }
+            let group = self.movers[index].link_group;
+            let chain_is_fired = source.spawn_flags & door::DOOR_DONT_LINK != 0
+                || self.movers.iter().any(|linked| {
+                    linked.link_group == group
+                        && linked.source.class_name == 0x0c
+                        && !linked.policy.automatic()
+                });
+            if chain_is_fired {
+                self.movers[index].policy.withdraw_proximity_field();
+            }
+        }
+    }
+
+    #[optimize(size)]
+    fn link_door_chains(&mut self, map: &ResidentMap) {
         let sources = map.entities();
         let door = |scene: &Self, index: usize| -> Option<(u16, [i16; 3], [i16; 3])> {
             let entity = scene
@@ -3403,11 +3437,19 @@ impl EntityScene {
                     64,
                     16,
                 );
-            let directly_usable = quake_core::mover::mover_admits_use(
-                source.class_name,
-                self.movers[mover_index].max_health,
-                source.target_name,
-            );
+            // USE stands in for walking into a door's proximity field, so a
+            // `func_door` admits it exactly when its chain has one. A leaf's
+            // own empty `targetname` is not enough: its named partner makes
+            // the whole chain trigger-fired.
+            let directly_usable = if source.class_name == 0x0c {
+                self.movers[mover_index].policy.automatic()
+            } else {
+                quake_core::mover::mover_admits_use(
+                    source.class_name,
+                    self.movers[mover_index].max_health,
+                    source.target_name,
+                )
+            };
             if message_touch
                 || used
                     && source.class_name == 0x0c
@@ -5569,6 +5611,12 @@ impl EntityScene {
     /// the scene throws them from the origin the game hands over.
     #[optimize(size)]
     pub fn gib_player(&mut self, origin: Vec3I32, health: i16) {
+        // `GibPlayer` calls `ThrowHead` first, so the chunks leave from 24
+        // units under the player's origin, like a monster's.
+        let origin = Vec3I32 {
+            z: origin.z.saturating_sub(24 << 12),
+            ..origin
+        };
         self.pending_player_gib = Some((origin, health));
     }
 
@@ -5583,6 +5631,11 @@ impl EntityScene {
     ) {
         const GIB_MODEL_IDS: [i16; 3] = [0x27, 0x28, 0x29];
         const DEBRIS_TICKS: u16 = 240;
+        /// A head still bouncing after ten seconds is parked where it is.
+        const HEAD_FLIGHT_TICKS: u16 = 600;
+        /// `avelocity = crandom() * '0 600 0'`: up to 600 degrees a second of
+        /// yaw, 1820 of the 65536-per-turn render units each 60 Hz tick.
+        const HEAD_YAW_STEP_MAX: i32 = 1_820;
         let styles = self.light_styles;
         {
             result.last_gib = Some(origin);
@@ -5597,13 +5650,9 @@ impl EntityScene {
                 seed ^= seed << 5;
                 seed
             };
-            for &model_id in &GIB_MODEL_IDS {
-                let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) else {
-                    return;
-                };
-                // `VelocityForDamage`: 100*crandom, 100*crandom, 200+100*random,
-                // scaled by 0.7 above -50, 2 above -200, 10 below.
-                let random = next();
+            // `VelocityForDamage`: 100*crandom, 100*crandom, 200+100*random,
+            // scaled by 0.7 above -50, 2 above -200, 10 below.
+            let velocity_for_damage = |random: u32| {
                 let crandom = |bits: u32| i32::from(bits as u16) - 32_768; // -32768..32767
                 let scale_q12 = if health > -50 {
                     2_867
@@ -5613,11 +5662,63 @@ impl EntityScene {
                     40_960
                 };
                 let axis = |value: i32| mul_q12_i32(value, scale_q12) / 60;
-                let velocity = Vec3I32 {
+                Vec3I32 {
                     x: axis(crandom(random) * 100 / 8), // 100 * crandom in Q12
                     y: axis(crandom(random >> 11) * 100 / 8),
                     z: axis((200 << 12) + i32::from((random >> 22) as u16 & 0x3ff) * 100 * 4),
+                }
+            };
+            // `ThrowHead` runs first. The corpse entity already wears the
+            // head model; a free slot flies it (`MOVETYPE_BOUNCE`) and hands
+            // it back on landing. With the pool full the head simply stays
+            // on the floor it was dropped to.
+            if let Some(head) = self
+                .entities
+                .get(index)
+                .copied()
+                .filter(|head| head.visible)
+            {
+                if let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) {
+                    let random = next();
+                    let velocity = velocity_for_damage(random);
+                    let render_index = self.missile_render_start as usize + slot_index;
+                    if let Some(render) = self.entities.get_mut(render_index) {
+                        if (render.model_id == head.model_id
+                            || set_alias_model(map, render, head.model_id))
+                            && update_projectile_render(map, render, origin, velocity, &styles)
+                        {
+                            render.angles = head.angles;
+                            let yaw_step =
+                                ((i32::from(random as u16) - 32_768) * HEAD_YAW_STEP_MAX) >> 15;
+                            self.missiles[slot_index] = Some(MonsterMissile {
+                                origin,
+                                velocity,
+                                angles: head.angles,
+                                angular_velocity: Vec3I16 {
+                                    x: 0,
+                                    y: yaw_step as i16,
+                                    z: 0,
+                                },
+                                kind: MonsterMissileKind::Head,
+                                damage: 0,
+                                remaining_ticks: HEAD_FLIGHT_TICKS,
+                                resting: false,
+                                owner: index as u16,
+                            });
+                            self.trail_anchors[MISSILE_TRAIL_BASE + slot_index] = origin;
+                            self.entities[index].visible = false;
+                        } else {
+                            render.visible = false;
+                        }
+                    }
+                }
+            }
+            for &model_id in &GIB_MODEL_IDS {
+                let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) else {
+                    return;
                 };
+                let random = next();
+                let velocity = velocity_for_damage(random);
                 let render_index = self.missile_render_start as usize + slot_index;
                 let Some(render) = self.entities.get_mut(render_index) else {
                     return;
@@ -5730,7 +5831,9 @@ impl EntityScene {
         let missile = self.missiles.get(slot - MISSILE_TRAIL_BASE)?.as_ref()?;
         let (kind, step_units) = match missile.kind {
             MonsterMissileKind::Grenade => (ParticleKind::Smoke, SMOKE_STEP_UNITS),
-            MonsterMissileKind::Debris => (ParticleKind::Blood, GIB_STEP_UNITS),
+            MonsterMissileKind::Debris | MonsterMissileKind::Head => {
+                (ParticleKind::Blood, GIB_STEP_UNITS)
+            }
             MonsterMissileKind::Gib => (ParticleKind::Blood, ZOMBIE_GIB_STEP_UNITS),
             // The spit, the lava ball and the backpack carry no model effect
             // flag, so they leave nothing behind.
@@ -6023,6 +6126,24 @@ impl EntityScene {
                     missile.origin = end;
                 }
                 tick += 1;
+            }
+            if matches!(missile.kind, MonsterMissileKind::Head) && (removed || missile.resting) {
+                // `ThrowHead` leaves the head in the level for good: hand it
+                // back to its corpse entity where it came to rest.
+                removed = true;
+                if let Some(corpse) = self.entities.get_mut(usize::from(missile.owner)) {
+                    if update_projectile_render(
+                        map,
+                        corpse,
+                        missile.origin,
+                        Vec3I32::default(),
+                        &styles,
+                    ) {
+                        corpse.angles = missile.angles;
+                        corpse.hit_mins = missile.origin;
+                        corpse.hit_maxs = missile.origin;
+                    }
+                }
             }
             self.missiles[slot] = (!removed).then_some(missile);
             let render_index = self.missile_render_start as usize + slot;
@@ -8121,11 +8242,14 @@ fn apply_entity_damage(
             entity.damageable = false;
             result.killed_targets = result.killed_targets.saturating_add(1);
             if transition.gibbed {
-                // `ThrowHead`: the corpse becomes the flying remains; the
-                // scene throws the three gib chunks on its next pass.
+                // `ThrowHead`: the corpse becomes the head, 24 units lower
+                // (`self.origin_z = self.origin_z - 24`, the floor under a
+                // standing monster). The scene throws it and the three gib
+                // chunks, which spawn from that same lowered origin, on its
+                // next pass.
                 entity.pending_gib = true;
                 *scene_work = true;
-                entity.origin.z = entity.origin.z.saturating_add(24 << 12);
+                entity.origin.z = entity.origin.z.saturating_sub(24 << 12);
                 if !monster
                     .kind()
                     .gib_head_model_id()

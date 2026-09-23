@@ -3349,9 +3349,14 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
             .filter_map(|index| models.model_at(index))
             .filter_map(|model| alias_model_is_sprite(model.header()).then_some(model.header().id))
             .collect::<Vec<_>>();
-        if sprite_ids != [quake_core::effects::BUBBLE_SPRITE_MODEL_ID] {
+        if sprite_ids
+            != [
+                quake_core::effects::BUBBLE_SPRITE_MODEL_ID,
+                quake_core::effects::EXPLOSION_SPRITE_MODEL_ID,
+            ]
+        {
             return Err(format!(
-                "cooked {map} has sprite model IDs {sprite_ids:?}, expected only the resident death bubble"
+                "cooked {map} has sprite model IDs {sprite_ids:?}, expected only the resident death bubble and explosion"
             )
             .into());
         }
@@ -3472,9 +3477,9 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
         println!("PSB5 resident {map}: {required} bytes");
         largest_required = largest_required.max(required);
     }
-    if largest_required != 865_958 {
+    if largest_required != 866_122 {
         return Err(format!(
-            "indexed resident census drifted: largest map needs {largest_required} bytes, expected 865958"
+            "indexed resident census drifted: largest map needs {largest_required} bytes, expected 866122"
         )
         .into());
     }
@@ -3506,15 +3511,15 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
 /// records and persistent-sound dedup visible in every validation run.
 fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     const MAPS: [(&str, usize, usize); 9] = [
-        ("start", 1_769_840, 1_464_806),
-        ("e1m1", 1_862_013, 1_549_333),
-        ("e1m2", 2_076_988, 1_756_594),
-        ("e1m3", 2_147_866, 1_844_570),
-        ("e1m4", 2_096_303, 1_781_981),
-        ("e1m5", 2_036_505, 1_713_133),
-        ("e1m6", 1_990_529, 1_688_683),
-        ("e1m7", 1_601_558, 1_389_440),
-        ("e1m8", 1_646_042, 1_417_964),
+        ("start", 1_769_840, 1_464_971),
+        ("e1m1", 1_862_013, 1_549_497),
+        ("e1m2", 2_076_988, 1_756_759),
+        ("e1m3", 2_147_866, 1_844_734),
+        ("e1m4", 2_096_303, 1_782_145),
+        ("e1m5", 2_036_505, 1_713_298),
+        ("e1m6", 1_990_529, 1_688_848),
+        ("e1m7", 1_601_558, 1_389_605),
+        ("e1m8", 1_646_042, 1_418_129),
     ];
     let mut legacy_total = 0usize;
     let mut compact_total = 0usize;
@@ -3550,9 +3555,9 @@ fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     let global_bytes = fs::metadata(root.join("id1psx/sounds/global.qsb"))?.len() as usize;
     let persistent_total = compact_total + global_bytes;
     if legacy_total != 17_227_644
-        || compact_total != 14_606_504
+        || compact_total != 14_607_986
         || global_bytes != 159_418
-        || persistent_total != 14_765_922
+        || persistent_total != 14_767_404
     {
         return Err(format!(
             "PSB5/QSB1 episode census drifted: {legacy_total} -> {compact_total} + {global_bytes}"

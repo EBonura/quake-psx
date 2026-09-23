@@ -30,7 +30,7 @@ use psx_engine::{
 };
 
 use psx_gpu::material::{BlendMode, TextureMaterial, TextureWindow};
-use psx_gpu::prim::{ClassicTriTextured, LineMono, QuadTextured, QuadTexturedMaterial, RectFlat};
+use psx_gpu::prim::{ClassicTriTextured, QuadTextured, QuadTexturedMaterial, RectFlat};
 use psx_gte::math::{Mat3I16, Vec3I16 as GteVec3I16, Vec3I32 as GteVec3I32};
 
 use psx_gte::scene::{self, AabbClipPlane};
@@ -39,7 +39,10 @@ use psx_math::{atan2_q12, cos_q12, sin_q12};
 use psx_render_contract::{CookedDrawSurface, RetainedSurfaceBounds};
 use quake_core::collision::{CONTENTS_EMPTY, CONTENTS_WATER};
 use quake_core::combat::{view_basis, WeaponView, LIGHTNING_BOLT_MODEL_ID};
-use quake_core::effects::{DynamicLight, ExplosionEffect, ImpactParticle, BUBBLE_SPRITE_MODEL_ID};
+use quake_core::effects::{
+    DynamicLight, ExplosionEffect, ImpactParticle, BUBBLE_SPRITE_MODEL_ID,
+    EXPLOSION_SPRITE_MODEL_ID,
+};
 use quake_core::hud::HudView;
 use quake_core::level::IntermissionView;
 use quake_core::menu::{
@@ -1887,7 +1890,15 @@ impl Renderer {
             );
         }
 
-        next = self.draw_explosion_effects(explosion_effects, view, next, end, &mut stats);
+        next = self.draw_explosion_effects(
+            map,
+            explosion_effects,
+            camera,
+            view,
+            next,
+            end,
+            &mut stats,
+        );
         next =
             self.draw_impact_particles(map, impact_particles, camera, view, next, end, &mut stats);
 
@@ -2324,67 +2335,41 @@ impl Renderer {
         output
     }
 
+    /// `BecomeExplosion`: the six-frame `progs/s_explod.spr` billboard.
     fn draw_explosion_effects(
         &self,
+        map: &ResidentMap,
         effects: impl Iterator<Item = ExplosionEffect>,
+        camera: Camera,
         view: QuakeViewTransform,
         mut output: *mut u32,
         end: *mut u32,
         stats: &mut RenderStats,
     ) -> *mut u32 {
-        const RAYS: [(i32, i32, i32); 6] = [
-            (1, 0, 0),
-            (-1, 0, 0),
-            (0, 1, 0),
-            (0, -1, 0),
-            (0, 0, 1),
-            (0, 0, -1),
-        ];
-        const PACKET_WORDS: usize = LineMono::WORDS as usize + 1;
-        scene::load_rotation(&view.rotation);
-        scene::load_translation(view.translation);
-        let vertex = |point: Vec3I32| {
-            GteVec3I16::new(
-                (point.x >> 12).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                (point.y >> 12).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                (point.z >> 12).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-            )
+        let Some(model) = map.alias_models().get(EXPLOSION_SPRITE_MODEL_ID) else {
+            return output;
         };
         for effect in effects {
-            let center = scene::project_vertex(vertex(effect.origin));
-            if center.sz == 0 {
-                continue;
+            let submitted = draw_sprite_model(
+                model,
+                effect.sprite_frame(),
+                effect.origin,
+                [0; 3],
+                camera,
+                view,
+                output,
+                end,
+            );
+            if submitted.overflow {
+                stats.packet_overflow_avoided = true;
+                return output;
             }
-            let radius = effect.radius_units().saturating_mul(4096);
-            let color = effect.color();
-            for (x, y, z) in RAYS {
-                if !packet_capacity(output, end, PACKET_WORDS) {
-                    stats.packet_overflow_avoided = true;
-                    return output;
-                }
-                let endpoint = Vec3I32 {
-                    x: effect.origin.x.saturating_add(radius.saturating_mul(x)),
-                    y: effect.origin.y.saturating_add(radius.saturating_mul(y)),
-                    z: effect.origin.z.saturating_add(radius.saturating_mul(z)),
-                };
-                let projected = scene::project_vertex(vertex(endpoint));
-                if projected.sz == 0 {
-                    continue;
-                }
-                let mut line = LineMono::new(
-                    center.sx,
-                    center.sy,
-                    projected.sx,
-                    projected.sy,
-                    color.0,
-                    color.1,
-                    color.2,
-                );
-                line.tag = u32::from(LineMono::WORDS) << 24;
-                unsafe { output.cast::<LineMono>().write(line) };
-                output = unsafe { output.add(PACKET_WORDS) };
+            output = submitted.next;
+            if submitted.drawn {
+                stats.sprite_packets = stats.sprite_packets.saturating_add(1);
                 stats.explosion_effect_packets = stats.explosion_effect_packets.saturating_add(1);
                 stats.packets = stats.packets.saturating_add(1);
+                stats.hardware_triangles = stats.hardware_triangles.saturating_add(2);
             }
         }
         output
