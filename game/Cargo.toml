@@ -124,6 +124,15 @@ gameplay-scratchpad-stack = []
 # matrix row left live beside the four frustum planes.
 renderer-gte-near-classification = ["renderer-block-frustum"]
 hardware-performance = []
+# Present without blocking the CPU. gpu_end_frame publishes the finished
+# frame's chain to a one-entry slot and returns; the VBlank handler flips to
+# the previous frame and kicks the queued chain at the first edge on which the
+# previous chain's closing GP0(1Fh) has run (GPUSTAT bit 24) and DMA channel 2
+# is idle. See platform.rs.
+present-queue = []
+# Diagnostic: record the interrupted PC of every VBlank IRQ in a 1,024-entry
+# ring (QUAKE_IRQ_EPC), to see what code the IRQ lands in.
+irq-epc-probe = []
 hardware-regression = ["hardware-performance"]
 
 [dependencies]
