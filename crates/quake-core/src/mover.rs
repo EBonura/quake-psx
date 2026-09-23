@@ -567,6 +567,26 @@ impl QuakeMover {
         }
     }
 
+    /// `door_fire` for one member of a fired `func_door` chain: a
+    /// `DOOR_TOGGLE` door that is up or rising goes back down, and every
+    /// other door runs `door_go_up`. That reverses a closing door and starts
+    /// a closed one; one already rising is left alone, and one standing open
+    /// restarts its wait (`self.nextthink = self.ltime + self.wait`), which is
+    /// what holds a door open over a player who keeps touching its field.
+    pub fn fire_door(&mut self) {
+        if !self.toggle {
+            match self.state {
+                QuakeMoverState::Top => {
+                    self.wait_remaining = self.wait_ticks;
+                    return;
+                }
+                QuakeMoverState::Up => return,
+                QuakeMoverState::Bottom | QuakeMoverState::Down => {}
+            }
+        }
+        self.activate();
+    }
+
     const fn is_secret(&self) -> bool {
         matches!(self.extra, MoverExtra::SecretForwardLeg { .. })
     }
@@ -1403,6 +1423,61 @@ mod tests {
     }
 
     #[test]
+    fn a_fired_chain_holds_an_open_door_and_reverses_a_closing_one() {
+        let mut source = source(CLASS_FUNC_DOOR);
+        source.speed = 240;
+        let mut door = QuakeMover::from_entity(source, model(Vec3I16 { x: 16, y: 8, z: 64 }))
+            .unwrap()
+            .unwrap();
+        door.fire_door();
+        assert_eq!(door.state(), QuakeMoverState::Up);
+        // Already rising: `door_go_up` returns at once.
+        door.fire_door();
+        assert_eq!(door.state(), QuakeMoverState::Up);
+        while door.state() != QuakeMoverState::Top {
+            door.tick();
+        }
+        // Touching the field every second keeps the three-second wait from
+        // ever running out.
+        for _ in 0..10 {
+            for _ in 0..60 {
+                door.tick();
+            }
+            assert_eq!(door.state(), QuakeMoverState::Top);
+            door.fire_door();
+        }
+        // Left alone it closes after exactly `wait`, and a touch while it is
+        // closing sends it back up.
+        for _ in 0..179 {
+            door.tick();
+        }
+        assert_eq!(door.state(), QuakeMoverState::Top);
+        door.tick();
+        assert_eq!(door.state(), QuakeMoverState::Down);
+        door.fire_door();
+        assert_eq!(door.state(), QuakeMoverState::Up);
+    }
+
+    #[test]
+    fn shootable_movers_take_the_health_their_spawn_functions_give() {
+        use crate::door::{SECRET_SHOT_HEALTH, SECRET_YES_SHOOT};
+        assert_eq!(mover_shot_health(CLASS_FUNC_BUTTON, 1, 0, 0), 1);
+        assert_eq!(mover_shot_health(CLASS_FUNC_BUTTON, 0, 0, 0), 0);
+        assert_eq!(mover_shot_health(CLASS_FUNC_DOOR, 20, 7, 0), 20);
+        assert_eq!(mover_shot_health(CLASS_FUNC_DOOR, 0, 0, 0), 0);
+        assert_eq!(
+            mover_shot_health(CLASS_FUNC_DOOR_SECRET, 0, 0, 0),
+            SECRET_SHOT_HEALTH
+        );
+        assert_eq!(mover_shot_health(CLASS_FUNC_DOOR_SECRET, 0, 7, 0), 0);
+        assert_eq!(
+            mover_shot_health(CLASS_FUNC_DOOR_SECRET, 0, 7, SECRET_YES_SHOOT),
+            SECRET_SHOT_HEALTH
+        );
+        assert_eq!(mover_shot_health(CLASS_FUNC_PLAT, 5, 0, 0), 0);
+    }
+
+    #[test]
     fn secret_door_spawnflags_are_not_func_door_spawnflags() {
         // Bit 1 is SECRET_OPEN_ONCE, not DOOR_START_OPEN: the door spawns in
         // its authored brush and never returns once opened. Bit 32 is unused
@@ -1828,6 +1903,31 @@ pub const fn mover_admits_use(class_name: u8, health: i16, target_name: u16) -> 
         return false;
     }
     button_admits_touch(class_name, health) || target_name == 0
+}
+
+/// The health a mover's spawn function hands `T_Damage`, or zero for a mover
+/// that never takes damage.
+///
+/// `func_button` and `func_door` take damage only when the map authors
+/// `health`, and die into `button_killed` and `door_killed`. A
+/// `func_door_secret` is shootable when no trigger names it, or when
+/// `SECRET_YES_SHOOT` says so anyway; it gets 10000 health and
+/// `th_pain = fd_secret_use`, so every hit opens it and none kills it.
+pub const fn mover_shot_health(
+    class_name: u8,
+    health: i16,
+    target_name: u16,
+    spawn_flags: u16,
+) -> i16 {
+    match class_name {
+        CLASS_FUNC_BUTTON | CLASS_FUNC_DOOR if health > 0 => health,
+        CLASS_FUNC_DOOR_SECRET
+            if target_name == 0 || spawn_flags & crate::door::SECRET_YES_SHOOT != 0 =>
+        {
+            crate::door::SECRET_SHOT_HEALTH
+        }
+        _ => 0,
+    }
 }
 
 /// A shootable `func_button`'s damage state.

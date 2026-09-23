@@ -21,6 +21,11 @@ pub const SECRET_1ST_LEFT: u16 = 2;
 /// `SECRET_1ST_DOWN`: the first leg drops by the door's own height instead of
 /// stepping sideways by its width.
 pub const SECRET_1ST_DOWN: u16 = 4;
+/// `SECRET_YES_SHOOT`: shootable even though a trigger names it.
+pub const SECRET_YES_SHOOT: u16 = 16;
+/// `func_door_secret` and `fd_secret_done` give a shootable secret door this
+/// much health, so every hit reaches `th_pain = fd_secret_use` and none kills.
+pub const SECRET_SHOT_HEALTH: i16 = 10_000;
 
 /// `IT_KEY1`, the silver key carried by `item_key1`.
 pub const KEY_SILVER_BIT: u8 = 1;
@@ -108,6 +113,98 @@ pub const fn entities_touching(
         && left_maxs.z >= right_mins.z
 }
 
+/// `spawn_field` grows the chain's closed bounds by `'60 60 8'`. Three more
+/// units ride on top on each side, all from the engine: `Mod_LoadSubmodels`
+/// grows every door's bounds by one before `LinkDoors` reads them, and
+/// `SV_LinkEdict` grows both the field's and the toucher's absolute box by
+/// one more. The margins apply to the cooked (ungrown) door bounds against the
+/// toucher's own ungrown box.
+pub const DOOR_FIELD_HORIZONTAL_UNITS: i32 = 60 + 3;
+pub const DOOR_FIELD_VERTICAL_UNITS: i32 = 8 + 3;
+/// `door_trigger_touch`: `if (time < self.attack_finished) return;
+/// self.attack_finished = time + 1`.
+pub const DOOR_FIELD_RETRY_TICKS: u8 = 60;
+
+/// `spawn_field`: the one `SOLID_TRIGGER` a linked door chain owns.
+///
+/// `LinkDoors` builds it once, over the union of every member's closed
+/// bounds, and it never moves: a door that is open, opening or closing keeps
+/// the same field, so whoever stands in the doorway keeps touching it. Each
+/// admitted touch runs `door_use` on the master, which walks the whole chain.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DoorField {
+    mins: Vec3I32,
+    maxs: Vec3I32,
+    group: u8,
+    retry_ticks: u8,
+    /// A monster's touch, admitted during the monster pass and fired with
+    /// the next mover pass. Holds the monster's source index.
+    pending_monster: Option<u16>,
+}
+
+impl DoorField {
+    /// The field over a chain whose closed bounds (whole units, Q20.12) are
+    /// `closed_mins..closed_maxs`.
+    #[optimize(size)]
+    pub const fn new(closed_mins: Vec3I32, closed_maxs: Vec3I32, group: u8) -> Self {
+        const H: i32 = DOOR_FIELD_HORIZONTAL_UNITS << 12;
+        const V: i32 = DOOR_FIELD_VERTICAL_UNITS << 12;
+        Self {
+            mins: Vec3I32 {
+                x: closed_mins.x - H,
+                y: closed_mins.y - H,
+                z: closed_mins.z - V,
+            },
+            maxs: Vec3I32 {
+                x: closed_maxs.x + H,
+                y: closed_maxs.y + H,
+                z: closed_maxs.z + V,
+            },
+            group,
+            retry_ticks: 0,
+            pending_monster: None,
+        }
+    }
+
+    /// The `LinkDoors` chain this field fires.
+    pub const fn group(&self) -> u8 {
+        self.group
+    }
+
+    pub fn tick(&mut self, ticks: u16) {
+        self.retry_ticks = self.retry_ticks.saturating_sub(ticks.min(255) as u8);
+    }
+
+    /// `SV_TouchLinks`' overlap test for a toucher's box.
+    pub const fn touches(&self, mins: Vec3I32, maxs: Vec3I32) -> bool {
+        entities_touching(mins, maxs, self.mins, self.maxs)
+    }
+
+    /// `door_trigger_touch`'s once-a-second gate. True when this touch fires
+    /// the chain; the caller has already checked `other.health > 0`.
+    pub fn admit(&mut self) -> bool {
+        if self.retry_ticks != 0 {
+            return false;
+        }
+        self.retry_ticks = DOOR_FIELD_RETRY_TICKS;
+        true
+    }
+
+    /// A living monster moved and its box touches this field. `SV_movestep`
+    /// and `SV_StepDirection` relink a walking monster with touches on every
+    /// step it tries, and a leaping one relinks every physics frame.
+    pub fn touch_by_monster(&mut self, source_index: u16, mins: Vec3I32, maxs: Vec3I32) {
+        if self.touches(mins, maxs) && self.admit() {
+            self.pending_monster = Some(source_index);
+        }
+    }
+
+    /// The monster whose admitted touch has not fired the chain yet.
+    pub fn take_monster_touch(&mut self) -> Option<u16> {
+        self.pending_monster.take()
+    }
+}
+
 /// `LinkDoors`: a door joins a neighbour's chain when their closed bounds
 /// touch and neither one carries `DOOR_DONT_LINK`.
 #[optimize(size)]
@@ -175,6 +272,41 @@ mod tests {
         assert_eq!(door_touch_key(0, 0), DoorKeyOutcome::NotLocked);
         assert_eq!(needs_key_message(KEY_SILVER_BIT), "You need the silver key");
         assert_eq!(needs_key_message(KEY_GOLD_BIT), "You need the gold key");
+    }
+
+    #[test]
+    fn the_field_covers_the_closed_chain_and_refires_once_a_second() {
+        let unit = |x: i32, y: i32, z: i32| Vec3I32 {
+            x: x << 12,
+            y: y << 12,
+            z: z << 12,
+        };
+        // E1M5's lone vertical door, closed at (-111..-37, 945..959, 87..191).
+        let mut field = DoorField::new(unit(-111, 945, 87), unit(-37, 959, 191), 3);
+        assert_eq!(field.group(), 3);
+        // A player standing in the doorway touches it whether the door is up
+        // or down; so does one 63 units short of the closed face.
+        assert!(field.touches(unit(-90, 936, 88), unit(-58, 968, 144)));
+        assert!(field.touches(unit(-90, 850, 88), unit(-58, 882, 144)));
+        assert!(!field.touches(unit(-90, 849, 88), unit(-58, 881, 144)));
+        // Eleven units under the door's bottom still counts, twelve does not.
+        assert!(field.touches(unit(-90, 936, 20), unit(-58, 968, 76)));
+        assert!(!field.touches(unit(-90, 936, 19), unit(-58, 968, 75)));
+
+        assert!(field.admit());
+        assert!(!field.admit());
+        field.tick(59);
+        assert!(!field.admit());
+        field.tick(1);
+        assert!(field.admit());
+
+        field.tick(60);
+        field.touch_by_monster(42, unit(-90, 1000, 88), unit(-58, 1032, 144));
+        assert_eq!(field.take_monster_touch(), Some(42));
+        assert_eq!(field.take_monster_touch(), None);
+        // The monster's touch spent the second, so a second one waits.
+        field.touch_by_monster(43, unit(-90, 1000, 88), unit(-58, 1032, 144));
+        assert_eq!(field.take_monster_touch(), None);
     }
 
     #[optimize(size)]

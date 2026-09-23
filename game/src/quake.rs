@@ -591,6 +591,7 @@ pub fn run() -> ! {
         let mut gameplay = entities.update_gameplay(
             &world,
             &mut rider,
+            weapon.inventory().health() > 0,
             controls.use_pressed(),
             weapon.inventory().keys(),
             elapsed_ticks,

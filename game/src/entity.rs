@@ -66,6 +66,11 @@ const MAX_CHANGE_LEVELS: usize = 4;
 // slots respectively; the host cooker mirrors them and rejects any future map
 // that would exceed either pool before a disc is built.
 const MAX_MOVERS: usize = 64;
+/// A door's `LinkDoors` chain id is the index of a mover, and a frame's fired
+/// chains travel as one bit each.
+const _: () = assert!(MAX_MOVERS <= 64);
+/// `spawn_field` volumes on one map. The shareware maps author at most three.
+const MAX_DOOR_FIELDS: usize = 8;
 const MAX_TRIGGERS: usize = 32;
 const MAX_TELEPORTS: usize = 32;
 const MAX_TRAINS: usize = 8;
@@ -81,8 +86,11 @@ const MAX_MONSTER_SOUNDS: usize = 16;
 /// spare so a corrupt or extended map fails visually without growing a pool.
 const MAX_MONSTER_TELEPORT_FOGS: usize = 4;
 /// Every monster-launched projectile in flight on one map, across all four
-/// authored kinds. Denial on full: an over-capacity launch is simply refused
-/// and the animation frame plays without a missile.
+/// authored kinds, plus thrown gib chunks, flying heads and dropped
+/// backpacks. A gib chunk lies around for 10 to 20 seconds and is only
+/// decoration, so a claim on a full pool takes the chunk nearest its end;
+/// with no chunk to take the launch is refused and the animation frame plays
+/// without a missile.
 const MAX_MONSTER_MISSILES: usize = 12;
 /// First trail anchor belonging to the monster missile pool.
 const MISSILE_TRAIL_BASE: usize = MAX_ROCKETS + MAX_GRENADES;
@@ -213,6 +221,8 @@ pub struct EntityScene {
     /// the whole render pool for every step/slide trace.
     collision_indices: Vec<u16>,
     movers: Vec<SceneMover>,
+    /// One `spawn_field` per `LinkDoors` chain that has one.
+    door_fields: Vec<door::DoorField>,
     trains: Vec<SceneTrain>,
     triggers: Vec<Trigger>,
     teleports: Vec<TeleportTrigger>,
@@ -837,6 +847,7 @@ impl EntityScene {
             pending_player_gib: None,
             collision_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             movers: Vec::with_capacity(MAX_MOVERS),
+            door_fields: Vec::with_capacity(MAX_DOOR_FIELDS),
             trains: Vec::with_capacity(MAX_TRAINS),
             triggers: Vec::with_capacity(MAX_TRIGGERS),
             teleports: Vec::with_capacity(MAX_TELEPORTS),
@@ -976,6 +987,7 @@ impl EntityScene {
         self.entities.clear();
         self.collision_indices.clear();
         self.movers.clear();
+        self.door_fields.clear();
         self.trains.clear();
         self.triggers.clear();
         self.teleports.clear();
@@ -1171,8 +1183,8 @@ impl EntityScene {
                         key_cooldown: 0,
                         key_spent: false,
                         crush: BlockCrush::new(),
-                        health: button_health(source),
-                        max_health: button_health(source),
+                        health: mover_shot_health(source),
+                        max_health: mover_shot_health(source),
                         shot_open: false,
                     });
                 }
@@ -1359,7 +1371,7 @@ impl EntityScene {
             });
         }
         self.drop_spawns_to_floor(map);
-        self.link_doors(map);
+        self.link_doors(map)?;
         self.rocket_render_start =
             self.install_projectile_render_slots(map, ROCKET_MODEL_ID, MAX_ROCKETS)?;
         self.nail_render_start =
@@ -1508,8 +1520,11 @@ impl EntityScene {
     /// named leaf with an unnamed one (both of Start's registered-only episode
     /// gates among them), and the unnamed leaf must stay shut until the
     /// trigger fires the chain.
+    ///
+    /// A chain that keeps its field gets exactly one, over the union of its
+    /// members' closed bounds. It never moves with the doors.
     #[optimize(size)]
-    fn link_doors(&mut self, map: &ResidentMap) {
+    fn link_doors(&mut self, map: &ResidentMap) -> Result<(), EntityLoadError> {
         self.link_door_chains(map);
         for index in 0..self.movers.len() {
             let source = self.movers[index].source;
@@ -1526,6 +1541,143 @@ impl EntityScene {
             if chain_is_fired {
                 self.movers[index].policy.withdraw_proximity_field();
             }
+        }
+        for index in 0..self.movers.len() {
+            let group = self.movers[index].link_group;
+            if self.movers[index].source.class_name != 0x0c
+                || !self.movers[index].policy.automatic()
+                || self.door_fields.iter().any(|field| field.group() == group)
+            {
+                continue;
+            }
+            // `LinkDoors` reads each member's model bounds, which a
+            // `DOOR_START_OPEN` door keeps where it was authored.
+            let mut bounds: Option<(Vec3I32, Vec3I32)> = None;
+            for mover in self.movers.iter().filter(|mover| mover.link_group == group) {
+                let source_index = self.entities[mover.render_index as usize].source_index;
+                let Some((mins, maxs)) = map
+                    .entities()
+                    .get(source_index as usize)
+                    .and_then(|source| entity_brush_bounds(map, source))
+                else {
+                    continue;
+                };
+                bounds = Some(match bounds {
+                    None => (mins, maxs),
+                    Some((low, high)) => (
+                        Vec3I32 {
+                            x: low.x.min(mins.x),
+                            y: low.y.min(mins.y),
+                            z: low.z.min(mins.z),
+                        },
+                        Vec3I32 {
+                            x: high.x.max(maxs.x),
+                            y: high.y.max(maxs.y),
+                            z: high.z.max(maxs.z),
+                        },
+                    ),
+                });
+            }
+            let Some((mins, maxs)) = bounds else {
+                continue;
+            };
+            if self.door_fields.len() == self.door_fields.capacity() {
+                return Err(EntityLoadError::TooMany);
+            }
+            self.door_fields
+                .push(door::DoorField::new(mins, maxs, group));
+        }
+        Ok(())
+    }
+
+    /// `door_trigger_touch` for every door field, and `door_killed` for every
+    /// shot door, ahead of the mover pass. Returns one bit per fired
+    /// `LinkDoors` chain and leaves the activator on each member, so the
+    /// mover pass runs `door_fire` on the whole chain at once.
+    ///
+    /// The player touches a field while alive (`other.health <= 0` returns).
+    /// USE stands in for walking into the field, so a USE within reach of an
+    /// unlocked automatic leaf touches that leaf's field. A monster's touch
+    /// was admitted during the monster pass and fires here.
+    fn fire_door_fields(
+        &mut self,
+        player_mins: Vec3I32,
+        player_maxs: Vec3I32,
+        player_alive: bool,
+        use_pressed: bool,
+        ticks: u16,
+    ) -> u64 {
+        let mut fired = 0u64;
+        for field_index in 0..self.door_fields.len() {
+            let field = &mut self.door_fields[field_index];
+            field.tick(ticks);
+            let group = field.group();
+            let activator = if let Some(monster) = field.take_monster_touch() {
+                Some(TargetActivator::Entity(monster))
+            } else if player_alive
+                && (field.touches(player_mins, player_maxs)
+                    || use_pressed
+                        && self.movers.iter().any(|mover| {
+                            mover.link_group == group
+                                && self.entities.get(mover.render_index as usize).is_some_and(
+                                    |entity| {
+                                        expanded_overlap(
+                                            player_mins,
+                                            player_maxs,
+                                            entity.clip_mins,
+                                            entity.clip_maxs,
+                                            64,
+                                            16,
+                                        )
+                                    },
+                                )
+                        }))
+                && self.door_fields[field_index].admit()
+            {
+                Some(TargetActivator::Player)
+            } else {
+                None
+            };
+            if let Some(activator) = activator {
+                fired |= 1u64 << group;
+                for mover in self
+                    .movers
+                    .iter_mut()
+                    .filter(|mover| mover.link_group == group)
+                {
+                    mover.activator = activator;
+                }
+            }
+        }
+        // `door_killed` runs `door_use` on the master, which walks the chain.
+        for index in 0..self.movers.len() {
+            if self.movers[index].shot_open && self.movers[index].source.class_name == 0x0c {
+                self.movers[index].shot_open = false;
+                let group = self.movers[index].link_group;
+                fired |= 1u64 << group;
+                for mover in self
+                    .movers
+                    .iter_mut()
+                    .filter(|mover| mover.link_group == group)
+                {
+                    mover.activator = TargetActivator::Player;
+                }
+            }
+        }
+        fired
+    }
+
+    /// A living monster tried a step or flew a frame of a leap, which is when
+    /// the original relinks it with touches: every door field its box reaches
+    /// is touched, and fires with the next mover pass.
+    fn touch_door_fields(&mut self, index: usize) {
+        let entity = &self.entities[index];
+        if self.door_fields.is_empty() || entity.health <= 0 {
+            return;
+        }
+        let (source_index, mins, maxs) = (entity.source_index, entity.hit_mins, entity.hit_maxs);
+        for field in &mut self.door_fields {
+            field.touch_by_monster(source_index, mins, maxs);
         }
     }
 
@@ -1844,10 +1996,11 @@ impl EntityScene {
         }
     }
 
-    /// The nearest live shootable `func_button` a segment reaches before
-    /// `limit`. Like a shootable trigger it is `SOLID_BBOX`, so it stops the
-    /// shot as well as taking it.
-    fn shootable_button_hit(
+    /// The nearest live shootable mover (a `func_button` or `func_door` with
+    /// health, or a shootable `func_door_secret`) a segment reaches before
+    /// `limit`. The mover's own brush already stops the shot; this finds
+    /// which one took it.
+    fn shootable_mover_hit(
         &self,
         start: Vec3I32,
         end: Vec3I32,
@@ -1865,12 +2018,10 @@ impl EntityScene {
             if !self.targets.is_enabled(entity.source_index) {
                 continue;
             }
-            // Only a button that is down can be shot open; one already at the
-            // top has nothing left to fire.
-            if !matches!(
-                mover.policy.state(),
-                QuakeMoverState::Bottom | QuakeMoverState::Down
-            ) {
+            // Only a mover that is down takes damage: `button_killed` and
+            // `door_killed` clear `takedamage` until the return starts, and
+            // `fd_secret_use` clears it until `fd_secret_done`.
+            if !mover_state_admits_activation(mover.source.class_name, mover.policy.state()) {
                 continue;
             }
             // The clip bounds are whole world units; the shot is Q20.12.
@@ -1903,8 +2054,10 @@ impl EntityScene {
         best.map(|index| (index, best_fraction))
     }
 
-    /// `T_Damage` against a shootable button, ending in `button_killed`.
-    fn damage_button(&mut self, index: usize, damage: i16, result: &mut DamageResult) {
+    /// `T_Damage` against a shootable mover: `button_killed` or `door_killed`
+    /// once the health runs out, and a secret door's `th_pain =
+    /// fd_secret_use` on every hit.
+    fn damage_mover(&mut self, index: usize, damage: i16, result: &mut DamageResult) {
         let Some(mover) = self.movers.get_mut(index) else {
             return;
         };
@@ -1915,8 +2068,9 @@ impl EntityScene {
         mover.health = mover.health.saturating_sub(damage);
         result.damaged_targets = result.damaged_targets.saturating_add(1);
         result.total_damage = result.total_damage.saturating_add(damage as u16);
-        if mover.health <= 0 {
-            // `button_killed` restores the authored health and fires.
+        if mover.health <= 0 || mover.source.class_name == 0x0d {
+            // `button_killed` and `door_killed` restore the authored health
+            // and fire; `fd_secret_use` resets the 10000 before it opens.
             mover.health = mover.max_health;
             mover.shot_open = true;
             result.killed_targets = result.killed_targets.saturating_add(1);
@@ -1928,7 +2082,7 @@ impl EntityScene {
     }
 
     /// The nearest brush entity a shot can hurt: a shootable trigger or a
-    /// shootable button, whichever the segment reaches first.
+    /// shootable mover, whichever the segment reaches first.
     #[optimize(size)]
     fn shootable_brush_hit(
         &self,
@@ -1937,12 +2091,12 @@ impl EntityScene {
         limit: i32,
     ) -> Option<(ShotBrush, i32)> {
         let trigger = self.shootable_trigger_hit(start, end, limit);
-        let button = self.shootable_button_hit(start, end, limit);
+        let button = self.shootable_mover_hit(start, end, limit);
         match (trigger, button) {
             (Some((index, near)), Some((_, far))) if near <= far => {
                 Some((ShotBrush::Trigger(index), near))
             }
-            (_, Some((index, fraction))) => Some((ShotBrush::Button(index), fraction)),
+            (_, Some((index, fraction))) => Some((ShotBrush::Mover(index), fraction)),
             (Some((index, fraction)), None) => Some((ShotBrush::Trigger(index), fraction)),
             (None, None) => None,
         }
@@ -1951,7 +2105,7 @@ impl EntityScene {
     fn damage_shootable_brush(&mut self, hit: ShotBrush, damage: i16, result: &mut DamageResult) {
         match hit {
             ShotBrush::Trigger(index) => self.damage_trigger(index, damage, result),
-            ShotBrush::Button(index) => self.damage_button(index, damage, result),
+            ShotBrush::Mover(index) => self.damage_mover(index, damage, result),
         }
     }
 
@@ -3011,6 +3165,63 @@ impl EntityScene {
             trigger_index += 1;
         }
 
+        // Shootable brush movers are in `findradius` as well. `CanDamage`
+        // treats a `MOVETYPE_PUSH` target by tracing to the middle of its
+        // bounds: the blast counts when the trace arrives or stops on the
+        // mover itself, which a rocket against a secret wall always does.
+        let mut mover_index = 0usize;
+        while mover_index < self.movers.len() {
+            let mover = self.movers[mover_index];
+            mover_index += 1;
+            if mover.health <= 0
+                || mover.shot_open
+                || !mover_state_admits_activation(mover.source.class_name, mover.policy.state())
+            {
+                continue;
+            }
+            let entity = self.entities[mover.render_index as usize];
+            if !self.targets.is_enabled(entity.source_index) {
+                continue;
+            }
+            let mins = whole_units_q12(entity.clip_mins);
+            let maxs = whole_units_q12(entity.clip_maxs);
+            let target = midpoint_vec_all(mins, maxs);
+            let points = explosion_splash_points(
+                splash_damage,
+                distance_units(impact, target),
+                false,
+                true,
+                false,
+            );
+            if points <= 0 {
+                continue;
+            }
+            let mut scratch = TraceScratch::default();
+            let mut trace = Trace::default();
+            if !self.trace_point(map, &impact, &target, &mut scratch, &mut trace) {
+                return None;
+            }
+            // One unit of slack: the trace stops just short of the face.
+            let slack = Vec3I32 {
+                x: 1 << 12,
+                y: 1 << 12,
+                z: 1 << 12,
+            };
+            if trace.fraction == Q12_ONE
+                || aabb_overlaps(
+                    trace.end,
+                    trace.end,
+                    subtract_vec(mins, slack),
+                    add_vec(maxs, slack),
+                )
+            {
+                let mut damage = DamageResult::default();
+                self.damage_mover(mover_index - 1, points, &mut damage);
+                result.splash_hits = result.splash_hits.saturating_add(damage.damaged_targets);
+                merge_rocket_damage(result, damage);
+            }
+        }
+
         // `T_RadiusDamage`'s `ignore` argument: a lava ball that hit the
         // player directly leaves them out of its splash.
         let Some(player_origin) = player_origin else {
@@ -3063,7 +3274,7 @@ impl EntityScene {
             pellets: u8,
             occupied: bool,
             /// Set when `entity_index` indexes `self.movers` (a shootable
-            /// button) instead of `self.triggers`.
+            /// mover) instead of `self.triggers`.
             button: bool,
             impact: Vec3I32,
         }
@@ -3099,7 +3310,7 @@ impl EntityScene {
             if let Some((hit, _)) = self.shootable_brush_hit(attack.start, end, best_fraction) {
                 let (index, button) = match hit {
                     ShotBrush::Trigger(index) => (index, false),
-                    ShotBrush::Button(index) => (index, true),
+                    ShotBrush::Mover(index) => (index, true),
                 };
                 if let Some(slot) = trigger_slots[..trigger_slot_count]
                     .iter_mut()
@@ -3149,7 +3360,7 @@ impl EntityScene {
             let damage = i16::from(slot.pellets).saturating_mul(attack.damage_per_pellet);
             let mut applied = DamageResult::default();
             let hit = if slot.button {
-                ShotBrush::Button(slot.entity_index as usize)
+                ShotBrush::Mover(slot.entity_index as usize)
             } else {
                 ShotBrush::Trigger(slot.entity_index as usize)
             };
@@ -3213,6 +3424,7 @@ impl EntityScene {
         &mut self,
         map: &ResidentMap,
         rider: &mut Rider,
+        player_alive: bool,
         use_pressed: bool,
         held_keys: u8,
         elapsed_ticks: u16,
@@ -3333,6 +3545,8 @@ impl EntityScene {
                 self.teleport_destination(map, source_index, player_mins, player_maxs);
         }
 
+        let fired_door_chains =
+            self.fire_door_fields(player_mins, player_maxs, player_alive, use_pressed, ticks);
         let mut mover_outputs = [None; MAX_MOVERS];
         let mut mover_output_count = 0usize;
         for mover_index in 0..self.movers.len() {
@@ -3386,19 +3600,10 @@ impl EntityScene {
                         z: plat_maxs[2] << 12,
                     },
                 );
-            let automatic_touch = self.movers[mover_index].policy.automatic()
-                && if plat_trigger {
-                    plat_touch
-                } else {
-                    expanded_overlap(
-                        player_mins,
-                        player_maxs,
-                        entity_snapshot.clip_mins,
-                        entity_snapshot.clip_maxs,
-                        60,
-                        8,
-                    )
-                };
+            // A door's own proximity is its chain's `spawn_field`, which
+            // `fire_door_fields` has already answered for the whole chain.
+            let chain_fired = source.class_name == 0x0c
+                && fired_door_chains & (1u64 << self.movers[mover_index].link_group) != 0;
             let shot_open = self.movers[mover_index].shot_open;
             self.movers[mover_index].shot_open = false;
             // `func_button`'s spawn is an either/or: a button with health has
@@ -3429,6 +3634,7 @@ impl EntityScene {
                     2,
                 );
             let used = use_pressed
+                && source.class_name != 0x0c
                 && expanded_overlap(
                     player_mins,
                     player_maxs,
@@ -3438,10 +3644,18 @@ impl EntityScene {
                     16,
                 );
             if message_touch
-                || used
+                || use_pressed
                     && source.class_name == 0x0c
                     && source.target_name != 0
                     && source.string != 0
+                    && expanded_overlap(
+                        player_mins,
+                        player_maxs,
+                        entity_snapshot.clip_mins,
+                        entity_snapshot.clip_maxs,
+                        64,
+                        16,
+                    )
             {
                 result.message_source = Some(entity_snapshot.source_index);
                 // `door_touch` answers an authored door message with talk.wav.
@@ -3500,9 +3714,26 @@ impl EntityScene {
                 self.movers[mover_index].activator = TargetActivator::Player;
                 result.record_player_activation(entity_snapshot.source_index);
             }
-            if !plat_trigger
-                && (automatic_touch
-                    || direct_touch
+            if chain_fired {
+                // `door_fire` on every member. Only a door that starts moving
+                // up runs `SUB_UseTargets`; one standing open just restarts
+                // its wait.
+                let activator = self.movers[mover_index].activator;
+                self.movers[mover_index].policy.fire_door();
+                if state_admits_activation
+                    && self.movers[mover_index].policy.state() == QuakeMoverState::Up
+                {
+                    if activator == TargetActivator::Player {
+                        result.record_player_activation(entity_snapshot.source_index);
+                    }
+                    if mover_output_count < mover_outputs.len() {
+                        mover_outputs[mover_output_count] =
+                            Some((entity_snapshot.source_index, activator));
+                        mover_output_count += 1;
+                    }
+                }
+            } else if !plat_trigger
+                && (direct_touch
                     || shot_open
                     || used && mover_admits_use(source, &self.movers[mover_index]))
                 && door::door_key_bit(source.spawn_flags) == 0
@@ -4369,6 +4600,7 @@ impl EntityScene {
                     &mut result,
                 )?;
                 self.entities[index].monster = Some(runtime);
+                self.touch_door_fields(index);
                 if forced {
                     index += 1;
                     continue;
@@ -4564,6 +4796,11 @@ impl EntityScene {
                     }
                     result.moved = result.moved.saturating_add(1);
                 }
+            }
+            // `SV_StepDirection` relinks with touches whether or not the step
+            // was taken, so a monster pressing on a closed door opens it.
+            if action.move_units != 0 {
+                self.touch_door_fields(index);
             }
             // `t_movetarget`: a walking monster that touches its corner takes
             // the corner's own target as the next goal.
@@ -5344,7 +5581,7 @@ impl EntityScene {
             ),
             _ => return false,
         };
-        let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) else {
+        let Some(slot_index) = self.claim_missile_slot() else {
             return false;
         };
         let render_index = self.missile_render_start as usize + slot_index;
@@ -5610,6 +5847,26 @@ impl EntityScene {
         self.pending_player_gib = Some((origin, health));
     }
 
+    /// A free monster-missile slot, or else the gib chunk with the least time
+    /// left: the original has no pool, and a chunk is the one thing in it
+    /// that nothing else ever reads.
+    #[optimize(size)]
+    fn claim_missile_slot(&self) -> Option<usize> {
+        let mut oldest_debris: Option<(usize, u16)> = None;
+        for (index, slot) in self.missiles.iter().enumerate() {
+            match slot {
+                None => return Some(index),
+                Some(missile) if missile.kind == MonsterMissileKind::Debris => {
+                    if oldest_debris.is_none_or(|(_, ticks)| missile.remaining_ticks < ticks) {
+                        oldest_debris = Some((index, missile.remaining_ticks));
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        oldest_debris.map(|(index, _)| index)
+    }
+
     #[optimize(size)]
     fn throw_gibs(
         &mut self,
@@ -5620,7 +5877,9 @@ impl EntityScene {
         result: &mut MonsterFrameResult,
     ) {
         const GIB_MODEL_IDS: [i16; 3] = [0x27, 0x28, 0x29];
-        const DEBRIS_TICKS: u16 = 240;
+        /// `ThrowGib`: `nextthink = time + 10 + random()*10`.
+        const DEBRIS_MIN_TICKS: u32 = 600;
+        const DEBRIS_RANDOM_TICKS: u32 = 600;
         /// A head still bouncing after ten seconds is parked where it is.
         const HEAD_FLIGHT_TICKS: u16 = 600;
         /// `avelocity = crandom() * '0 600 0'`: up to 600 degrees a second of
@@ -5668,7 +5927,7 @@ impl EntityScene {
                 .copied()
                 .filter(|head| head.visible)
             {
-                if let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) {
+                if let Some(slot_index) = self.claim_missile_slot() {
                     let random = next();
                     let velocity = velocity_for_damage(random);
                     let render_index = self.missile_render_start as usize + slot_index;
@@ -5704,7 +5963,7 @@ impl EntityScene {
                 }
             }
             for &model_id in &GIB_MODEL_IDS {
-                let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) else {
+                let Some(slot_index) = self.claim_missile_slot() else {
                     return;
                 };
                 let random = next();
@@ -5731,7 +5990,11 @@ impl EntityScene {
                     },
                     kind: MonsterMissileKind::Debris,
                     damage: 0,
-                    remaining_ticks: DEBRIS_TICKS,
+                    // The velocity already used every bit of `random`, so the
+                    // lifetime draws on a scrambled copy of it.
+                    remaining_ticks: (DEBRIS_MIN_TICKS
+                        + ((random.wrapping_mul(0x9e37_79b9) >> 16) * DEBRIS_RANDOM_TICKS >> 16))
+                        as u16,
                     resting: false,
                     owner: index as u16,
                 });
@@ -5747,7 +6010,7 @@ impl EntityScene {
     fn drop_backpack(&mut self, map: &ResidentMap, origin: Vec3I32, ammo: BackpackAmmo) {
         const BACKPACK_MODEL_ID: i16 = 0x11;
         const BACKPACK_TICKS: u16 = 7_200;
-        let Some(slot_index) = self.missiles.iter().position(|slot| slot.is_none()) else {
+        let Some(slot_index) = self.claim_missile_slot() else {
             return;
         };
         let render_index = self.missile_render_start as usize + slot_index;
@@ -7732,11 +7995,12 @@ struct SceneMover {
     key_cooldown: u16,
     key_spent: bool,
     crush: BlockCrush,
-    /// `func_button`'s authored `health`. Non-zero means the original spawn
-    /// gave it `th_die = button_killed` and `takedamage = DAMAGE_YES` INSTEAD
-    /// of a touch function, so it is shot open and cannot be walked into.
-    /// `button_killed` hands the health straight back, so a re-usable button
-    /// can be shot again once it has returned.
+    /// The health the spawn function gave a shootable mover, zero for one
+    /// that takes no damage. A `func_button` with health gets
+    /// `th_die = button_killed` INSTEAD of a touch function, so it is shot
+    /// open and cannot be walked into; `button_killed` and `door_killed` hand
+    /// the health straight back, so a returned mover can be shot again. A
+    /// shootable `func_door_secret` holds 10000 and opens on every hit.
     health: i16,
     max_health: i16,
     /// A kill this frame, consumed by the mover loop exactly where a touch
@@ -7780,8 +8044,8 @@ struct SceneTrain {
 enum ShotBrush {
     /// Index into `self.triggers`.
     Trigger(usize),
-    /// Index into `self.movers`.
-    Button(usize),
+    /// Index into `self.movers`: a shootable button, door or secret door.
+    Mover(usize),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -7808,28 +8072,25 @@ struct TeleportTrigger {
     cooldown: u16,
 }
 
-/// `func_button`'s authored `health`, and only a button's. The spawn rule
-/// itself lives in `quake_core::mover` so it is host-tested: E1M2, E1M3 and
-/// E1M4 are the shareware maps that author a shootable one, all at health 1.
-/// Whether the player's USE key activates this mover. USE stands in for
-/// walking into a door's proximity field, so a `func_door` admits it exactly
-/// when its chain has one: a leaf's own empty `targetname` is not enough when
-/// a named partner makes the whole chain trigger-fired.
+/// Whether the player's USE key activates this mover directly. A `func_door`
+/// never does: USE stands in for walking into its chain's field, and
+/// `fire_door_fields` answers that for the whole chain.
 fn mover_admits_use(source: MoverSource, mover: &SceneMover) -> bool {
-    if source.class_name == 0x0c {
-        mover.policy.automatic()
-    } else {
-        quake_core::mover::mover_admits_use(source.class_name, mover.max_health, source.target_name)
-    }
+    quake_core::mover::mover_admits_use(source.class_name, mover.max_health, source.target_name)
 }
 
+/// The health `T_Damage` sees on a mover, zero for one that takes no damage.
+/// The spawn rules live in `quake_core::mover` so they are host-tested: E1M2,
+/// E1M3 and E1M4 author shootable buttons, all at health 1, and every
+/// untargeted `func_door_secret` is shot open.
 #[optimize(size)]
-fn button_health(source: MapEntity) -> i16 {
-    if quake_core::mover::button_is_shootable(source.class_name, source.health) {
-        source.health
-    } else {
-        0
-    }
+fn mover_shot_health(source: MapEntity) -> i16 {
+    quake_core::mover::mover_shot_health(
+        source.class_name,
+        source.health,
+        source.target_name,
+        source.spawn_flags,
+    )
 }
 
 #[optimize(size)]
