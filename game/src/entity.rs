@@ -1641,26 +1641,21 @@ impl EntityScene {
         weapon: &mut WeaponState,
     ) -> PickupResult {
         let mut result = PickupResult::default();
-        for index in 0..self.entities.len() {
-            // Reject through a borrow. `RenderEntity` is 112 bytes and this
-            // loop runs over the whole scene on every tick, so copying the
-            // record before the tests streams the entire array through a CPU
-            // with no data cache. Almost every entity fails on `pickup`.
-            let entity = &self.entities[index];
+        let mut index = 0;
+        loop {
+            // The hull scan visits every entity on every tick; what follows a
+            // hull touch is rare, and deep (`fire_pickup_targets`' frame alone
+            // is 2 KB), so only the scan runs on the scratchpad.
+            index = self.next_pickup_hull_touch(index, player_mins, player_maxs, true);
+            if index >= self.entities.len() {
+                break;
+            }
+            let touched = index;
+            index += 1;
+            let entity = self.entities[touched];
             let Some(pickup) = entity.pickup else {
                 continue;
             };
-            if !entity.visible {
-                continue;
-            }
-            // Every class's touch box lies inside the hull below, so an entity
-            // whose hull misses the player cannot be touched: skip it before
-            // decoding its cooked record (the decode dominated this loop).
-            let (hull_mins, hull_maxs) = pickup_touch_hull(entity.origin);
-            if !aabb_overlaps(player_mins, player_maxs, hull_mins, hull_maxs) {
-                continue;
-            }
-            let entity = self.entities[index];
             let source = map
                 .entities()
                 .get(entity.source_index as usize)
@@ -1673,8 +1668,8 @@ impl EntityScene {
             if !outcome.consumed {
                 continue;
             }
-            self.entities[index].visible = false;
-            self.entities[index].pickup = None;
+            self.entities[touched].visible = false;
+            self.entities[touched].pickup = None;
             result.consumed = result.consumed.saturating_add(1);
             result.switched_weapon |= outcome.switched_weapon;
             result.last_source_index = Some(entity.source_index);
@@ -1690,19 +1685,18 @@ impl EntityScene {
         }
         // `item_sigil` is not an inventory item: `sigil_touch` folds its
         // spawnflags into `serverflags`, which survives every later map load.
-        for index in 0..self.entities.len() {
-            // Same borrow-before-copy rule as the pickup scan above.
-            let entity = &self.entities[index];
-            if !entity.visible {
-                continue;
+        let mut index = 0;
+        loop {
+            // Same hull pre-test over every visible entity: a sigil the
+            // player is not touching is skipped either way, so only entities
+            // inside the hull need decoding.
+            index = self.next_pickup_hull_touch(index, player_mins, player_maxs, false);
+            if index >= self.entities.len() {
+                break;
             }
-            // Same hull pre-test: a sigil the player is not touching is skipped
-            // either way, so only entities inside the hull need decoding.
-            let (hull_mins, hull_maxs) = pickup_touch_hull(entity.origin);
-            if !aabb_overlaps(player_mins, player_maxs, hull_mins, hull_maxs) {
-                continue;
-            }
-            let entity = self.entities[index];
+            let touched = index;
+            index += 1;
+            let entity = self.entities[touched];
             let source = map
                 .entities()
                 .get(entity.source_index as usize)
@@ -1714,7 +1708,7 @@ impl EntityScene {
             if !aabb_overlaps(player_mins, player_maxs, mins, maxs) {
                 continue;
             }
-            self.entities[index].visible = false;
+            self.entities[touched].visible = false;
             self.runes |= source.spawn_flags as u8 & RUNE_MASK;
             result.consumed = result.consumed.saturating_add(1);
             result.last_source_index = Some(entity.source_index);
@@ -1725,6 +1719,29 @@ impl EntityScene {
             self.fire_pickup_targets(map, entity.source_index, &mut result);
         }
         result
+    }
+
+    /// Index of the first visible entity at or after `from` (with a pickup,
+    /// when `pickups_only`) whose pickup touch hull reaches the player box,
+    /// or the entity count. Every class's touch box lies inside that hull, so
+    /// an entity whose hull misses the player cannot be touched: the caller
+    /// decodes the cooked record only for the ones returned.
+    fn next_pickup_hull_touch(
+        &self,
+        from: usize,
+        player_mins: Vec3I32,
+        player_maxs: Vec3I32,
+        pickups_only: bool,
+    ) -> usize {
+        let scan =
+            || next_pickup_hull_touch(&self.entities, from, player_mins, player_maxs, pickups_only);
+        // SAFETY: the simulation owns the scratchpad (see CollisionStack).
+        // The scan's spills and the boxes it hands `aabb_overlaps` by
+        // reference then load in one cycle.
+        #[cfg(feature = "gameplay-scratchpad-stack")]
+        return unsafe { CollisionStack::run(scan) };
+        #[cfg(not(feature = "gameplay-scratchpad-stack"))]
+        scan()
     }
 
     /// `SUB_UseTargets` for a just-taken item, with the player as activator.
@@ -7757,6 +7774,31 @@ fn pickup_touch_hull(origin: Vec3I32) -> (Vec3I32, Vec3I32) {
     )
 }
 
+/// See [`EntityScene::next_pickup_hull_touch`].
+#[inline(never)]
+fn next_pickup_hull_touch(
+    entities: &[RenderEntity],
+    from: usize,
+    player_mins: Vec3I32,
+    player_maxs: Vec3I32,
+    pickups_only: bool,
+) -> usize {
+    for (index, entity) in entities.iter().enumerate().skip(from) {
+        // Reject through a borrow. `RenderEntity` is 112 bytes and this scan
+        // runs over the whole scene on every tick, so copying the record
+        // before the tests streams the entire array through a CPU with no
+        // data cache. Almost every entity fails on `pickup`.
+        if pickups_only && entity.pickup.is_none() || !entity.visible {
+            continue;
+        }
+        let (hull_mins, hull_maxs) = pickup_touch_hull(entity.origin);
+        if aabb_overlaps(player_mins, player_maxs, hull_mins, hull_maxs) {
+            return index;
+        }
+    }
+    entities.len()
+}
+
 /// `SV_LinkEdict` widens every `FL_ITEM` entity's absolute box by 15 units in
 /// x and y ("to make items easier to pick up") and the moving player's own
 /// box by one unit on all axes, and `SV_TouchLinks` compares those absolute
@@ -8506,9 +8548,7 @@ impl MovementTrace for SceneCollision<'_> {
     ) -> bool {
         // SAFETY: see CollisionStack.
         #[cfg(feature = "collision-scratchpad-stack")]
-        return unsafe {
-            CollisionStack::run(|| self.trace_in_place(start, end, scratch, output))
-        };
+        return unsafe { CollisionStack::run(|| self.trace_in_place(start, end, scratch, output)) };
         #[cfg(not(feature = "collision-scratchpad-stack"))]
         self.trace_in_place(start, end, scratch, output)
     }
