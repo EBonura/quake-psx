@@ -1,5 +1,3 @@
-cargo-features = ["trim-paths"]
-
 [package]
 name = "quake-psx"
 version = "0.1.0"
@@ -7,17 +5,9 @@ edition = "2021"
 license = "GPL-2.0-only"
 build = "build.rs"
 
-[workspace]
-
 [[bin]]
 name = "quake-psx"
 path = "src/main.rs"
-
-[profile.release]
-trim-paths = "all"
-panic = "abort"
-codegen-units = 1
-lto = true
 
 [features]
 # The accepted renderer stack (RENDERING.md): image-exact on the E1M1 chain

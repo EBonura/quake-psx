@@ -1,0 +1,6 @@
+# The builder is its own workspace (host/quake-build), so the game's workspace
+# at this root never has to load for it. From the repository root:
+#   cargo quake-build build
+#   cargo quake-build --help
+[alias]
+quake-build = "run --release --manifest-path host/quake-build/Cargo.toml --"

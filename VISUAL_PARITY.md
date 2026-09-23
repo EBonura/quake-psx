@@ -13,7 +13,7 @@ advances a fixed simulation step and records a small probe in RAM.
 Run the check with the same PSoXide revision used for the standalone build:
 
 ```sh
-cargo run --release -- visual-parity-regress --psoxide ../PSoXide-quake
+cargo quake-build visual-parity-regress --psoxide ../PSoXide-quake
 ```
 
 The runner captures the view twice. Both runs must produce the same probe,

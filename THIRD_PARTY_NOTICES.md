@@ -28,9 +28,10 @@ shareware distribution subject to its accompanying terms.
 
 [PSoXide](https://github.com/EBonura/PSoXide) provides the PlayStation runtime,
 hardware-access crates, linker script, WORLD.PAK/ISO builder, and emulator used
-for regression testing. The exact SDK revision is pinned in `Cargo.lock` and
-hydrated locally by the build driver. PSoXide is GPL-2.0-or-later; its own
-licence and notices apply to the linked runtime and build tools.
+for regression testing. The exact SDK revision is pinned in the builder's
+`host/quake-build/Cargo.lock` and hydrated locally by the build driver.
+PSoXide is GPL-2.0-or-later; its own licence and notices apply to the linked
+runtime and build tools.
 
 ## Historical converter libraries
 
