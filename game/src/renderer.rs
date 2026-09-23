@@ -3337,9 +3337,26 @@ impl Renderer {
     /// already present in it into exactly one opposite PVS. A failed union is
     /// rebuilt opaque immediately, so custom maps cannot turn this option into
     /// an unbounded face-cache allocation or a partially rendered frame.
-    #[optimize(size)]
     #[inline(never)]
     fn prepare_visibility(&mut self, map: &ResidentMap, camera: Camera, water_alpha: bool) -> bool {
+        // SAFETY: nothing is live in the scratchpad (see SelectionStack), and
+        // stack_guard.py proves the call tree fits after the link.
+        #[cfg(feature = "renderer-scratchpad-stack")]
+        return unsafe {
+            SelectionStack::run(|| self.prepare_visibility_in_place(map, camera, water_alpha))
+        };
+        #[cfg(not(feature = "renderer-scratchpad-stack"))]
+        self.prepare_visibility_in_place(map, camera, water_alpha)
+    }
+
+    #[optimize(size)]
+    #[inline(never)]
+    fn prepare_visibility_in_place(
+        &mut self,
+        map: &ResidentMap,
+        camera: Camera,
+        water_alpha: bool,
+    ) -> bool {
         let camera_leaf = self.camera_leaf(map, camera.origin);
         let camera_matches = camera_leaf.is_some_and(|leaf| {
             self.cached_visibility
@@ -4972,6 +4989,18 @@ unsafe fn census_world_batch(
 /// touches the shared scratchpad reservation, and no DMA reads these vertices.
 const _: () = assert!(core::mem::size_of::<BatchVertexStorage>() <= psx_engine::scratchpad::SIZE);
 
+/// The PVS pass and frame-face selection run with their frames on the whole
+/// scratchpad. The game's other scratchpad users, the batch vertices above
+/// and the liquid pass's phase offsets (`update_visible_liquid_tiles`), are
+/// transient within later phases of the frame, so nothing else is live
+/// around these calls. Their loops keep more live values than there are
+/// callee-saved registers (selection spills eight loop-invariant frustum
+/// selectors), and a spill reload from DRAM stalls about six cycles where
+/// the scratchpad answers in one. `tools/stack_guard.py` proves the linked
+/// call trees fit after every link.
+#[cfg(feature = "renderer-scratchpad-stack")]
+type SelectionStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;
+
 #[inline]
 fn scratchpad_batch_vertices() -> &'static mut BatchVertexStorage {
     unsafe { &mut *psx_engine::scratchpad::ptr_at::<BatchVertexStorage>(0) }
@@ -5641,6 +5670,39 @@ fn select_frame_faces(
 #[cfg(all(not(feature = "renderer-census"), feature = "renderer-block-frustum"))]
 #[inline(never)]
 fn select_frame_faces_blocked(
+    visible_faces: &[VisibleFace],
+    visible_blocks: &[VisibleFaceBlock],
+    #[cfg(not(feature = "renderer-cell-liquid-policy"))] active_textures: &[TextureInfo],
+    origin: Vec3I32,
+    frustum: &[AabbClipPlane; 4],
+    water_plane: i16,
+    output: &mut Vec<u16>,
+) {
+    let select = || {
+        select_frame_faces_blocked_in_place(
+            visible_faces,
+            visible_blocks,
+            #[cfg(not(feature = "renderer-cell-liquid-policy"))]
+            active_textures,
+            origin,
+            frustum,
+            water_plane,
+            output,
+        )
+    };
+    // SAFETY: nothing is live in the scratchpad (see SelectionStack), and
+    // stack_guard.py proves the call tree fits after the link.
+    #[cfg(feature = "renderer-scratchpad-stack")]
+    unsafe {
+        SelectionStack::run(select)
+    };
+    #[cfg(not(feature = "renderer-scratchpad-stack"))]
+    select();
+}
+
+#[cfg(all(not(feature = "renderer-census"), feature = "renderer-block-frustum"))]
+#[inline(never)]
+fn select_frame_faces_blocked_in_place(
     visible_faces: &[VisibleFace],
 
     visible_blocks: &[VisibleFaceBlock],
