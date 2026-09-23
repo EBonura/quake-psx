@@ -4355,7 +4355,18 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         command.env("CARGO_HOME", cargo_home);
     }
     if let Some(feature) = feature {
-        command.args(["--features", feature]);
+        // QUAKE_PSX_EXTRA_FEATURES adds guest features to every test or bench
+        // build (never the featureless shipping build), so any gate can run
+        // an A/B such as `present-queue` or `irq-epc-probe`.
+        match env::var("QUAKE_PSX_EXTRA_FEATURES") {
+            Ok(extra) if !extra.is_empty() => {
+                println!("quake-psx-build: extra guest features {extra}");
+                command.args(["--features", &format!("{feature},{extra}")]);
+            }
+            _ => {
+                command.args(["--features", feature]);
+            }
+        }
     }
     // Load-delay hazards from LLVM's delay-slot filler are rerouted through
     // trampolines after the link (below), like Cortex and hl-psx. The old
