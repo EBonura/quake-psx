@@ -87,6 +87,12 @@ impl BodyBlockers {
         self.len as usize
     }
 
+    /// Empty the set for reuse, as `new` would, without rewriting its slots.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.refused = 0;
+    }
+
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }

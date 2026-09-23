@@ -8473,8 +8473,42 @@ fn dynamic_body(entity: &RenderEntity) -> Option<Body> {
     })
 }
 
+/// Collision traces run with their frames on the whole CPU scratchpad
+/// (psx-rt ScratchpadStack): the world and brush-model hull walks spill
+/// their segment state every node, and a spill reload from DRAM stalls
+/// about six cycles where the scratchpad answers in one. The simulation owns
+/// the scratchpad while it runs (the renderer's batch and liquid users live
+/// only inside `draw_frame`, which never traces), and the caller's
+/// `TraceScratch` stays in its own RAM frame. `tools/stack_guard.py` proves
+/// the linked call tree fits after every link.
+#[cfg(feature = "collision-scratchpad-stack")]
+type CollisionStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;
+
+/// `SceneCollision::trace`'s body candidates, kept out of its frame.
+#[cfg(feature = "collision-scratchpad-stack")]
+static mut TRACE_BODIES: BodyBlockers = BodyBlockers::new();
+
 impl MovementTrace for SceneCollision<'_> {
     fn trace(
+        &self,
+        start: &Vec3I32,
+        end: &Vec3I32,
+        scratch: &mut TraceScratch,
+        output: &mut MovementTraceResult,
+    ) -> bool {
+        // SAFETY: see CollisionStack.
+        #[cfg(feature = "collision-scratchpad-stack")]
+        return unsafe {
+            CollisionStack::run(|| self.trace_in_place(start, end, scratch, output))
+        };
+        #[cfg(not(feature = "collision-scratchpad-stack"))]
+        self.trace_in_place(start, end, scratch, output)
+    }
+}
+
+impl SceneCollision<'_> {
+    #[inline(never)]
+    fn trace_in_place(
         &self,
         start: &Vec3I32,
         end: &Vec3I32,
@@ -8498,6 +8532,14 @@ impl MovementTrace for SceneCollision<'_> {
         // Live monster bodies join the same broad phase as the solid brush
         // submodels, in ascending authored source index (the render slots are
         // filled in load order), so the candidate set is deterministic.
+        // The 514-byte set lives in RAM rather than in this frame, which runs
+        // on the scratchpad stack (see CollisionStack). Traces never nest, so
+        // one set serves them all.
+        #[cfg(feature = "collision-scratchpad-stack")]
+        let bodies = unsafe { &mut *core::ptr::addr_of_mut!(TRACE_BODIES) };
+        #[cfg(feature = "collision-scratchpad-stack")]
+        bodies.clear();
+        #[cfg(not(feature = "collision-scratchpad-stack"))]
         let mut bodies = BodyBlockers::new();
         // The broad phase runs once per candidate per trace, dozens of times a
         // frame, so the swept box is reduced to whole units once here and the
