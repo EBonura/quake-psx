@@ -36,6 +36,7 @@ use psx_gte::math::{Mat3I16, Vec3I16 as GteVec3I16, Vec3I32 as GteVec3I32};
 use psx_gte::scene::{self, AabbClipPlane};
 use psx_math::int32::{isqrt_i32, mul_q12_i32, mul_q12_i32_wide, square_i32_saturating};
 use psx_math::{atan2_q12, cos_q12, sin_q12};
+use psx_bsp::resident::IndexedVertices;
 use psx_render_contract::{CookedDrawSurface, RetainedSurfaceBounds};
 use quake_core::collision::{CONTENTS_EMPTY, CONTENTS_WATER};
 use quake_core::combat::{view_basis, WeaponView, LIGHTNING_BOLT_MODEL_ID};
@@ -1613,6 +1614,10 @@ impl Renderer {
 
         if visibility_valid {
             let batch_vertices = scratchpad_batch_vertices();
+            // Resolved once per frame: every retained face materializes from
+            // the same validated arrays, and resolving them costs a call,
+            // the lump range reads and the layout checks.
+            let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
 
             let mut batch_surfaces = uninit_batch_surfaces();
 
@@ -1697,7 +1702,7 @@ impl Renderer {
                     }
                     let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
 
-                    self.materialize_retained_face(map, face, texture, vertices);
+                    self.materialize_retained_face(indexed, face, texture, vertices);
 
                     animate_special_surface(vertices, texture, self.frame);
                     let vertex_count = if clip {
@@ -1803,7 +1808,7 @@ impl Renderer {
 
                 {
                     self.materialize_retained_face(
-                        map,
+                        indexed,
                         face,
                         texture,
                         &mut vertices[..vertex_count],
@@ -2766,7 +2771,7 @@ impl Renderer {
 
     fn materialize_surface(
         &self,
-        map: &ResidentMap,
+        indexed: IndexedVertices<'_>,
         first: usize,
         flags: u16,
         light_styles: [u8; 2],
@@ -2775,7 +2780,6 @@ impl Renderer {
     ) {
         let baked_uv = flags & FACE_BAKED_UV != 0;
         let baked_light = flags & FACE_BAKED_LIGHT != 0;
-        let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
         let corners = &indexed.corners[first..first + output.len()];
         unsafe {
             if baked_uv && baked_light {
@@ -2816,13 +2820,13 @@ impl Renderer {
     #[inline(always)]
     fn materialize_retained_face(
         &self,
-        map: &ResidentMap,
+        indexed: IndexedVertices<'_>,
         face: CookedDrawSurface,
         texture: TextureInfo,
         output: &mut [ClassicAffineVertex],
     ) {
         self.materialize_surface(
-            map,
+            indexed,
             face.first_corner as usize,
             u16::from(face.flags),
             face.light_styles,
@@ -2834,13 +2838,13 @@ impl Renderer {
     #[inline(always)]
     fn materialize_face(
         &self,
-        map: &ResidentMap,
+        indexed: IndexedVertices<'_>,
         face: Face,
         texture: TextureInfo,
         output: &mut [ClassicAffineVertex],
     ) {
         self.materialize_surface(
-            map,
+            indexed,
             face.first_vertex as usize,
             face.flags,
             face.light_styles,
@@ -3174,6 +3178,7 @@ impl Renderer {
         let Some(model) = map.brush_models().get(entity.model_index as usize) else {
             return next;
         };
+        let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
         let (rotation, translation) = compose_classic_alias_transform(
             view.rotation,
             view.translation,
@@ -3256,7 +3261,7 @@ impl Renderer {
             }
             if windowed {
                 let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
-                self.materialize_face(map, face, texture, vertices);
+                self.materialize_face(indexed, face, texture, vertices);
                 animate_special_surface(vertices, texture, self.frame);
                 let vertex_count = if clip {
                     unsafe { clip_face_near(batch_vertices.as_mut_ptr().cast(), vertex_count) }
@@ -3288,7 +3293,7 @@ impl Renderer {
                 let vertices = unsafe {
                     batch_vertices_mut(batch_vertices, batch_vertex_count, reserve_count)
                 };
-                self.materialize_face(map, face, texture, &mut vertices[..vertex_count]);
+                self.materialize_face(indexed, face, texture, &mut vertices[..vertex_count]);
                 let vertex_count = if clip {
                     unsafe { clip_face_near(vertices.as_mut_ptr(), vertex_count) }
                 } else {
