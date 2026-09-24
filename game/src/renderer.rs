@@ -2321,7 +2321,7 @@ impl Renderer {
                     header.vertex_count as usize,
                     faces.as_ptr().cast::<ClassicAliasFace>(),
                     face_count,
-                    self.alias_projected.as_mut_ptr(),
+                    alias_projected_buffer(&mut self.alias_projected, header.vertex_count as usize),
                     output,
                     header.skins[0].texture_page,
                     clut_texture(),
@@ -2995,7 +2995,7 @@ impl Renderer {
                     header.vertex_count as usize,
                     faces.as_ptr().cast::<ClassicAliasFace>(),
                     face_count,
-                    self.alias_projected.as_mut_ptr(),
+                    alias_projected_buffer(&mut self.alias_projected, header.vertex_count as usize),
                     next,
                     header.skins[skin].texture_page,
                     clut_texture(),
@@ -3133,7 +3133,7 @@ impl Renderer {
                 header.vertex_count as usize,
                 faces.as_ptr().cast::<ClassicAliasFace>(),
                 face_count,
-                self.alias_projected.as_mut_ptr(),
+                alias_projected_buffer(&mut self.alias_projected, header.vertex_count as usize),
                 output,
                 header.skins[0].texture_page,
                 view_model::CLUT,
@@ -5025,6 +5025,31 @@ const _: () = assert!(core::mem::size_of::<BatchVertexStorage>() <= psx_engine::
 /// call trees fit after every link.
 #[cfg(feature = "renderer-scratchpad-stack")]
 type RendererStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;
+
+/// Alias models whose projected records fit the scratchpad project there. The
+/// projection pass writes one eight-byte record per vertex and the triangle
+/// pass reads three records back per face, all inside one alias submit call:
+/// nothing else in the scratchpad is live between batches, where entities,
+/// lightning beams and the view model submit alias models (each brush entity
+/// flushes its own batch before returning).
+const SCRATCHPAD_ALIAS_VERTICES: usize =
+    psx_engine::scratchpad::SIZE / core::mem::size_of::<ClassicAliasProjectedVertex>();
+
+#[inline]
+fn alias_projected_buffer(
+    fallback: &mut [ClassicAliasProjectedVertex],
+    vertex_count: usize,
+) -> *mut ClassicAliasProjectedVertex {
+    if cfg!(feature = "renderer-scratchpad-alias-projection")
+        && vertex_count <= SCRATCHPAD_ALIAS_VERTICES
+    {
+        // SAFETY: see SCRATCHPAD_ALIAS_VERTICES; the records are word aligned
+        // and the whole buffer lies inside the 1 KiB scratchpad.
+        unsafe { psx_engine::scratchpad::ptr_at::<ClassicAliasProjectedVertex>(0) }
+    } else {
+        fallback.as_mut_ptr()
+    }
+}
 
 #[inline]
 fn scratchpad_batch_vertices() -> &'static mut BatchVertexStorage {
