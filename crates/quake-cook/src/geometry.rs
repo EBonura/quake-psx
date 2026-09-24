@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use psx_render_contract::CookedDrawSurface;
 use quake_formats::{
@@ -221,10 +221,11 @@ pub(crate) fn cook_geometry_staged(
 ) -> Result<(GeometryLumps, TextureAtlas), CookError> {
     let (textures, atlas) = cook_textures(bsp, sky)?;
     let planes = cook_planes(bsp)?;
-    let (mut vertices, mut faces, face_offsets) = cook_faces(bsp, &textures)?;
+    let (mut vertices, mut faces, face_offsets, face_lightmaps) = cook_faces(bsp, &textures)?;
     let (nodes, mut leaves) = cook_nodes_and_leaves(bsp)?;
     let mark_surfaces = remap_mark_surfaces(bsp, &face_offsets, &mut leaves)?;
     update_leaf_lighting(&mark_surfaces, &faces, &vertices, &mut leaves)?;
+    fit_vertex_light(bsp, &faces, &face_lightmaps, &mut vertices);
     bake_vertices(&textures, &mut faces, &mut vertices);
 
     let geometry = GeometryLumps {
@@ -486,13 +487,18 @@ fn cook_planes(bsp: &Bsp<'_>) -> Result<Vec<u8>, CookError> {
     Ok(output)
 }
 
-fn cook_faces(
-    bsp: &Bsp<'_>,
-    textures: &[CookTexture],
-) -> Result<(Vec<CookVertex>, Vec<CookFace>, Vec<usize>), CookError> {
+type CookedFaces = (
+    Vec<CookVertex>,
+    Vec<CookFace>,
+    Vec<usize>,
+    Vec<Option<FaceLightmap>>,
+);
+
+fn cook_faces(bsp: &Bsp<'_>, textures: &[CookTexture]) -> Result<CookedFaces, CookError> {
     let face_bytes = bsp.lump(BspLump::Faces);
     let mut output_vertices = Vec::new();
     let mut output_faces = Vec::with_capacity(face_bytes.len() / 20);
+    let mut output_lightmaps = Vec::with_capacity(face_bytes.len() / 20);
     let mut face_offsets = Vec::with_capacity(face_bytes.len() / 20 + 1);
     face_offsets.push(0);
     for source_face in face_bytes.chunks_exact(20) {
@@ -696,6 +702,15 @@ fn cook_faces(
             let vertex_count = u8::try_from(vertex_count)
                 .map_err(|_| CookError::new("cooked face vertex count exceeds u8"))?;
             let texture = compact_face_index(texture_index, "texture")?;
+            output_lightmaps.push(face_lightmap(
+                bsp,
+                source_face,
+                texture_info,
+                source_texture,
+                light_min,
+                light_size,
+                [order[0], order[1]],
+            )?);
             output_faces.push(CookFace {
                 plane,
                 flags: if side != 0 { FACE_BACKSIDE } else { 0 },
@@ -707,7 +722,349 @@ fn cook_faces(
         }
         face_offsets.push(output_faces.len());
     }
-    Ok((output_vertices, output_faces, face_offsets))
+    Ok((
+        output_vertices,
+        output_faces,
+        face_offsets,
+        output_lightmaps,
+    ))
+}
+
+/// Where one cooked face's Quake lightmap lives, for the corner-light fit.
+#[derive(Clone, Copy, Debug)]
+struct FaceLightmap {
+    /// Byte offset of style slot zero in the lighting lump.
+    offset: usize,
+    width: usize,
+    height: usize,
+    /// Texture-space axes (xyz, offset), as `sample_vertex_light` reads them.
+    axes: [[f32; 4]; 2],
+    light_min: [f32; 2],
+    /// Source style slot (0..3) behind each cooked light channel, and that
+    /// slot's style number; `None` when the face has no such channel.
+    channels: [Option<(usize, u8)>; 2],
+}
+
+/// The lightmap of an ordinary lit face; `None` for every face whose corner
+/// light `sample_vertex_light` sets to a constant.
+fn face_lightmap(
+    bsp: &Bsp<'_>,
+    face: &[u8],
+    texture_info: &[u8],
+    texture: Option<MipTexture<'_>>,
+    light_min: [f32; 2],
+    light_size: [f32; 2],
+    order: [usize; 2],
+) -> Result<Option<FaceLightmap>, CookError> {
+    let special_name = texture
+        .map(|texture| {
+            texture.name.starts_with('+')
+                || texture.name.contains("*lava")
+                || texture.name.contains("*tele")
+        })
+        .unwrap_or(false);
+    let light_offset = i32_at(face, 16)?;
+    if special_name || i32_at(texture_info, 36)? & 7 != 0 || light_offset < 0 {
+        return Ok(None);
+    }
+    let mut axes = [[0.0; 4]; 2];
+    for (axis, row) in axes.iter_mut().enumerate() {
+        for (component, value) in row.iter_mut().enumerate() {
+            *value = f32_at(texture_info, axis * 16 + component * 4)?;
+        }
+    }
+    let width = (light_size[0] as usize >> 4) + 1;
+    let height = (light_size[1] as usize >> 4) + 1;
+    let styles = (0..4).take_while(|&slot| face[12 + slot] != 0xff).count();
+    let channel = |slot: usize| (slot < styles).then(|| (slot, face[12 + slot]));
+    let lightmap = FaceLightmap {
+        offset: light_offset as usize,
+        width,
+        height,
+        axes,
+        light_min,
+        channels: [channel(order[0]), channel(order[1])],
+    };
+    let end = lightmap.offset + styles * width * height;
+    if end > bsp.lump(BspLump::Lighting).len() {
+        return Err(CookError::new("face lightmap is out of bounds"));
+    }
+    Ok(Some(lightmap))
+}
+
+impl FaceLightmap {
+    /// Quake's light at a point of the face for one style slot, in the
+    /// cooker's corner units (`luxel * 255 / 256`). Luxel `k` sits at
+    /// texture coordinate `light_min + 16k`, and WinQuake's surface cache
+    /// (`R_DrawSurfaceBlock8`) interpolates linearly between luxels, so this
+    /// is a bilinear read.
+    fn sample(&self, lighting: &[u8], slot: usize, position: [f64; 3]) -> f64 {
+        let mut luxel = [0.0f64; 2];
+        let limits = [self.width - 1, self.height - 1];
+        for axis in 0..2 {
+            let row = self.axes[axis];
+            let coordinate = position[0] * f64::from(row[0])
+                + position[1] * f64::from(row[1])
+                + position[2] * f64::from(row[2])
+                + f64::from(row[3]);
+            luxel[axis] = ((coordinate - f64::from(self.light_min[axis])) / 16.0)
+                .clamp(0.0, limits[axis] as f64);
+        }
+        let x0 = (luxel[0].floor() as usize).min(limits[0].saturating_sub(1));
+        let y0 = (luxel[1].floor() as usize).min(limits[1].saturating_sub(1));
+        let x1 = (x0 + 1).min(limits[0]);
+        let y1 = (y0 + 1).min(limits[1]);
+        let fx = luxel[0] - x0 as f64;
+        let fy = luxel[1] - y0 as f64;
+        let base = self.offset + slot * self.width * self.height;
+        let at = |x: usize, y: usize| f64::from(lighting[base + y * self.width + x]);
+        let value = at(x0, y0) * (1.0 - fx) * (1.0 - fy)
+            + at(x1, y0) * fx * (1.0 - fy)
+            + at(x0, y1) * (1.0 - fx) * fy
+            + at(x1, y1) * fx * fy;
+        value * 255.0 / 256.0
+    }
+}
+
+/// Spacing, in world units, of the interior light samples each face's corner
+/// values are fitted to. Half a luxel: finer than Quake's own light detail.
+const LIGHT_FIT_SAMPLE_UNITS: f64 = 8.0;
+/// Weight of each corner's pull toward the exact lightmap value at that
+/// corner, relative to the interior samples. Only decides corners the samples
+/// leave free (tiny faces); it barely moves the others.
+const LIGHT_FIT_CORNER_WEIGHT: f64 = 0.05;
+
+/// Replace each lit face's corner light with the values whose Gouraud shading
+/// best matches Quake's lightmap across the whole face.
+///
+/// The PS1 draws a face as a fan of Gouraud triangles from corner 0, so it
+/// only sees light at the corners. Quake's light tool leaves the luxels at a
+/// face's corners in the shadow of the neighbouring brush, and a face can
+/// span fifteen luxels, so point samples at the corners drew most faces far
+/// darker than Quake and let the darkness of one corner run across the whole
+/// face. Least squares over interior samples instead gives each face Quake's
+/// brightness and gradient. Corners at the same position on the same plane
+/// share one unknown per light style, so coplanar neighbours meet at equal
+/// values and no seam appears between them.
+fn fit_vertex_light(
+    bsp: &Bsp<'_>,
+    faces: &[CookFace],
+    lightmaps: &[Option<FaceLightmap>],
+    vertices: &mut [CookVertex],
+) {
+    let lighting = bsp.lump(BspLump::Lighting);
+    // One unknown per (plane, side, position, style).
+    let mut index: HashMap<(u16, u8, [i16; 3], u8), usize> = HashMap::new();
+    let mut corner_sum: Vec<f64> = Vec::new();
+    let mut corner_count: Vec<f64> = Vec::new();
+    // Per face and channel, the unknown behind each corner.
+    let mut face_unknowns: Vec<[Vec<usize>; 2]> = Vec::with_capacity(faces.len());
+    for (face, lightmap) in faces.iter().zip(lightmaps) {
+        let mut unknowns = [Vec::new(), Vec::new()];
+        if let Some(lightmap) = lightmap {
+            let corners = &vertices[face.first_vertex as usize
+                ..face.first_vertex as usize + face.vertex_count as usize];
+            for (channel, source) in lightmap.channels.iter().enumerate() {
+                let Some((slot, style)) = *source else {
+                    continue;
+                };
+                for corner in corners {
+                    let key = (
+                        face.plane,
+                        face.flags & FACE_BACKSIDE,
+                        corner.position,
+                        style,
+                    );
+                    let next = corner_sum.len();
+                    let unknown = *index.entry(key).or_insert(next);
+                    if unknown == next {
+                        corner_sum.push(0.0);
+                        corner_count.push(0.0);
+                    }
+                    corner_sum[unknown] +=
+                        lightmap.sample(lighting, slot, corner.position.map(f64::from));
+                    corner_count[unknown] += 1.0;
+                    unknowns[channel].push(unknown);
+                }
+            }
+        }
+        face_unknowns.push(unknowns);
+    }
+    let unknown_count = corner_sum.len();
+    if unknown_count == 0 {
+        return;
+    }
+
+    // Normal equations, one sorted row per unknown.
+    let mut normal: Vec<BTreeMap<usize, f64>> = vec![BTreeMap::new(); unknown_count];
+    let mut right = vec![0.0f64; unknown_count];
+    let mut support = vec![0.0f64; unknown_count];
+    for ((face, lightmap), unknowns) in faces.iter().zip(lightmaps).zip(&face_unknowns) {
+        let Some(lightmap) = lightmap else { continue };
+        let corners: Vec<[f64; 3]> = vertices
+            [face.first_vertex as usize..face.first_vertex as usize + face.vertex_count as usize]
+            .iter()
+            .map(|corner| corner.position.map(f64::from))
+            .collect();
+        for_each_fan_sample(&corners, |triangle, weights, position| {
+            for (channel, source) in lightmap.channels.iter().enumerate() {
+                let Some((slot, _)) = *source else { continue };
+                let target = lightmap.sample(lighting, slot, position);
+                let ids = triangle.map(|corner| unknowns[channel][corner]);
+                for a in 0..3 {
+                    support[ids[a]] += weights[a];
+                    right[ids[a]] += weights[a] * target;
+                    for b in 0..3 {
+                        *normal[ids[a]].entry(ids[b]).or_insert(0.0) += weights[a] * weights[b];
+                    }
+                }
+            }
+        });
+    }
+    let mut exact = vec![0.0f64; unknown_count];
+    for unknown in 0..unknown_count {
+        exact[unknown] = corner_sum[unknown] / corner_count[unknown];
+        let pull = LIGHT_FIT_CORNER_WEIGHT * LIGHT_FIT_CORNER_WEIGHT * (1.0 + support[unknown]);
+        *normal[unknown].entry(unknown).or_insert(0.0) += pull;
+        right[unknown] += pull * exact[unknown];
+    }
+    let solved = conjugate_gradient(&normal, &right, exact);
+
+    for ((face, lightmap), unknowns) in faces.iter().zip(lightmaps).zip(&face_unknowns) {
+        let Some(lightmap) = lightmap else { continue };
+        for (channel, source) in lightmap.channels.iter().enumerate() {
+            if source.is_none() {
+                continue;
+            }
+            for (corner, &unknown) in unknowns[channel].iter().enumerate() {
+                vertices[face.first_vertex as usize + corner].light[channel] =
+                    solved[unknown].round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+/// Visit sample points on a square grid across a convex polygon, each with the
+/// fan triangle (corners 0, k, k+1) containing it and its barycentric weights.
+fn for_each_fan_sample(
+    corners: &[[f64; 3]],
+    mut visit: impl FnMut([usize; 3], [f64; 3], [f64; 3]),
+) {
+    let count = corners.len();
+    // Project onto the plane of the two axes the polygon spans most.
+    let mut normal = [0.0f64; 3];
+    for k in 1..count - 1 {
+        let a = sub3(corners[k], corners[0]);
+        let b = sub3(corners[k + 1], corners[0]);
+        let cross = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        for axis in 0..3 {
+            normal[axis] += cross[axis];
+        }
+    }
+    let dominant = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+        0
+    } else if normal[1].abs() >= normal[2].abs() {
+        1
+    } else {
+        2
+    };
+    let (u, v) = match dominant {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let mut low = [f64::MAX; 2];
+    let mut high = [f64::MIN; 2];
+    for corner in corners {
+        low = [low[0].min(corner[u]), low[1].min(corner[v])];
+        high = [high[0].max(corner[u]), high[1].max(corner[v])];
+    }
+    let step = LIGHT_FIT_SAMPLE_UNITS;
+    let mut a = low[0] + step * 0.5;
+    while a < high[0] {
+        let mut b = low[1] + step * 0.5;
+        while b < high[1] {
+            for k in 1..count - 1 {
+                let (p0, p1, p2) = (corners[0], corners[k], corners[k + 1]);
+                let det = (p1[v] - p2[v]) * (p0[u] - p2[u]) + (p2[u] - p1[u]) * (p0[v] - p2[v]);
+                if det.abs() < 1e-9 {
+                    continue;
+                }
+                let w0 = ((p1[v] - p2[v]) * (a - p2[u]) + (p2[u] - p1[u]) * (b - p2[v])) / det;
+                let w1 = ((p2[v] - p0[v]) * (a - p2[u]) + (p0[u] - p2[u]) * (b - p2[v])) / det;
+                let w2 = 1.0 - w0 - w1;
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    continue;
+                }
+                let position = [0, 1, 2].map(|axis| w0 * p0[axis] + w1 * p1[axis] + w2 * p2[axis]);
+                visit([0, k, k + 1], [w0, w1, w2], position);
+                break;
+            }
+            b += step;
+        }
+        a += step;
+    }
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+/// Jacobi-preconditioned conjugate gradient on a symmetric positive-definite
+/// system held as sorted rows; deterministic for a given input.
+fn conjugate_gradient(rows: &[BTreeMap<usize, f64>], right: &[f64], start: Vec<f64>) -> Vec<f64> {
+    let count = right.len();
+    let multiply = |x: &[f64]| -> Vec<f64> {
+        rows.iter()
+            .map(|row| row.iter().map(|(&column, &value)| value * x[column]).sum())
+            .collect()
+    };
+    let diagonal: Vec<f64> = rows
+        .iter()
+        .enumerate()
+        .map(|(row, values)| values[&row])
+        .collect();
+    let mut x = start;
+    let product = multiply(&x);
+    let mut residual: Vec<f64> = (0..count).map(|i| right[i] - product[i]).collect();
+    let mut preconditioned: Vec<f64> = (0..count).map(|i| residual[i] / diagonal[i]).collect();
+    let mut direction = preconditioned.clone();
+    let mut rho: f64 = (0..count).map(|i| residual[i] * preconditioned[i]).sum();
+    let tolerance = 1e-12
+        * right
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .max(1.0);
+    for _ in 0..4 * count.max(64) {
+        let step = multiply(&direction);
+        let curvature: f64 = (0..count).map(|i| direction[i] * step[i]).sum();
+        if curvature <= 0.0 {
+            break;
+        }
+        let alpha = rho / curvature;
+        for i in 0..count {
+            x[i] += alpha * direction[i];
+            residual[i] -= alpha * step[i];
+        }
+        if residual.iter().map(|value| value * value).sum::<f64>() <= tolerance {
+            break;
+        }
+        for i in 0..count {
+            preconditioned[i] = residual[i] / diagonal[i];
+        }
+        let next: f64 = (0..count).map(|i| residual[i] * preconditioned[i]).sum();
+        let beta = next / rho;
+        rho = next;
+        for i in 0..count {
+            direction[i] = preconditioned[i] + beta * direction[i];
+        }
+    }
+    x
 }
 
 fn subdivide_liquid_polygon(polygon: Vec<FaceVertex>, cell_size: f32) -> Vec<Vec<FaceVertex>> {
@@ -1535,5 +1892,62 @@ mod tests {
         assert_eq!(frame1.animation_next, 2);
         assert_eq!(frame0.animation_alt, -1);
         assert_eq!(quake_formats::liquid_alternate_texture(frame0), None);
+    }
+
+    #[test]
+    fn light_fit_samples_cover_the_face_once_with_unit_weights() {
+        // A 32x32 square in the XY plane: 16 samples at 8-unit spacing, each
+        // inside exactly one fan triangle, weights summing to one and
+        // reproducing the sample position.
+        let corners = [
+            [0.0, 0.0, 5.0],
+            [32.0, 0.0, 5.0],
+            [32.0, 32.0, 5.0],
+            [0.0, 32.0, 5.0],
+        ];
+        let mut samples = 0;
+        for_each_fan_sample(&corners, |triangle, weights, position| {
+            samples += 1;
+            assert!(weights.iter().all(|&weight| weight >= 0.0));
+            assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+            for axis in 0..3 {
+                let rebuilt: f64 = (0..3)
+                    .map(|corner| weights[corner] * corners[triangle[corner]][axis])
+                    .sum();
+                assert!((rebuilt - position[axis]).abs() < 1e-9);
+            }
+        });
+        assert_eq!(samples, 16);
+    }
+
+    #[test]
+    fn light_fit_solver_recovers_a_known_solution() {
+        // Tridiagonal SPD system with solution [1, 2, 3, 4].
+        let rows: Vec<BTreeMap<usize, f64>> = (0..4)
+            .map(|row| {
+                let mut values = BTreeMap::new();
+                values.insert(row, 4.0);
+                if row > 0 {
+                    values.insert(row - 1, -1.0);
+                }
+                if row < 3 {
+                    values.insert(row + 1, -1.0);
+                }
+                values
+            })
+            .collect();
+        let expected = [1.0, 2.0, 3.0, 4.0];
+        let right: Vec<f64> = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|(&column, &value)| value * expected[column])
+                    .sum()
+            })
+            .collect();
+        let solved = conjugate_gradient(&rows, &right, vec![0.0; 4]);
+        for (value, expected) in solved.iter().zip(expected) {
+            assert!((value - expected).abs() < 1e-9);
+        }
     }
 }
