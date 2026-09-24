@@ -7415,7 +7415,9 @@ fn run_ambient_regression(root: &Path, frontend: &Path, build: &Path) -> Result<
         .ok()
         .and_then(|value| value.parse().ok())
         // Allow enough emulated time to reach the final 52-second sample.
-        .unwrap_or(900_000_000);
+        // The budget counts retired instructions, not time: 900M covered
+        // 51.8 s once the present queue stopped the CPU spinning on vblank.
+        .unwrap_or(1_000_000_000);
     let mut command = Command::new(frontend);
     let output = command
         .arg("launch")
