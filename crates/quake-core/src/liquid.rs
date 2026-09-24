@@ -149,6 +149,16 @@ pub fn warp_tile_64_prepared(source: &[u8], destination: &mut [u8], offsets: &[u
 #[inline(always)]
 unsafe fn warp_tile_64_mips(source: *const u8, destination: *mut u8, offsets: *const u8) {
     unsafe {
+        // Software-pipelined: each texel's source address is formed while the
+        // previous texel's main-RAM source load is outstanding. On the R3000A
+        // the third to sixth instructions behind a RAM load run under it for
+        // free when they neither touch the bus nor read the loaded register
+        // (hwtest v1.23), so the four address instructions of the next texel
+        // cost nothing and both load-delay nops are gone. Source coordinates
+        // and write order are exactly the dense Quake resample. The phase
+        // byte one past the row (offsets[64]) is read on the last iteration
+        // and never used: it is inside TURBULENCE_DOUBLE for a table window
+        // (phase < 128) and inside the 1 KiB scratchpad for a prepared one.
         core::arch::asm!(
             ".set noreorder",
             "move  $24, $6",
@@ -158,35 +168,39 @@ unsafe fn warp_tile_64_mips(source: *const u8, destination: *mut u8, offsets: *c
             "2:",
             "lbu   $10, 0($11)",
             "move  $11, $24",
-            // Two texels share one loop branch and counter update. Source
-            // coordinates and write order remain exactly the original dense
-            // Quake resample; only the MIPS-I schedule is unrolled.
-            "addiu $9, $zero, 32",
-            "3:",
             "lbu   $12, 0($11)",
-            "nop", // R3000 load delay: the next instruction consumes this value.
+            "addiu $9, $zero, 32",
+            // Address of texel x = 0; $10 (the row's x offset) is two
+            // instructions old and $12 one, so neither needs a nop.
             "addu  $13, $8, $12",
             "andi  $13, $13, 63",
             "sll   $13, $13, 6",
             "or    $13, $13, $10",
             "addu  $15, $4, $13",
+            "3:",
+            // Even texel: source load in flight while the odd texel's
+            // address is formed from its phase byte, loaded just before.
+            "lbu   $2, 1($11)",
             "lbu   $14, 0($15)",
-            "nop", // R3000 load delay: the next instruction consumes this value.
+            "addiu $10, $10, 1",
+            "andi  $10, $10, 63",
+            "addu  $13, $8, $2",
+            "andi  $13, $13, 63",
+            "sll   $13, $13, 6",
+            "or    $13, $13, $10",
             "sb    $14, 0($5)",
+            "addu  $15, $4, $13",
+            // Odd texel, forming the next even texel's address likewise.
+            "lbu   $12, 2($11)",
+            "lbu   $14, 0($15)",
             "addiu $10, $10, 1",
             "andi  $10, $10, 63",
-            "lbu   $12, 1($11)",
-            "nop", // R3000 load delay: the next instruction consumes this value.
             "addu  $13, $8, $12",
             "andi  $13, $13, 63",
             "sll   $13, $13, 6",
             "or    $13, $13, $10",
-            "addu  $15, $4, $13",
-            "lbu   $14, 0($15)",
-            "nop", // R3000 load delay: the next instruction consumes this value.
             "sb    $14, 1($5)",
-            "addiu $10, $10, 1",
-            "andi  $10, $10, 63",
+            "addu  $15, $4, $13",
             "addiu $11, $11, 2",
             "addiu $9, $9, -1",
             "bnez  $9, 3b",
@@ -198,6 +212,7 @@ unsafe fn warp_tile_64_mips(source: *const u8, destination: *mut u8, offsets: *c
             in("$4") source,
             inout("$5") destination => _,
             in("$6") offsets,
+            lateout("$2") _,
             lateout("$8") _,
             lateout("$9") _,
             lateout("$10") _,
