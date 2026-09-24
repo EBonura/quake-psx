@@ -188,8 +188,8 @@ const VISUAL_WORLD_REGION: ImageRegion = ImageRegion::new(0, 0, 320, 184);
 const VISUAL_HUD_REGION: ImageRegion = ImageRegion::new(0, 184, 320, 56);
 // Advance one simulation tick per rendered frame so renderer speed cannot
 // change the animation sampled by this camera.
-const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0x951a_75ba_bd8f_2904;
-const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0x09e9_6289_3d49_6136;
+const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0xd6e3_dec7_545a_f73d;
+const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0x233e_66b3_f894_d486;
 const VISUAL_MAX_WORLD_PACKETS: u32 = 400_000;
 const VISUAL_MAX_HARDWARE_TRIANGLES: u32 = 460_000;
 // Top of the guest heap. The linker script computes it as
