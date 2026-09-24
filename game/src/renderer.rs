@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
-use core::ptr::{self, addr_of_mut};
+use core::ptr::{self, addr_of, addr_of_mut};
 
 #[cfg(not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")))]
 use psx_engine::materialize_classic_affine_indexed_baked_vertices;
@@ -18,10 +18,10 @@ use psx_engine::{
         ClipTraversal,
     },
     compose_classic_alias_transform, materialize_classic_affine_indexed_vertices,
-    submit_classic_affine_projected_fan, submit_classic_affine_scoped_windowed_fan,
-    submit_classic_alias_model, submit_classic_alias_view_model, ClassicAffineBatchSurface,
-    ClassicAffineIndexedCorner, ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit,
-    ClassicAffineVertex, ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
+    submit_classic_affine_scoped_windowed_fan, submit_classic_alias_model,
+    submit_classic_alias_view_model, ClassicAffineBatchSurface, ClassicAffineIndexedCorner,
+    ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit, ClassicAffineVertex,
+    ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
 };
 #[cfg(feature = "renderer-census")]
 use psx_engine::{
@@ -138,7 +138,7 @@ const NEAR_VIEW_XY_SCALE: i32 = 4;
 /// Largest quarter-unit X/Y the scaled projection keeps inside IR1/IR2 at the
 /// water warp's widest projection plane (167).
 const NEAR_VIEW_XY_LIMIT: i32 = 31_200;
-/// Depth at which the ordinary GTE projection is exact (SZ > H/2 = 80).
+/// Depth at which the ordinary GTE projection stops saturating (SZ > H/2).
 const NEAR_VIEW_EXACT_DEPTH: i32 = 81;
 const BATCH_MAX_VERTICES: usize = 39;
 const BATCH_MAX_SURFACES: usize = 13;
@@ -1660,6 +1660,7 @@ impl Renderer {
             [camera.origin.x, camera.origin.y, camera.origin.z],
             camera.angles,
         );
+        set_near_view(view.rotation, view.translation, self.projection_plane);
         self.update_visible_liquid_tiles(map, animation_tick_60hz);
 
         if visibility_valid {
@@ -1761,12 +1762,7 @@ impl Renderer {
                     animate_special_surface(vertices, texture, self.frame);
                     let (vertex_count, view_space) = if near {
                         match unsafe {
-                            clip_face_view(
-                                batch_vertices.as_mut_ptr().cast(),
-                                vertex_count,
-                                &view.rotation,
-                                view.translation,
-                            )
+                            clip_face_view(batch_vertices.as_mut_ptr().cast(), vertex_count)
                         } {
                             ViewClip::Culled => continue,
                             ViewClip::Untouched => (vertex_count, false),
@@ -1806,12 +1802,7 @@ impl Renderer {
                         )
                     };
                     let submitted = if view_space {
-                        with_view_space_projection(
-                            &view.rotation,
-                            view.translation,
-                            self.projection_plane,
-                            submit,
-                        )
+                        with_view_space_projection(submit)
                     } else {
                         submit()
                     };
@@ -1835,12 +1826,9 @@ impl Renderer {
                 }
 
                 let face_worst_words = (reserve_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
-                // A near face may be drawn through its own fan from the start
-                // of the scratch, so it begins on an empty batch.
                 if batch_vertex_count + reserve_count > BATCH_MAX_VERTICES
                     || batch_surface_count == BATCH_MAX_SURFACES
                     || !packet_capacity(next, end, batch_worst_words + face_worst_words)
-                    || (near && batch_vertex_count != 0)
                 {
                     #[cfg(feature = "renderer-census")]
                     let batch_output = next;
@@ -1909,31 +1897,15 @@ impl Renderer {
 
                 let vertex_count = if near {
                     match unsafe {
-                        clip_face_view(
+                        near_face(
                             vertices.as_mut_ptr(),
                             vertex_count,
-                            &view.rotation,
-                            view.translation,
+                            next,
+                            texture.texture_page,
                         )
                     } {
-                        ViewClip::Culled => continue,
-                        ViewClip::Untouched => vertex_count,
-                        ViewClip::Fallback if vertex_count < NEAR_CLIP_MAX_VERTICES => unsafe {
-                            clip_face_near(vertices.as_mut_ptr(), vertex_count)
-                        },
-                        ViewClip::Fallback => vertex_count,
-                        ViewClip::ViewSpace(count) => {
-                            let submitted = unsafe {
-                                submit_view_space_fan(
-                                    batch_vertices.as_mut_ptr().cast(),
-                                    count,
-                                    next,
-                                    texture.texture_page,
-                                    &view.rotation,
-                                    view.translation,
-                                    self.projection_plane,
-                                )
-                            };
+                        NearFace::Batch(count) => count,
+                        NearFace::Drawn(submitted) => {
                             next = submitted.next_packet;
                             stats.packets = stats.packets.wrapping_add(submitted.packets);
                             stats.hardware_triangles = stats
@@ -3312,6 +3284,7 @@ impl Renderer {
         );
         scene::load_rotation(&rotation);
         scene::load_translation(translation);
+        set_near_view(rotation, translation, self.projection_plane);
 
         let model_camera = Vec3I32 {
             x: camera.origin.x.saturating_sub(entity.origin.x),
@@ -3358,7 +3331,6 @@ impl Renderer {
                 || batch_vertex_count + reserve_count > BATCH_MAX_VERTICES
                 || batch_surface_count == BATCH_MAX_SURFACES
                 || !packet_capacity(next, end, batch_worst_words + face_worst_words)
-                || (near && batch_vertex_count != 0)
             {
                 let submitted = unsafe {
                     flush_batch(
@@ -3388,12 +3360,7 @@ impl Renderer {
                 animate_special_surface(vertices, texture, self.frame);
                 let (vertex_count, view_space) = if near {
                     match unsafe {
-                        clip_face_view(
-                            batch_vertices.as_mut_ptr().cast(),
-                            vertex_count,
-                            &rotation,
-                            translation,
-                        )
+                        clip_face_view(batch_vertices.as_mut_ptr().cast(), vertex_count)
                     } {
                         ViewClip::Culled => continue,
                         ViewClip::Untouched => (vertex_count, false),
@@ -3425,12 +3392,7 @@ impl Renderer {
                     )
                 };
                 let submitted = if view_space {
-                    with_view_space_projection(
-                        &rotation,
-                        translation,
-                        self.projection_plane,
-                        submit,
-                    )
+                    with_view_space_projection(submit)
                 } else {
                     submit()
                 };
@@ -3447,26 +3409,15 @@ impl Renderer {
                 self.materialize_face(indexed, face, texture, &mut vertices[..vertex_count]);
                 let vertex_count = if near {
                     match unsafe {
-                        clip_face_view(vertices.as_mut_ptr(), vertex_count, &rotation, translation)
+                        near_face(
+                            vertices.as_mut_ptr(),
+                            vertex_count,
+                            next,
+                            texture.texture_page,
+                        )
                     } {
-                        ViewClip::Culled => continue,
-                        ViewClip::Untouched => vertex_count,
-                        ViewClip::Fallback if vertex_count < NEAR_CLIP_MAX_VERTICES => unsafe {
-                            clip_face_near(vertices.as_mut_ptr(), vertex_count)
-                        },
-                        ViewClip::Fallback => vertex_count,
-                        ViewClip::ViewSpace(count) => {
-                            let submitted = unsafe {
-                                submit_view_space_fan(
-                                    batch_vertices.as_mut_ptr().cast(),
-                                    count,
-                                    next,
-                                    texture.texture_page,
-                                    &rotation,
-                                    translation,
-                                    self.projection_plane,
-                                )
-                            };
+                        NearFace::Batch(count) => count,
+                        NearFace::Drawn(submitted) => {
                             next = submitted.next_packet;
                             stats.packets = stats.packets.wrapping_add(submitted.packets);
                             stats.hardware_triangles = stats
@@ -6268,8 +6219,8 @@ enum ViewClip {
     /// Every corner is already in front of the exact-projection depth and
     /// inside the guard band: the ordinary world-space path draws it exactly.
     Untouched,
-    /// The corners now hold camera-space positions; submit them through
-    /// [`submit_view_space_fan`] or [`with_view_space_projection`].
+    /// The corners now hold camera-space positions; submit them under
+    /// [`with_view_space_projection`].
     ViewSpace(usize),
     /// Too many corners, or a coordinate too large for the scaled projection:
     /// keep the plain near-plane clip.
@@ -6346,7 +6297,7 @@ fn view_crossing(
 }
 
 /// Clip one near face against the near plane and the guard band in camera
-/// space, under `rotation`/`translation` (the camera for the world, the
+/// space, under the transform in [`NEAR_VIEW`] (the camera for the world, the
 /// composed entity transform for brush models).
 ///
 /// The camera transform runs on the CPU so the corners keep the fraction the
@@ -6360,12 +6311,12 @@ fn view_crossing(
 /// `vertices` must hold `count` materialized corners and have room for
 /// `NEAR_CLIP_MAX_VERTICES` records.
 #[inline(never)]
-unsafe fn clip_face_view(
-    vertices: *mut ClassicAffineVertex,
-    count: usize,
-    rotation: &Mat3I16,
-    translation: GteVec3I32,
-) -> ViewClip {
+unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> ViewClip {
+    let NearView {
+        rotation,
+        translation,
+        ..
+    } = unsafe { *addr_of!(NEAR_VIEW) };
     if count > NEAR_VIEW_MAX_INPUT {
         return ViewClip::Fallback;
     }
@@ -6373,7 +6324,10 @@ unsafe fn clip_face_view(
     let b = unsafe { &mut *addr_of_mut!(VIEW_CLIP_B) };
     let offset = [translation.x, translation.y, translation.z];
     let exact_depth = NEAR_VIEW_EXACT_DEPTH << VIEW_CLIP_FRACTION_BITS;
-    let mut all_exact = true;
+    // Planes some corner lies outside of, and planes every corner does.
+    let mut outside_any = 0u32;
+    let mut outside_all = (1u32 << NEAR_GUARD_PLANES) - 1;
+    let mut nearest = i32::MAX;
     for index in 0..count {
         let vertex = unsafe { *vertices.add(index) };
         let [px, py, pz] = vertex.position.map(i32::from);
@@ -6390,8 +6344,13 @@ unsafe fn clip_face_view(
         } else {
             exact
         };
-        all_exact &= position[2] >= exact_depth
-            && (1..NEAR_GUARD_PLANES).all(|plane| view_plane_distance(position, plane) >= 0);
+        let mut outside = u32::from(view_plane_distance(exact, 0) < 0);
+        for plane in 1..NEAR_GUARD_PLANES {
+            outside |= u32::from(view_plane_distance(position, plane) < 0) << plane;
+        }
+        outside_any |= outside;
+        outside_all &= outside;
+        nearest = nearest.min(position[2]);
         a[index] = ViewCorner {
             exact,
             position,
@@ -6399,13 +6358,21 @@ unsafe fn clip_face_view(
             color: vertex.color,
         };
     }
-    if all_exact {
+    if nearest >= exact_depth && outside_any == 0 {
         return ViewClip::Untouched;
+    }
+    if outside_all != 0 {
+        return ViewClip::Culled;
     }
     let mut source: &mut [ViewCorner; NEAR_CLIP_MAX_VERTICES] = a;
     let mut target: &mut [ViewCorner; NEAR_CLIP_MAX_VERTICES] = b;
     let mut length = count;
+    // A crossing lies between its two corners, so a plane no original corner
+    // is outside of never needs a pass.
     for plane in 0..NEAR_GUARD_PLANES {
+        if outside_any & (1 << plane) == 0 {
+            continue;
+        }
         let mut written = 0usize;
         let distance_of = |corner: &ViewCorner| {
             view_plane_distance(
@@ -6444,10 +6411,9 @@ unsafe fn clip_face_view(
         length = written;
         core::mem::swap(&mut source, &mut target);
     }
-    // Quarter-unit X/Y and whole-unit Z for the projection. Whole-unit
-    // corners stay exact through the shift, so an original corner at the
-    // exact depth projects bit for bit like the ordinary path (see
-    // `submit_view_space_fan`).
+    // Quarter-unit X/Y and whole-unit Z for the scaled projection. An
+    // original corner at the exact depth keeps the GTE's whole units, the
+    // position the ordinary path draws it at.
     const QUARTER: u32 = VIEW_CLIP_FRACTION_BITS - 2;
     const WHOLE: u32 = VIEW_CLIP_FRACTION_BITS;
     for index in 0..length {
@@ -6486,66 +6452,90 @@ unsafe fn clip_face_view(
     ViewClip::ViewSpace(length)
 }
 
-/// Project and submit one ordinary near face whose corners
-/// [`clip_face_view`] left in camera space.
-///
-/// Corners at or beyond the exact-projection depth project through an
-/// identity camera at the frame's own projection plane, which repeats the
-/// ordinary path's arithmetic bit for bit, so an edge this face shares with a
-/// face drawn the ordinary way lands on the same pixels and no crack opens
-/// between them. Only the corners nearer than that depth take the scaled
-/// projection, which also stays loaded for the lattice's midpoints.
+/// The transform and projection plane loaded for the pass that is drawing:
+/// the camera for the world, the composed transform for a brush model.
+/// [`near_face`] reads it here so the per-face loops do not keep it live.
+#[derive(Copy, Clone)]
+struct NearView {
+    rotation: Mat3I16,
+    translation: GteVec3I32,
+    plane: u16,
+}
+
+static mut NEAR_VIEW: NearView = NearView {
+    rotation: Mat3I16 { m: [[0; 3]; 3] },
+    translation: GteVec3I32::ZERO,
+    plane: 160,
+};
+
+fn set_near_view(rotation: Mat3I16, translation: GteVec3I32, plane: u16) {
+    unsafe {
+        *addr_of_mut!(NEAR_VIEW) = NearView {
+            rotation,
+            translation,
+            plane,
+        }
+    };
+}
+
+/// What [`near_face`] did with one ordinary near face.
+enum NearFace {
+    /// Batch this many corners as usual; under three means nothing is left.
+    Batch(usize),
+    /// Already drawn through [`submit_view_space_face`].
+    Drawn(ClassicAffineSubmit),
+}
+
+/// Clip one ordinary near face and either hand it back to the batch or draw
+/// it through [`submit_view_space_face`]. Cold and out of line, and it takes
+/// the packet cursor by value, so the per-face world loop keeps its
+/// registers: a few percent of faces are near.
 ///
 /// # Safety
-/// `vertices` must hold `count` camera-space corners with the batch
-/// scratch tail after them; `output` must have room for the fan's packets.
+/// As [`clip_face_view`] and [`submit_view_space_face`].
+#[cold]
 #[inline(never)]
-unsafe fn submit_view_space_fan(
+unsafe fn near_face(
+    vertices: *mut ClassicAffineVertex,
+    count: usize,
+    next: *mut u32,
+    tpage: u16,
+) -> NearFace {
+    match unsafe { clip_face_view(vertices, count) } {
+        ViewClip::Culled => NearFace::Batch(0),
+        ViewClip::Untouched => NearFace::Batch(count),
+        ViewClip::Fallback if count < NEAR_CLIP_MAX_VERTICES => {
+            NearFace::Batch(unsafe { clip_face_near(vertices, count) })
+        }
+        ViewClip::Fallback => NearFace::Batch(count),
+        ViewClip::ViewSpace(corners) => {
+            NearFace::Drawn(unsafe { submit_view_space_face(vertices, corners, next, tpage) })
+        }
+    }
+}
+
+/// Submit one ordinary near face whose corners [`clip_face_view`] left in
+/// camera space, through the same batch kernel as every other world face,
+/// under the scaled projection.
+///
+/// # Safety
+/// `vertices` must hold `count` camera-space corners with the twelve-record
+/// subdivision scratch after them; `output` must have room for the fan.
+#[inline(never)]
+unsafe fn submit_view_space_face(
     vertices: *mut ClassicAffineVertex,
     count: usize,
     output: *mut u32,
     tpage: u16,
-    rotation: &Mat3I16,
-    translation: GteVec3I32,
-    plane: u16,
 ) -> ClassicAffineSubmit {
-    let project = |exact: bool| {
-        for index in 0..count {
-            let vertex = unsafe { &mut *vertices.add(index) };
-            if (i32::from(vertex.position[2]) >= NEAR_VIEW_EXACT_DEPTH) == exact {
-                let projected = scene::project_vertex_scheduled(GteVec3I16::new(
-                    vertex.position[0],
-                    vertex.position[1],
-                    vertex.position[2],
-                ));
-                vertex.screen = [projected.sx, projected.sy];
-                vertex.depth = i32::from(projected.sz);
-            }
-        }
+    let surface = ClassicAffineBatchSurface {
+        first_vertex: 0,
+        vertex_count: count as u16,
+        tpage,
+        clut: clut_texture(),
     };
-    // Undo the quarter units exactly: a corner the camera transform produced
-    // holds 4x, and 0x400 * 4x >> 12 gives back the ordinary path's x.
-    let unit = (0x1000 / NEAR_VIEW_XY_SCALE) as i16;
-    scene::load_rotation(&Mat3I16 {
-        m: [[unit, 0, 0], [0, unit, 0], [0, 0, 0x1000]],
-    });
-    scene::load_translation(GteVec3I32::ZERO);
-    project(true);
-    load_view_space_projection(plane);
-    project(false);
-    let submitted = unsafe {
-        submit_classic_affine_projected_fan(
-            vertices,
-            count,
-            output,
-            tpage,
-            clut_texture(),
-            ClassicAffineProfile::QUAKE_REFERENCE,
-        )
-    };
-    scene::load_rotation(rotation);
-    scene::load_translation(translation);
-    scene::set_projection_plane(plane);
+    let submitted =
+        with_view_space_projection(|| unsafe { flush_batch(vertices, count, &surface, 1, output) });
     submitted
 }
 
@@ -6568,16 +6558,16 @@ fn load_view_space_projection(plane: u16) {
 /// (see [`load_view_space_projection`]). Restores `rotation`, `translation`
 /// and `plane` afterwards.
 #[inline(never)]
-fn with_view_space_projection<R>(
-    rotation: &Mat3I16,
-    translation: GteVec3I32,
-    plane: u16,
-    submit: impl FnOnce() -> R,
-) -> R {
+fn with_view_space_projection<R>(submit: impl FnOnce() -> R) -> R {
+    let NearView {
+        rotation,
+        translation,
+        plane,
+    } = unsafe { *addr_of!(NEAR_VIEW) };
     scene::load_translation(GteVec3I32::ZERO);
     load_view_space_projection(plane);
     let result = submit();
-    scene::load_rotation(rotation);
+    scene::load_rotation(&rotation);
     scene::load_translation(translation);
     scene::set_projection_plane(plane);
     result
