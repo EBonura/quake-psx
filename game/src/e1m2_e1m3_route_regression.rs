@@ -37,6 +37,8 @@ const FAILURE_BUTTON_STATE: u32 = 7;
 
 const MAX_TOTAL_FRAMES: u32 = 14_000;
 const MAX_STAGE_FRAMES: u32 = 2_000;
+/// Frames a moving button may take to reach Top and fire its targets.
+const MAX_BUTTON_TRAVEL_FRAMES: u32 = 240;
 
 const E1M2_LIFT: u32 = 1 << 0;
 const E1M2_USE_REJECTED: u32 = 1 << 1;
@@ -236,6 +238,10 @@ struct RouteState {
     detour: usize,
     u_bend_activations: u8,
     jump_committed: bool,
+    /// A button the route set moving whose `button_fire` has not run yet:
+    /// (source index, failure map, failure detail, mechanism bits).
+    awaited_button: Option<(u16, u32, u32, u32)>,
+    awaited_frames: u32,
 }
 
 impl RouteState {
@@ -249,6 +255,8 @@ impl RouteState {
             detour: 0,
             u_bend_activations: 0,
             jump_committed: false,
+            awaited_button: None,
+            awaited_frames: 0,
         }
     }
 }
@@ -1663,14 +1671,16 @@ pub fn observe(
                 return;
             }
         }
+        // A button's activation only starts its travel: `button_fire` runs
+        // `SUB_UseTargets` when it reaches Top, which lands in the same frame
+        // only when that frame spans the whole travel. The route used to
+        // require that, so it passed or failed with the frame rate (it failed
+        // here on the round-2 emulator, whose frames are shorter). Await the
+        // edge on the frame the button arrives instead.
         if state.stage == Stage::E1M2ShootButton
             && activations.iter().flatten().any(|&index| index == 243)
         {
-            if gameplay.fired_target_edges == 0 {
-                fail(FAILURE_MECHANISM, 2, 77);
-                return;
-            }
-            add_mechanism(probe, E1M2_BUTTON_SHOT | E1M2_TARGET_77);
+            await_button(state, 243, 2, 77, E1M2_BUTTON_SHOT | E1M2_TARGET_77);
             write_volatile(
                 addr_of_mut!((*probe).weapon_fired),
                 read_volatile(addr_of_mut!((*probe).weapon_fired)).saturating_add(1),
@@ -1680,11 +1690,7 @@ pub fn observe(
         if state.stage == Stage::E1M3ShootStairButton
             && activations.iter().flatten().any(|&index| index == 303)
         {
-            if gameplay.fired_target_edges == 0 {
-                fail(FAILURE_MECHANISM, 3, 32);
-                return;
-            }
-            add_mechanism(probe, E1M3_STAIR_BUTTON);
+            await_button(state, 303, 3, 32, E1M3_STAIR_BUTTON);
             write_volatile(
                 addr_of_mut!((*probe).weapon_fired),
                 read_volatile(addr_of_mut!((*probe).weapon_fired)).saturating_add(1),
@@ -1710,12 +1716,11 @@ pub fn observe(
             if activated(66) {
                 add_mechanism(probe, E1M3_UNDERWATER_GATE);
             }
-            if activated(115) {
-                if gameplay.fired_target_edges == 0 {
-                    fail(FAILURE_MECHANISM, 3, 100);
-                    return;
-                }
-                add_mechanism(probe, E1M3_CORRIDOR_BUTTON);
+            if activated(115)
+                && state.awaited_button.is_none()
+                && read_volatile(addr_of_mut!((*probe).player_state)) & E1M3_CORRIDOR_BUTTON == 0
+            {
+                await_button(state, 115, 3, 100, E1M3_CORRIDOR_BUTTON);
             }
             if activated(14) {
                 // `button_fire` runs only when the moving button reaches Top;
@@ -1728,6 +1733,20 @@ pub fn observe(
                     return;
                 }
                 add_mechanism(probe, E1M3_END_LIFT_TRIGGERED);
+            }
+        }
+        if let Some((button, failure_map, detail, mechanism)) = state.awaited_button {
+            if gameplay.fired_target_edges != 0
+                && entities.regression_route_mover_state(button) == Some(QuakeMoverState::Top)
+            {
+                add_mechanism(probe, mechanism);
+                state.awaited_button = None;
+            } else {
+                state.awaited_frames = state.awaited_frames.saturating_add(1);
+                if state.awaited_frames > MAX_BUTTON_TRAVEL_FRAMES {
+                    fail(FAILURE_MECHANISM, failure_map, detail);
+                    return;
+                }
             }
         }
         // Trigger #52 can be crossed on the final approach to #243, before
@@ -2067,6 +2086,11 @@ fn record_map(probe: *mut Probe, map: EpisodeMap) {
         );
         write_volatile(addr_of_mut!((*probe).current_map), map_index(map));
     }
+}
+
+fn await_button(state: &mut RouteState, button: u16, map: u32, detail: u32, mechanism: u32) {
+    state.awaited_button = Some((button, map, detail, mechanism));
+    state.awaited_frames = 0;
 }
 
 fn fail(code: u32, map: u32, detail: u32) {
