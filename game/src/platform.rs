@@ -320,7 +320,11 @@ quake_exception_handler:
         psx_gpu::signal_draw_done();
         unsafe {
             let handler: u32;
-            core::arch::asm!("la {0}, quake_exception_handler", out(reg) handler);
+            core::arch::asm!(
+                "lui {0}, %hi(quake_exception_handler)",
+                "addiu {0}, {0}, %lo(quake_exception_handler)",
+                out(reg) handler,
+            );
             // SAFETY: the handler uses only $k0/$k1 and jumps into psx-rt's
             // with $sp untouched, so an interrupt is safe on a scratchpad
             // stack. (The pointer type comes from the parameter; the source
