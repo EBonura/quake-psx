@@ -1423,6 +1423,19 @@ impl Renderer {
         now_playing: Option<(&'static str, u32)>,
         screen_blend: &quake_core::screenblend::ScreenBlend,
     ) -> RenderStats {
+        // Draw, cull and classify from one eye. `load_quake_camera` builds the
+        // view translation from whole units (`-origin >> 12`: the origin
+        // rounded up), so a frustum built from the unrounded origin disagreed
+        // with the drawn view by up to a unit, ten pixels at a wall's
+        // distance: the face beside the player was culled while the view still
+        // showed it, leaving a strip of sky at the screen edge. Rounding here
+        // leaves the projection bit-identical.
+        let whole_unit = |value: i32| -((value.wrapping_neg()) >> 12) << 12;
+        camera.origin = Vec3I32 {
+            x: whole_unit(camera.origin.x),
+            y: whole_unit(camera.origin.y),
+            z: whole_unit(camera.origin.z),
+        };
         crate::platform::gpu_begin_frame();
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_begin(psx_telemetry::stage::RENDER);
