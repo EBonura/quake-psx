@@ -124,17 +124,16 @@ unsafe fn framebuffer() -> &'static mut FrameBuffer {
 
 unsafe fn wait_for_pending_submission() {
     if unsafe { GPU_SUBMISSION_PENDING } {
-        #[cfg(feature = "present-queue")]
+        #[cfg(not(feature = "blocking-present"))]
         present_queue::wait_slot_empty();
         psx_gpu::submit_linked_list_wait();
         psx_gpu::draw_sync();
     }
 }
 
-#[cfg(all(feature = "present-queue", feature = "hardware-performance"))]
-compile_error!("the present queue does not record hardware-performance cadence");
-
-/// Non-blocking present (`present-queue`).
+/// Non-blocking present, the default (`blocking-present` selects the old
+/// path; `hardware-performance` implies it, since its cadence probe times
+/// the blocking wait).
 ///
 /// The blocking path in [`gpu_end_frame`] serialises "previous raster done,
 /// vblank edge, flip, kick" on the CPU, so the CPU idles until the edge even
@@ -169,7 +168,7 @@ compile_error!("the present queue does not record hardware-performance cadence")
 /// the IRQ landed on (psx-rt 8055e87f6), so an edge taken on RTPS does not
 /// run it twice. A GTE command in a branch delay slot is still exposed;
 /// `hazard_scan.py` reports any.
-#[cfg(any(feature = "present-queue", feature = "irq-epc-probe"))]
+#[cfg(any(not(feature = "blocking-present"), feature = "irq-epc-probe"))]
 pub(crate) mod present_queue {
     use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
@@ -198,7 +197,7 @@ pub(crate) mod present_queue {
     #[no_mangle]
     pub static mut QUAKE_IRQ_EPC_COUNT: u32 = 0;
 
-    const PRESENT: u32 = cfg!(feature = "present-queue") as u32;
+    const PRESENT: u32 = cfg!(not(feature = "blocking-present")) as u32;
     const PROBE: u32 = cfg!(feature = "irq-epc-probe") as u32;
 
     /// Edges a queued frame may wait before the CPU treats the chain ahead
@@ -316,7 +315,7 @@ quake_exception_handler:
         const EXCEPTION_VECTOR: *mut u32 = 0x8000_0080 as *mut u32;
         const J_OPCODE: u32 = 0x0800_0000;
         // Nothing is queued and channel 2 is idle during start-up.
-        #[cfg(feature = "present-queue")]
+        #[cfg(not(feature = "blocking-present"))]
         psx_gpu::signal_draw_done();
         unsafe {
             let handler: u32;
@@ -437,7 +436,7 @@ quake_exception_handler:
 /// VBlank handler kicks: draw area and offset (only after a swap), then the
 /// world draw mode and the clear. One per arena, since the handler may still
 /// be walking the other one.
-#[cfg(feature = "present-queue")]
+#[cfg(not(feature = "blocking-present"))]
 #[repr(C, align(4))]
 struct Preamble {
     target_tag: u32,
@@ -452,7 +451,7 @@ struct Preamble {
     fill_wh: u32,
 }
 
-#[cfg(feature = "present-queue")]
+#[cfg(not(feature = "blocking-present"))]
 const EMPTY_PREAMBLE: Preamble = Preamble {
     target_tag: 0,
     draw_area_top_left: 0,
@@ -466,7 +465,7 @@ const EMPTY_PREAMBLE: Preamble = Preamble {
     fill_wh: 0,
 };
 
-#[cfg(feature = "present-queue")]
+#[cfg(not(feature = "blocking-present"))]
 static mut PREAMBLES: [Preamble; 2] = [EMPTY_PREAMBLE, EMPTY_PREAMBLE];
 
 #[cfg(feature = "hardware-performance")]
@@ -558,7 +557,7 @@ pub fn gpu_init_before_interrupts() {
         BUILD_BUFFER = 0;
         GPU_SUBMISSION_PENDING = false;
         DEFERRED_UPLOAD_COUNT = 0;
-        #[cfg(feature = "present-queue")]
+        #[cfg(not(feature = "blocking-present"))]
         core::ptr::write_volatile(addr_of_mut!(present_queue::QUAKE_PRESENT_HEAD), 0);
         FRAME_BUFFER = FrameBuffer::new_strided(WIDTH, HEIGHT, BACK_BUFFER_Y);
         psx_gpu::set_draw_area(0, 0, WIDTH - 1, HEIGHT - 1);
@@ -599,7 +598,7 @@ pub fn boot_framebuffer() -> &'static mut FrameBuffer {
 #[optimize(size)]
 pub fn start_vblank_counter() {
     psx_rt::interrupts::install_vblank_counter();
-    #[cfg(any(feature = "present-queue", feature = "irq-epc-probe"))]
+    #[cfg(any(not(feature = "blocking-present"), feature = "irq-epc-probe"))]
     present_queue::install();
 }
 
@@ -670,12 +669,12 @@ pub fn gpu_begin_frame() {
             TELEMETRY_FRAME = TELEMETRY_FRAME.wrapping_add(1);
         }
         BUILD_BUFFER ^= 1;
-        #[cfg(feature = "present-queue")]
+        #[cfg(not(feature = "blocking-present"))]
         present_queue::wait_arena_free();
         build_ot().clear();
         // Every queued chain ends on the shared GP0(1Fh) node, which raises
         // the draw-done flag the VBlank handler flips on.
-        #[cfg(feature = "present-queue")]
+        #[cfg(not(feature = "blocking-present"))]
         build_ot().end_with_draw_done();
         SCREEN_COMMAND_COUNT = 0;
     }
@@ -731,11 +730,11 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_end(psx_telemetry::stage::OT_SUBMIT);
     }
-    #[cfg(feature = "present-queue")]
+    #[cfg(not(feature = "blocking-present"))]
     unsafe {
         queue_frame()
     }
-    #[cfg(not(feature = "present-queue"))]
+    #[cfg(feature = "blocking-present")]
     unsafe {
         present_blocking()
     }
@@ -743,7 +742,7 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
 
 /// Publish the built frame to the VBlank handler and return without waiting
 /// for the edge. The GP0 stream is word-for-word the blocking path's.
-#[cfg(feature = "present-queue")]
+#[cfg(not(feature = "blocking-present"))]
 unsafe fn queue_frame() {
     use psx_gpu::material::TextureMaterial;
 
@@ -814,7 +813,7 @@ unsafe fn queue_frame() {
 
 /// Wait for the previous frame and the next vblank edge, flip, and kick this
 /// frame.
-#[cfg(not(feature = "present-queue"))]
+#[cfg(feature = "blocking-present")]
 unsafe fn present_blocking() {
     #[cfg(feature = "hardware-performance")]
     let gpu_wait_start = psx_rt::interrupts::vblank_count();

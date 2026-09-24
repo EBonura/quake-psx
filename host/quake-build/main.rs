@@ -4357,7 +4357,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     if let Some(feature) = feature {
         // QUAKE_PSX_EXTRA_FEATURES adds guest features to every test or bench
         // build (never the featureless shipping build), so any gate can run
-        // an A/B such as `present-queue` or `irq-epc-probe`.
+        // an A/B such as `blocking-present` or `irq-epc-probe`.
         match env::var("QUAKE_PSX_EXTRA_FEATURES") {
             Ok(extra) if !extra.is_empty() => {
                 println!("quake-psx-build: extra guest features {extra}");
