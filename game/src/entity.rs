@@ -3473,9 +3473,6 @@ impl EntityScene {
             if !trigger.armed || !self.targets.is_enabled(trigger.source_index) {
                 continue;
             }
-            let source = sources
-                .get(trigger.source_index as usize)
-                .unwrap_or_default();
             // A shootable trigger has no touch function at all: it fires from
             // `multi_killed` and `multi_wait` hands its health back when the
             // authored wait runs out.
@@ -3489,6 +3486,12 @@ impl EntityScene {
             {
                 continue;
             }
+            // Decoded only for a trigger that fires: the 50-byte cooked record
+            // is read a byte at a time from main RAM, and every armed trigger
+            // used to pay that on every tick before the touch test rejected it.
+            let source = sources
+                .get(trigger.source_index as usize)
+                .unwrap_or_default();
             if source.class_name == CLASS_TRIGGER_SETSKILL {
                 if let Some(skill) = map.string_at(source.string).and_then(parse_setskill) {
                     // `cvar_set ("skill", ...)`: the entity loader reads the
