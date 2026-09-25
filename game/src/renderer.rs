@@ -6315,7 +6315,7 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
     let NearView {
         rotation,
         translation,
-        ..
+        plane: projection_plane,
     } = unsafe { *addr_of!(NEAR_VIEW) };
     if count > NEAR_VIEW_MAX_INPUT {
         return ViewClip::Fallback;
@@ -6430,6 +6430,7 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
             return ViewClip::Fallback;
         }
     }
+    snap_exact_corners(&mut source[..length], projection_plane);
     for index in 0..length {
         let corner = source[index];
         unsafe {
@@ -6450,6 +6451,81 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
         };
     }
     ViewClip::ViewSpace(length)
+}
+
+/// Move each whole-unit corner at or beyond the exact depth to the
+/// quarter-unit position whose scaled projection lands on the pixel the
+/// ordinary path draws that corner at.
+///
+/// The scaled projection divides with H=40 where the ordinary path divides
+/// with the frame's plane, and the GTE rounds the two quotients differently,
+/// so a corner shared with an ordinary face can land one pixel off it and
+/// open a hairline seam. At the exact depth a quarter unit moves a corner by
+/// under half a pixel, so the ordinary pixel is always reachable. That pixel
+/// comes from the GTE itself: an identity rotation at the frame's plane
+/// applied to the whole-unit corner, which is the IR the ordinary transform
+/// produces. Each step then moves the corner under a pixel's width per
+/// pixel of error, which cannot jump past the target. A corner that does not
+/// converge keeps its position. It leaves the scaled projection loaded:
+/// every caller of a [`ViewClip::ViewSpace`] face submits it through
+/// [`with_view_space_projection`], which loads that projection again and
+/// restores the pass transform afterwards.
+#[inline(never)]
+fn snap_exact_corners(corners: &mut [ViewCorner], plane: u16) {
+    const STEPS: usize = 8;
+    // `exact` is spent once the corners are placed: hold the ordinary pixel
+    // in its X/Y and whether the corner takes part in its Z.
+    let mut any = false;
+    for corner in corners.iter_mut() {
+        let [x, y, z] = corner.position;
+        let whole = z >= NEAR_VIEW_EXACT_DEPTH && (x | y) & 3 == 0;
+        corner.exact[2] = i32::from(whole);
+        any |= whole;
+    }
+    if !any {
+        return;
+    }
+    scene::load_translation(GteVec3I32::ZERO);
+    scene::load_rotation(&Mat3I16 {
+        m: [[0x1000, 0, 0], [0, 0x1000, 0], [0, 0, 0x1000]],
+    });
+    scene::set_projection_plane(plane);
+    for corner in corners.iter_mut() {
+        if corner.exact[2] == 0 {
+            continue;
+        }
+        let [x, y, z] = corner.position;
+        let ordinary =
+            scene::project_vertex(GteVec3I16::new((x >> 2) as i16, (y >> 2) as i16, z as i16));
+        corner.exact[0] = i32::from(ordinary.sx);
+        corner.exact[1] = i32::from(ordinary.sy);
+    }
+    load_view_space_projection(plane);
+    for corner in corners.iter_mut() {
+        if corner.exact[2] == 0 {
+            continue;
+        }
+        let [mut x, mut y, z] = corner.position;
+        // A pixel spans 4z/plane quarter units at depth z (z/40 at the
+        // normal plane, z/41.75 under the water warp). A step of z/64 stays
+        // under one pixel, so it cannot jump over the target, without a
+        // divide per corner.
+        let step = (z >> 6).max(1);
+        for _ in 0..STEPS {
+            let scaled = scene::project_vertex(GteVec3I16::new(x as i16, y as i16, z as i16));
+            let dx = corner.exact[0] - i32::from(scaled.sx);
+            let dy = corner.exact[1] - i32::from(scaled.sy);
+            if dx == 0 && dy == 0 {
+                corner.position = [x, y, z];
+                break;
+            }
+            x += dx * step;
+            y += dy * step;
+            if x.abs() > NEAR_VIEW_XY_LIMIT || y.abs() > NEAR_VIEW_XY_LIMIT {
+                break;
+            }
+        }
+    }
 }
 
 /// The transform and projection plane loaded for the pass that is drawing:
