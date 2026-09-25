@@ -1464,6 +1464,7 @@ impl Renderer {
 
         let mut stats = RenderStats::default();
         let mut layered_sky_texture = None;
+        crate::platform::sort_probe_class(crate::platform::sort_class::WORLD);
 
         let frustum = self.frustum(camera);
         // The MIPS AABB classifier consumes the four planes from the GTE
@@ -1893,6 +1894,7 @@ impl Renderer {
                 .wrapping_add(submitted.hardware_triangles);
         }
 
+        crate::platform::sort_probe_class(crate::platform::sort_class::MODEL);
         if visibility_valid && !stats.packet_overflow_avoided {
             next = self.draw_entities(
                 map,
@@ -1906,6 +1908,7 @@ impl Renderer {
             );
         }
 
+        crate::platform::sort_probe_class(crate::platform::sort_class::SPRITE);
         next = self.draw_explosion_effects(
             map,
             explosion_effects,
@@ -1925,6 +1928,7 @@ impl Renderer {
         // Submit the sky last into the farthest OT slot. OT insertion is
         // prepend-only, so this makes the bounded screen lattice execute
         // before every world/entity polygon and lets opaque geometry mask it.
+        crate::platform::sort_probe_class(crate::platform::sort_class::SKY);
         if let Some(texture) = layered_sky_texture {
             if packet_capacity(next, end, SKY_BACKGROUND_WORDS) {
                 let submitted =
@@ -1939,9 +1943,11 @@ impl Renderer {
             }
         }
 
+        crate::platform::sort_probe_class(crate::platform::sort_class::VIEW);
         if let Some(view_model) = view_model {
             self.draw_view_model(map, camera, view_model, next, end, &mut stats);
         }
+        crate::platform::sort_probe_class(0);
 
         if let Some(hud) = hud {
             let hud_stats = self.draw_hud(map, hud);
@@ -2907,7 +2913,9 @@ impl Renderer {
                 }
                 #[cfg(not(feature = "episode1-regression"))]
                 {
+                    crate::platform::sort_probe_class(crate::platform::sort_class::WORLD);
                     next = self.draw_brush_entity(map, entity, camera, view, next, end, stats);
+                    crate::platform::sort_probe_class(crate::platform::sort_class::MODEL);
                     if stats.packet_overflow_avoided {
                         break;
                     }
