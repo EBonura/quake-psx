@@ -61,6 +61,11 @@ perf-fixed-ticks = []
 # renderer change; the route still steps deterministically.
 perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
 emulator-telemetry = ["psx-telemetry/emit"]
+# Measurement builds only: tag projections with a primitive class (world,
+# model, view model, sprite, sky) through PSoXide's emulator-only class port
+# so `frontend launch --sort-log` splits depth-sort errors by class pair.
+# Retail hardware ignores the writes; shipping builds compile them out.
+sort-probe = []
 # Diagnostic-only renderer census. This deliberately emits one guest debug
 # line per frame and performs extra classification passes; never use it for a
 # timing comparison or a shipping image.

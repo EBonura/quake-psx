@@ -661,6 +661,29 @@ pub fn load_quake_camera(origin_q12: [i32; 3], angles: [i16; 3]) -> QuakeViewTra
 }
 
 /// Start building the next double-buffered frame.
+/// Primitive classes for the depth-sort probe (PSoXide `--sort-log`).
+pub mod sort_class {
+    pub const WORLD: u32 = 1;
+    pub const MODEL: u32 = 2;
+    pub const VIEW: u32 = 3;
+    pub const SPRITE: u32 = 4;
+    pub const SKY: u32 = 7;
+}
+
+/// Tag the projections that follow with a primitive class (`sort-probe`
+/// measurement builds only; nothing otherwise).
+#[inline(always)]
+pub fn sort_probe_class(class: u32) {
+    #[cfg(feature = "sort-probe")]
+    // SAFETY: emulator-only port in Expansion Region 2 (PSoXide telemetry
+    // slice + 0x28); retail hardware ignores the write.
+    unsafe {
+        core::ptr::write_volatile(0x1F80_2F28 as *mut u32, class);
+    }
+    #[cfg(not(feature = "sort-probe"))]
+    let _ = class;
+}
+
 pub fn gpu_begin_frame() {
     unsafe {
         #[cfg(feature = "emulator-telemetry")]
