@@ -150,7 +150,7 @@ hardware-regression = ["hardware-performance"]
 quake-formats = { path = "../crates/quake-formats" }
 quake-core = { path = "../crates/quake-core" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
-psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc"] }
+psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-256"] }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
