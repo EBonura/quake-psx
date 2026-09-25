@@ -30,7 +30,7 @@ const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402d
 // Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "29f1c652a2b5a9667d4eb942e39f469b031b5d47";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "894b9ef65c80025536b5f28f04bb46bbf3de0c81";
+const PSOXIDE_SDK_REV: &str = "a156a2f5800c330dbc2c284b9f62dffc36f9063a";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -3511,12 +3511,12 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
 /// records and persistent-sound dedup visible in every validation run.
 fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     const MAPS: [(&str, usize, usize); 9] = [
-        ("start", 1_769_840, 1_464_971),
-        ("e1m1", 1_862_013, 1_549_497),
-        ("e1m2", 2_076_988, 1_756_759),
-        ("e1m3", 2_147_866, 1_844_734),
-        ("e1m4", 2_096_303, 1_782_145),
-        ("e1m5", 2_036_505, 1_713_298),
+        ("start", 1_769_840, 1_464_923),
+        ("e1m1", 1_862_013, 1_549_465),
+        ("e1m2", 2_076_988, 1_756_727),
+        ("e1m3", 2_147_866, 1_844_702),
+        ("e1m4", 2_096_303, 1_782_113),
+        ("e1m5", 2_036_505, 1_713_266),
         ("e1m6", 1_990_529, 1_688_848),
         ("e1m7", 1_601_558, 1_389_605),
         ("e1m8", 1_646_042, 1_418_129),
@@ -3555,9 +3555,9 @@ fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     let global_bytes = fs::metadata(root.join("id1psx/sounds/global.qsb"))?.len() as usize;
     let persistent_total = compact_total + global_bytes;
     if legacy_total != 17_227_644
-        || compact_total != 14_607_986
+        || compact_total != 14_607_778
         || global_bytes != 159_418
-        || persistent_total != 14_767_404
+        || persistent_total != 14_767_196
     {
         return Err(format!(
             "PSB5/QSB1 episode census drifted: {legacy_total} -> {compact_total} + {global_bytes}"
