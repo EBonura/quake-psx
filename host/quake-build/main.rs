@@ -8301,7 +8301,7 @@ fn validate_e1m2_route_probe(probe: &Probe) -> Result<()> {
 }
 
 fn validate_map_probe(probe: &Probe) -> Result<()> {
-    const GPU_ARENA_WORDS: u32 = 128 * 1024 / 4;
+    const GPU_ARENA_WORDS: u32 = 132 * 1024 / 4;
     const MIN_PACKET_MARGIN_WORDS: u32 = 8 * 1024 / 4;
     if probe.version != 3 {
         return Err(format!("unsupported probe version {}", probe.version).into());
@@ -8354,7 +8354,7 @@ fn validate_map_probe(probe: &Probe) -> Result<()> {
     {
         return Err(format!(
             "packet arena high-water is {} of {} words ({} words free; require {}): \
-             the 128 KiB arena no longer has its fixed 8 KiB safety reserve",
+             the 132 KiB arena no longer has its fixed 8 KiB safety reserve",
             probe.weapon_pickups,
             GPU_ARENA_WORDS,
             GPU_ARENA_WORDS.saturating_sub(probe.weapon_pickups),
