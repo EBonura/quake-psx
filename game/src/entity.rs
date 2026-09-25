@@ -156,6 +156,33 @@ pub enum EntityLoadError {
     BadTarget(TargetError),
 }
 
+/// The fields of a monster's entity that its think still reads after the
+/// entity itself has changed, copied once per think. Copying the whole
+/// entity for them cost a 112-byte memcpy per monster per frame.
+#[derive(Copy, Clone)]
+struct MonsterSnapshot {
+    source_index: u16,
+    origin: Vec3I32,
+    angles: Vec3I16,
+    hit_mins: Vec3I32,
+    hit_maxs: Vec3I32,
+    patrol: u16,
+}
+
+impl MonsterSnapshot {
+    #[inline(always)]
+    fn of(entity: &RenderEntity) -> Self {
+        Self {
+            source_index: entity.source_index,
+            origin: entity.origin,
+            angles: entity.angles,
+            hit_mins: entity.hit_mins,
+            hit_maxs: entity.hit_maxs,
+            patrol: entity.patrol,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RenderEntity {
     pub source_index: u16,
@@ -4385,23 +4412,21 @@ impl EntityScene {
         styles: &[u16; lightstyle::DUMMY_STYLE + 1],
         result: &mut MonsterFrameResult,
     ) -> Option<bool> {
-        let snapshot = self.entities[index];
-        let runtime = snapshot.monster?;
-        if !snapshot.visible || snapshot.health <= 0 || runtime.dead() || runtime.crucified() {
+        // Borrow for the checks that reject nearly every call, then copy the
+        // three fields the teleport needs rather than the whole entity.
+        let entity = &self.entities[index];
+        let runtime = entity.monster?;
+        if !entity.visible || entity.health <= 0 || runtime.dead() || runtime.crucified() {
             return Some(false);
         }
+        let (hit_mins, hit_maxs, origin) = (entity.hit_mins, entity.hit_maxs, entity.origin);
         let source_index = self
             .teleports
             .iter()
             .find(|source| {
                 source.gate.admits(source.spawn_flags, false)
                     && self.targets.is_enabled(source.source_index)
-                    && aabb_overlaps(
-                        snapshot.hit_mins,
-                        snapshot.hit_maxs,
-                        source.mins,
-                        source.maxs,
-                    )
+                    && aabb_overlaps(hit_mins, hit_maxs, source.mins, source.maxs)
             })
             .map(|source| source.source_index);
         let Some(source_index) = source_index else {
@@ -4416,8 +4441,8 @@ impl EntityScene {
         }) else {
             return Some(false);
         };
-        let relative_mins = subtract_vec(snapshot.hit_mins, snapshot.origin);
-        let relative_maxs = subtract_vec(snapshot.hit_maxs, snapshot.origin);
+        let relative_mins = subtract_vec(hit_mins, origin);
+        let relative_maxs = subtract_vec(hit_maxs, origin);
         let (frag_mins, frag_maxs) =
             teleport::telefrag_bounds(target.origin, relative_mins, relative_maxs);
         let nightmare = self.nightmare();
@@ -4637,7 +4662,7 @@ impl EntityScene {
                     continue;
                 }
             }
-            let snapshot = self.entities[index];
+            let snapshot = MonsterSnapshot::of(&self.entities[index]);
             let alive = weapon.inventory().health() > 0;
             // The enemy is the player unless infighting substituted another
             // monster; `ai_run` drops a dead enemy for the old one (the
@@ -4970,7 +4995,7 @@ impl EntityScene {
     fn pack_alerted(
         &self,
         map: &ResidentMap,
-        snapshot: &RenderEntity,
+        snapshot: &MonsterSnapshot,
         monster_eye: Vec3I32,
     ) -> Option<bool> {
         let Some(sighter) = self.entities.get(usize::from(self.sight_index)) else {
