@@ -30,7 +30,7 @@ const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402d
 // Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "1ff80664944dead6c6e2d37461a74deef0e83838";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "37422ee10cc95ce44d1dc15f050acb4d47a05607";
+const PSOXIDE_SDK_REV: &str = "9ebc01ff391b8b998b21bdcfb88ad3587483e5c6";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
