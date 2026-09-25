@@ -6201,18 +6201,35 @@ unsafe fn clip_face_near(vertices: *mut ClassicAffineVertex, count: usize) -> us
 }
 
 /// One corner in camera space while the near path clips it, in sixteenths
-/// of a view unit.
+/// of a view unit. Five words, so a clip pass moves as little as it can
+/// through main RAM (the scratchpad already holds the batch).
 #[derive(Copy, Clone)]
+#[repr(C)]
 struct ViewCorner {
-    /// The exact camera-space position; only the near plane reads it.
+    /// The exact camera-space position; the near plane clips on it.
     exact: [i32; 3],
-    /// The position the corner is drawn at: `exact`, except that an original
-    /// corner at the exact-projection depth keeps the GTE's whole units, the
-    /// position the ordinary path draws it at. The guard band clips on this,
-    /// so an edge shared with an ordinary face is cut on that face's line.
-    position: [i32; 3],
-    uv: [u8; 2],
+    /// U in bits 0..8, V in bits 8..16, and [`VIEW_CORNER_WHOLE`].
+    uv_whole: u32,
     color: u32,
+}
+
+/// Set on an original corner at the exact-projection depth: it is drawn at
+/// the GTE's whole units, `floor(exact)`, the position the ordinary path
+/// draws it at. The guard band clips on the drawn position, so an edge
+/// shared with an ordinary face is cut on that face's line.
+const VIEW_CORNER_WHOLE: u32 = 1 << 16;
+
+impl ViewCorner {
+    /// The position the corner is drawn at (see [`VIEW_CORNER_WHOLE`]).
+    #[inline(always)]
+    fn position(&self) -> [i32; 3] {
+        const WHOLE: u32 = VIEW_CLIP_FRACTION_BITS;
+        if self.uv_whole & VIEW_CORNER_WHOLE != 0 {
+            self.exact.map(|value| (value >> WHOLE) << WHOLE)
+        } else {
+            self.exact
+        }
+    }
 }
 
 /// What [`clip_face_view`] did to a near face.
@@ -6233,8 +6250,7 @@ enum ViewClip {
 
 const VIEW_CORNER_ZERO: ViewCorner = ViewCorner {
     exact: [0; 3],
-    position: [0; 3],
-    uv: [0; 2],
+    uv_whole: 0,
     color: 0,
 };
 static mut VIEW_CLIP_A: [ViewCorner; NEAR_CLIP_MAX_VERTICES] =
@@ -6242,7 +6258,7 @@ static mut VIEW_CLIP_A: [ViewCorner; NEAR_CLIP_MAX_VERTICES] =
 static mut VIEW_CLIP_B: [ViewCorner; NEAR_CLIP_MAX_VERTICES] =
     [VIEW_CORNER_ZERO; NEAR_CLIP_MAX_VERTICES];
 
-/// Fraction bits of [`ViewCorner::position`].
+/// Fraction bits of [`ViewCorner::exact`].
 const VIEW_CLIP_FRACTION_BITS: u32 = 4;
 
 /// Signed distance, scaled per plane, to one of the near path's planes: the
@@ -6259,83 +6275,154 @@ fn view_plane_distance(position: [i32; 3], plane: usize) -> i32 {
     }
 }
 
-/// The crossing on edge `inside`-`outside`, always interpolated from the
-/// inside corner so two faces sharing the edge produce the same point. The
-/// near plane (`plane` 0) interpolates the exact positions: its crossing
-/// lands where one view unit spans seven pixels, so it must not inherit a
-/// whole-unit rounding from a corner hundreds of units deeper.
+/// A corner's distance to plane `PLANE`: the near plane measures the exact
+/// position, the guard band the drawn one.
 #[inline(always)]
+fn view_corner_distance<const PLANE: usize>(corner: &ViewCorner) -> i32 {
+    if PLANE == 0 {
+        view_plane_distance(corner.exact, 0)
+    } else {
+        view_plane_distance(corner.position(), PLANE)
+    }
+}
+
+/// Write the crossing on edge `inside`-`outside` to `target`, always
+/// interpolated from the inside corner so two faces sharing the edge produce
+/// the same point. The near plane (`plane` 0) interpolates the exact
+/// positions: its crossing lands where one view unit spans seven pixels, so
+/// it must not inherit a whole-unit rounding from a corner hundreds of units
+/// deeper. Out of line: a face has a couple of crossings, and its divides
+/// would otherwise crowd the pass loop's registers.
+#[inline(never)]
 fn view_crossing(
     plane: usize,
-    inside: ViewCorner,
+    inside: &ViewCorner,
     d_inside: i32,
-    outside: ViewCorner,
+    outside: &ViewCorner,
     d_outside: i32,
-) -> ViewCorner {
+    target: &mut ViewCorner,
+) {
     let span = d_inside - d_outside;
     let t = ratio_q12_i32(d_inside, span);
     let mix = |from: i32, to: i32| lerp_q12_i32_rounded(from, to, t);
-    let channel = |shift: u32| {
+    let channel = |word_a: u32, word_b: u32, shift: u32| {
         (mix(
-            ((inside.color >> shift) & 0xff) as i32,
-            ((outside.color >> shift) & 0xff) as i32,
+            ((word_a >> shift) & 0xff) as i32,
+            ((word_b >> shift) & 0xff) as i32,
         ) as u32)
             << shift
     };
     let (from, to) = if plane == 0 {
         (inside.exact, outside.exact)
     } else {
-        (inside.position, outside.position)
+        (inside.position(), outside.position())
     };
     let axis = |index: usize| from[index] + mul_div_i32(to[index] - from[index], d_inside, span);
-    let position = [axis(0), axis(1), axis(2)];
-    ViewCorner {
-        exact: position,
-        position,
-        uv: [
-            mix(i32::from(inside.uv[0]), i32::from(outside.uv[0])) as u8,
-            mix(i32::from(inside.uv[1]), i32::from(outside.uv[1])) as u8,
-        ],
-        color: channel(0) | channel(8) | channel(16),
+    let u = mix(
+        (inside.uv_whole & 0xff) as i32,
+        (outside.uv_whole & 0xff) as i32,
+    ) as u8;
+    let v = mix(
+        ((inside.uv_whole >> 8) & 0xff) as i32,
+        ((outside.uv_whole >> 8) & 0xff) as i32,
+    ) as u8;
+    *target = ViewCorner {
+        exact: [axis(0), axis(1), axis(2)],
+        uv_whole: u32::from(u) | (u32::from(v) << 8),
+        color: channel(inside.color, outside.color, 0)
+            | channel(inside.color, outside.color, 8)
+            | channel(inside.color, outside.color, 16),
+    };
+}
+
+/// One Sutherland-Hodgman pass against plane `PLANE`, from `source` into
+/// `target`; returns the corners written. Only the distance's inputs are read
+/// per corner, and a kept corner is copied whole once.
+///
+/// # Safety
+/// `source` must hold `length` (at least one) corners and `target` must have
+/// room for `length + 1`.
+#[inline(always)]
+unsafe fn view_clip_pass<const PLANE: usize>(
+    source: *const ViewCorner,
+    length: usize,
+    target: *mut ViewCorner,
+) -> usize {
+    let mut written = 0usize;
+    let mut previous = unsafe { source.add(length - 1) };
+    let mut previous_distance = view_corner_distance::<PLANE>(unsafe { &*previous });
+    for index in 0..length {
+        let current = unsafe { source.add(index) };
+        let distance = view_corner_distance::<PLANE>(unsafe { &*current });
+        if distance >= 0 {
+            if previous_distance < 0 {
+                view_crossing(
+                    PLANE,
+                    unsafe { &*current },
+                    distance,
+                    unsafe { &*previous },
+                    previous_distance,
+                    unsafe { &mut *target.add(written) },
+                );
+                written += 1;
+            }
+            unsafe { ptr::copy_nonoverlapping(current, target.add(written), 1) };
+            written += 1;
+        } else if previous_distance >= 0 {
+            view_crossing(
+                PLANE,
+                unsafe { &*previous },
+                previous_distance,
+                unsafe { &*current },
+                distance,
+                unsafe { &mut *target.add(written) },
+            );
+            written += 1;
+        }
+        previous = current;
+        previous_distance = distance;
     }
+    written
 }
 
 /// Clip one near face against the near plane and the guard band in camera
 /// space, under the transform in [`NEAR_VIEW`] (the camera for the world, the
 /// composed entity transform for brush models).
 ///
-/// The camera transform runs on the CPU so the corners keep the fraction the
-/// GTE's `>> 12` would drop: a crossing on the near plane is extrapolated
-/// from corners up to hundreds of units deeper, and a whole-unit error there
-/// grew to several pixels, so the edge of a wall beside the player and the
-/// edge of the wall behind it no longer met and the sky showed between them.
-/// Whole units are still `floor(q12 >> 12)`, which is what the GTE computes.
+/// The corners keep the fraction the GTE's `>> 12` would drop (see
+/// [`view_position`]): a crossing on the near plane is extrapolated from
+/// corners up to hundreds of units deeper, and a whole-unit error there grew
+/// to several pixels, so the edge of a wall beside the player and the edge of
+/// the wall behind it no longer met and the sky showed between them. Whole
+/// units are still `floor(q12 >> 12)`, which is what the GTE computes.
 ///
 /// # Safety
 /// `vertices` must hold `count` materialized corners and have room for
 /// `NEAR_CLIP_MAX_VERTICES` records.
 #[inline(never)]
 unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> ViewClip {
-    let projection_plane = unsafe { (*addr_of!(NEAR_VIEW)).plane };
     if count > NEAR_VIEW_MAX_INPUT {
         return ViewClip::Fallback;
     }
-    let a = unsafe { &mut *addr_of_mut!(VIEW_CLIP_A) };
-    let b = unsafe { &mut *addr_of_mut!(VIEW_CLIP_B) };
+    let a = unsafe { addr_of_mut!(VIEW_CLIP_A).cast::<ViewCorner>() };
+    let b = unsafe { addr_of_mut!(VIEW_CLIP_B).cast::<ViewCorner>() };
     let exact_depth = NEAR_VIEW_EXACT_DEPTH << VIEW_CLIP_FRACTION_BITS;
     // Planes some corner lies outside of, and planes every corner does.
     let mut outside_any = 0u32;
     let mut outside_all = (1u32 << NEAR_GUARD_PLANES) - 1;
     let mut nearest = i32::MAX;
     for index in 0..count {
-        let vertex = unsafe { *vertices.add(index) };
+        let vertex = unsafe { &*vertices.add(index) };
         let exact = view_position(vertex.position);
-        const WHOLE: u32 = VIEW_CLIP_FRACTION_BITS;
-        let position = if exact[2] >= exact_depth {
-            exact.map(|value| (value >> WHOLE) << WHOLE)
-        } else {
-            exact
+        let whole = exact[2] >= exact_depth;
+        let corner = ViewCorner {
+            exact,
+            uv_whole: u32::from(vertex.uv[0])
+                | (u32::from(vertex.uv[1]) << 8)
+                | if whole { VIEW_CORNER_WHOLE } else { 0 },
+            color: vertex.color,
         };
+        let position = corner.position();
         let mut outside = u32::from(view_plane_distance(exact, 0) < 0);
         for plane in 1..NEAR_GUARD_PLANES {
             outside |= u32::from(view_plane_distance(position, plane) < 0) << plane;
@@ -6343,12 +6430,7 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
         outside_any |= outside;
         outside_all &= outside;
         nearest = nearest.min(position[2]);
-        a[index] = ViewCorner {
-            exact,
-            position,
-            uv: vertex.uv,
-            color: vertex.color,
-        };
+        unsafe { a.add(index).write(corner) };
     }
     if nearest >= exact_depth && outside_any == 0 {
         return ViewClip::Untouched;
@@ -6356,8 +6438,8 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
     if outside_all != 0 {
         return ViewClip::Culled;
     }
-    let mut source: &mut [ViewCorner; NEAR_CLIP_MAX_VERTICES] = a;
-    let mut target: &mut [ViewCorner; NEAR_CLIP_MAX_VERTICES] = b;
+    let mut source = a;
+    let mut target = b;
     let mut length = count;
     // A crossing lies between its two corners, so a plane no original corner
     // is outside of never needs a pass.
@@ -6365,38 +6447,15 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
         if outside_any & (1 << plane) == 0 {
             continue;
         }
-        let mut written = 0usize;
-        let distance_of = |corner: &ViewCorner| {
-            view_plane_distance(
-                if plane == 0 {
-                    corner.exact
-                } else {
-                    corner.position
-                },
-                plane,
-            )
-        };
-        let mut previous = source[length - 1];
-        let mut previous_distance = distance_of(&previous);
-        for index in 0..length {
-            let current = source[index];
-            let distance = distance_of(&current);
-            if distance >= 0 {
-                if previous_distance < 0 {
-                    target[written] =
-                        view_crossing(plane, current, distance, previous, previous_distance);
-                    written += 1;
-                }
-                target[written] = current;
-                written += 1;
-            } else if previous_distance >= 0 {
-                target[written] =
-                    view_crossing(plane, previous, previous_distance, current, distance);
-                written += 1;
+        let written = unsafe {
+            match plane {
+                0 => view_clip_pass::<0>(source, length, target),
+                1 => view_clip_pass::<1>(source, length, target),
+                2 => view_clip_pass::<2>(source, length, target),
+                3 => view_clip_pass::<3>(source, length, target),
+                _ => view_clip_pass::<4>(source, length, target),
             }
-            previous = current;
-            previous_distance = distance;
-        }
+        };
         if written < 3 {
             return ViewClip::Culled;
         }
@@ -6405,42 +6464,50 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
     }
     // Quarter-unit X/Y and whole-unit Z for the scaled projection. An
     // original corner at the exact depth keeps the GTE's whole units, the
-    // position the ordinary path draws it at.
+    // position the ordinary path draws it at. Checked for every corner
+    // before any is written, so a fallback still finds the face intact.
     const QUARTER: u32 = VIEW_CLIP_FRACTION_BITS - 2;
     const WHOLE: u32 = VIEW_CLIP_FRACTION_BITS;
+    let half = |shift: u32| 1 << (shift - 1);
     for index in 0..length {
-        let corner = &mut source[index];
-        let [x, y, z] = corner.position;
-        let half = |shift: u32| 1 << (shift - 1);
-        corner.position = [
+        let corner = unsafe { &mut *source.add(index) };
+        let [x, y, z] = corner.position();
+        let (x, y, z) = (
             (x + half(QUARTER)) >> QUARTER,
             (y + half(QUARTER)) >> QUARTER,
             (z + half(WHOLE)) >> WHOLE,
-        ];
-        let [x, y, z] = corner.position;
+        );
         if x.abs() > NEAR_VIEW_XY_LIMIT || y.abs() > NEAR_VIEW_XY_LIMIT || z > i16::MAX as i32 {
             return ViewClip::Fallback;
         }
+        corner.exact = [x, y, z];
     }
-    snap_exact_corners(&mut source[..length], projection_plane);
+    let mut snap = false;
     for index in 0..length {
-        let corner = source[index];
+        let corner = unsafe { &*source.add(index) };
+        let [x, y, z] = corner.exact;
+        // `depth` marks a corner for snap_exact_corners, which then clears it.
+        let whole = z >= NEAR_VIEW_EXACT_DEPTH && (x | y) & 3 == 0;
+        snap |= whole;
         unsafe {
             ptr::write(
                 vertices.add(index),
                 ClassicAffineVertex {
-                    position: [
-                        corner.position[0] as i16,
-                        corner.position[1] as i16,
-                        corner.position[2] as i16,
-                    ],
-                    uv: corner.uv,
+                    position: [x as i16, y as i16, z as i16],
+                    uv: [corner.uv_whole as u8, (corner.uv_whole >> 8) as u8],
                     color: corner.color,
                     screen: [0; 2],
-                    depth: 0,
+                    depth: i32::from(whole),
                 },
             )
         };
+    }
+    if snap {
+        let plane = unsafe { (*addr_of!(NEAR_VIEW)).plane };
+        snap_exact_corners(
+            unsafe { core::slice::from_raw_parts_mut(vertices, length) },
+            plane,
+        );
     }
     ViewClip::ViewSpace(length)
 }
@@ -6510,9 +6577,10 @@ fn view_position(position: [i16; 3]) -> [i32; 3] {
     }
 }
 
-/// Move each whole-unit corner at or beyond the exact depth to the
-/// quarter-unit position whose scaled projection lands on the pixel the
-/// ordinary path draws that corner at.
+/// Move each marked corner (whole units at or beyond the exact depth, with
+/// `depth` set to 1) to the quarter-unit position whose scaled projection
+/// lands on the pixel the ordinary path draws that corner at, then clear
+/// the marks.
 ///
 /// The scaled projection divides with H=40 where the ordinary path divides
 /// with the frame's plane, and the GTE rounds the two quotients differently,
@@ -6528,52 +6596,41 @@ fn view_position(position: [i16; 3]) -> [i32; 3] {
 /// [`with_view_space_projection`], which loads that projection again and
 /// restores the pass transform afterwards.
 #[inline(never)]
-fn snap_exact_corners(corners: &mut [ViewCorner], plane: u16) {
+fn snap_exact_corners(corners: &mut [ClassicAffineVertex], plane: u16) {
     const STEPS: usize = 8;
-    // `exact` is spent once the corners are placed: hold the ordinary pixel
-    // in its X/Y and whether the corner takes part in its Z.
-    let mut any = false;
-    for corner in corners.iter_mut() {
-        let [x, y, z] = corner.position;
-        let whole = z >= NEAR_VIEW_EXACT_DEPTH && (x | y) & 3 == 0;
-        corner.exact[2] = i32::from(whole);
-        any |= whole;
-    }
-    if !any {
-        return;
-    }
     scene::load_translation(GteVec3I32::ZERO);
     scene::load_rotation(&Mat3I16 {
         m: [[0x1000, 0, 0], [0, 0x1000, 0], [0, 0, 0x1000]],
     });
     scene::set_projection_plane(plane);
+    // `screen` holds the ordinary pixel until the corner is placed.
     for corner in corners.iter_mut() {
-        if corner.exact[2] == 0 {
+        if corner.depth == 0 {
             continue;
         }
         let [x, y, z] = corner.position;
-        let ordinary =
-            scene::project_vertex(GteVec3I16::new((x >> 2) as i16, (y >> 2) as i16, z as i16));
-        corner.exact[0] = i32::from(ordinary.sx);
-        corner.exact[1] = i32::from(ordinary.sy);
+        let ordinary = scene::project_vertex(GteVec3I16::new(x >> 2, y >> 2, z));
+        corner.screen = [ordinary.sx, ordinary.sy];
     }
     load_view_space_projection(plane);
     for corner in corners.iter_mut() {
-        if corner.exact[2] == 0 {
+        if corner.depth == 0 {
             continue;
         }
-        let [mut x, mut y, z] = corner.position;
+        let [x0, y0, z16] = corner.position;
+        let (mut x, mut y, z) = (i32::from(x0), i32::from(y0), i32::from(z16));
+        let [target_x, target_y] = corner.screen.map(i32::from);
         // A pixel spans 4z/plane quarter units at depth z (z/40 at the
         // normal plane, z/41.75 under the water warp). A step of z/64 stays
         // under one pixel, so it cannot jump over the target, without a
         // divide per corner.
         let step = (z >> 6).max(1);
         for _ in 0..STEPS {
-            let scaled = scene::project_vertex(GteVec3I16::new(x as i16, y as i16, z as i16));
-            let dx = corner.exact[0] - i32::from(scaled.sx);
-            let dy = corner.exact[1] - i32::from(scaled.sy);
+            let scaled = scene::project_vertex(GteVec3I16::new(x as i16, y as i16, z16));
+            let dx = target_x - i32::from(scaled.sx);
+            let dy = target_y - i32::from(scaled.sy);
             if dx == 0 && dy == 0 {
-                corner.position = [x, y, z];
+                corner.position = [x as i16, y as i16, z16];
                 break;
             }
             x += dx * step;
@@ -6582,6 +6639,8 @@ fn snap_exact_corners(corners: &mut [ViewCorner], plane: u16) {
                 break;
             }
         }
+        corner.screen = [0; 2];
+        corner.depth = 0;
     }
 }
 
