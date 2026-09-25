@@ -4909,7 +4909,11 @@ unsafe fn flush_batch(
             surfaces,
             surface_count,
             output,
-            ClassicAffineProfile::QUAKE_REFERENCE,
+            if cfg!(feature = "renderer-error-bounded-tessellation") {
+                ClassicAffineProfile::QUAKE_ERROR_BOUNDED
+            } else {
+                ClassicAffineProfile::QUAKE_REFERENCE
+            },
         )
     }
     #[cfg(feature = "renderer-quake-specialized-kernel")]
