@@ -65,7 +65,7 @@ use crate::asset::{texture_rect, EpisodeMap, ResidentMap};
 use crate::entity::{model_rotates, LightningBeam, RenderEntity};
 use crate::platform::QuakeViewTransform;
 
-const GPU_ARENA_BYTES: usize = 0x20000;
+const GPU_ARENA_BYTES: usize = 0x21000;
 const GPU_ARENA_WORDS: usize = GPU_ARENA_BYTES / core::mem::size_of::<u32>();
 // Closed Episode 1 corpus maximum (E1M4). The host cooker pins this bound so
 // the guest can keep both the PVS mask and its ordered visible-face cache
@@ -2103,7 +2103,7 @@ impl Renderer {
 
         #[cfg(feature = "episode1-regression")]
         {
-            // `start` and `next` are members of the same 128 KiB arena.
+            // `start` and `next` are members of the same 132 KiB arena.
             stats.packet_arena_words = unsafe { next.offset_from(start) as u32 };
         }
 
