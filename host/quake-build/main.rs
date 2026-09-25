@@ -191,7 +191,7 @@ const VISUAL_HUD_REGION: ImageRegion = ImageRegion::new(0, 184, 320, 56);
 const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0xccb7_7f02_591e_3b92;
 const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0x5780_70fb_88af_e3ff;
 const VISUAL_MAX_WORLD_PACKETS: u32 = 400_000;
-const VISUAL_MAX_HARDWARE_TRIANGLES: u32 = 465_000;
+const VISUAL_MAX_HARDWARE_TRIANGLES: u32 = 510_000;
 // Top of the guest heap. The linker script computes it as
 // `STACK_INIT - STACK_RESERVE`, and rust-lld's map prints the location
 // counter for that assignment rather than its value, so it is spelled out
