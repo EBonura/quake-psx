@@ -10,5 +10,5 @@ description = "Rust host-side asset cooker for quake-psx"
 # PSoXide source contract instead of a second remote revision.
 psx-sfx = { path = "../../.psoxide/sdk/crates/psx-sfx" }
 psx-render-contract = { path = "../../.psoxide/engine/crates/psx-render-contract" }
-psxed-audio = { path = "../../.psoxide/editor/crates/psxed-audio" }
+psx-audio-cook = { path = "../../.psoxide/crates/psx-audio-cook" }
 quake-formats = { path = "../quake-formats" }
