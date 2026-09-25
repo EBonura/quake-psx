@@ -1782,22 +1782,30 @@ impl Renderer {
                         continue;
                     }
 
-                    let mut submit = || unsafe {
+                    // Capture scalars only: a closure that borrowed `texture`
+                    // would give it a stack address for the whole per-face
+                    // loop, which then copies every face's texture record
+                    // through the stack.
+                    let fan_vertices: *mut ClassicAffineVertex = batch_vertices.as_mut_ptr().cast();
+                    let tpage = if water_blend {
+                        texture.texture_page | 0x60
+                    } else {
+                        texture.texture_page
+                    };
+                    let clut = if water_blend {
+                        clut_liquid()
+                    } else {
+                        clut_texture()
+                    };
+                    let window = special_texture_window(texture).word();
+                    let submit = move || unsafe {
                         submit_classic_affine_scoped_windowed_fan(
-                            batch_vertices.as_mut_ptr().cast(),
+                            fan_vertices,
                             vertex_count,
                             next,
-                            if water_blend {
-                                texture.texture_page | 0x60
-                            } else {
-                                texture.texture_page
-                            },
-                            if water_blend {
-                                clut_liquid()
-                            } else {
-                                clut_texture()
-                            },
-                            special_texture_window(texture).word(),
+                            tpage,
+                            clut,
+                            window,
                             ClassicAffineProfile::QUAKE_REFERENCE,
                         )
                     };
@@ -3380,14 +3388,18 @@ impl Renderer {
                     continue;
                 }
 
-                let mut submit = || unsafe {
+                // Scalars only, as in the world pass.
+                let fan_vertices: *mut ClassicAffineVertex = batch_vertices.as_mut_ptr().cast();
+                let tpage = texture.texture_page;
+                let window = special_texture_window(texture).word();
+                let submit = move || unsafe {
                     submit_classic_affine_scoped_windowed_fan(
-                        batch_vertices.as_mut_ptr().cast(),
+                        fan_vertices,
                         vertex_count,
                         next,
-                        texture.texture_page,
+                        tpage,
                         clut_texture(),
-                        special_texture_window(texture).word(),
+                        window,
                         ClassicAffineProfile::QUAKE_REFERENCE,
                     )
                 };
