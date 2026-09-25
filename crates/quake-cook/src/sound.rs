@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use psx_audio_cook::{adpcm::FLAG_LOOP_START, CookOptions, Looping};
 use psx_sfx::PARKING_TAIL;
-use psxed_audio::cook_spu_adpcm_from_wav;
 use quake_formats::{
     sound_content_hash, SoundBankHeader, SoundBankKind, SOUND_BANK_HEADER_BYTES,
     SOUND_BANK_RATE_BYTES, SOUND_BANK_RECORD_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_MAX_EFFECTS,
@@ -289,7 +289,7 @@ fn encode_selected(
             ))
         })?;
         let rate_hz = category_rate_hz(&source_name);
-        let cooked = cook_spu_adpcm_from_wav(wav, rate_hz, loop_start)
+        let cooked = cook_adpcm(wav, rate_hz, loop_start)
             .map_err(|error| CookError::new(format!("could not cook {source_name}: {error}")))?;
         if cooked.source_channels != 1 {
             return Err(CookError::new(format!(
@@ -339,6 +339,74 @@ fn encode_selected(
     }
 
     Ok(encoded)
+}
+
+/// One sound cooked by the shared SDK encoder (psx-audio-cook).
+struct CookedAdpcm {
+    source_channels: u16,
+    source_sample_rate_hz: u32,
+    source_sample_count: u32,
+    loop_start: Option<usize>,
+    adpcm: Vec<u8>,
+}
+
+/// Cook a WAV into raw SPU ADPCM at `rate_hz` with psx-audio-cook:
+/// windowed-sinc resampling, pre-emphasis for the SPU's Gaussian
+/// interpolation, and trellis coding against the exact SPU decoder. The
+/// source level is kept (no normalisation), as before. A cue-point loop
+/// starts on a block boundary whose block ignores history, and repeats whole
+/// blocks. Flags stay what the runtime has always read: a one-shot latches
+/// its first block as the repeat address and ends on END; a loop marks its
+/// loop block and ends on END|REPEAT.
+fn cook_adpcm(wav: &[u8], rate_hz: u32, loop_start: Option<u32>) -> Result<CookedAdpcm, String> {
+    let source_channels = wav_channels(wav)?;
+    let mut source = psx_audio_cook::wav::read(wav).map_err(|error| error.to_string())?;
+    if source.samples.is_empty() {
+        return Err("sound has no samples".into());
+    }
+    // Quake's own cue reader decides looping (it ignores metadata after a
+    // malformed chunk, as the engine does).
+    source.loop_start = loop_start
+        .map(|s| s as usize)
+        .filter(|&s| s < source.samples.len());
+    source.loop_end = None;
+    let cooked = psx_audio_cook::cook(
+        &source,
+        &CookOptions {
+            rate: rate_hz,
+            normalize_peak: None,
+            looping: Looping::Source,
+            compensate_gauss: true,
+            encode: Default::default(),
+        },
+    );
+    let mut adpcm = cooked.adpcm;
+    if cooked.loop_block.is_none() {
+        adpcm[1] |= FLAG_LOOP_START;
+    }
+    Ok(CookedAdpcm {
+        source_channels,
+        source_sample_rate_hz: source.rate,
+        source_sample_count: source.samples.len() as u32,
+        loop_start: cooked.loop_block,
+        adpcm,
+    })
+}
+
+/// Channel count from a WAV's fmt chunk.
+fn wav_channels(wav: &[u8]) -> Result<u16, String> {
+    let mut offset = 12usize;
+    while offset + 8 <= wav.len() {
+        let len = u32::from_le_bytes(wav[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        if &wav[offset..offset + 4] == b"fmt " && offset + 12 <= wav.len() {
+            return Ok(u16::from_le_bytes([wav[offset + 10], wav[offset + 11]]));
+        }
+        offset = offset
+            .saturating_add(8)
+            .saturating_add(len)
+            .saturating_add(len & 1);
+    }
+    Err("WAV has no fmt chunk".into())
 }
 
 fn encode_versioned_bank(
@@ -753,6 +821,70 @@ mod tests {
                 (0x09, "sound/ambience/swamp1.wav".to_owned()),
             ]
         );
+    }
+
+    fn test_wav(samples: usize, cue: Option<u32>) -> Vec<u8> {
+        let pcm: Vec<u8> = (0..samples)
+            .map(|i| (128.0 + 90.0 * (i as f64 * 0.21).sin()) as u8)
+            .collect();
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF\0\0\0\0WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        for v in [1u16, 1] {
+            wav.extend_from_slice(&v.to_le_bytes());
+        }
+        wav.extend_from_slice(&11_025u32.to_le_bytes());
+        wav.extend_from_slice(&11_025u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&pcm);
+        if let Some(start) = cue {
+            wav.extend_from_slice(b"cue ");
+            wav.extend_from_slice(&28u32.to_le_bytes());
+            wav.extend_from_slice(&1u32.to_le_bytes());
+            for v in [0u32, 0, 0, 0, 0, start] {
+                wav.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        wav
+    }
+
+    #[test]
+    fn one_shots_keep_the_flags_the_runtime_reads() {
+        let cooked = cook_adpcm(&test_wav(5_000, None), 8_000, None).unwrap();
+        let blocks = cooked.adpcm.len() / 16;
+        assert_eq!(cooked.loop_start, None);
+        assert_eq!(
+            cooked.adpcm[1], 0x04,
+            "first block latches the repeat address"
+        );
+        assert_eq!(
+            cooked.adpcm[(blocks - 1) * 16 + 1],
+            0x01,
+            "END without repeat"
+        );
+        assert_eq!(cooked.source_sample_count, 5_000);
+        assert_eq!(cooked.source_channels, 1);
+        // Same length the previous cooker gave: round(5000 * 8000 / 11025).
+        assert_eq!(blocks, 3_628usize.div_ceil(28));
+    }
+
+    #[test]
+    fn cue_loops_start_on_a_history_free_block_and_repeat() {
+        let cooked = cook_adpcm(&test_wav(6_000, Some(1_000)), 8_000, Some(1_000)).unwrap();
+        let blocks = cooked.adpcm.len() / 16;
+        let loop_block = cooked.loop_start.expect("cue loop");
+        assert!(loop_block > 0);
+        assert_eq!(cooked.adpcm[loop_block * 16 + 1], 0x04);
+        assert_eq!(
+            cooked.adpcm[loop_block * 16] >> 4,
+            0,
+            "filter 0 at re-entry"
+        );
+        assert_eq!(cooked.adpcm[(blocks - 1) * 16 + 1], 0x03, "END|REPEAT");
+        assert_eq!(cooked.adpcm[1], 0x00, "no latch before the loop block");
     }
 
     #[test]
