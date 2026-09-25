@@ -4816,12 +4816,16 @@ impl EntityScene {
             }
             let mut next_origin = snapshot.origin;
             if action.move_units != 0 {
-                let bodies = self.monster_step_bodies(
+                // Filled in place: returned by value, the 452-byte set was
+                // copied out on every step.
+                let mut bodies = BodyBlockers::new();
+                self.monster_step_bodies(
                     index,
                     i32::from(action.move_units.saturating_abs()),
                     player_mins,
                     player_maxs,
                     alive,
+                    &mut bodies,
                 );
                 let hull = runtime.kind().collision_hull();
                 next_origin = if runtime.kind().flies() {
@@ -5141,11 +5145,12 @@ impl EntityScene {
         player_mins: Vec3I32,
         player_maxs: Vec3I32,
         player_alive: bool,
-    ) -> BodyBlockers {
+        bodies: &mut BodyBlockers,
+    ) {
         // Largest Quake body plus the largest clip hull, so no candidate that
         // could touch the swept hull is discarded by the broad phase.
         const BODY_BROAD_PHASE_UNITS: i32 = 128;
-        let mut bodies = BodyBlockers::new();
+        bodies.clear();
         let origin = self.entities[mover_index].origin;
         let reach = step_units.saturating_add(BODY_BROAD_PHASE_UNITS);
         if player_alive {
@@ -5168,7 +5173,6 @@ impl EntityScene {
             }
             bodies.push(body);
         }
-        bodies
     }
 
     fn trace_hull(
@@ -5333,7 +5337,8 @@ impl EntityScene {
             .saturating_add(step.z.abs()))
             >> 12;
         let alive = weapon.inventory().health() > 0;
-        let bodies = self.monster_step_bodies(index, reach, player_mins, player_maxs, alive);
+        let mut bodies = BodyBlockers::new();
+        self.monster_step_bodies(index, reach, player_mins, player_maxs, alive, &mut bodies);
         let mut position = origin;
         let mut touched = None;
         let mut grounded = false;
