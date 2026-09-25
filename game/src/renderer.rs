@@ -6312,17 +6312,12 @@ fn view_crossing(
 /// `NEAR_CLIP_MAX_VERTICES` records.
 #[inline(never)]
 unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> ViewClip {
-    let NearView {
-        rotation,
-        translation,
-        plane: projection_plane,
-    } = unsafe { *addr_of!(NEAR_VIEW) };
+    let projection_plane = unsafe { (*addr_of!(NEAR_VIEW)).plane };
     if count > NEAR_VIEW_MAX_INPUT {
         return ViewClip::Fallback;
     }
     let a = unsafe { &mut *addr_of_mut!(VIEW_CLIP_A) };
     let b = unsafe { &mut *addr_of_mut!(VIEW_CLIP_B) };
-    let offset = [translation.x, translation.y, translation.z];
     let exact_depth = NEAR_VIEW_EXACT_DEPTH << VIEW_CLIP_FRACTION_BITS;
     // Planes some corner lies outside of, and planes every corner does.
     let mut outside_any = 0u32;
@@ -6330,14 +6325,7 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
     let mut nearest = i32::MAX;
     for index in 0..count {
         let vertex = unsafe { *vertices.add(index) };
-        let [px, py, pz] = vertex.position.map(i32::from);
-        // |m| <= 3 * 4096 and |p| <= 32768 keep the sum inside i32.
-        let axis = |row: usize| {
-            let m = rotation.m[row].map(i32::from);
-            ((offset[row] << 12) + m[0] * px + m[1] * py + m[2] * pz)
-                >> (12 - VIEW_CLIP_FRACTION_BITS)
-        };
-        let exact = [axis(0), axis(1), axis(2)];
+        let exact = view_position(vertex.position);
         const WHOLE: u32 = VIEW_CLIP_FRACTION_BITS;
         let position = if exact[2] >= exact_depth {
             exact.map(|value| (value >> WHOLE) << WHOLE)
@@ -6451,6 +6439,71 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
         };
     }
     ViewClip::ViewSpace(length)
+}
+
+/// Camera-space position of a pass-space corner with
+/// `VIEW_CLIP_FRACTION_BITS` fraction bits.
+///
+/// On the console this is one GTE MVMVA (RT, V0, TR) with sf=0: MAC1..3 then
+/// hold the translation times 4096 plus the rotated corner, unshifted, so
+/// the fraction the ordinary projection drops is still there, and the CPU
+/// pays no multiplies. The GTE holds the pass transform in [`NEAR_VIEW`]
+/// whenever a near face is clipped: every pass that can meet one loads its
+/// rotation and translation and then calls [`set_near_view`] with the same
+/// values, and a near submit restores them afterwards. The sums stay inside
+/// i32 because |m| <= 3 * 4096 and |p| <= 32768.
+#[inline(always)]
+fn view_position(position: [i16; 3]) -> [i32; 3] {
+    const SHIFT: u32 = 12 - VIEW_CLIP_FRACTION_BITS;
+    #[cfg(target_arch = "mips")]
+    {
+        let mut mac1 = (position[0] as u16 as u32) | ((position[1] as u16 as u32) << 16);
+        let mut mac2 = position[2] as u16 as u32;
+        let mac3: u32;
+        unsafe {
+            core::arch::asm!(
+                // MTC2 $8,VXY0 and $9,VZ0.
+                ".word 0x48880000",
+                ".word 0x48890800",
+                // The console-confirmed V0 commit distance (two buffer NOPs),
+                // as in PSoXide's transform_vertex_mips.
+                ".word 0",
+                ".word 0",
+                // MVMVA RT,V0,TR,sf=0,lm=0.
+                ".word 0x4a000012",
+                // MAC1/MAC2/MAC3; consecutive MFC2s fill each other's load
+                // delay, the last one needs the NOP.
+                ".word 0x4808c800",
+                ".word 0x4809d000",
+                ".word 0x480ad800",
+                ".word 0",
+                inlateout("$8") mac1,
+                inlateout("$9") mac2,
+                lateout("$10") mac3,
+                options(nostack, nomem, preserves_flags),
+            );
+        }
+        [
+            (mac1 as i32) >> SHIFT,
+            (mac2 as i32) >> SHIFT,
+            (mac3 as i32) >> SHIFT,
+        ]
+    }
+    #[cfg(not(target_arch = "mips"))]
+    {
+        let NearView {
+            rotation,
+            translation,
+            ..
+        } = unsafe { *addr_of!(NEAR_VIEW) };
+        let offset = [translation.x, translation.y, translation.z];
+        let [px, py, pz] = position.map(i32::from);
+        let axis = |row: usize| {
+            let m = rotation.m[row].map(i32::from);
+            ((offset[row] << 12) + m[0] * px + m[1] * py + m[2] * pz) >> SHIFT
+        };
+        [axis(0), axis(1), axis(2)]
+    }
 }
 
 /// Move each whole-unit corner at or beyond the exact depth to the
