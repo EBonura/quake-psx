@@ -5079,11 +5079,14 @@ static mut PACKET_ARENA_END: *mut u32 = ptr::null_mut();
 
 /// Remaining words under which a world batch switches to the coarse error
 /// budget: two full batches at the admission's worst case (every source
-/// triangle of a 39-corner batch at 19 packets of 13 words). The per-face
-/// admission below stops a frame once one face's worst case no longer
-/// fits, so the coarse budget has to start while two batches still do.
+/// triangle of a 39-corner batch at 19 packets of 13 words), plus 3,072
+/// words. The per-face admission stops a frame once one face's worst case
+/// no longer fits, so the coarse budget has to start while two batches
+/// still do; the extra words keep the heaviest Episode 1 frame (map route
+/// high-water 31,166 of 33,792 words) clear of the builder's 2,048-word
+/// reserve, which two batches alone missed by 62 words.
 const COARSE_BUDGET_REMAINING_WORDS: usize =
-    2 * (BATCH_MAX_VERTICES - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
+    2 * (BATCH_MAX_VERTICES - 2) * WORST_PACKET_WORDS_PER_TRIANGLE + 3072;
 
 /// World batches submitted on the coarse budget since boot. Read from RAM
 /// by the regression builder; zero on every route that fits the arena.
