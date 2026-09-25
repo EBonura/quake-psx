@@ -29,6 +29,7 @@ default = [
     "collision-scratchpad-stack",
     "gameplay-scratchpad-stack",
     "renderer-scratchpad-alias-projection",
+    "renderer-error-bounded-tessellation",
 ]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
@@ -89,6 +90,10 @@ renderer-gpu-polygon-clip = ["psx-engine/classic-affine-gpu-polygon-clip"]
 renderer-quake-specialized-kernel = [
     "psx-engine/classic-affine-quake-specialized-kernel",
 ]
+# World faces split by their predicted affine warp (psx-engine
+# `classic-affine-lattice`, profile QUAKE_ERROR_BOUNDED: a 16-pixel budget)
+# instead of the fixed depth bands; wide faces split as quad fans.
+renderer-error-bounded-tessellation = ["psx-engine/classic-affine-lattice"]
 # Quake's dominant baked-corner gather as one fixed inline MIPS schedule.
 # Dynamic light-style and UV-offset faces retain the authoritative generic path.
 renderer-quake-baked-materialize = []
