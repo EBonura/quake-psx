@@ -10,8 +10,6 @@ use psx_engine::materialize_classic_affine_indexed_baked_vertices;
 #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
 use psx_engine::submit_classic_affine_batch;
 
-#[cfg(feature = "renderer-quake-specialized-kernel")]
-use psx_engine::submit_quake_classic_affine_batch;
 use psx_engine::{
     attributed_clip::{
         clip_convex_plane_uninit, lerp_q12_i32_rounded, ratio_q12_i32, AttributedClipPlane,
@@ -29,6 +27,8 @@ use psx_engine::{
     collect_classic_affine_projected_subdivision_requests, ClassicAffineSubdivisionRequest,
     ClassicAffineTopologyCensus,
 };
+#[cfg(feature = "renderer-quake-specialized-kernel")]
+use psx_engine::{submit_quake_classic_affine_batch_budget, QUAKE_COARSE_ERROR_BUDGET_Q3};
 
 use psx_gpu::material::{BlendMode, TextureMaterial, TextureWindow};
 use psx_gpu::prim::{ClassicTriTextured, QuadTextured, QuadTexturedMaterial, RectFlat};
@@ -1509,6 +1509,7 @@ impl Renderer {
         };
 
         let end = unsafe { start.add(GPU_ARENA_WORDS) };
+        unsafe { *addr_of_mut!(PACKET_ARENA_END) = end };
 
         let mut next = start;
 
@@ -5061,7 +5062,55 @@ unsafe fn flush_batch(
     }
     #[cfg(feature = "renderer-quake-specialized-kernel")]
     unsafe {
-        submit_quake_classic_affine_batch(vertices, vertex_count, surfaces, surface_count, output)
+        submit_quake_classic_affine_batch_budget(
+            vertices,
+            vertex_count,
+            surfaces,
+            surface_count,
+            output,
+            batch_error_budget(output),
+        )
+    }
+}
+
+/// End of the packet arena the frame being drawn writes into, set where
+/// `draw_frame` picks its arena.
+static mut PACKET_ARENA_END: *mut u32 = ptr::null_mut();
+
+/// Remaining words under which a world batch switches to the coarse error
+/// budget: two full batches at the admission's worst case (every source
+/// triangle of a 39-corner batch at 19 packets of 13 words). The per-face
+/// admission below stops a frame once one face's worst case no longer
+/// fits, so the coarse budget has to start while two batches still do.
+const COARSE_BUDGET_REMAINING_WORDS: usize =
+    2 * (BATCH_MAX_VERTICES - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
+
+/// World batches submitted on the coarse budget since boot. Read from RAM
+/// by the regression builder; zero on every route that fits the arena.
+#[no_mangle]
+pub static mut QUAKE_COARSE_BUDGET_BATCHES: u32 = 0;
+
+/// The error budget for a batch written at `output`: the profile's own,
+/// or [`QUAKE_COARSE_ERROR_BUDGET_Q3`] once the arena is nearly full, so a
+/// heavy view trades warp for packets instead of dropping faces.
+#[cfg(feature = "renderer-quake-specialized-kernel")]
+#[inline(always)]
+fn batch_error_budget(output: *mut u32) -> u8 {
+    let end = unsafe { *addr_of!(PACKET_ARENA_END) };
+    let remaining = (end as usize).wrapping_sub(output as usize) / core::mem::size_of::<u32>();
+    let normal = if cfg!(feature = "renderer-error-bounded-tessellation") {
+        ClassicAffineProfile::QUAKE_ERROR_BOUNDED.subdivide_error_px_q3
+    } else {
+        0
+    };
+    if normal != 0 && remaining < COARSE_BUDGET_REMAINING_WORDS {
+        unsafe {
+            *addr_of_mut!(QUAKE_COARSE_BUDGET_BATCHES) =
+                (*addr_of!(QUAKE_COARSE_BUDGET_BATCHES)).wrapping_add(1)
+        };
+        QUAKE_COARSE_ERROR_BUDGET_Q3
+    } else {
+        normal
     }
 }
 
