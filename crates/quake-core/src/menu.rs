@@ -141,7 +141,8 @@ pub struct MenuView {
     pub crosshair: bool,
     /// PS1-native equivalent of the original underwater screen warp.
     pub water_warp: bool,
-    /// Opt-in PS1 translucency with bounded visibility through liquid planes.
+    /// PS1 translucency with bounded visibility through liquid planes. On by
+    /// default; the Options row turns the water opaque again.
     pub water_alpha: bool,
     /// Compact console overlay or the original two-tier status bar.
     pub hud_mode: HudMode,
@@ -388,7 +389,7 @@ impl Menu {
             brightness: DEFAULT_BRIGHTNESS,
             crosshair: true,
             water_warp: true,
-            water_alpha: false,
+            water_alpha: true,
             hud_mode: DEFAULT_HUD_MODE,
             skill: DEFAULT_SKILL,
             sound_volume: DEFAULT_SOUND_VOLUME,
@@ -848,7 +849,7 @@ mod tests {
         menu.update(down());
         assert_eq!(
             menu.view().row(6),
-            Some(MenuRow::valued("CLEAR WATER", "OFF"))
+            Some(MenuRow::valued("CLEAR WATER", "ON"))
         );
         menu.update(down());
         assert_eq!(menu.view().row(7), Some(MenuRow::valued("HUD", "MINIMAL")));
@@ -887,7 +888,7 @@ mod tests {
 
     #[optimize(size)]
     #[test]
-    fn clear_water_defaults_off_and_can_be_enabled() {
+    fn clear_water_defaults_on_and_can_be_disabled() {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
@@ -895,16 +896,16 @@ mod tests {
         for _ in 0..6 {
             menu.update(down());
         }
-        assert!(!menu.view().water_alpha);
-        assert_eq!(
-            menu.view().row(6),
-            Some(MenuRow::valued("CLEAR WATER", "OFF"))
-        );
-        menu.update(accept());
         assert!(menu.view().water_alpha);
         assert_eq!(
             menu.view().row(6),
             Some(MenuRow::valued("CLEAR WATER", "ON"))
+        );
+        menu.update(accept());
+        assert!(!menu.view().water_alpha);
+        assert_eq!(
+            menu.view().row(6),
+            Some(MenuRow::valued("CLEAR WATER", "OFF"))
         );
     }
 
