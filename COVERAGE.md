@@ -105,7 +105,7 @@ Implemented:
 - moving brush models;
 - alias models and all Quake sprite orientations;
 - layered Quake sky;
-- turbulent water and optional PS1 transparency;
+- turbulent water and PS1 transparency (on by default);
 - Minimal and Classic HUD modes;
 - menus, pause screen, screen blends and light styles;
 - weapon models, pickups, monsters, particles and shadows;
