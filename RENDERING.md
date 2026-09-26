@@ -45,10 +45,15 @@ Quake sky without drawing distant world geometry.
 
 ### Water
 
-Water surfaces perturb their texture coordinates over time. Water warp affects
-the camera while the viewpoint is submerged. An optional translucent-water
-mode uses the PS1's semi-transparent blend modes and a limited view through the
-first water boundary.
+Water surfaces perturb their texture coordinates over time. Like Quake's
+`r_viewleaf` test, the water warp and the underwater tint follow the leaf the
+eye is in, so wading with the eye above the surface shows neither.
+
+Translucent water is on by default and can be turned off in Options. It draws
+the side of each surface that faces the viewer once, with the PS1's 50/50
+average blend (GLQuake's `r_wateralpha` equation at 0.5). The shareware maps
+were not vised through water, so the renderer finds the first water boundary in
+the camera's PVS and merges the PVS of every leaf on its far side, up to 16.
 
 ### Sprites and models
 
@@ -1726,8 +1731,9 @@ for the acceptance rules.
 
 - Very large or steep polygons can still show affine distortion.
 - Fixed-point midpoint rounding can expose a seam on unusual surfaces.
-- Translucent water intentionally opens only a limited additional visibility
-  set to keep memory and packet use predictable.
+- Translucent water opens one water plane and at most 16 leaves beyond it to
+  keep memory and packet use predictable. A camera leaf whose union overflows
+  the visible-face cache keeps opaque water.
 - The 30 fps target has not yet been demonstrated across the whole episode on
   original hardware.
 
