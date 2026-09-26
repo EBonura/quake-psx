@@ -190,8 +190,11 @@ const VISUAL_HUD_REGION: ImageRegion = ImageRegion::new(0, 184, 320, 56);
 // change the animation sampled by this camera.
 const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0x39f7_8f03_ce49_82ef;
 const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0x2517_2c84_d9bb_9f60;
-const VISUAL_MAX_WORLD_PACKETS: u32 = 400_000;
-const VISUAL_MAX_HARDWARE_TRIANGLES: u32 = 510_000;
+// Clear water is on by default, so the fixed camera also draws the canal
+// floor through the surface: 429,605 packets and 546,997 hardware triangles
+// over the 176 captured frames (398,629 and 502,997 with opaque water).
+const VISUAL_MAX_WORLD_PACKETS: u32 = 440_000;
+const VISUAL_MAX_HARDWARE_TRIANGLES: u32 = 560_000;
 // Top of the guest heap. The linker script computes it as
 // `STACK_INIT - STACK_RESERVE`, and rust-lld's map prints the location
 // counter for that assignment rather than its value, so it is spelled out
