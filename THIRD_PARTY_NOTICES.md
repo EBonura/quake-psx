@@ -22,7 +22,9 @@ is due to id Software, fgsfdsfgs, and the QuakePSX contributors.
 Quake maps, models, textures, sounds, UI art, and other game data remain
 copyrighted and are not relicensed by the GPL source release. They are not
 included in this repository. The local build uses the original Quake 1.06
-shareware distribution subject to its accompanying terms.
+shareware distribution subject to its accompanying terms. Every release
+package that carries Quake data includes that licence agreement verbatim as
+`SLICNSE.TXT` (tracked at `release/SLICNSE.TXT`).
 
 ## PSoXide
 

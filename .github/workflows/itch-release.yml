@@ -148,6 +148,9 @@ jobs:
             .artifacts.exe.file == "quake-psx.exe"
           ' "$provenance" >/dev/null
 
+          # The shareware licence must travel with the data, byte for byte.
+          echo "070cdf6a6410adef8fb5f83a4e5ccdb9e2301d2e48d460bb3a67a0f5ba9d70a8  release/SLICNSE.TXT" | sha256sum --check
+
           release_dir="$RUNNER_TEMP/quake-psx-$RELEASE_VERSION"
           install -d "$release_dir"
           install -m 0644 \
@@ -156,12 +159,13 @@ jobs:
             dist/quake-psx.exe \
             dist/quake-psx.provenance.json \
             release/README.txt \
+            release/SLICNSE.TXT \
             LICENSE \
             THIRD_PARTY_NOTICES.md \
             "$release_dir/"
           printf '%s\n' "$RELEASE_VERSION" > "$release_dir/VERSION.txt"
 
-          test "$(find "$release_dir" -maxdepth 1 -type f | wc -l)" -eq 8
+          test "$(find "$release_dir" -maxdepth 1 -type f | wc -l)" -eq 9
           echo "directory=$release_dir" >> "$GITHUB_OUTPUT"
 
       - name: Retain the versioned disc as a workflow artifact

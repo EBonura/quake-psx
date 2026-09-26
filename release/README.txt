@@ -18,5 +18,7 @@ toolchain built on the PSoXide SDK.
 
 Source: https://github.com/EBonura/quake-psx
 
-See THIRD_PARTY_NOTICES.md and LICENSE for licensing and attribution. Build
-inputs and exact artifact hashes are recorded in quake-psx.provenance.json.
+The Quake shareware data on this disc is id Software's, distributed under
+the shareware licence agreement in SLICNSE.TXT, which must accompany it.
+See THIRD_PARTY_NOTICES.md and LICENSE for the code licence and attribution.
+Build inputs and exact artifact hashes are recorded in quake-psx.provenance.json.
