@@ -52,8 +52,9 @@ eye is in, so wading with the eye above the surface shows neither.
 Translucent water is on by default and can be turned off in Options. It draws
 the side of each surface that faces the viewer once, with the PS1's 50/50
 average blend (GLQuake's `r_wateralpha` equation at 0.5). The shareware maps
-were not vised through water, so the renderer finds the first water boundary in
-the camera's PVS and merges the PVS of every leaf on its far side, up to 16.
+were not vised through water, so the renderer finds the water boundary plane in
+the camera's PVS nearest the eye and merges the PVS of every leaf on its far
+side, up to 16.
 
 ### Sprites and models
 

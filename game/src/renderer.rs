@@ -3555,7 +3555,7 @@ impl Renderer {
                     if !self.mark_visible_faces(map, camera.origin, &[]) {
                         return false;
                     }
-                    self.find_water_portal(map, camera_leaf);
+                    self.find_water_portal(map, camera.origin, camera_leaf);
                     self.water_portal_key = Some(key);
                 }
                 let count = usize::from(self.water_portal_count);
@@ -3616,10 +3616,12 @@ impl Renderer {
     /// the surface into all of them. Merging only the first one's PVS left
     /// the floor under the rest undrawn, so the translucent water blended
     /// over the sky layer behind the world and flashed as pale quads along
-    /// E1M1's canal.
+    /// E1M1's canal. When several boundary planes are in view (E1M1's
+    /// underwater teleporter is a liquid face on a water/empty boundary too),
+    /// the one nearest the eye is opened.
     #[optimize(size)]
     #[inline(never)]
-    fn find_water_portal(&mut self, map: &ResidentMap, camera_leaf: usize) {
+    fn find_water_portal(&mut self, map: &ResidentMap, eye: Vec3I32, camera_leaf: usize) {
         self.water_portal_plane = -1;
         self.water_portal_count = 0;
         let Some(camera_contents) = map.leaves().get(camera_leaf).map(|leaf| leaf.contents)
@@ -3630,6 +3632,7 @@ impl Renderer {
             return;
         }
         let mut count = 0usize;
+        let mut nearest = i32::MAX;
         for visible in self.visible_faces.iter() {
             let Some(texture) = self.active_textures.get(visible.face.material as usize) else {
                 continue;
@@ -3638,7 +3641,8 @@ impl Renderer {
                 continue;
             }
             let face_plane = visible.face.plane as i16;
-            if count != 0 && face_plane != self.water_portal_plane {
+            let distance = compact_plane_distance(visible.plane, eye).saturating_abs();
+            if count != 0 && face_plane != self.water_portal_plane && distance >= nearest {
                 continue;
             }
 
@@ -3696,16 +3700,18 @@ impl Renderer {
             {
                 continue;
             }
+            if count == 0 || face_plane != self.water_portal_plane {
+                // A nearer boundary plane replaces the one collected so far.
+                self.water_portal_plane = face_plane;
+                nearest = distance;
+                count = 0;
+            }
             let leaf = opposite.0 as u16;
-            if self.water_portal_leaves[..count].contains(&leaf) {
+            if count == MAX_WATER_PORTAL_LEAVES || self.water_portal_leaves[..count].contains(&leaf) {
                 continue;
             }
-            self.water_portal_plane = face_plane;
             self.water_portal_leaves[count] = leaf;
             count += 1;
-            if count == MAX_WATER_PORTAL_LEAVES {
-                break;
-            }
         }
         self.water_portal_count = count as u8;
     }
