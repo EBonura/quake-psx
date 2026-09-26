@@ -423,11 +423,12 @@ pub fn run() -> ! {
             entities.animate_lights(&world, audio_tick);
             renderer.set_light_styles(entities.light_styles());
             renderer.set_dynamic_lights(&dynamic_lights);
+            let view_contents = renderer.view_contents(&world, camera);
             let _ = renderer.draw_frame(
                 &world,
                 camera,
                 audio_tick,
-                view.water_warp && player.water_level() == 3,
+                view.water_warp && view_contents <= quake_core::screenblend::CONTENTS_WATER,
                 view.water_alpha,
                 entities.entities(),
                 None,
@@ -1116,13 +1117,6 @@ pub fn run() -> ! {
             CenterprintText::Fixed(text) => Some(text),
         });
         presentation.screen_blend_mut().tick(elapsed_ticks);
-        presentation
-            .screen_blend_mut()
-            .set_contents(if player_frame.water_level > 0 {
-                player_frame.water_type
-            } else {
-                0
-            });
         // `V_CalcPowerupCshift`, which folds into the same sustained quad the
         // contents shift above drives rather than adding one of its own.
         presentation
@@ -1186,11 +1180,17 @@ pub fn run() -> ! {
         entities.animate_lights(&world, render_light_tick);
         renderer.set_light_styles(entities.light_styles());
         renderer.set_dynamic_lights(&dynamic_lights);
+        // `V_SetContentsColor (r_viewleaf->contents)` and `r_dowarp`: the tint
+        // and the warp follow the leaf the drawn eye is in. The player's
+        // `waterlevel` counts wading feet, so it tinted the canal walk while
+        // the eye was still above the surface.
+        let view_contents = renderer.view_contents(&world, render_camera);
+        presentation.screen_blend_mut().set_contents(view_contents);
         let _render_stats = renderer.draw_frame(
             &world,
             render_camera,
             render_light_tick,
-            menu.view().water_warp && player_frame.water_level == 3,
+            menu.view().water_warp && view_contents <= quake_core::screenblend::CONTENTS_WATER,
             menu.view().water_alpha,
             entities.entities(),
             entities.lightning_beam(),

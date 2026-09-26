@@ -97,7 +97,7 @@ const MAX_VISIBLE_FACE_BLOCKS: usize = MAX_VISIBLE_FACE_COUNT.div_ceil(VISIBLE_F
 /// Frame face indices carry this bit when the face's bounds reach behind the
 /// near plane, so the world pass clips that face before submitting it.
 const NEAR_FACE_BIT: u16 = 0x8000;
-/// The selected liquid portal uses the PS1's AddQuarter blend and translucent
+/// The selected liquid portal uses the PS1's average blend and translucent
 /// palette while retaining the same geometry and texture-window packets.
 const WATER_BLEND_FACE_BIT: u16 = 0x4000;
 const FRAME_FACE_INDEX_MASK: u16 = !(NEAR_FACE_BIT | WATER_BLEND_FACE_BIT);
@@ -1011,11 +1011,9 @@ fn request_subdivision_slot(
 
 const RESIDENT_BASE_PACKET_SLOTS: usize = 0;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct WaterPortal {
-    plane: i16,
-    leaf: u16,
-}
+/// Most leaves on the far side of one water plane whose PVS rows are merged
+/// into the camera's. Leaves past the bound are left out, never allocated.
+const MAX_WATER_PORTAL_LEAVES: usize = 16;
 
 /// `R_AddDynamicLights`' own term, `rad - dist`, in light bytes.
 ///
@@ -1153,6 +1151,13 @@ pub struct Renderer {
     /// located it independently. One memo collapses five BSP descents to one.
     cached_camera_leaf: Option<(u32, Vec3I32, Option<usize>)>,
     active_water_plane: i16,
+    /// The water boundary found from one camera leaf: its plane and every
+    /// distinct leaf on the far side of its PVS-resident faces. Keyed by map
+    /// generation and camera leaf, so it is found once per leaf change.
+    water_portal_key: Option<(u32, usize)>,
+    water_portal_plane: i16,
+    water_portal_count: u8,
+    water_portal_leaves: [u16; MAX_WATER_PORTAL_LEAVES],
     #[cfg(feature = "renderer-selection-cache")]
     cached_frame_selection: Option<(Camera, Option<(u32, usize, u16)>, i16)>,
 
@@ -1202,6 +1207,10 @@ impl Renderer {
             cached_visibility: None,
             cached_camera_leaf: None,
             active_water_plane: -1,
+            water_portal_key: None,
+            water_portal_plane: -1,
+            water_portal_count: 0,
+            water_portal_leaves: [0; MAX_WATER_PORTAL_LEAVES],
             #[cfg(feature = "renderer-selection-cache")]
             cached_frame_selection: None,
 
@@ -1465,12 +1474,7 @@ impl Renderer {
         // distance: the face beside the player was culled while the view still
         // showed it, leaving a strip of sky at the screen edge. Rounding here
         // leaves the projection bit-identical.
-        let whole_unit = |value: i32| -((value.wrapping_neg()) >> 12) << 12;
-        camera.origin = Vec3I32 {
-            x: whole_unit(camera.origin.x),
-            y: whole_unit(camera.origin.y),
-            z: whole_unit(camera.origin.z),
-        };
+        camera.origin = whole_unit_origin(camera.origin);
         crate::platform::gpu_begin_frame();
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_begin(psx_telemetry::stage::RENDER);
@@ -1789,8 +1793,12 @@ impl Renderer {
                     // loop, which then copies every face's texture record
                     // through the stack.
                     let fan_vertices: *mut ClassicAffineVertex = batch_vertices.as_mut_ptr().cast();
+                    // GLQuake's `r_wateralpha` blend, at the one alpha the
+                    // PS1 has: B/2 + F/2 (tpage mode 0). The additive B + F/4
+                    // saturated wherever slivers of the grazing surface
+                    // overlapped, drawing white lines along the water.
                     let tpage = if water_blend {
-                        texture.texture_page | 0x60
+                        texture.texture_page & !0x60
                     } else {
                         texture.texture_page
                     };
@@ -3482,6 +3490,18 @@ impl Renderer {
         submitted.next_packet
     }
 
+    /// `r_viewleaf->contents`: the contents of the leaf holding the eye this
+    /// camera draws from. Quake's contents shift (`V_SetContentsColor`) and
+    /// water warp (`r_dowarp`) both follow it, not the player's `waterlevel`,
+    /// so a wading player whose eye is above the surface sees no tint. The
+    /// eye is rounded exactly as `draw_frame` rounds it, so the frame's own
+    /// leaf lookup reuses this one.
+    pub fn view_contents(&mut self, map: &ResidentMap, camera: Camera) -> i16 {
+        self.camera_leaf(map, whole_unit_origin(camera.origin))
+            .and_then(|leaf| map.leaves().get(leaf))
+            .map_or(CONTENTS_EMPTY, |leaf| leaf.contents)
+    }
+
     /// `ResidentMap::point_leaf_index` memoized for the current frame's camera.
     fn camera_leaf(&mut self, map: &ResidentMap, point: Vec3I32) -> Option<usize> {
         if let Some((generation, cached_point, leaf)) = self.cached_camera_leaf {
@@ -3527,29 +3547,33 @@ impl Renderer {
         camera: Camera,
         water_alpha: bool,
     ) -> bool {
-        let camera_leaf = self.camera_leaf(map, camera.origin);
-        let camera_matches = camera_leaf.is_some_and(|leaf| {
-            self.cached_visibility
-                .is_some_and(|(generation, cached_leaf, _)| {
-                    generation == map.generation() && cached_leaf == leaf
-                })
-        });
         if water_alpha {
-            if !camera_matches && !self.mark_visible_faces(map, camera.origin, None) {
-                return false;
-            }
-            if let Some(portal) =
-                camera_leaf.and_then(|leaf| self.water_portal(map, camera.origin, leaf))
-            {
-                if self.mark_visible_faces(map, camera.origin, Some(portal.leaf)) {
-                    self.active_water_plane = portal.plane;
-                    return true;
+            if let Some(camera_leaf) = self.camera_leaf(map, camera.origin) {
+                let key = (map.generation(), camera_leaf);
+                if self.water_portal_key != Some(key) {
+                    // The boundary is found in the camera's own PVS.
+                    if !self.mark_visible_faces(map, camera.origin, &[]) {
+                        return false;
+                    }
+                    self.find_water_portal(map, camera_leaf);
+                    self.water_portal_key = Some(key);
+                }
+                let count = usize::from(self.water_portal_count);
+                if count != 0 {
+                    let leaves = self.water_portal_leaves;
+                    if self.mark_visible_faces(map, camera.origin, &leaves[..count]) {
+                        self.active_water_plane = self.water_portal_plane;
+                        return true;
+                    }
+                    // Too many faces for the cache: this leaf stays opaque
+                    // rather than retrying the union every frame.
+                    self.water_portal_count = 0;
                 }
             }
         }
 
         self.active_water_plane = -1;
-        self.mark_visible_faces(map, camera.origin, None)
+        self.mark_visible_faces(map, camera.origin, &[])
     }
 
     /// Rebuild the conservative 16-face unions only when the PVS list changes.
@@ -3585,27 +3609,36 @@ impl Renderer {
         );
     }
 
-    /// Locate a PVS-resident water/empty boundary. Sampling eight units on both
-    /// sides of the plane identifies the opposite BSP leaf without retaining
-    /// new topology; only that one PVS is ever merged into the frame.
+    /// Locate a PVS-resident water/empty boundary and every leaf on its far
+    /// side. Sampling eight units on both sides of each liquid face on the
+    /// boundary plane identifies the opposite BSP leaf without retaining new
+    /// topology. A water body spans many leaves and the camera looks through
+    /// the surface into all of them. Merging only the first one's PVS left
+    /// the floor under the rest undrawn, so the translucent water blended
+    /// over the sky layer behind the world and flashed as pale quads along
+    /// E1M1's canal.
     #[optimize(size)]
     #[inline(never)]
-    fn water_portal(
-        &self,
-        map: &ResidentMap,
-        point: Vec3I32,
-        camera_leaf: usize,
-    ) -> Option<WaterPortal> {
-        let camera_contents = map.leaves().get(camera_leaf)?.contents;
+    fn find_water_portal(&mut self, map: &ResidentMap, camera_leaf: usize) {
+        self.water_portal_plane = -1;
+        self.water_portal_count = 0;
+        let Some(camera_contents) = map.leaves().get(camera_leaf).map(|leaf| leaf.contents)
+        else {
+            return;
+        };
         if camera_contents != CONTENTS_EMPTY && camera_contents != CONTENTS_WATER {
-            return None;
+            return;
         }
-        for (visible_index, visible) in self.visible_faces.iter().enumerate() {
-            let _ = visible_index;
+        let mut count = 0usize;
+        for visible in self.visible_faces.iter() {
             let Some(texture) = self.active_textures.get(visible.face.material as usize) else {
                 continue;
             };
             if texture.flags & TEXTURE_LIQUID == 0 {
+                continue;
+            }
+            let face_plane = visible.face.plane as i16;
+            if count != 0 && face_plane != self.water_portal_plane {
                 continue;
             }
 
@@ -3663,12 +3696,18 @@ impl Renderer {
             {
                 continue;
             }
-            return Some(WaterPortal {
-                plane: visible.face.plane as i16,
-                leaf: opposite.0 as u16,
-            });
+            let leaf = opposite.0 as u16;
+            if self.water_portal_leaves[..count].contains(&leaf) {
+                continue;
+            }
+            self.water_portal_plane = face_plane;
+            self.water_portal_leaves[count] = leaf;
+            count += 1;
+            if count == MAX_WATER_PORTAL_LEAVES {
+                break;
+            }
         }
-        None
+        self.water_portal_count = count as u8;
     }
 
     #[optimize(size)]
@@ -3677,7 +3716,7 @@ impl Renderer {
         &mut self,
         map: &ResidentMap,
         point: Vec3I32,
-        portal_leaf: Option<u16>,
+        portal_leaves: &[u16],
     ) -> bool {
         let faces = map.faces();
         if faces.len() > self.face_visible.len() * 4 {
@@ -3696,7 +3735,9 @@ impl Renderer {
             self.visible_faces.clear();
             return false;
         }
-        let portal_key = portal_leaf.unwrap_or(u16::MAX);
+        // The portal leaves are a function of the camera leaf, so the first
+        // one keys the whole union.
+        let portal_key = portal_leaves.first().copied().unwrap_or(u16::MAX);
         if self.cached_visibility == Some((map.generation(), leaf_index, portal_key)) {
             return true;
         }
@@ -3736,7 +3777,7 @@ impl Renderer {
             self.visible_faces.clear();
             return false;
         }
-        if let Some(portal_leaf) = portal_leaf {
+        for &portal_leaf in portal_leaves {
             let Some(portal) = map.leaves().get(portal_leaf as usize) else {
                 self.cached_visibility = None;
                 return false;
@@ -5435,13 +5476,11 @@ fn select_frame_faces_census(
 
         let water_blend =
             texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
-        if !water_blend {
-            census.plane_tests = census.plane_tests.wrapping_add(1);
-            plane_run_calls = plane_run_calls.wrapping_add(1);
-            if !front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin) {
-                census.backface_rejects = census.backface_rejects.wrapping_add(1);
-                continue;
-            }
+        census.plane_tests = census.plane_tests.wrapping_add(1);
+        plane_run_calls = plane_run_calls.wrapping_add(1);
+        if !front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin) {
+            census.backface_rejects = census.backface_rejects.wrapping_add(1);
+            continue;
         }
 
         if scene::aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f) {
@@ -5482,9 +5521,8 @@ fn face_reaches_aabb(
     if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
         return false;
     }
-    let water_blend =
-        texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
-    water_blend || front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
+    let _ = water_plane;
+    front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
 }
 
 /// Measure a conservative union-AABB prepass for one fixed consecutive group
@@ -5910,11 +5948,7 @@ fn select_frame_faces(
         let water_blend =
             texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
         if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0
-            && (water_blend || {
-                {
-                    front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
-                }
-            })
+            && front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
             && !scene::aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f)
         {
             let entry = visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
@@ -6014,8 +6048,11 @@ fn select_frame_faces_blocked_in_place(
                 let policy_visible = true;
                 #[cfg(not(feature = "renderer-cell-policy"))]
                 let policy_visible = texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0;
+                // A liquid face on the translucent plane is culled like any
+                // other: the cooker keeps both sides of every water surface,
+                // and drawing the far one as well blended the water twice.
                 if policy_visible
-                    && (water_blend || {
+                    && ({
                         #[cfg(feature = "renderer-cell-policy")]
                         {
                             visible.bounds.surface_index & VISIBLE_INVARIANT_FRONT_BIT != 0
@@ -6877,6 +6914,18 @@ unsafe fn mark_window_packets_translucent(mut packet: *mut u32, end: *mut u32) {
         let command = unsafe { packet.add(2) };
         unsafe { ptr::write(command, ptr::read(command) | 0x0200_0000) };
         packet = unsafe { packet.add(data_words as usize + 1) };
+    }
+}
+
+/// Round an eye to whole units the way `load_quake_camera` builds the view
+/// translation (`-origin >> 12`: the origin rounded up).
+#[inline(always)]
+fn whole_unit_origin(origin: Vec3I32) -> Vec3I32 {
+    let whole_unit = |value: i32| -((value.wrapping_neg()) >> 12) << 12;
+    Vec3I32 {
+        x: whole_unit(origin.x),
+        y: whole_unit(origin.y),
+        z: whole_unit(origin.z),
     }
 }
 
