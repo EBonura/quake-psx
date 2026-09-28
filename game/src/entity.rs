@@ -5168,7 +5168,7 @@ impl EntityScene {
             let Some(body) = dynamic_body(entity) else {
                 continue;
             };
-            if body.dead || distance_units(origin, entity.origin) > reach {
+            if body.dead || distance_units_exceeds(origin, entity.origin, reach) {
                 continue;
             }
             bodies.push(body);
@@ -8781,6 +8781,25 @@ fn midpoint_vec_all(mins: Vec3I32, maxs: Vec3I32) -> Vec3I32 {
 
 fn midpoint_all(min: i32, max: i32) -> i32 {
     min.saturating_add(max.saturating_sub(min) / 2)
+}
+
+/// `distance_units(left, right) > limit` without the square root: the root is
+/// an exact floor, so `isqrt(s) > limit` exactly when `s >= (limit + 1)^2`.
+#[inline]
+fn distance_units_exceeds(left: Vec3I32, right: Vec3I32, limit: i32) -> bool {
+    if limit < 0 {
+        return true;
+    }
+    let component = |a: i32, b: i32| (a.saturating_sub(b) >> 12).clamp(-32_767, 32_767);
+    let x = component(left.x, right.x);
+    let y = component(left.y, right.y);
+    let z = component(left.z, right.z);
+    let squared = x
+        .saturating_mul(x)
+        .saturating_add(y.saturating_mul(y))
+        .saturating_add(z.saturating_mul(z));
+    let bound = (limit as u32 + 1).saturating_mul(limit as u32 + 1);
+    squared > 0 && squared as u32 >= bound
 }
 
 #[inline(never)]
