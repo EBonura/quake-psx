@@ -194,13 +194,40 @@ pub fn run() -> ! {
     ))]
     menu.close_for_game();
     let mut intermission: Option<Intermission> = None;
-    let mut movement_tick = psx_rt::interrupts::vblank_count();
+    // Game logic ticks at 60 Hz on the shared psx-tick clock. A frame consumes
+    // every tick owed since the last one, at most four (the batch the monster
+    // and movement code accepts); the rest carries into the next frames rather
+    // than being dropped, so game speed never depends on frame cost. A level
+    // load realigns the clock instead of catching the load time up.
+    let mut game_clock = psx_tick::FixedClock::new(
+        psx_tick::TickConfig::new(psx_tick::TickRate::HZ60).with_interleave(4),
+        psx_rt::interrupts::vblank_count().wrapping_add(1),
+    );
+    let mut clock_generation = presentation.generation();
     // `cl.faceanimtime`, held beside the loop that owns the damage signal.
     let mut pain_face = quake_core::hud::PainFaceTimer::new();
 
     loop {
         #[cfg(not(feature = "perf-fixed-ticks"))]
-        let audio_tick = psx_rt::interrupts::vblank_count();
+        let (audio_tick, clock_ticks) = {
+            if presentation.generation() != clock_generation {
+                clock_generation = presentation.generation();
+                game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
+            }
+            // Wait for a tick rather than invent one: a frame shorter than a
+            // VBlank must not advance game time.
+            let mut ticks = 0u16;
+            loop {
+                let now = psx_rt::interrupts::vblank_count();
+                while game_clock.due(now) {
+                    ticks += 1;
+                }
+                if ticks != 0 {
+                    game_clock.end_frame();
+                    break (now, ticks);
+                }
+            }
+        };
         // Performance benchmark: the animation clock (liquid warp phase, light
         // styles, sound scheduling) also advances three ticks per frame, so a
         // frame dump at frame N is the same picture on any build.
@@ -214,7 +241,8 @@ pub fn run() -> ! {
                 FIXED_TICK
             }
         };
-        let elapsed_ticks = audio_tick.wrapping_sub(movement_tick).clamp(1, 4) as u16;
+        #[cfg(not(feature = "perf-fixed-ticks"))]
+        let elapsed_ticks = clock_ticks;
         // The visual oracle must sample the same simulated instant when a
         // renderer optimization changes how many VBlanks one frame spans.
         // Shipping continues to consume the measured 60-Hz delta; only this
@@ -225,7 +253,6 @@ pub fn run() -> ! {
         // its scene sequence identical across builds of differing speed.
         #[cfg(feature = "perf-fixed-ticks")]
         let elapsed_ticks = PERF_FIXED_TICKS_PER_FRAME as u16;
-        movement_tick = audio_tick;
         presentation.explosion_effects_mut().tick(elapsed_ticks);
         presentation.impact_particles_mut().tick(elapsed_ticks);
         // `enter_map` is a no-op until the session token moves, so this is
@@ -286,7 +313,7 @@ pub fn run() -> ! {
                 };
                 player = next_player;
                 weapon.map_loaded();
-                movement_tick = psx_rt::interrupts::vblank_count();
+                game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
                 continue;
             }
             let camera = active.camera;
@@ -362,7 +389,7 @@ pub fn run() -> ! {
                 };
                 player = next_player;
                 weapon = quake_core::combat::WeaponState::new();
-                movement_tick = psx_rt::interrupts::vblank_count();
+                game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             }
             Some(quake_core::menu::MenuAction::Impulse9) => weapon.impulse_nine(),
             Some(quake_core::menu::MenuAction::Resume) | None => {}
@@ -541,7 +568,7 @@ pub fn run() -> ! {
             };
             player = next_player;
             weapon.respawn();
-            movement_tick = psx_rt::interrupts::vblank_count();
+            game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             continue;
         }
         #[cfg(feature = "episode1-regression")]
@@ -560,7 +587,7 @@ pub fn run() -> ! {
             };
             player = next_player;
             weapon.map_loaded();
-            movement_tick = psx_rt::interrupts::vblank_count();
+            game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             continue;
         }
         #[cfg(feature = "bestiary-regression")]
@@ -584,7 +611,7 @@ pub fn run() -> ! {
                     psx_rt::tty::println("quake-psx: Rust bestiary stage setup failed");
                     psx_rt::halt();
                 }
-                movement_tick = psx_rt::interrupts::vblank_count();
+                game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
                 continue;
             }
         }
@@ -794,7 +821,7 @@ pub fn run() -> ! {
                 psx_rt::tty::println("quake-psx: Rust arsenal regression map setup failed");
                 psx_rt::halt();
             }
-            movement_tick = psx_rt::interrupts::vblank_count();
+            game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             continue;
         }
 
@@ -969,7 +996,7 @@ pub fn run() -> ! {
             };
             player = next_player;
             weapon.map_loaded();
-            movement_tick = psx_rt::interrupts::vblank_count();
+            game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             continue;
         }
         if let Some(result) = fireball_result {
