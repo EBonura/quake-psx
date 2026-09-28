@@ -163,6 +163,7 @@ psx-font = { path = "../.psoxide/sdk/crates/psx-font" }
 psx-gte = { path = "../.psoxide/sdk/crates/psx-gte" }
 psx-math = { path = "../.psoxide/sdk/crates/psx-math" }
 psx-pad = { path = "../.psoxide/sdk/crates/psx-pad" }
+psx-tick = { path = "../.psoxide/sdk/crates/psx-tick" }
 psx-spu = { path = "../.psoxide/sdk/crates/psx-spu" }
 psx-sfx = { path = "../.psoxide/sdk/crates/psx-sfx" }
 psx-pack = { path = "../.psoxide/sdk/crates/psx-pack" }
