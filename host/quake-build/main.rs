@@ -30,7 +30,7 @@ const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402d
 // Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "6188e908e4c665ac94f4afd968ba68334d61b2df";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "f97505e702632ca2523d96701cfe8c4019ddf0f7";
+const PSOXIDE_SDK_REV: &str = "690ad5f35abea5d0fd32c333b13d8e0c530f1b8c";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -71,6 +71,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     ".psoxide/sdk/crates/psx-sfx",
     ".psoxide/sdk/crates/psx-spu",
     ".psoxide/sdk/crates/psx-telemetry",
+    ".psoxide/sdk/crates/psx-tick",
     ".psoxide/sdk/crates/psx-vram",
 ];
 // Minimal PSoXide workspaces for the dependencies used by the PS1 executable.
@@ -117,6 +118,7 @@ members = [
     "crates/psx-telemetry",
     "crates/psx-asset",
     "crates/psx-pack",
+    "crates/psx-tick",
 ]
 
 [workspace.package]
@@ -143,6 +145,7 @@ psx-gpu = { path = "crates/psx-gpu" }
 psx-gte = { path = "crates/psx-gte" }
 psx-gte-core = { path = "crates/psx-gte-core" }
 psx-pad = { path = "crates/psx-pad" }
+psx-tick = { path = "crates/psx-tick" }
 psx-vram = { path = "crates/psx-vram" }
 psx-font = { path = "crates/psx-font" }
 psx-math = { path = "crates/psx-math" }
