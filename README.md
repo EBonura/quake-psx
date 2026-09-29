@@ -33,14 +33,6 @@ Quake data and generated disc images are not stored in this repository. The
 builder obtains Quake 1.06 shareware data, checks its digest and converts it
 locally.
 
-| Minimal HUD (default) | Classic HUD |
-| --- | --- |
-| [![Minimal HUD](docs/readme/minimal-hud.png)](docs/readme/minimal-hud.png) | [![Classic HUD](docs/readme/classic-hud.png)](docs/readme/classic-hud.png) |
-
-| Translucent water | Sprite rendering |
-| --- | --- |
-| [![Translucent water](docs/readme/clear-water.png)](docs/readme/clear-water.png) | [![Sprite rendering](docs/readme/sprite-rendering.png)](docs/readme/sprite-rendering.png) |
-
 ## Status
 
 | Area | Current state |
