@@ -1401,6 +1401,18 @@ impl EntityScene {
                 patrol,
             });
         }
+        // Preserve the former full-slice traversal order exactly. These are
+        // immutable class properties for the level session: monsters may die
+        // and movers may translate, but neither changes collision class. Only
+        // a `func_wall` toggle ever sets `solid`, and walls load solid, so
+        // every entity that can block a trace is listed here. Built before
+        // the floor drop, whose hull traces already walk this list; the
+        // projectile slots installed below are never solid.
+        for (index, entity) in self.entities.iter().enumerate() {
+            if entity.monster.is_some() || entity.solid {
+                self.collision_indices.push(index as u16);
+            }
+        }
         self.drop_spawns_to_floor(map);
         self.link_doors(map)?;
         self.rocket_render_start =
@@ -1426,14 +1438,6 @@ impl EntityScene {
                 self.fireball_slots,
             )?)
         };
-        // Preserve the former full-slice traversal order exactly. These are
-        // immutable class properties for the level session: monsters may die
-        // and movers may translate, but neither changes collision class.
-        for (index, entity) in self.entities.iter().enumerate() {
-            if entity.monster.is_some() || entity.solid {
-                self.collision_indices.push(index as u16);
-            }
-        }
         Ok(())
     }
 
@@ -5206,7 +5210,10 @@ impl EntityScene {
         // through their full hulls no matter where the monster stood, and a
         // blocked monster fans over six directions.
         let swept = SweptUnitBox::new(*start, *end);
-        for entity in &self.entities {
+        // Only `collision_indices` can ever be solid (see `load`), and in the
+        // same ascending order, so ties resolve as a whole-scene scan would.
+        for &index in &self.collision_indices {
+            let entity = &self.entities[usize::from(index)];
             if !entity.visible || !entity.solid || entity.model_id >= 0 {
                 continue;
             }
@@ -6817,7 +6824,9 @@ impl EntityScene {
             return None;
         }
         let mut ground = None;
-        for (index, entity) in self.entities.iter().enumerate() {
+        for &index in &self.collision_indices {
+            let index = usize::from(index);
+            let entity = &self.entities[index];
             if !entity.visible || !entity.solid || entity.model_id >= 0 {
                 continue;
             }
@@ -7064,7 +7073,8 @@ impl EntityScene {
         ) {
             return false;
         }
-        for entity in &self.entities {
+        for &index in &self.collision_indices {
+            let entity = &self.entities[usize::from(index)];
             if !entity.visible
                 || !entity.solid
                 || entity.model_id >= 0
