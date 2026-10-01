@@ -724,6 +724,44 @@ struct VisibleFace {
 
 const _: [(); 36] = [(); core::mem::size_of::<VisibleFace>()];
 
+/// The fields of a visible face's draw surface the world pass reads every
+/// frame, from `first_corner` on: two aligned words instead of five
+/// halfword and byte loads from RAM.
+#[derive(Copy, Clone)]
+struct HotFace {
+    first_corner: u16,
+    material: u16,
+    flags: u8,
+    corner_count: u8,
+    light_styles: [u8; 2],
+}
+
+const HOT_FACE_OFFSET: usize = core::mem::offset_of!(VisibleFace, face)
+    + core::mem::offset_of!(CookedDrawSurface, first_corner);
+const _: () = assert!(HOT_FACE_OFFSET == 28 && core::mem::align_of::<VisibleFace>() == 4);
+const _: () = assert!(
+    core::mem::offset_of!(CookedDrawSurface, material) == 4
+        && core::mem::offset_of!(CookedDrawSurface, flags) == 6
+        && core::mem::offset_of!(CookedDrawSurface, corner_count) == 7
+        && core::mem::offset_of!(CookedDrawSurface, light_styles) == 8
+);
+const _: () = assert!(cfg!(target_endian = "little"));
+
+/// # Safety
+/// `visible` must point to a live `VisibleFace`.
+#[inline(always)]
+unsafe fn hot_face(visible: *const VisibleFace) -> HotFace {
+    let [low, high] =
+        unsafe { ptr::read(visible.cast::<u8>().add(HOT_FACE_OFFSET).cast::<[u32; 2]>()) };
+    HotFace {
+        first_corner: low as u16,
+        material: (low >> 16) as u16,
+        flags: high as u8,
+        corner_count: (high >> 8) as u8,
+        light_styles: [(high >> 16) as u8, (high >> 24) as u8],
+    }
+}
+
 /// Conservative union bounds for one consecutive visible-face block.
 #[cfg(feature = "renderer-block-frustum")]
 #[repr(C)]
@@ -1098,12 +1136,24 @@ unsafe fn materialize_quake_baked_inline(
             "sll   $12, $8, 2",
             "addu  $11, $11, $12",
             "addu  $11, $5, $11",
-            "lhu   $12, 0($11)",
-            "lhu   $13, 2($11)",
-            "lhu   $14, 4($11)",
-            "sll   $13, $13, 16",
-            "or    $12, $12, $13",
+            // A 6-byte position is two loads, not three: a word and a
+            // halfword in whichever order its alignment allows. Every RAM
+            // load stalls the same six cycles whatever its width.
+            "andi  $13, $11, 2",
+            "bne   $13, $zero, 3f",
             "and   $9, $9, $15",
+            "lw    $12, 0($11)",
+            "lhu   $14, 4($11)",
+            "b     5f",
+            "nop",
+            "3:",
+            "lhu   $12, 0($11)",
+            "lw    $13, 2($11)",
+            "nop",
+            "sll   $14, $13, 16",
+            "or    $12, $12, $14",
+            "srl   $14, $13, 16",
+            "5:",
             "or    $9, $9, $14",
             "sw    $12, 0($7)",
             "sw    $9, 4($7)",
@@ -1717,11 +1767,11 @@ impl Renderer {
                 let visible_index = (frame_entry & FRAME_FACE_INDEX_MASK) as usize;
                 let near = frame_entry & NEAR_FACE_BIT != 0;
                 let water_blend = frame_entry & WATER_BLEND_FACE_BIT != 0;
-                let visible = unsafe { *self.visible_faces.get_unchecked(visible_index) };
-                let face = visible.face;
-
-                let texture =
-                    unsafe { *self.active_textures.get_unchecked(face.material as usize) };
+                let visible = unsafe { self.visible_faces.as_ptr().add(visible_index) };
+                let face = unsafe { hot_face(visible) };
+                // Read the texture record field by field where it is used: a
+                // copy loaded all six fields for every face.
+                let texture = unsafe { self.active_textures.as_ptr().add(face.material as usize) };
 
                 let vertex_count = face.corner_count as usize;
                 // The near path's clip can add one vertex per plane; reserve
@@ -1731,7 +1781,9 @@ impl Renderer {
                 } else {
                     vertex_count
                 };
-                if texture.flags & TEXTURE_LAYERED_SKY != 0 {
+                let texture_flags = unsafe { (*texture).flags };
+                if texture_flags & TEXTURE_LAYERED_SKY != 0 {
+                    let texture = unsafe { *texture };
                     if let Some(selected) = layered_sky_texture {
                         debug_assert_eq!(selected, texture);
                     } else {
@@ -1740,7 +1792,8 @@ impl Renderer {
                     stats.visible_faces = stats.visible_faces.saturating_add(1);
                     continue;
                 }
-                if texture.flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 {
+                if texture_flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 {
+                    let texture = unsafe { *texture };
                     #[cfg(feature = "renderer-census")]
                     let batch_output = next;
 
@@ -1789,7 +1842,7 @@ impl Renderer {
                     }
                     let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
 
-                    self.materialize_retained_face(indexed, face, texture, vertices);
+                    self.materialize_retained_face(indexed, face, &texture, vertices);
 
                     animate_special_surface(vertices, texture, self.frame);
                     let (vertex_count, view_space) = if near {
@@ -1927,7 +1980,7 @@ impl Renderer {
                     self.materialize_retained_face(
                         indexed,
                         face,
-                        texture,
+                        unsafe { &*texture },
                         &mut vertices[..vertex_count],
                     );
                 }
@@ -1945,7 +1998,7 @@ impl Renderer {
                             vertices.as_mut_ptr(),
                             vertex_count,
                             next,
-                            texture.texture_page,
+                            (*texture).texture_page,
                         )
                     } {
                         NearFace::Batch(count) => count,
@@ -1970,7 +2023,7 @@ impl Renderer {
                 batch_surfaces[batch_surface_count].write(ClassicAffineBatchSurface {
                     first_vertex: batch_vertex_count as u16,
                     vertex_count: vertex_count as u16,
-                    tpage: texture.texture_page,
+                    tpage: unsafe { (*texture).texture_page },
                     clut: clut_texture(),
                 });
 
@@ -1980,7 +2033,7 @@ impl Renderer {
                     batch_source_surfaces[batch_surface_count].write(if near || !stable {
                         u16::MAX
                     } else {
-                        visible.bounds.surface_index
+                        unsafe { (*visible).bounds.surface_index }
                     });
                 }
 
@@ -2915,7 +2968,7 @@ impl Renderer {
         first: usize,
         flags: u16,
         light_styles: [u8; 2],
-        texture: TextureInfo,
+        texture: &TextureInfo,
         output: &mut [ClassicAffineVertex],
     ) {
         let baked_uv = flags & FACE_BAKED_UV != 0;
@@ -2961,8 +3014,8 @@ impl Renderer {
     fn materialize_retained_face(
         &self,
         indexed: IndexedVertices<'_>,
-        face: CookedDrawSurface,
-        texture: TextureInfo,
+        face: HotFace,
+        texture: &TextureInfo,
         output: &mut [ClassicAffineVertex],
     ) {
         self.materialize_surface(
@@ -2988,7 +3041,7 @@ impl Renderer {
             face.first_vertex as usize,
             face.flags,
             face.light_styles,
-            texture,
+            &texture,
             output,
         );
     }
