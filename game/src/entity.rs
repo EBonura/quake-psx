@@ -7048,9 +7048,13 @@ impl EntityScene {
         };
         let mut best = Trace::default();
         let mut render_scratch = RenderTraceScratch::default();
+        // The aligned resident views: the cooked records' unaligned fields
+        // cost a byte load each on every node step.
+        let planes = map.collision_planes();
+        let nodes = map.render_nodes();
         if !trace_render_bsp_into(
-            map.planes(),
-            map.nodes(),
+            planes,
+            nodes,
             map.leaves(),
             world.head_nodes[0],
             start,
@@ -7073,8 +7077,8 @@ impl EntityScene {
             };
             let mut candidate = Trace::default();
             if !trace_translated_render_bsp_into(
-                map.planes(),
-                map.nodes(),
+                planes,
+                nodes,
                 map.leaves(),
                 model.head_nodes[0],
                 entity.origin,

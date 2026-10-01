@@ -11,7 +11,7 @@ use psx_bsp::collision::{
     CollisionHull as SharedCollisionHull, Trace as SharedTrace,
     TransformedCollisionHull as SharedTransformedCollisionHull,
 };
-use psx_bsp::Vec3I32 as SharedVec3I32;
+use psx_bsp::{CompactNode, CompactPlane, Vec3I32 as SharedVec3I32};
 use psx_engine::div_q12_i32;
 use psx_math::int32::mul_q12_i32;
 use quake_formats::{ClipNode, Leaf, Node, Plane, RecordSlice, Vec3I16, Vec3I32};
@@ -78,14 +78,70 @@ impl Default for RenderTraceScratch {
     }
 }
 
+/// Render-BSP nodes as the point tracer reads them: the split plane and the
+/// two children. Implemented for the cooked records and for the resident
+/// map's native [`CompactNode`] view, which reads both fields with two aligned
+/// loads where the record decode takes six byte loads.
+pub trait RenderNodes: Copy {
+    fn len(self) -> usize;
+    fn plane_and_children(self, index: usize) -> Option<(u16, [i16; 2])>;
+}
+
+impl RenderNodes for RecordSlice<'_, Node> {
+    #[inline(always)]
+    fn len(self) -> usize {
+        RecordSlice::len(self)
+    }
+
+    #[inline(always)]
+    fn plane_and_children(self, index: usize) -> Option<(u16, [i16; 2])> {
+        let node = self.get(index)?;
+        Some((node.plane, node.children))
+    }
+}
+
+impl RenderNodes for &[CompactNode] {
+    #[inline(always)]
+    fn len(self) -> usize {
+        <[CompactNode]>::len(self)
+    }
+
+    #[inline(always)]
+    fn plane_and_children(self, index: usize) -> Option<(u16, [i16; 2])> {
+        let node = self.get(index)?;
+        Some((node.plane, node.children))
+    }
+}
+
+/// Render-BSP planes as the point tracer reads them. Implemented for the
+/// cooked 14-byte records, whose distance and class are unaligned words, and
+/// for the resident map's aligned [`CompactPlane`] copy of the same lump.
+pub trait RenderPlanes: Copy {
+    fn plane(self, index: usize) -> Option<Plane>;
+}
+
+impl RenderPlanes for RecordSlice<'_, Plane> {
+    #[inline(always)]
+    fn plane(self, index: usize) -> Option<Plane> {
+        self.get(index)
+    }
+}
+
+impl RenderPlanes for &[CompactPlane] {
+    #[inline(always)]
+    fn plane(self, index: usize) -> Option<Plane> {
+        Some(self.get(index)?.decoded())
+    }
+}
+
 /// Trace a Quake-space point segment through a checked render BSP.
 ///
 /// This is integer-only and allocation-free. Malformed nodes, planes, leaves,
 /// cycles, or a traversal deeper than [`TRACE_STACK_CAPACITY`] return `false`
 /// and leave `output` unchanged.
 pub fn trace_render_bsp_into(
-    planes: RecordSlice<'_, Plane>,
-    nodes: RecordSlice<'_, Node>,
+    planes: impl RenderPlanes,
+    nodes: impl RenderNodes,
     leaves: RecordSlice<'_, Leaf>,
     head_node: i16,
     start: &Vec3I32,
@@ -117,20 +173,21 @@ pub fn trace_render_bsp_into(
                 return false;
             }
             descent_budget -= 1;
-            let Some(node) = nodes.get(node_index as usize) else {
+            let Some((plane_index, children)) = nodes.plane_and_children(node_index as usize)
+            else {
                 return false;
             };
-            let Some(plane) = planes.get(node.plane as usize) else {
+            let Some(plane) = planes.plane(plane_index as usize) else {
                 return false;
             };
             let start_distance = render_plane_distance(plane, segment_start);
             let end_distance = render_plane_distance(plane, segment_end);
             if start_distance >= 0 && end_distance >= 0 {
-                node_index = node.children[0];
+                node_index = children[0];
                 continue;
             }
             if start_distance < 0 && end_distance < 0 {
-                node_index = node.children[1];
+                node_index = children[1];
                 continue;
             }
             let numerator = if start_distance < 0 {
@@ -150,8 +207,8 @@ pub fn trace_render_bsp_into(
                 return false;
             }
             scratch.continuations[continuation_count] = MaybeUninit::new(RenderTraceContinuation {
-                far_child: node.children[side ^ 1],
-                plane_index: node.plane,
+                far_child: children[side ^ 1],
+                plane_index,
                 side: side as u8,
                 middle_fraction,
                 end_fraction,
@@ -159,7 +216,7 @@ pub fn trace_render_bsp_into(
                 end: segment_end,
             });
             continuation_count += 1;
-            node_index = node.children[side];
+            node_index = children[side];
             end_fraction = middle_fraction;
             segment_end = middle;
         }
@@ -206,7 +263,7 @@ pub fn trace_render_bsp_into(
             *output = trace;
             return true;
         }
-        let Some(plane) = planes.get(continuation.plane_index as usize) else {
+        let Some(plane) = planes.plane(continuation.plane_index as usize) else {
             return false;
         };
         if continuation.side == 0 {
@@ -236,8 +293,8 @@ pub fn trace_render_bsp_into(
 /// sight and weapon rays through it.
 #[allow(clippy::too_many_arguments)]
 pub fn trace_translated_render_bsp_into(
-    planes: RecordSlice<'_, Plane>,
-    nodes: RecordSlice<'_, Node>,
+    planes: impl RenderPlanes,
+    nodes: impl RenderNodes,
     leaves: RecordSlice<'_, Leaf>,
     head_node: i16,
     origin: Vec3I32,
@@ -280,8 +337,8 @@ pub fn trace_translated_render_bsp_into(
 }
 
 fn render_contents_from(
-    planes: RecordSlice<'_, Plane>,
-    nodes: RecordSlice<'_, Node>,
+    planes: impl RenderPlanes,
+    nodes: impl RenderNodes,
     leaves: RecordSlice<'_, Leaf>,
     mut node_index: i16,
     point: Vec3I32,
@@ -292,9 +349,9 @@ fn render_contents_from(
             return None;
         }
         descent_budget -= 1;
-        let node = nodes.get(node_index as usize)?;
-        let plane = planes.get(node.plane as usize)?;
-        node_index = node.children[(render_plane_distance(plane, point) < 0) as usize];
+        let (plane_index, children) = nodes.plane_and_children(node_index as usize)?;
+        let plane = planes.plane(plane_index as usize)?;
+        node_index = children[(render_plane_distance(plane, point) < 0) as usize];
     }
     render_leaf_contents(leaves, node_index)
 }
