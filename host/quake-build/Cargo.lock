@@ -92,7 +92,7 @@ dependencies = [
 [[package]]
 name = "psoxide-link"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=aa4afd2872f1fa02f09da0eefc7c1a796d519616#aa4afd2872f1fa02f09da0eefc7c1a796d519616"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=690ad5f35abea5d0fd32c333b13d8e0c530f1b8c#690ad5f35abea5d0fd32c333b13d8e0c530f1b8c"
 dependencies = [
  "serde_json",
 ]
