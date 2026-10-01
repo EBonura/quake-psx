@@ -5,6 +5,8 @@
 //! PSoXide Y-up boundary around the shared caller-owned tracer and contains no
 //! BSP traversal implementation of its own.
 
+use core::mem::MaybeUninit;
+
 use psx_bsp::collision::{
     CollisionHull as SharedCollisionHull, Trace as SharedTrace,
     TransformedCollisionHull as SharedTransformedCollisionHull,
@@ -48,40 +50,29 @@ struct RenderTraceContinuation {
     end: Vec3I32,
 }
 
-impl RenderTraceContinuation {
-    const EMPTY: Self = Self {
-        far_child: 0,
-        plane_index: 0,
-        side: 0,
-        middle_fraction: 0,
-        end_fraction: 0,
-        middle: Vec3I32 { x: 0, y: 0, z: 0 },
-        end: Vec3I32 { x: 0, y: 0, z: 0 },
-    };
-}
-
 /// Caller-owned fixed workspace for tracing a point through the render BSP.
 ///
 /// Quake model head zero indexes the render-node lump, not the clipnode lump.
 /// Weapon and sight point traces therefore use this tree and its leaf
 /// contents; body movement continues to use the canonical clipnode tracer.
+///
+/// A slot is only read after the same trace wrote it, so the slots start
+/// uninitialized like the shared tracer's [`TraceScratch`]. Zeroing the
+/// 2,560 bytes cost a `memset` per slot and a `memcpy` of the whole array
+/// on every construction, about 6,000 cycles for each sight or weapon trace.
 pub struct RenderTraceScratch {
-    continuations: [RenderTraceContinuation; TRACE_STACK_CAPACITY],
+    continuations: [MaybeUninit<RenderTraceContinuation>; TRACE_STACK_CAPACITY],
 }
 
 impl RenderTraceScratch {
     pub const fn new() -> Self {
         Self {
-            continuations: [RenderTraceContinuation::EMPTY; TRACE_STACK_CAPACITY],
+            continuations: [const { MaybeUninit::uninit() }; TRACE_STACK_CAPACITY],
         }
     }
 }
 
 impl Default for RenderTraceScratch {
-    /// Out of line and size-optimised: the sixty-four-slot array literal is
-    /// lowered as one `memset` call per slot, and inline that is a kilobyte
-    /// of call setup in every caller.
-    #[inline(never)]
     fn default() -> Self {
         Self::new()
     }
@@ -158,7 +149,7 @@ pub fn trace_render_bsp_into(
             if continuation_count == TRACE_STACK_CAPACITY {
                 return false;
             }
-            scratch.continuations[continuation_count] = RenderTraceContinuation {
+            scratch.continuations[continuation_count] = MaybeUninit::new(RenderTraceContinuation {
                 far_child: node.children[side ^ 1],
                 plane_index: node.plane,
                 side: side as u8,
@@ -166,7 +157,7 @@ pub fn trace_render_bsp_into(
                 end_fraction,
                 middle,
                 end: segment_end,
-            };
+            });
             continuation_count += 1;
             node_index = node.children[side];
             end_fraction = middle_fraction;
@@ -191,7 +182,9 @@ pub fn trace_render_bsp_into(
             return true;
         }
         continuation_count -= 1;
-        let continuation = scratch.continuations[continuation_count];
+        // SAFETY: every slot below `continuation_count` was written by this
+        // trace before the count passed it.
+        let continuation = unsafe { scratch.continuations[continuation_count].assume_init() };
         let Some(far_contents) = render_contents_from(
             planes,
             nodes,
