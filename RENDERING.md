@@ -4,6 +4,10 @@ The Quake renderer targets the original PlayStation at 320x240. It keeps
 Quake's BSP visibility model and adapts the visible surfaces to PSoXide's GTE,
 GPU packet and ordering-table APIs.
 
+For the September 27 architecture research, complete experiment ledger,
+measurement limits and before/after screenshots, see
+[Rendering architecture experiments](docs/render-architecture-experiments-2026-09-27.md).
+
 ## Frame path
 
 A normal frame follows this path:
@@ -647,6 +651,32 @@ slabs per display pool and preserve the authoritative dynamic writer for
 adaptive, oversized, changed or already-live ranges. The complete handoff and
 clean-room range model are committed privately at `quake2-psx-decomp`
 `34f6f8b`.
+
+### Native contiguous batches rejected, 2026-09-27
+
+The bounded native-range proposal above has now been implemented and tested
+against `16e27a9` with the pinned frontend. Prepared GTE input words and
+per-display-pool GT3/GT4 templates retained exact reference fallback behavior.
+32 slots per pool reached 32.857 fps against the accepted 35.189 fps; writing
+projections directly into reference scratch fields made no material difference.
+A 16-slot revision with the patch kernel on a proven 176/220-byte scratchpad
+stack reached 33.212 fps, still 5.62% slower. RENDER plus OT_SUBMIT cost rose
+14.64%. Default and experimental DMA FIFO models agreed.
+
+The separate 32-slot counter build hit its native path in 10,195 of 13,911
+attempts, but exhausted the remaining dynamic arena on three frames. The
+16-slot revision had zero overflow flags across 1,552 matched gameplay frames,
+passed fixed-camera pixel parity and the repeated full-route gameplay probe,
+and passed 31 host renderer tests. It still lost to extra RAM reads and
+instruction/cache overhead. The 1 KiB claim above is not a general L0 bound:
+a 39-vertex fan can require 37 unpaired GT3 packets, or 1,480 bytes. Capacity
+failure must retain the dynamic fallback even when no subdivision is needed.
+
+This implementation used runtime cold preparation from existing cooked
+geometry; it did not implement an offline native-stream cooker or Nanite-style
+mesh hierarchy. Runtime changes were restored. Source snapshots, patches,
+discs, counters and measurements are preserved in
+`~/Documents/PSoXide-native-stream-quake-2026-09-27/REPORT.md`.
 
 ### Quake II-informed selector/materialization leader
 
@@ -1550,14 +1580,43 @@ leaf across 1,530 leaves and no room structure to recover. Do not reopen leaf
 portal admission without authored or offline-clustered rooms that bound both
 doorway count and cell reach.
 
-### Closed: coplanar face merging
+### Corrected: coplanar face merging, 2026-09-27
 
-`tools/face-merge-census.rs` applies qbsp's own `TryMerge` rule (same plane and
-side, same texture information, same light styles, one shared edge, convex
-after joining, collinear boundary vertices retained so no T-junction appears)
-to every Episode 1 map. It merges **zero** faces on all nine maps: id's qbsp
-already runs its merge pass after splitting, so the remaining fragmentation is
-exactly the part that cannot be rejoined convexly.
+The former zero-merge result was wrong. `tools/face-merge-census.rs` tested
+convex turns against the opposite winding to BSP29. Correcting the sign,
+with tests for a convex clockwise join and a rejected concave join, finds
+916 geometric joins in E1M1 (5,516 source faces to 4,600), and 7,119 across
+Episode 1. These counts retain boundary junctions and do not reduce fan
+triangle count. They do not establish cooked UV or lighting continuity.
+
+An independent offline PSB remesher was then run in the emulator with the
+**byte-identical accepted guest executable**, leaving the BSP collision,
+PVS bytes, entities, textures, and dynamic brush geometry intact. Conservative
+mark-surface remapping admits each merged face from all its original leaves.
+The small-tolerance variant reduces textured polygon submissions 11.43% and
+reaches 36.184 fps versus 35.189. Wider attribute tolerances reach 36.398 fps;
+the aggressive geometry variant reaches 37.448 fps (+6.42%). The gains include
+collinear boundary-vertex removal and come with changed interpolation,
+texture distortion and visible gaps exposing the background. User review
+rejects this approach: poorer tessellation and increased affine warping are
+unacceptable. These are failed visual-quality experiments, not usable speedups.
+Protecting all junction positions retains the triangle count
+and reaches only 35.203 fps (+0.04%).
+
+All variants complete the E1M1 route and match its 136-byte gameplay probe.
+Default and experimental DMA FIFO runs agree for the three faster variants.
+The fixed-camera fixture reports no packet overflow or texture-window reset
+failure; every remeshed variant changes pixels. Moving-route captures are
+qualitative evidence only because scanout can show a different frame age.
+
+A separate host-only meshoptimizer experiment triangulates full polygon
+boundaries, locks patch borders, and simplifies material/spatial patches.
+At the recorded error/attribute setting, increasing patch extent reduces
+10,189 eligible triangles to 9,863, 9,553, or 8,983. These are cooker counts,
+not measured PS1 speedups or a completed HLOD renderer. Source revision,
+parameters, executable variants, captures, validations and reproduction
+scripts are preserved in
+`~/Documents/PSoXide-render-mesh-quake-2026-09-27/REPORT.md`.
 
 ### Where the Quake II gap actually is
 
@@ -1577,7 +1636,7 @@ resolution                  512x240         320x240
 
 **quake-psx costs essentially the same per surviving face as Quake II.** It is
 not slower per unit of work. It draws 4.5 times as many faces, producing 1.65
-times the hardware triangles into 0.39 times the pixel area, which is 4.2 times
+times the hardware triangles into 0.625 times the pixel area, which is 2.64 times
 the geometric density. Quake II's world is an authored mesh of large quads that
 subdivide at runtime, 14.9 quads per brush and 15.2 brushes per present; a Quake
 BSP hands the renderer 5,516 already minimal convex fragments.

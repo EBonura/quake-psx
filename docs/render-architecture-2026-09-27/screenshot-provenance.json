@@ -1,0 +1,52 @@
+{
+  "artifact_bundle": "PSoXide-render-mesh-quake-2026-09-27",
+  "camera": "owner-e1m1-2026-08-13",
+  "origin_q12": [
+    888798,
+    3824884,
+    -728959
+  ],
+  "angles": [
+    43,
+    1088,
+    0
+  ],
+  "guest_markers": 180,
+  "render_observations": 176,
+  "source_dimensions": [
+    320,
+    240
+  ],
+  "processing": "Lossless PNG conversion; labeled sheets use integer nearest-neighbor scaling. No color/contrast correction.",
+  "sources": {
+    "baseline": {
+      "source_relative_to_artifacts": "visual-baseline/frame-180/frame.ppm",
+      "ppm_sha256": "ccb285cf033760f32ed52ae87cb79f3e1e7c327107608a447f7070d445f2ce7b",
+      "rgb_sha256": "0e44a4137d7e779f8db2963d57dfa1279808168dfd423f05f63f97fabd340e6c"
+    },
+    "approximate": {
+      "source_relative_to_artifacts": "visual-approximate/frame-180/frame.ppm",
+      "ppm_sha256": "f4681fd6db25c74adeaa89891f6c8468e884ff71a79946c359bb06150234d30c",
+      "rgb_sha256": "e956d1698dc7bcd22f5e5c903c31832648526d3e662198a163c8855eead1d05c",
+      "changed_pixels": 5187
+    },
+    "moderate": {
+      "source_relative_to_artifacts": "visual-moderate/frame-180/frame.ppm",
+      "ppm_sha256": "f60a7f2f69b1f35bb2e65630473be887ea3b8d056b9122c0b5438eaa2e241632",
+      "rgb_sha256": "3ddc31180c2933516c7bc6e1600337f927fe433dacaa9d063ecbc7e2758f57c2",
+      "changed_pixels": 16400
+    },
+    "geometry": {
+      "source_relative_to_artifacts": "visual-geometry/frame-180/frame.ppm",
+      "ppm_sha256": "a4f33ae985c73456b54ac19bfc9f724fd41da623c60b804484f73aaf023eaf39",
+      "rgb_sha256": "59ae8ed2c471368acd3ae42309cc059ec2bad77e709f69955491e4b822d2e5f5",
+      "changed_pixels": 41500
+    },
+    "stitched": {
+      "source_relative_to_artifacts": "visual-stitched/frame-180/frame.ppm",
+      "ppm_sha256": "4502e1206d92e8c289dbdf692e2cd7be49de4647606cf2ba8d40cc64514fe2a7",
+      "rgb_sha256": "11e6bbbe335779cf41010834440b430860f2241dc5f2e62c9017efafb1cc5519",
+      "changed_pixels": 117
+    }
+  }
+}

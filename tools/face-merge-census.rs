@@ -106,11 +106,37 @@ fn try_merge(a: &[[f64; 3]], b: &[[f64; 3]], normal: [f64; 3]) -> Option<Vec<[f6
         let next = merged[(index + 1) % merged.len()];
         let edge = sub(current, previous);
         let turn = cross(edge, sub(next, current));
-        if dot(turn, normal) < -CONTINUOUS_EPSILON {
+        // BSP29 face vertices wind clockwise when viewed along the outward
+        // normal (already adjusted for `side`). Convex turns are negative.
+        // Testing the opposite sign rejected ordinary convex joins and made
+        // the old census incorrectly report zero mergeable faces.
+        if dot(turn, normal) > CONTINUOUS_EPSILON {
             return None;
         }
     }
     Some(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clockwise_bsp_rectangles_merge_and_keep_boundary_junctions() {
+        let a = [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]];
+        let b = [[1., 0., 0.], [1., 1., 0.], [2., 1., 0.], [2., 0., 0.]];
+        let merged = try_merge(&a, &b, [0., 0., 1.]).unwrap();
+        assert_eq!(merged.len(), 6);
+        assert!(merged.contains(&[1., 0., 0.]));
+        assert!(merged.contains(&[1., 1., 0.]));
+    }
+
+    #[test]
+    fn concave_join_is_still_rejected() {
+        let a = [[0., 0., 0.], [0., 2., 0.], [1., 2., 0.], [1., 1., 0.], [1., 0., 0.]];
+        let b = [[1., 0., 0.], [1., 1., 0.], [2., 1., 0.], [2., 0., 0.]];
+        assert!(try_merge(&a, &b, [0., 0., 1.]).is_none());
+    }
 }
 
 fn main() -> Result<()> {

@@ -1,0 +1,226 @@
+{
+  "scope": "E1M1 emulator benchmarks, not original-console measurements",
+  "experiments": {
+    "PSoXide-nanite-quake-2026-09-27": {
+      "source_bundle": "PSoXide-nanite-quake-2026-09-27",
+      "source_json_sha256": "ab3cf4e8a022b037703863442145fdc6638e53557c8e6524e7f04a60c4d64010",
+      "variants": {
+        "baseline": {
+          "fps": 35.189383730265604,
+          "fps_change_percent": 0.0,
+          "renderer_cost_change_percent": 0.0,
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": 0.0,
+          "exe_bytes": 413696,
+          "textured_polygon_commands": 1692618
+        },
+        "strict": {
+          "fps": 34.60816523663458,
+          "fps_change_percent": -1.651687048816164,
+          "renderer_cost_change_percent": 4.6672813593541695,
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -0.24624575657354875,
+          "exe_bytes": 417792,
+          "textured_polygon_commands": 1688450
+        },
+        "relaxed": {
+          "fps": 34.19738463561611,
+          "fps_change_percent": -2.819029461423328,
+          "renderer_cost_change_percent": 6.877195157397087,
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -0.4727587677786693,
+          "exe_bytes": 417792,
+          "textured_polygon_commands": 1684616
+        }
+      },
+      "cycle_metric": "RENDER only"
+    },
+    "PSoXide-shared-vertices-quake-2026-09-27": {
+      "source_bundle": "PSoXide-shared-vertices-quake-2026-09-27",
+      "source_json_sha256": "f1ef4bab54859c55c5884a5eea55a299ab016d66942535f7e9cfd1d0f0fa9fcd",
+      "variants": {
+        "baseline": {
+          "fps": 35.189383730265604,
+          "fps_change_percent": 0.0,
+          "renderer_cost_change_percent": 0.0,
+          "matched_renderer_cycles": {
+            "mean": 494792.26804123714,
+            "p50": 485325,
+            "p95": 1138588,
+            "max": 2244332
+          },
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": 0.0,
+          "exe_bytes": 413696,
+          "textured_polygon_commands": 1692618
+        },
+        "whole-cluster": {
+          "fps": 32.18016942875961,
+          "fps_change_percent": -8.551483380818159,
+          "renderer_cost_change_percent": 22.495176435596733,
+          "matched_renderer_cycles": {
+            "mean": 606096.6617268041,
+            "p50": 604890,
+            "p95": 1213706,
+            "max": 2481620
+          },
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -0.0002954003797683846,
+          "exe_bytes": 419840,
+          "textured_polygon_commands": 1692613
+        },
+        "selected-cluster": {
+          "fps": 31.868705820146793,
+          "fps_change_percent": -9.436590124943756,
+          "renderer_cost_change_percent": 24.81648499786957,
+          "matched_renderer_cycles": {
+            "mean": 617582.3170103093,
+            "p50": 622636,
+            "p95": 1238236,
+            "max": 2491854
+          },
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -5.9080075953676925e-05,
+          "exe_bytes": 421888,
+          "textured_polygon_commands": 1692617
+        },
+        "layout-control": {
+          "fps": 35.17596085138918,
+          "fps_change_percent": -0.03814468300813445,
+          "renderer_cost_change_percent": -0.0007827662759640752,
+          "matched_renderer_cycles": {
+            "mean": 494788.39497422683,
+            "p50": 485284,
+            "p95": 1138877,
+            "max": 2244125
+          },
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -5.9080075953676925e-05,
+          "exe_bytes": 413696,
+          "textured_polygon_commands": 1692617
+        }
+      },
+      "cycle_metric": "RENDER only"
+    },
+    "PSoXide-native-stream-quake-2026-09-27": {
+      "source_bundle": "PSoXide-native-stream-quake-2026-09-27",
+      "source_json_sha256": "5d356e9c75ebfb4d3204bb9bc035721b0beb609250cff575ceb60e923fab4f33",
+      "variants": {
+        "baseline": {
+          "fps": 35.189383730265604,
+          "fps_change_percent": 0.0,
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": 0.0,
+          "exe_bytes": 413696,
+          "textured_polygon_commands": 1692618
+        },
+        "native-v1": {
+          "fps": 32.85679122193841,
+          "fps_change_percent": -6.628682463458391,
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -0.045196258104307496,
+          "exe_bytes": 421888,
+          "textured_polygon_commands": 1691853
+        },
+        "native-v2": {
+          "fps": 32.856798396382125,
+          "fps_change_percent": -6.628662075366998,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -0.04525533818026117,
+          "exe_bytes": 421888,
+          "textured_polygon_commands": 1691852
+        },
+        "native-v3": {
+          "fps": 33.21187651515596,
+          "fps_change_percent": -5.619613092027064,
+          "fixed_camera_changed_pixels": 0,
+          "gameplay_probe_matches_baseline": true,
+          "textured_polygon_change_percent": -5.9080075953676925e-05,
+          "exe_bytes": 423936,
+          "textured_polygon_commands": 1692617
+        }
+      },
+      "cycle_metric": "RENDER + OT_SUBMIT (see original report for keys)"
+    },
+    "PSoXide-render-mesh-quake-2026-09-27": {
+      "source_bundle": "PSoXide-render-mesh-quake-2026-09-27",
+      "source_json_sha256": "1402cb9e77db497a4c4f479eefdba8ec0902caaaa0b50d304be4f14237c2a65a",
+      "variants": {
+        "baseline": {
+          "fps": 35.189383730265604,
+          "fps_change_percent": 0.0,
+          "render_cost_change_percent": 0.0,
+          "render_and_ot": {
+            "mean": 523834.887242268,
+            "p50": 517961,
+            "p95": 1162571,
+            "max": 2293791
+          },
+          "probe_matches_baseline": true,
+          "textured_polygon_commands": 1692618
+        },
+        "approximate": {
+          "fps": 36.18374231398142,
+          "fps_change_percent": 2.825734577615213,
+          "render_cost_change_percent": -4.367785923828771,
+          "render_and_ot": {
+            "mean": 500954.9007731959,
+            "p50": 503384,
+            "p95": 1132469,
+            "max": 2250071
+          },
+          "probe_matches_baseline": true,
+          "textured_polygon_commands": 1499236
+        },
+        "moderate": {
+          "fps": 36.39801627281673,
+          "fps_change_percent": 3.4346510635581584,
+          "render_cost_change_percent": -5.557788535724917,
+          "render_and_ot": {
+            "mean": 494721.2519329897,
+            "p50": 499176,
+            "p95": 1125167,
+            "max": 2233435
+          },
+          "probe_matches_baseline": true,
+          "textured_polygon_commands": 1446658
+        },
+        "geometry": {
+          "fps": 37.4476759564996,
+          "fps_change_percent": 6.4175384358655,
+          "render_cost_change_percent": -11.763362000680576,
+          "render_and_ot": {
+            "mean": 462214.2931701031,
+            "p50": 453660,
+            "p95": 1042495,
+            "max": 2112922
+          },
+          "probe_matches_baseline": true,
+          "textured_polygon_commands": 1314100
+        },
+        "stitched": {
+          "fps": 35.20282499862194,
+          "fps_change_percent": 0.038196941609913715,
+          "render_cost_change_percent": -0.25509619411940854,
+          "render_and_ot": {
+            "mean": 522498.6043814433,
+            "p50": 515940,
+            "p95": 1159979,
+            "max": 2289331
+          },
+          "probe_matches_baseline": true,
+          "textured_polygon_commands": 1694344
+        }
+      },
+      "cycle_metric": "RENDER + OT_SUBMIT (see original report for keys)"
+    }
+  }
+}
