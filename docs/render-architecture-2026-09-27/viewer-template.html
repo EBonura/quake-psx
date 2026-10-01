@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quake E1M1 — Before / after</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10151e;color:#eaf0f8;font:16px/1.5 system-ui,sans-serif}main{max-width:1060px;margin:auto;padding:30px 24px}h1{font-size:30px;margin:0 0 8px}p{color:#bac7d8;margin:8px 0 18px}nav{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0}button{font:inherit;cursor:pointer;border:1px solid #4c5b70;border-radius:6px;padding:8px 14px;background:#1d2838;color:#eaf0f8}button[aria-pressed=true]{background:#c8e3ff;color:#152133;border-color:#c8e3ff}.stats{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px}.stats strong{display:block;color:#fff}.stats span{color:#acbbce;font-size:14px}.frame{position:relative;max-width:960px;aspect-ratio:4/3;overflow:hidden;background:#000;border:1px solid #435268}.frame img{width:100%;height:100%;position:absolute;inset:0;image-rendering:pixelated}.frame .after{clip-path:inset(0 0 0 50%)}.divider{position:absolute;left:50%;top:0;height:100%;border-left:2px solid #fff;pointer-events:none}.labels{position:absolute;inset:12px 12px auto;display:flex;justify-content:space-between;pointer-events:none}.labels span{padding:4px 8px;background:#10151ee8;border-radius:4px;font-size:13px}.control{max-width:960px;margin:16px 0}input{width:100%;accent-color:#c8e3ff;cursor:ew-resize}label{display:block;font-size:14px;color:#bac7d8}details{border-top:1px solid #344155;margin-top:28px;padding-top:14px}summary{cursor:pointer}a{color:#a8d5ff}.limits{font-size:14px;max-width:920px}noscript{display:block;color:#fff}
+</style>
+<main>
+<h1>Quake E1M1: before / after</h1>
+<p>Real emulator captures. Same fixed camera, frozen light-animation phase, original 320 × 240 pixels.</p>
+<p><strong>Rejected experiments.</strong> User review found background leaks, poorer tessellation and increased texture warping. The FPS gains do not meet the visual-quality requirement.</p>
+<nav aria-label="Choose prototype" id="variants"></nav>
+<div class="stats"><div><strong>35.189 FPS</strong><span>Original / full E1M1 route</span></div><div><strong id="performance"></strong><span id="title"></span></div><div><strong id="changed"></strong><span>Changed pixels in this view</span></div></div>
+<div class="frame">
+<img src="__BASELINE_IMAGE__" alt="Original Quake renderer at the fixed comparison camera">
+<img id="after" class="after" alt="Selected experimental render asset at the same camera">
+<div id="divider" class="divider"></div><div class="labels"><span>BEFORE / original</span><span>AFTER / prototype</span></div>
+</div>
+<div class="control"><label for="split">Move the divider: 0 shows the entire prototype; 100 shows the entire original.</label><input type="range" id="split" min="0" max="100" value="50" aria-label="Before after divider"></div>
+<p id="note"></p>
+<p class="limits">FPS measures the full E1M1 route, not this still image. All remeshed versions change pixels. The junction-preserving control provides no meaningful speed gain. None is enabled in the shipping game. Changed-pixel counts are not perceptual quality scores.</p>
+<details><summary>Capture and measurement details</summary><p class="limits">Owner camera: origin Q12 [888798, 3824884, −728959], angles [43, 1088, 0]. Captured after 180 guest markers; 176 render observations. All fixtures reported zero packet overflows and texture-window reset failures. PNG pixels are unfiltered; the browser enlarges them with pixelated scaling. Moving-route captures are excluded from this viewer because display age can differ between builds.</p><p><a href="../render-architecture-experiments-2026-09-27.md">Consolidated experiment documentation</a> · <a href="screenshot-provenance.json">Screenshot provenance</a></p></details>
+<noscript>Enable JavaScript to select and compare prototypes, or open the before-after PNG files beside this viewer.</noscript>
+</main>
+<script>
+const data=__VARIANT_DATA__;
+const nav=document.getElementById('variants');
+function choose(key){const v=data[key];document.getElementById('after').src=v.image;document.getElementById('title').textContent=v.title;document.getElementById('performance').textContent=v.performance;document.getElementById('changed').textContent=v.changed.toLocaleString()+' / 76,800';document.getElementById('note').textContent=v.note;for(const b of nav.children)b.setAttribute('aria-pressed',String(b.dataset.key===key));}
+for(const [key,v] of Object.entries(data)){const b=document.createElement('button');b.type='button';b.textContent=v.title;b.dataset.key=key;b.addEventListener('click',()=>choose(key));nav.append(b);}
+document.getElementById('split').addEventListener('input',e=>{document.getElementById('after').style.clipPath=`inset(0 0 0 ${e.target.value}%)`;document.getElementById('divider').style.left=e.target.value+'%';});
+choose('approximate');
+</script>
+</html>
