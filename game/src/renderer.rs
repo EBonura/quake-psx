@@ -3551,11 +3551,17 @@ impl Renderer {
             if let Some(camera_leaf) = self.camera_leaf(map, camera.origin) {
                 let key = (map.generation(), camera_leaf);
                 if self.water_portal_key != Some(key) {
-                    // The boundary is found in the camera's own PVS.
-                    if !self.mark_visible_faces(map, camera.origin, &[]) {
-                        return false;
+                    // The boundary is found in the camera's own PVS, read from
+                    // its face marks. Building that PVS's face list only to
+                    // replace it with the union's doubled the visibility work
+                    // of every leaf change in sight of water. Anything the
+                    // marks cannot answer takes the original path.
+                    if !self.find_water_portal_in_pvs(map, camera.origin, camera_leaf) {
+                        if !self.mark_visible_faces(map, camera.origin, &[]) {
+                            return false;
+                        }
+                        self.find_water_portal(map, camera.origin, camera_leaf);
                     }
-                    self.find_water_portal(map, camera.origin, camera_leaf);
                     self.water_portal_key = Some(key);
                 }
                 let count = usize::from(self.water_portal_count);
@@ -3633,87 +3639,301 @@ impl Renderer {
         }
         let mut count = 0usize;
         let mut nearest = i32::MAX;
-        for visible in self.visible_faces.iter() {
-            let Some(texture) = self.active_textures.get(visible.face.material as usize) else {
-                continue;
-            };
-            if texture.flags & TEXTURE_LIQUID == 0 {
-                continue;
-            }
-            let face_plane = visible.face.plane as i16;
-            let distance = compact_plane_distance(visible.plane, eye).saturating_abs();
-            if count != 0 && face_plane != self.water_portal_plane && distance >= nearest {
-                continue;
-            }
+        for index in 0..self.visible_faces.len() {
+            let visible = self.visible_faces[index];
+            self.consider_water_face(
+                map,
+                eye,
+                camera_contents,
+                visible.plane,
+                visible.face,
+                &mut count,
+                &mut nearest,
+            );
+        }
+        self.water_portal_count = count as u8;
+    }
 
-            let plane = visible.plane;
-            let center = water_face_sample(map, visible.face);
-            // Axial cooked planes intentionally use `kind` as their hot
-            // normal; their retained normal components are not authoritative.
-            // Match `plane_distance` or both samples can remain in one leaf.
-            let mut step = Vec3I32 { x: 0, y: 0, z: 0 };
-            match plane.kind {
-                0 => step.x = 8 << 12,
-                1 => step.y = 8 << 12,
-                2 => step.z = 8 << 12,
-                _ => {
-                    step.x = mul_q12_i32(8 << 12, i32::from(plane.normal.x));
-                    step.y = mul_q12_i32(8 << 12, i32::from(plane.normal.y));
-                    step.z = mul_q12_i32(8 << 12, i32::from(plane.normal.z));
+    /// [`Self::find_water_portal`] over the camera leaf's own PVS, read from
+    /// the face marks [`Self::mark_visible_faces`] would set, without building
+    /// that PVS's face list. The faces it considers are the ones that list
+    /// would hold after `retain_cell_faces`, in the same ascending order, so
+    /// the boundary plane and the leaves found are exactly the same.
+    ///
+    /// Returns false, leaving the portal unset, wherever `mark_visible_faces`
+    /// would fail, return a cached list or need more than its capacity; the
+    /// caller then takes the original path, which reproduces that outcome.
+    #[inline(never)]
+    fn find_water_portal_in_pvs(
+        &mut self,
+        map: &ResidentMap,
+        eye: Vec3I32,
+        camera_leaf: usize,
+    ) -> bool {
+        let faces = map.faces();
+        if camera_leaf == 0
+            || faces.len() > self.face_visible.len() * 4
+            || self.cached_visibility == Some((map.generation(), camera_leaf, u16::MAX))
+        {
+            return false;
+        }
+        let leaves = map.leaves();
+        let Some(leaf) = leaves.get(camera_leaf) else {
+            return false;
+        };
+        if leaf.visibility_offset < 0 {
+            return false;
+        }
+        let Some(world) = map.brush_models().get(0) else {
+            return false;
+        };
+        let visible_leaves = world.visible_leaves.max(0) as usize;
+        let row_bytes = (visible_leaves + 7) >> 3;
+        if row_bytes > self.visibility.len() {
+            return false;
+        }
+        self.visibility.fill(0);
+        if !decompress_visibility(
+            map.visibility(),
+            leaf.visibility_offset as usize,
+            &mut self.visibility[..row_bytes],
+        ) {
+            return false;
+        }
+        let face_words = faces.len().div_ceil(4);
+        self.face_visible[..face_words].fill(0);
+        let marks = map.mark_surfaces();
+        let face_marks = self.face_visible.as_mut_ptr().cast::<u8>();
+        for visible_index in 0..visible_leaves {
+            if self.visibility[visible_index >> 3] & (1 << (visible_index & 7)) == 0 {
+                continue;
+            }
+            let Some(leaf) = leaves.get(visible_index + 1) else {
+                return false;
+            };
+            let start = leaf.first_mark_surface as usize;
+            let end = start + leaf.mark_surface_count as usize;
+            for mark_index in start..end {
+                let face = marks.get(mark_index).expect("validated mark surface") as usize;
+                debug_assert!(face < faces.len());
+                unsafe {
+                    ptr::write(face_marks.add(face), 1);
                 }
             }
-            let Some(positive) = map.point_leaf_index(Vec3I32 {
-                x: center.x.wrapping_add(step.x),
-                y: center.y.wrapping_add(step.y),
-                z: center.z.wrapping_add(step.z),
-            }) else {
+        }
+        // `mark_visible_faces` fails once the marked faces outgrow either list.
+        let capacity = self
+            .visible_faces
+            .capacity()
+            .min(self.frame_face_indices.capacity());
+        let mut marked = 0usize;
+        for word in &self.face_visible[..face_words] {
+            marked += word.count_ones() as usize;
+        }
+        if marked > capacity {
+            return false;
+        }
+
+        self.water_portal_plane = -1;
+        self.water_portal_count = 0;
+        let Some(camera_contents) = leaves.get(camera_leaf).map(|leaf| leaf.contents) else {
+            return true;
+        };
+        if camera_contents != CONTENTS_EMPTY && camera_contents != CONTENTS_WATER {
+            return true;
+        }
+        let mut count = 0usize;
+        let mut nearest = i32::MAX;
+        let mut face_index = 0usize;
+        while face_index < faces.len() {
+            if unsafe { *self.face_visible.get_unchecked(face_index >> 2) } == 0 {
+                face_index += 4;
                 continue;
+            }
+            let last = (face_index + 4).min(faces.len());
+            while face_index < last {
+                if unsafe { ptr::read(face_marks.add(face_index)) } != 0 {
+                    // Only the material, until the face proves to be liquid.
+                    let record = faces.record_bytes(face_index).expect("validated face");
+                    let material = u16::from_le_bytes([record[4], record[5]]);
+                    let liquid = self
+                        .active_textures
+                        .get(material as usize)
+                        .is_some_and(|texture| texture.flags & TEXTURE_LIQUID != 0);
+                    if liquid {
+                        let face = faces.get(face_index).expect("validated face");
+                        // The entry `mark_visible_faces` would decode.
+                        let plane = map
+                            .planes()
+                            .get(face.plane as usize)
+                            .expect("validated face plane");
+                        let mut sign_bits = 0u8;
+                        for (axis, normal) in [plane.normal.x, plane.normal.y, plane.normal.z]
+                            .into_iter()
+                            .enumerate()
+                        {
+                            if normal < 0 {
+                                sign_bits |= 1 << axis;
+                            }
+                        }
+                        let compact_plane = CompactPlane {
+                            normal: plane.normal,
+                            kind: plane.kind as u8,
+                            sign_bits,
+                            distance: plane.distance,
+                        };
+                        let surface = CookedDrawSurface {
+                            plane: face.plane as u16,
+                            first_corner: face.first_vertex as u16,
+                            material: face.texture as u16,
+                            flags: face.flags as u8,
+                            corner_count: face.vertex_count as u8,
+                            light_styles: face.light_styles,
+                        };
+                        if self.retained_in_cell(map, camera_leaf, compact_plane, surface) {
+                            self.consider_water_face(
+                                map,
+                                eye,
+                                camera_contents,
+                                compact_plane,
+                                surface,
+                                &mut count,
+                                &mut nearest,
+                            );
+                        }
+                    }
+                }
+                face_index += 1;
+            }
+        }
+        self.water_portal_count = count as u8;
+        true
+    }
+
+    /// Whether `retain_cell_faces` keeps this face in the camera leaf's list,
+    /// the same test with the same records.
+    #[inline(always)]
+    fn retained_in_cell(
+        &self,
+        map: &ResidentMap,
+        leaf_index: usize,
+        plane: CompactPlane,
+        face: CookedDrawSurface,
+    ) -> bool {
+        #[cfg(feature = "renderer-cell-policy")]
+        {
+            let Some(bounds) = map.leaf_bounds(leaf_index) else {
+                return true;
             };
-            let Some(negative) = map.point_leaf_index(Vec3I32 {
-                x: center.x.wrapping_sub(step.x),
-                y: center.y.wrapping_sub(step.y),
-                z: center.z.wrapping_sub(step.z),
-            }) else {
-                continue;
-            };
-            let Some(positive_contents) = map.leaves().get(positive).map(|leaf| leaf.contents)
-            else {
-                continue;
-            };
-            let Some(negative_contents) = map.leaves().get(negative).map(|leaf| leaf.contents)
-            else {
-                continue;
-            };
-            let opposite = if positive_contents == camera_contents
-                && negative_contents != camera_contents
-            {
+            let texture = unsafe { map.render_textures().get_unchecked(face.material as usize) };
+            if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
+                return false;
+            }
+            // Both liquid policies keep every liquid face.
+            if texture.flags & TEXTURE_LIQUID != 0 {
+                return true;
+            }
+            !matches!(
+                leaf_invariant_facing(plane, u16::from(face.flags), bounds),
+                Some(false)
+            )
+        }
+        #[cfg(not(feature = "renderer-cell-policy"))]
+        {
+            let _ = (map, leaf_index, plane, face);
+            true
+        }
+    }
+
+    /// One PVS-resident face of [`Self::find_water_portal`], in ascending
+    /// face order: if it is a liquid face on a water/empty boundary, record
+    /// the leaf on its far side under the nearest such boundary plane.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn consider_water_face(
+        &mut self,
+        map: &ResidentMap,
+        eye: Vec3I32,
+        camera_contents: i16,
+        plane: CompactPlane,
+        face: CookedDrawSurface,
+        count: &mut usize,
+        nearest: &mut i32,
+    ) {
+        let Some(texture) = self.active_textures.get(face.material as usize) else {
+            return;
+        };
+        if texture.flags & TEXTURE_LIQUID == 0 {
+            return;
+        }
+        let face_plane = face.plane as i16;
+        let distance = compact_plane_distance(plane, eye).saturating_abs();
+        if *count != 0 && face_plane != self.water_portal_plane && distance >= *nearest {
+            return;
+        }
+
+        let center = water_face_sample(map, face);
+        // Axial cooked planes intentionally use `kind` as their hot
+        // normal; their retained normal components are not authoritative.
+        // Match `plane_distance` or both samples can remain in one leaf.
+        let mut step = Vec3I32 { x: 0, y: 0, z: 0 };
+        match plane.kind {
+            0 => step.x = 8 << 12,
+            1 => step.y = 8 << 12,
+            2 => step.z = 8 << 12,
+            _ => {
+                step.x = mul_q12_i32(8 << 12, i32::from(plane.normal.x));
+                step.y = mul_q12_i32(8 << 12, i32::from(plane.normal.y));
+                step.z = mul_q12_i32(8 << 12, i32::from(plane.normal.z));
+            }
+        }
+        let Some(positive) = map.point_leaf_index(Vec3I32 {
+            x: center.x.wrapping_add(step.x),
+            y: center.y.wrapping_add(step.y),
+            z: center.z.wrapping_add(step.z),
+        }) else {
+            return;
+        };
+        let Some(negative) = map.point_leaf_index(Vec3I32 {
+            x: center.x.wrapping_sub(step.x),
+            y: center.y.wrapping_sub(step.y),
+            z: center.z.wrapping_sub(step.z),
+        }) else {
+            return;
+        };
+        let Some(positive_contents) = map.leaves().get(positive).map(|leaf| leaf.contents) else {
+            return;
+        };
+        let Some(negative_contents) = map.leaves().get(negative).map(|leaf| leaf.contents) else {
+            return;
+        };
+        let opposite =
+            if positive_contents == camera_contents && negative_contents != camera_contents {
                 (negative, negative_contents)
             } else if negative_contents == camera_contents && positive_contents != camera_contents {
                 (positive, positive_contents)
             } else {
-                continue;
+                return;
             };
-            if !matches!(
-                (camera_contents, opposite.1),
-                (CONTENTS_EMPTY, CONTENTS_WATER) | (CONTENTS_WATER, CONTENTS_EMPTY)
-            ) || opposite.0 > u16::MAX as usize
-            {
-                continue;
-            }
-            if count == 0 || face_plane != self.water_portal_plane {
-                // A nearer boundary plane replaces the one collected so far.
-                self.water_portal_plane = face_plane;
-                nearest = distance;
-                count = 0;
-            }
-            let leaf = opposite.0 as u16;
-            if count == MAX_WATER_PORTAL_LEAVES || self.water_portal_leaves[..count].contains(&leaf) {
-                continue;
-            }
-            self.water_portal_leaves[count] = leaf;
-            count += 1;
+        if !matches!(
+            (camera_contents, opposite.1),
+            (CONTENTS_EMPTY, CONTENTS_WATER) | (CONTENTS_WATER, CONTENTS_EMPTY)
+        ) || opposite.0 > u16::MAX as usize
+        {
+            return;
         }
-        self.water_portal_count = count as u8;
+        if *count == 0 || face_plane != self.water_portal_plane {
+            // A nearer boundary plane replaces the one collected so far.
+            self.water_portal_plane = face_plane;
+            *nearest = distance;
+            *count = 0;
+        }
+        let leaf = opposite.0 as u16;
+        if *count == MAX_WATER_PORTAL_LEAVES || self.water_portal_leaves[..*count].contains(&leaf) {
+            return;
+        }
+        self.water_portal_leaves[*count] = leaf;
+        *count += 1;
     }
 
     #[optimize(size)]
