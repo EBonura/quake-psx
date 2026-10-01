@@ -1014,6 +1014,25 @@ const RESIDENT_BASE_PACKET_SLOTS: usize = 0;
 /// Most leaves on the far side of one water plane whose PVS rows are merged
 /// into the camera's. Leaves past the bound are left out, never allocated.
 const MAX_WATER_PORTAL_LEAVES: usize = 16;
+/// Direct-mapped liquid-face sample slots in [`Renderer`].
+const WATER_SAMPLE_SLOTS: usize = 256;
+
+/// [`Renderer::water_face_leaves`] for one liquid face: the leaf eight units
+/// in front of and behind it, `u16::MAX` for none.
+#[derive(Copy, Clone)]
+struct WaterSample {
+    first_corner: u16,
+    positive: u16,
+    negative: u16,
+}
+
+impl WaterSample {
+    const EMPTY: Self = Self {
+        first_corner: u16::MAX,
+        positive: u16::MAX,
+        negative: u16::MAX,
+    };
+}
 
 /// `R_AddDynamicLights`' own term, `rad - dist`, in light bytes.
 ///
@@ -1158,6 +1177,11 @@ pub struct Renderer {
     water_portal_plane: i16,
     water_portal_count: u8,
     water_portal_leaves: [u16; MAX_WATER_PORTAL_LEAVES],
+    /// The leaves either side of a liquid face, keyed by its first corner and
+    /// direct-mapped. They depend only on the map, and every leaf change in
+    /// sight of water asked the BSP for the same pairs again.
+    water_samples: [WaterSample; WATER_SAMPLE_SLOTS],
+    water_sample_generation: Option<u32>,
     #[cfg(feature = "renderer-selection-cache")]
     cached_frame_selection: Option<(Camera, Option<(u32, usize, u16)>, i16)>,
 
@@ -1211,6 +1235,8 @@ impl Renderer {
             water_portal_plane: -1,
             water_portal_count: 0,
             water_portal_leaves: [0; MAX_WATER_PORTAL_LEAVES],
+            water_samples: [WaterSample::EMPTY; WATER_SAMPLE_SLOTS],
+            water_sample_generation: None,
             #[cfg(feature = "renderer-selection-cache")]
             cached_frame_selection: None,
 
@@ -3887,18 +3913,11 @@ impl Renderer {
                 step.z = mul_q12_i32(8 << 12, i32::from(plane.normal.z));
             }
         }
-        let Some(positive) = map.point_leaf_index(Vec3I32 {
-            x: center.x.wrapping_add(step.x),
-            y: center.y.wrapping_add(step.y),
-            z: center.z.wrapping_add(step.z),
-        }) else {
+        let (positive, negative) = self.water_face_leaves(map, face, center, step);
+        let Some(positive) = positive else {
             return;
         };
-        let Some(negative) = map.point_leaf_index(Vec3I32 {
-            x: center.x.wrapping_sub(step.x),
-            y: center.y.wrapping_sub(step.y),
-            z: center.z.wrapping_sub(step.z),
-        }) else {
+        let Some(negative) = negative else {
             return;
         };
         let Some(positive_contents) = map.leaves().get(positive).map(|leaf| leaf.contents) else {
@@ -3934,6 +3953,54 @@ impl Renderer {
         }
         self.water_portal_leaves[*count] = leaf;
         *count += 1;
+    }
+
+    /// The leaves at `center + step` and `center - step` for a liquid face,
+    /// from [`Self::water_samples`] when this map already asked.
+    fn water_face_leaves(
+        &mut self,
+        map: &ResidentMap,
+        face: CookedDrawSurface,
+        center: Vec3I32,
+        step: Vec3I32,
+    ) -> (Option<usize>, Option<usize>) {
+        if self.water_sample_generation != Some(map.generation()) {
+            self.water_samples = [WaterSample::EMPTY; WATER_SAMPLE_SLOTS];
+            self.water_sample_generation = Some(map.generation());
+        }
+        let slot = usize::from(face.first_corner) % WATER_SAMPLE_SLOTS;
+        let cached = self.water_samples[slot];
+        let unpack = |leaf: u16| (leaf != u16::MAX).then_some(usize::from(leaf));
+        if cached.first_corner == face.first_corner && face.first_corner != u16::MAX {
+            return (unpack(cached.positive), unpack(cached.negative));
+        }
+        let positive = map.point_leaf_index(Vec3I32 {
+            x: center.x.wrapping_add(step.x),
+            y: center.y.wrapping_add(step.y),
+            z: center.z.wrapping_add(step.z),
+        });
+        let negative = map.point_leaf_index(Vec3I32 {
+            x: center.x.wrapping_sub(step.x),
+            y: center.y.wrapping_sub(step.y),
+            z: center.z.wrapping_sub(step.z),
+        });
+        let pack = |leaf: Option<usize>| match leaf {
+            Some(leaf) if leaf < usize::from(u16::MAX) => Some(leaf as u16),
+            None => Some(u16::MAX),
+            Some(_) => None,
+        };
+        if let (Some(positive), Some(negative), true) = (
+            pack(positive),
+            pack(negative),
+            face.first_corner != u16::MAX,
+        ) {
+            self.water_samples[slot] = WaterSample {
+                first_corner: face.first_corner,
+                positive,
+                negative,
+            };
+        }
+        (positive, negative)
     }
 
     #[optimize(size)]
