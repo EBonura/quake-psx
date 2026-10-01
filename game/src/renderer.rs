@@ -724,6 +724,22 @@ struct VisibleFace {
 
 const _: [(); 36] = [(); core::mem::size_of::<VisibleFace>()];
 
+/// Loop state the world pass lends `Renderer::ordinary_world_faces`.
+#[derive(Copy, Clone)]
+struct WorldCursor {
+    next: *mut u32,
+    batch_vertex_count: usize,
+    batch_surface_count: usize,
+    batch_worst_words: usize,
+    visible_faces: u16,
+    packets: u32,
+    hardware_triangles: u32,
+    /// Material of the frame's layered sky, or [`NO_LAYERED_SKY`].
+    layered_sky_material: u32,
+}
+
+const NO_LAYERED_SKY: u32 = u32::MAX;
+
 /// The fields of a visible face's draw surface the world pass reads every
 /// frame, from `first_corner` on: two aligned words instead of five
 /// halfword and byte loads from RAM.
@@ -1761,7 +1777,55 @@ impl Renderer {
             let mut batch_surface_count = 0usize;
             let mut batch_worst_words = 0usize;
 
-            for frame_index in 0..self.frame_face_indices.len() {
+            let mut frame_faces = 0..self.frame_face_indices.len();
+            loop {
+                // Runs of ordinary faces (no sky, liquid, near clip or
+                // dynamic light) take the out-of-line loop below, which keeps
+                // its state in registers; the face it stops at, if any, takes
+                // the general path that follows, then the loop resumes.
+                #[cfg(not(feature = "renderer-census"))]
+                if self.frame_light.is_none() {
+                    let mut cursor = WorldCursor {
+                        next,
+                        batch_vertex_count,
+                        batch_surface_count,
+                        batch_worst_words,
+                        visible_faces: stats.visible_faces,
+                        packets: stats.packets,
+                        hardware_triangles: stats.hardware_triangles,
+                        // Once the sky is known the fast loop only counts
+                        // its faces (the general path asserts they agree).
+                        layered_sky_material: if layered_sky_texture.is_some() {
+                            0
+                        } else {
+                            NO_LAYERED_SKY
+                        },
+                    };
+                    frame_faces.start = unsafe {
+                        self.ordinary_world_faces(
+                            frame_faces.clone(),
+                            indexed,
+                            batch_vertices.as_mut_ptr().cast(),
+                            batch_surfaces.as_mut_ptr().cast(),
+                            end,
+                            &mut cursor,
+                        )
+                    };
+                    next = cursor.next;
+                    batch_vertex_count = cursor.batch_vertex_count;
+                    batch_surface_count = cursor.batch_surface_count;
+                    batch_worst_words = cursor.batch_worst_words;
+                    stats.visible_faces = cursor.visible_faces;
+                    stats.packets = cursor.packets;
+                    stats.hardware_triangles = cursor.hardware_triangles;
+                    if layered_sky_texture.is_none() && cursor.layered_sky_material != NO_LAYERED_SKY {
+                        layered_sky_texture =
+                            Some(self.active_textures[cursor.layered_sky_material as usize]);
+                    }
+                }
+                let Some(frame_index) = frame_faces.next() else {
+                    break;
+                };
                 // Copy before mutably borrowing `self` in the submission path.
                 let frame_entry = unsafe { *self.frame_face_indices.get_unchecked(frame_index) };
                 let visible_index = (frame_entry & FRAME_FACE_INDEX_MASK) as usize;
@@ -2960,6 +3024,149 @@ impl Renderer {
                 QuadTexturedMaterial::WORDS,
             );
         }
+    }
+
+    /// The world pass for ordinary faces, from `faces.start` until a face
+    /// that needs the general path in `draw_frame` (liquid, sky without the
+    /// layered sky, near clip), a packet arena too full for the face, or the
+    /// end. Returns the index of the first face it did not draw. Same work,
+    /// in the same order, as the general path does for these faces; out of
+    /// `draw_frame`'s frame and with the baked corner gather inline, its
+    /// loop state stays in registers instead of the RAM stack.
+    ///
+    /// # Safety
+    /// `batch_vertices` and `batch_surfaces` are the world pass's batch
+    /// storage, holding `cursor`'s counts; `end` bounds the packet arena.
+    #[inline(never)]
+    unsafe fn ordinary_world_faces(
+        &self,
+        faces: core::ops::Range<usize>,
+        indexed: IndexedVertices<'_>,
+        batch_vertices: *mut ClassicAffineVertex,
+        batch_surfaces: *mut ClassicAffineBatchSurface,
+        end: *mut u32,
+        cursor: &mut WorldCursor,
+    ) -> usize {
+        let WorldCursor {
+            mut next,
+            mut batch_vertex_count,
+            mut batch_surface_count,
+            batch_worst_words,
+            mut visible_faces,
+            mut packets,
+            mut hardware_triangles,
+            mut layered_sky_material,
+        } = *cursor;
+        // Every batched surface added (corners - 2) worst-case triangles,
+        // so the running total follows from the two counts.
+        debug_assert_eq!(
+            batch_worst_words,
+            (batch_vertex_count - 2 * batch_surface_count) * WORST_PACKET_WORDS_PER_TRIANGLE
+        );
+        let _ = batch_worst_words;
+        let entries = self.frame_face_indices.as_ptr();
+        let visible = self.visible_faces.as_ptr();
+        let textures = self.active_textures.as_ptr();
+        let clut = clut_texture();
+        let mut frame_index = faces.start;
+        while frame_index < faces.end {
+            let frame_entry = unsafe { *entries.add(frame_index) };
+            if frame_entry & NEAR_FACE_BIT != 0 {
+                break;
+            }
+            let face =
+                unsafe { hot_face(visible.add((frame_entry & FRAME_FACE_INDEX_MASK) as usize)) };
+            let texture = unsafe { textures.add(face.material as usize) };
+            let texture_flags = unsafe { (*texture).flags };
+            if texture_flags & TEXTURE_LAYERED_SKY != 0 {
+                if layered_sky_material == NO_LAYERED_SKY {
+                    layered_sky_material = u32::from(face.material);
+                }
+                visible_faces = visible_faces.saturating_add(1);
+                frame_index += 1;
+                continue;
+            }
+            if texture_flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 {
+                break;
+            }
+            let vertex_count = face.corner_count as usize;
+            let face_worst_words = (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
+            let batch_worst_words =
+                (batch_vertex_count - 2 * batch_surface_count) * WORST_PACKET_WORDS_PER_TRIANGLE;
+            if batch_vertex_count + vertex_count > BATCH_MAX_VERTICES
+                || batch_surface_count == BATCH_MAX_SURFACES
+                || !packet_capacity(next, end, batch_worst_words + face_worst_words)
+            {
+                let submitted = unsafe {
+                    flush_world_batch(
+                        batch_vertices,
+                        batch_vertex_count,
+                        batch_surfaces,
+                        batch_surface_count,
+                        next,
+                    )
+                };
+                next = submitted.next_packet;
+                packets = packets.wrapping_add(submitted.packets);
+                hardware_triangles = hardware_triangles.wrapping_add(submitted.hardware_triangles);
+                batch_vertex_count = 0;
+                batch_surface_count = 0;
+            }
+            if !packet_capacity(next, end, face_worst_words) {
+                // The general path repeats the (now empty) flush and stops
+                // the frame.
+                break;
+            }
+            let output = unsafe { batch_vertices.add(batch_vertex_count) };
+            let baked = u16::from(face.flags) & (FACE_BAKED_UV | FACE_BAKED_LIGHT)
+                == FACE_BAKED_UV | FACE_BAKED_LIGHT;
+            if baked && cfg!(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")) {
+                #[cfg(feature = "renderer-quake-baked-materialize")]
+                unsafe {
+                    materialize_quake_baked_inline(
+                        indexed
+                            .corners
+                            .as_ptr()
+                            .add(face.first_corner as usize)
+                            .cast::<ClassicAffineIndexedCorner>(),
+                        indexed.positions.as_ptr().cast::<ClassicAffinePosition>(),
+                        indexed.positions.len(),
+                        vertex_count,
+                        output,
+                    )
+                };
+            } else {
+                let vertices = unsafe { core::slice::from_raw_parts_mut(output, vertex_count) };
+                self.materialize_retained_face(indexed, face, unsafe { &*texture }, vertices);
+            }
+            frame_index += 1;
+            if vertex_count < 3 {
+                continue;
+            }
+            unsafe {
+                batch_surfaces.add(batch_surface_count).write(ClassicAffineBatchSurface {
+                    first_vertex: batch_vertex_count as u16,
+                    vertex_count: vertex_count as u16,
+                    tpage: (*texture).texture_page,
+                    clut,
+                })
+            };
+            batch_vertex_count += vertex_count;
+            batch_surface_count += 1;
+            visible_faces = visible_faces.saturating_add(1);
+        }
+        *cursor = WorldCursor {
+            next,
+            batch_vertex_count,
+            batch_surface_count,
+            batch_worst_words: (batch_vertex_count - 2 * batch_surface_count)
+                * WORST_PACKET_WORDS_PER_TRIANGLE,
+            visible_faces,
+            packets,
+            hardware_triangles,
+            layered_sky_material,
+        };
+        frame_index
     }
 
     fn materialize_surface(

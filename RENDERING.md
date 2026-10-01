@@ -1970,3 +1970,35 @@ is not the kernel's ceiling any more: making the whole kernel free
 (`PSOXIDE_LIMIT_FREE`) was worth 7.0% on the base build. What is left of the
 kernel is mostly the split-fan bodies (about 5 KB when a face splits twice) and
 the descriptor and prologue loads.
+
+## 2026-10-01: RAM loads in the world pass
+
+The RAM oracle (`PSOXIDE_LIMIT_ORACLES=ram`) on `177d738` puts main-RAM load
+stalls at the largest remaining ceiling: 33.895 -> 42.723 fps on the chain
+bench (+26%) and 43.206 -> 56.362 on the monster route (+30%). Every load
+costs six stall cycles whatever its width, so the count of loads is the cost.
+Whole chain run by function (RAM load stall cycles): draw_frame's face loop
+287M, materialize_surface 209M, submit_classic_alias_model 144M,
+update_gameplay 118M, the OT link pass in gpu_end_frame 89M (two loads a
+packet), trace_segment 51M. Inside the E1M1 window the world pass is a fifth
+of the stalls; collision, gameplay, alias models and the PVS passes share
+the rest.
+
+Two changes, packets unchanged (hashes at every gate poll, both routes):
+fewer, wider loads for the face record, texture and corner positions, then an
+out-of-line loop for ordinary faces (`ordinary_world_faces`) that keeps its
+state in registers, takes the layered sky and the baked corner gather inline,
+and sits, by Quake's linker script, next to the batch kernel and its leaves
+(3.8 KB together, so the two no longer evict each other between batches).
+
+| frozen frontend `dc04257d` | `177d738` | this pass |
+|---|---:|---:|
+| `e1m1-chain-bench` fps | 33.895 | 33.808 (layout band) |
+| `e1m1-monster-route-bench` fps | 43.206 | 44.851 (+3.8%) |
+| tape E1M1 / E1M2 (shipping disc) | 53.16 / 24.93 | 54.52 / 26.32 |
+| chain run RAM load stalls | 1,491.4M | 1,419.9M |
+| chain run work (no vblank spin, no CD) | 3,793M | 3,708M |
+
+Tried and dropped: splitting the fast loop into a pick pass and a gather
+pass (fewer live values on paper; LLVM still spilled them, and the larger
+body overflowed the 4 KB placement).

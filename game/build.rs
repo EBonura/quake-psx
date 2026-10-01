@@ -150,9 +150,24 @@ fn main() {
     );
     let quake_linker =
         PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("quake-psoxide.ld");
+    // The world pass alternates, batch after batch, between the ordinary
+    // face loop and the engine's batch kernel with its two packet leaves:
+    // 3.8 KB together, which fits the 4 KB direct-mapped I-cache only when
+    // the four sit side by side. Placed by the linker's default order they
+    // shared cache sets and refilled each other on every batch.
+    let text_marker = "        *(.text .text.*);";
+    assert!(
+        linker_source.contains(text_marker),
+        "PSoXide linker text rule changed; re-audit Quake's world-pass placement"
+    );
+    let world_pass = format!(
+        "        *(.text.*ordinary_world_faces*)\n        *(.text.*submit_quake_classic_affine_batch_budget*)\n        *(.text.*quake_kernel*leaf_quad_words*)\n        *(.text.*quake_kernel*leaf_tri_words*)\n{text_marker}"
+    );
     fs::write(
         &quake_linker,
-        linker_source.replacen(stack_marker, "STACK_RESERVE = 0xD000;", 1),
+        linker_source
+            .replacen(stack_marker, "STACK_RESERVE = 0xD000;", 1)
+            .replacen(text_marker, &world_pass, 1),
     )
     .unwrap_or_else(|error| panic!("write {}: {error}", quake_linker.display()));
 
