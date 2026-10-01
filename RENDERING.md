@@ -1938,3 +1938,35 @@ Closed in this pass:
   1,020 of the 1,024 bytes while they run. The next stack-load cost in
   Quake's own code is `update_gameplay` (43.6M, about half of it the mover
   loop), whose 5,384-byte frame does not fit either.
+
+## 2026-10-01: the batch kernel split for the I-cache
+
+`submit_quake_classic_affine_batch_budget` was one 17,964-byte function with
+every fan, lattice and subdivision path inlined. On the chain bench a call ran
+up to 5.7 KB of it and refilled about 3 KB (1,027 I-cache stall cycles a call),
+and the 18 KB body spilled its loop state to the RAM stack (1,133 RAM stall
+cycles a call). Engine `71ac91d0` keeps the per-call path (projection, surface
+rejection, face error level, unsplit quads and fans) in a 2,080-byte entry with
+two frameless GT3/GT4 leaves, and moves split fans (0.29 faces a call) and
+split quads (0.05) out of line. Packets are unchanged: a host test compares it
+with the generic batch on random batches, and the routes below match at every
+gate poll.
+
+Frozen frontend `dc04257d`, base `298b9b2`:
+
+| | base | split kernel |
+|---|---:|---:|
+| `e1m1-chain-bench` fps | 33.307 | 33.895 (+1.8%) |
+| `e1m1-monster-route-bench` fps | 42.511 | 43.206 (+1.6%) |
+| kernel instructions (chain run) | 538.8M | 558.8M |
+| kernel RAM stall cycles | 177.8M | 73.9M |
+| kernel I-cache stall cycles | 161.1M | 94.1M |
+| whole chain run, instructions + stalls | 4,357M | 4,213M |
+
+VRAM and display hashes are identical at `--stop-at-poll` 800, 1500, 2000,
+2600 and 3700 on both routes. The I-cache oracle (`PSOXIDE_LIMIT_ORACLES=icache`)
+still finds 12.3% (chain) and 11.8% (monster) in the whole frame, so the cache
+is not the kernel's ceiling any more: making the whole kernel free
+(`PSOXIDE_LIMIT_FREE`) was worth 7.0% on the base build. What is left of the
+kernel is mostly the split-fan bodies (about 5 KB when a face splits twice) and
+the descriptor and prologue loads.
