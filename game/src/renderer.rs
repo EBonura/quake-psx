@@ -3281,7 +3281,7 @@ impl Renderer {
             if entity.is_projectile() {
                 stats.pvs_projectile_entities = stats.pvs_projectile_entities.saturating_add(1);
             }
-            if !scene::aabb_outside_clip4(entity.clip_mins, entity.clip_maxs, &frustum, 0x0f) {
+            if !scene::is_aabb_outside_clip4(entity.clip_mins, entity.clip_maxs, &frustum, 0x0f) {
                 if self.visible_entity_indices.len() == self.visible_entity_indices.capacity() {
                     stats.packet_overflow_avoided = true;
                     break;
@@ -6036,7 +6036,7 @@ fn select_frame_faces_census(
             continue;
         }
 
-        if scene::aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f) {
+        if scene::is_aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f) {
             census.frustum_rejects = census.frustum_rejects.wrapping_add(1);
             continue;
         }
@@ -6103,7 +6103,7 @@ fn census_face_blocks_for(
                 maxs[axis] = maxs[axis].max(visible.bounds.maxs[axis]);
             }
         }
-        if !scene::aabb_outside_clip4(mins, maxs, frustum, 0x0f) {
+        if !scene::is_aabb_outside_clip4(mins, maxs, frustum, 0x0f) {
             continue;
         }
         census.rejected_groups = census.rejected_groups.wrapping_add(1);
@@ -6579,11 +6579,12 @@ fn select_frame_faces_blocked_in_place(
         let block = unsafe { visible_blocks.get_unchecked(block_index) };
         let end = (first + VISIBLE_FACE_BLOCK_SIZE).min(visible_faces.len());
 
-        let block_clip_flags = if scene::aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
-            -1
-        } else {
-            0x0f
-        };
+        let block_clip_flags =
+            if scene::is_aabb_outside_clip4(block.mins, block.maxs, frustum, 0x0f) {
+                -1
+            } else {
+                0x0f
+            };
         if block_clip_flags >= 0 {
             let mut visible_index = first;
             while visible_index < end {
@@ -6626,7 +6627,7 @@ fn select_frame_faces_blocked_in_place(
                             )
                         }
                     })
-                    && !scene::aabb_outside_clip4(
+                    && !scene::is_aabb_outside_clip4(
                         visible.bounds.mins,
                         visible.bounds.maxs,
                         frustum,

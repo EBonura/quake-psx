@@ -10,11 +10,11 @@
 use psx_font::{fonts::BASIC_8X16, FontAtlas};
 use psx_gpu::framebuf::FrameBuffer;
 use psx_pad::{button, poll_port1, ButtonState};
-use psx_vram::{Clut, TexDepth, Tpage};
+use psx_vram::{Clut, TextureDepth, TexturePage};
 
-const LOGO_TPAGE: Tpage = Tpage::new(896, 0, TexDepth::Bit4);
+const LOGO_TPAGE: TexturePage = TexturePage::new(896, 0, TextureDepth::Bit4);
 const LOGO_CLUT: Clut = Clut::new(768, 256);
-const FONT_TPAGE: Tpage = Tpage::new(320, 0, TexDepth::Bit4);
+const FONT_TPAGE: TexturePage = TexturePage::new(320, 0, TextureDepth::Bit4);
 const FONT_CLUT: Clut = Clut::new(320, 256);
 
 const FADE_IN: i32 = 32;
@@ -67,8 +67,8 @@ pub fn show(fb: &mut FrameBuffer) {
         psx_gpu::draw_quad_textured(
             [(112, 34), (208, 34), (112, 130), (208, 130)],
             [(0, 0), (128, 0), (0, 128), (128, 128)],
-            LOGO_CLUT.uv_clut_word(),
-            LOGO_TPAGE.uv_tpage_word(0),
+            LOGO_CLUT.uv_word(),
+            LOGO_TPAGE.uv_word(0),
             (level, level, level),
         );
         // Gradient text with the sweeping sheen.
@@ -97,7 +97,7 @@ pub fn show(fb: &mut FrameBuffer) {
             );
             x += font.text_width(glyph) as i16;
         }
-        psx_gpu::draw_sync();
+        psx_gpu::wait_idle();
         psx_rt::interrupts::wait_vblank();
         fb.swap();
         frame += 1;
@@ -105,7 +105,7 @@ pub fn show(fb: &mut FrameBuffer) {
     // Leave the display black rather than the last intro frame while the
     // graphics load.
     fb.clear(0, 0, 0);
-    psx_gpu::draw_sync();
+    psx_gpu::wait_idle();
     psx_rt::interrupts::wait_vblank();
     fb.swap();
 }

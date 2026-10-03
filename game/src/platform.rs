@@ -127,7 +127,7 @@ unsafe fn wait_for_pending_submission() {
         #[cfg(not(feature = "blocking-present"))]
         present_queue::wait_slot_empty();
         psx_gpu::submit_linked_list_wait();
-        psx_gpu::draw_sync();
+        psx_gpu::wait_idle();
     }
 }
 
@@ -334,7 +334,7 @@ quake_exception_handler:
             write_volatile(EXCEPTION_VECTOR, J_OPCODE | ((handler >> 2) & 0x03ff_ffff));
             write_volatile(EXCEPTION_VECTOR.add(1), 0);
         }
-        psx_rt::cache::flush_i_cache();
+        psx_rt::cache::flush_instruction_cache();
     }
 
     #[cfg(not(target_arch = "mips"))]
@@ -400,7 +400,7 @@ quake_exception_handler:
     fn release_stalled_slot() {
         let mask = psx_io::irq::mask();
         psx_io::irq::set_mask(0);
-        if slot_full() && !psx_gpu::draw_done() {
+        if slot_full() && !psx_gpu::is_draw_done() {
             if channel_busy() {
                 psx_gpu::submit_linked_list_wait();
             }
@@ -607,7 +607,7 @@ pub fn start_vblank_counter() {
 pub fn configure_quake_projection() {
     scene::set_screen_offset(160 << 16, 120 << 16);
     scene::set_projection_plane(160);
-    scene::set_avsz_weights(0x155, 0x100);
+    scene::set_average_z_weights(0x155, 0x100);
 }
 
 /// Apply one render frame's underwater projection. The offsets are pixels;
@@ -810,10 +810,10 @@ unsafe fn queue_frame() {
         // the stream in the blocking path's order.
         if swap {
             psx_gpu::submit_linked_list_wait();
-            psx_gpu::draw_sync();
-            psx_io::gpu::write_gp0(preamble.draw_area_top_left);
-            psx_io::gpu::write_gp0(preamble.draw_area_bottom_right);
-            psx_io::gpu::write_gp0(preamble.draw_offset);
+            psx_gpu::wait_idle();
+            psx_io::gpu::write_command(preamble.draw_area_top_left);
+            psx_io::gpu::write_command(preamble.draw_area_bottom_right);
+            psx_io::gpu::write_command(preamble.draw_offset);
             head = addr_of!(preamble.clear_tag);
         }
         unsafe { flush_deferred_vram_uploads() };
@@ -875,7 +875,7 @@ unsafe fn present_blocking() {
         // SAFETY: the build buffer's table and the screen commands it links
         // stay untouched until wait_for_pending_submission has waited this
         // walk out; GPU_SUBMISSION_PENDING records that it is in flight.
-        psx_gpu::submit_linked_list_raw_async(ot.submit_head());
+        psx_gpu::submit_linked_list_async_raw(ot.submit_head());
     }
     unsafe {
         GPU_SUBMISSION_PENDING = true;
@@ -956,7 +956,7 @@ pub fn upload_vram(rect: VramRect, bytes: &[u8]) -> Result<(), VramUploadError> 
     }
     unsafe { wait_for_pending_submission() };
     psx_vram::upload_bytes(rect, bytes);
-    psx_gpu::draw_sync();
+    psx_gpu::wait_idle();
     Ok(())
 }
 
@@ -1102,7 +1102,7 @@ pub enum StorageError {
 
 /// Last CD failure snapshot for the on-screen loading error.
 pub fn storage_diag() -> u32 {
-    unsafe { (&*addr_of!(READER)).diag() }
+    unsafe { (&*addr_of!(READER)).diagnostics() }
 }
 
 #[optimize(size)]
