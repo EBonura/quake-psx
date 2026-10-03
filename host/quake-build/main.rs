@@ -4162,8 +4162,13 @@ fn prepare_guest_stage_at(
     })
 }
 
+/// The canonical stage, or `QUAKE_PSX_GUEST_STAGE_ROOT` for a checkout that
+/// must not share it (two clones building different SDKs side by side).
 fn prepare_guest_stage(root: &Path, recipe: &GuestRecipe) -> Result<PreparedGuestStage> {
-    prepare_guest_stage_at(root, recipe, Path::new(GUEST_STAGE_ROOT))
+    let stage_root = env::var_os("QUAKE_PSX_GUEST_STAGE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(GUEST_STAGE_ROOT));
+    prepare_guest_stage_at(root, recipe, &stage_root)
 }
 
 /// Delete the guest's linked executables (the uplifted one and every feature
