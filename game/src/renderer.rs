@@ -3816,7 +3816,7 @@ impl Renderer {
     #[inline(never)]
     fn prepare_visibility(&mut self, map: &ResidentMap, camera: Camera, water_alpha: bool) -> bool {
         // SAFETY: nothing is live in the scratchpad (see RendererStack), and
-        // stack_guard.py proves the call tree fits after the link.
+        // The SDK's stack-guard proves the call tree fits after the link.
         #[cfg(feature = "renderer-scratchpad-stack")]
         return unsafe {
             RendererStack::run(|| self.prepare_visibility_in_place(map, camera, water_alpha))
@@ -5594,7 +5594,7 @@ unsafe fn submit_view_ray_sky_background(
         )
     };
     // SAFETY: the sky is submitted after the last batch (see RendererStack),
-    // and stack_guard.py proves the call tree fits after the link.
+    // and the SDK's stack-guard proves the call tree fits after the link.
     #[cfg(feature = "renderer-scratchpad-stack")]
     return unsafe { RendererStack::run(submit) };
     #[cfg(not(feature = "renderer-scratchpad-stack"))]
@@ -5827,7 +5827,7 @@ const _: () = assert!(core::mem::size_of::<BatchVertexStorage>() <= psx_engine::
 /// these calls. Their loops keep more live values than there are
 /// callee-saved registers (selection spills eight loop-invariant frustum
 /// selectors), and a spill reload from DRAM stalls about six cycles where
-/// the scratchpad answers in one. `tools/stack_guard.py` proves the linked
+/// the scratchpad answers in one. The SDK's `stack-guard` proves the linked
 /// call trees fit after every link.
 #[cfg(feature = "renderer-scratchpad-stack")]
 type RendererStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;
@@ -6540,7 +6540,7 @@ fn select_frame_faces_blocked(
         )
     };
     // SAFETY: nothing is live in the scratchpad (see RendererStack), and
-    // stack_guard.py proves the call tree fits after the link.
+    // The SDK's stack-guard proves the call tree fits after the link.
     #[cfg(feature = "renderer-scratchpad-stack")]
     unsafe {
         RendererStack::run(select)

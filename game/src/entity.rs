@@ -9024,7 +9024,7 @@ fn dynamic_body(entity: &RenderEntity) -> Option<Body> {
 /// about six cycles where the scratchpad answers in one. The simulation owns
 /// the scratchpad while it runs (the renderer's batch and liquid users live
 /// only inside `draw_frame`, which never traces), and the caller's
-/// `TraceScratch` stays in its own RAM frame. `tools/stack_guard.py` proves
+/// `TraceScratch` stays in its own RAM frame. The SDK's `stack-guard` proves
 /// the linked call tree fits after every link.
 #[cfg(feature = "collision-scratchpad-stack")]
 type CollisionStack = psx_rt::scratchpad::ScratchpadStack<0, { psx_rt::scratchpad::SIZE }>;

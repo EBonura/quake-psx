@@ -28,9 +28,9 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Editor revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "71ac91d082837083c2cf65cdb4f60e8d2eb4c774";
+const PSOXIDE_REV: &str = "3fd4ca112031fd4c68def44b335223a10d2d347f";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "690ad5f35abea5d0fd32c333b13d8e0c530f1b8c";
+const PSOXIDE_SDK_REV: &str = "1855cd21b06bf6c009bbf6e6812f1174eb6697b3";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -2990,12 +2990,12 @@ fn hydrate_psoxide(
             {
                 return Err("component lock and build-driver source pins disagree".into());
             }
-            run(Command::new("python3")
-                .arg(root.join("tools/bootstrap-components.py"))
-                .arg("--root")
-                .arg(&destination)
-                .arg("--lock")
-                .arg(&lock))?;
+            psoxide_link::components::materialize(
+                &destination,
+                &std::collections::BTreeMap::new(),
+                false,
+                Some(&lock),
+            )?;
             let rev = PSOXIDE_REV.to_string();
             let source = PsoxideSource::Pinned { rev };
             write_hydration_stamp(&destination, &source)?;
@@ -4412,15 +4412,19 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         // jump table is proven and bounded to its function.
         // The stage carries only the SDK link closure; the tool lives in
         // the hydrated checkout.
-        let patcher = root.join(".psoxide/tools/hazard_patch.py");
-        let mut patch = Command::new("python3");
-        patch.arg(&patcher).arg(&staged_exe).arg("--map").arg(&map);
-        run(&mut patch)?;
+        run_hazard_tool(
+            root,
+            "hazard-patch",
+            &[staged_exe.as_os_str(), "--map".as_ref(), map.as_os_str()],
+        )?;
     }
     // Prove every psx-rt scratchpad stack call tree fits its region (and,
     // in an image without one, that none is linked).
-    let guard = root.join(".psoxide/tools/stack_guard.py");
-    run(Command::new("python3").arg(&guard).arg(&staged_exe).arg(&map))?;
+    run_hazard_tool(
+        root,
+        "stack-guard",
+        &[staged_exe.as_os_str(), map.as_os_str()],
+    )?;
     if let Some(requested) = GUEST_LINK_MAP.get() {
         fs::copy(&map, requested)?;
     }
@@ -4630,13 +4634,12 @@ fn verify_component_inputs(root: &Path, local: Option<&Path>) -> Result<()> {
             return Err(format!("PSoXide {name} component differs from the game lock").into());
         }
     }
-    run(Command::new("python3")
-        .arg(root.join("tools/bootstrap-components.py"))
-        .arg("--root")
-        .arg(root.join(".psoxide"))
-        .arg("--lock")
-        .arg(lock)
-        .arg("--check"))?;
+    psoxide_link::components::materialize(
+        &root.join(".psoxide"),
+        &std::collections::BTreeMap::new(),
+        true,
+        Some(&lock),
+    )?;
     Ok(())
 }
 
@@ -8937,6 +8940,20 @@ fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
+/// Run one of the SDK's post-link checks (`tools/psoxide-hazard`: `hazard-patch`,
+/// `hazard-scan`, `stack-guard`), built from the hydrated checkout against its
+/// imported lockfile.
+fn run_hazard_tool(root: &Path, bin: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
+    let mut command = Command::new(require_tool(&["cargo"])?);
+    command
+        .current_dir(root)
+        .args(["run", "--quiet", "--release", "--locked", "--manifest-path"])
+        .arg(root.join(".psoxide/tools/psoxide-hazard/Cargo.toml"))
+        .args(["--bin", bin, "--"])
+        .args(args);
+    run(&mut command)
+}
+
 fn output(command: &mut Command) -> Result<Output> {
     print_command(command);
     let result = command.output()?;
@@ -10216,15 +10233,9 @@ mod source_contract_tests {
     fn component_receipt_rejects_changed_imports() {
         let root = env::temp_dir().join(format!("quake-components-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("tools")).unwrap();
         fs::create_dir_all(root.join(".psoxide/sdk")).unwrap();
         let lock = include_str!("../../components.lock.json");
         fs::write(root.join("components.lock.json"), lock).unwrap();
-        fs::write(
-            root.join("tools/bootstrap-components.py"),
-            include_str!("../../tools/bootstrap-components.py"),
-        )
-        .unwrap();
         let input = root.join(".psoxide/sdk/psoxide.ld");
         fs::write(&input, "SECTIONS {}\n").unwrap();
         let receipt = serde_json::json!({

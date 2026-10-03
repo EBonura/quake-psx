@@ -121,12 +121,12 @@ renderer-scratchpad-liquid-phase = []
 renderer-liquid-half-rate = []
 # Run the camera PVS pass and frame-face selection with their frames on the
 # CPU scratchpad (psx-rt ScratchpadStack), so their spills load in one cycle.
-# Nothing else is live in the scratchpad then; tools/stack_guard.py proves
+# Nothing else is live in the scratchpad then; the SDK's stack-guard proves
 # the call trees fit after every link.
 renderer-scratchpad-stack = []
 # Run every scene collision trace (world and brush-model hull walks) with its
 # frames on the CPU scratchpad (psx-rt ScratchpadStack). The simulation owns
-# the scratchpad while it runs; tools/stack_guard.py proves the tree fits.
+# the scratchpad while it runs; the SDK's stack-guard proves the tree fits.
 collision-scratchpad-stack = []
 # Run the per-tick pickup scan the same way.
 gameplay-scratchpad-stack = []
