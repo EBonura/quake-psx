@@ -125,87 +125,45 @@ unsafe fn framebuffer() -> &'static mut FrameBuffer {
 unsafe fn wait_for_pending_submission() {
     if unsafe { GPU_SUBMISSION_PENDING } {
         #[cfg(not(feature = "blocking-present"))]
-        present_queue::wait_slot_empty();
+        psx_rt::present::wait_slot_empty();
         psx_gpu::submit_linked_list_wait();
         psx_gpu::wait_idle();
     }
 }
 
-/// Non-blocking present, the default (`blocking-present` selects the old
-/// path; `hardware-performance` implies it, since its cadence probe times
-/// the blocking wait).
-///
-/// The blocking path in [`gpu_end_frame`] serialises "previous raster done,
-/// vblank edge, flip, kick" on the CPU, so the CPU idles until the edge even
-/// when the next frame could already be building. Here the finished frame's
-/// chain goes into a one-entry slot and the CPU returns at once; the VBlank
-/// handler below applies the flip to the previous frame and kicks the queued
-/// chain on the first edge where the previous chain's closing GP0(1Fh) has
-/// run (GPUSTAT bit 24) and DMA channel 2 is idle, so a flip lands only on a
-/// blank edge and only once that frame is fully drawn. This is psx-rt's
-/// present protocol (`psx_gpu::draw_done`): every queued chain ends on
-/// [`psx_gpu::DRAW_DONE_NODE`], the handler acknowledges the flag with
-/// GP1(02h) after the flip and before the kick, and start-up raises it once
-/// through the port so the first frame's edge finds it set. GPUSTAT bit 28 is
-/// not a drawing-complete test: on silicon it rises when the walk has pushed
-/// its last packet, about one large primitive before the drawing ends
-/// (hardware-tests v1.24 cases 219-226).
-///
-/// The new back buffer's draw area, offset, draw mode and clear travel as the
-/// chain's first packets, so the handler writes only GP1(05h), GP1(02h) and
-/// the channel 2 kick. The CPU waits only when it is a whole frame ahead (the
-/// slot is still full), before rebuilding an arena whose walk has not
-/// finished, and before immediate GP0 image loads, which need the previous
-/// frame off the GPU. The main thread touches GP0/GP1/DMA only while the slot
-/// is empty, and never sends GP0(1Fh) through the port while channel 2 walks.
-///
-/// Both waits are bounded: a frame whose chain wedges or loses its GP0(1Fh)
-/// would otherwise hold the slot forever. After [`STALL_VBLANKS`] edges the
-/// CPU stops the walk, as `psx_gpu::submit_linked_list_wait` does, and raises
-/// the flag itself (counted in `QUAKE_PRESENT_RECOVERIES`).
-///
-/// psx-rt's handler, which this one jumps into, resumes after a GTE command
-/// the IRQ landed on (psx-rt 8055e87f6), so an edge taken on RTPS does not
-/// run it twice. A GTE command in a branch delay slot is still exposed;
-/// the SDK's `hazard-scan` reports any.
-#[cfg(any(not(feature = "blocking-present"), feature = "irq-epc-probe"))]
-pub(crate) mod present_queue {
-    use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
+// Non-blocking present, the default (`blocking-present` selects the old
+// path; `hardware-performance` implies it, since its cadence probe times
+// the blocking wait).
+//
+// The blocking path in [`gpu_end_frame`] serialises "previous raster done,
+// vblank edge, flip, kick" on the CPU, so the CPU idles until the edge even
+// when the next frame could already be building. Here the finished frame's
+// chain goes to psx-rt's present queue (`psx_rt::present`, this game's
+// queue moved into the SDK) and the CPU returns at once: psx-rt's VBlank
+// handler flips to the previous frame and kicks the queued chain on the
+// first edge where the previous chain's closing GP0(1Fh) has run and DMA
+// channel 2 is idle. Every queued chain ends on [`psx_gpu::DRAW_DONE_NODE`].
+//
+// The new back buffer's draw area, offset, draw mode and clear travel as the
+// chain's first packets, so the handler writes only GP1(05h), GP1(02h) and
+// the channel 2 kick. The CPU waits only when it is a whole frame ahead (the
+// slot is still full), before rebuilding an arena whose walk has not
+// finished, and before direct GP0/GP1 or GPU DMA access, which psx-rt's
+// direct-access guard turns into a wait for the queue to drain.
 
-    /// Chain head the handler kicks at the next ready edge; 0 = empty. The
-    /// handler owns the slot (and the GPU) while this is non-zero.
-    #[no_mangle]
-    pub static mut QUAKE_PRESENT_HEAD: u32 = 0;
-    /// GP1(05h) word applied just before the kick; 0 = no flip.
-    #[no_mangle]
-    pub static mut QUAKE_PRESENT_DISPLAY: u32 = 0;
-    /// Edges on which a queued frame found the previous one undrawn or
-    /// channel 2 busy.
-    #[no_mangle]
-    pub static mut QUAKE_PRESENT_SKIPPED: u32 = 0;
-    /// Frames the handler has kicked.
-    #[no_mangle]
-    pub static mut QUAKE_PRESENT_KICKS: u32 = 0;
-    /// Times the CPU gave up on a stalled chain (see [`STALL_VBLANKS`]).
-    #[no_mangle]
-    pub static mut QUAKE_PRESENT_RECOVERIES: u32 = 0;
+/// With `irq-epc-probe`, a handler that records each interrupt's EPC runs
+/// ahead of psx-rt's.
+#[cfg(feature = "irq-epc-probe")]
+pub(crate) mod irq_epc_probe {
+    use core::ptr::write_volatile;
 
-    #[cfg(feature = "irq-epc-probe")]
     #[no_mangle]
     pub static mut QUAKE_IRQ_EPC: [u32; 1024] = [0; 1024];
-    #[cfg(feature = "irq-epc-probe")]
     #[no_mangle]
     pub static mut QUAKE_IRQ_EPC_COUNT: u32 = 0;
 
-    const PRESENT: u32 = cfg!(not(feature = "blocking-present")) as u32;
-    const PROBE: u32 = cfg!(feature = "irq-epc-probe") as u32;
-
-    /// Edges a queued frame may wait before the CPU treats the chain ahead
-    /// of it as stalled. A Quake frame's GPU work is well under one field.
-    pub const STALL_VBLANKS: u32 = 8;
-
-    // Runs ahead of psx-rt's handler, which still counts the VBlank, applies
-    // its own GP1 queue, acknowledges the IRQ and returns. Only $k0/$k1.
+    // Runs ahead of psx-rt's handler, which counts the VBlank, kicks the
+    // present queue, acknowledges the IRQ and returns. Only $k0/$k1.
     #[cfg(target_arch = "mips")]
     core::arch::global_asm!(
         r#"
@@ -221,7 +179,6 @@ quake_exception_handler:
     andi  $27, $27, 0x0001
     beqz  $27, 9f
     nop
-.if {probe}
     lui   $26, %hi(QUAKE_IRQ_EPC_COUNT)
     lw    $27, %lo(QUAKE_IRQ_EPC_COUNT)($26)
     nop
@@ -236,87 +193,19 @@ quake_exception_handler:
     mfc0  $27, $14
     nop
     sw    $27, 0($26)
-.endif
-.if {present}
-    lui   $26, %hi(QUAKE_PRESENT_HEAD)
-    lw    $27, %lo(QUAKE_PRESENT_HEAD)($26)
-    nop
-    beqz  $27, 9f
-    nop
-    # The previous chain's closing GP0(1Fh) has run: GPUSTAT bit 24.
-    lui   $26, 0x1f80
-    lw    $27, 0x1814($26)
-    nop
-    srl   $27, $27, 24
-    andi  $27, $27, 1
-    beqz  $27, 8f
-    nop
-    lw    $27, 0x10a8($26)
-    nop
-    srl   $27, $27, 24
-    andi  $27, $27, 1
-    bnez  $27, 8f
-    nop
-    lui   $27, %hi(QUAKE_PRESENT_DISPLAY)
-    lw    $27, %lo(QUAKE_PRESENT_DISPLAY)($27)
-    nop
-    beqz  $27, 7f
-    nop
-    sw    $27, 0x1814($26)
-7:
-    # GP1(02h): acknowledge the flag after the flip, before the kick whose
-    # own GP0(1Fh) raises it again.
-    lui   $27, 0x0200
-    sw    $27, 0x1814($26)
-    lui   $27, 0x0400
-    ori   $27, $27, 0x0002
-    sw    $27, 0x1814($26)
-    lw    $27, 0x10f0($26)
-    nop
-    ori   $27, $27, 0x0800
-    sw    $27, 0x10f0($26)
-    lui   $27, %hi(QUAKE_PRESENT_HEAD)
-    lw    $27, %lo(QUAKE_PRESENT_HEAD)($27)
-    nop
-    sw    $27, 0x10a0($26)
-    sw    $zero, 0x10a4($26)
-    lui   $27, 0x0100
-    ori   $27, $27, 0x0401
-    sw    $27, 0x10a8($26)
-    lui   $26, %hi(QUAKE_PRESENT_HEAD)
-    sw    $zero, %lo(QUAKE_PRESENT_HEAD)($26)
-    lui   $26, %hi(QUAKE_PRESENT_KICKS)
-    lw    $27, %lo(QUAKE_PRESENT_KICKS)($26)
-    nop
-    addiu $27, $27, 1
-    b     9f
-    sw    $27, %lo(QUAKE_PRESENT_KICKS)($26)
-8:
-    lui   $26, %hi(QUAKE_PRESENT_SKIPPED)
-    lw    $27, %lo(QUAKE_PRESENT_SKIPPED)($26)
-    nop
-    addiu $27, $27, 1
-    sw    $27, %lo(QUAKE_PRESENT_SKIPPED)($26)
-.endif
 9:
     j     __psx_rt_exception_handler
     nop
     .set reorder
 "#,
-        probe = const PROBE,
-        present = const PRESENT,
     );
 
     /// Point the exception vector at the handler above, after psx-rt has
-    /// installed and enabled its own, and raise the draw-done flag once so
-    /// the first queued frame's edge finds it set.
+    /// installed and enabled its own.
     #[cfg(target_arch = "mips")]
     pub fn install() {
         const EXCEPTION_VECTOR: *mut u32 = 0x8000_0080 as *mut u32;
         const J_OPCODE: u32 = 0x0800_0000;
-        // Nothing is queued and channel 2 is idle during start-up.
-        #[cfg(not(feature = "blocking-present"))]
-        psx_gpu::signal_draw_done();
         unsafe {
             let handler: u32;
             core::arch::asm!(
@@ -339,97 +228,6 @@ quake_exception_handler:
 
     #[cfg(not(target_arch = "mips"))]
     pub fn install() {}
-
-    #[inline]
-    pub fn slot_full() -> bool {
-        unsafe { read_volatile(addr_of!(QUAKE_PRESENT_HEAD)) != 0 }
-    }
-
-    const CHCR2: *const u32 = 0x1f80_10a8 as *const u32;
-
-    #[inline]
-    fn channel_busy() -> bool {
-        #[cfg(target_arch = "mips")]
-        return unsafe { read_volatile(CHCR2) } & (1 << 24) != 0;
-        #[cfg(not(target_arch = "mips"))]
-        false
-    }
-
-    /// Block until the handler has kicked the queued frame. Only spins when
-    /// the CPU is a whole frame ahead of presentation. Not inlined, so a
-    /// profile can tell the spin from work.
-    #[inline(never)]
-    pub fn wait_slot_empty() {
-        let start = psx_rt::interrupts::vblank_count();
-        while slot_full() {
-            if psx_rt::interrupts::vblank_count().wrapping_sub(start) >= STALL_VBLANKS {
-                release_stalled_slot();
-            }
-        }
-    }
-
-    /// Wait until the arena the next frame is about to rebuild is no longer
-    /// being walked. That arena belongs to the frame before the most recently
-    /// published one: once the published frame has been kicked (slot empty)
-    /// the handler saw that frame's GP0(1Fh), so its walk had ended, and while
-    /// it is still queued the only walk that can be running is the older
-    /// frame's.
-    #[inline(never)]
-    pub fn wait_arena_free() {
-        let start = psx_rt::interrupts::vblank_count();
-        while slot_full() && channel_busy() {
-            if psx_rt::interrupts::vblank_count().wrapping_sub(start) >= STALL_VBLANKS {
-                release_stalled_slot();
-            }
-        }
-        // Keep the arena's rebuild stores after the completion read.
-        #[cfg(target_arch = "mips")]
-        unsafe {
-            core::arch::asm!("", options(nostack, preserves_flags));
-        }
-    }
-
-    /// A queued frame has waited [`STALL_VBLANKS`] edges for the chain ahead
-    /// of it: that chain wedged, or its GP0(1Fh) never ran. With the VBlank
-    /// IRQ masked (so the handler cannot kick in between), stop a walk still
-    /// running the way `submit_linked_list_wait` recovers, then raise the flag
-    /// through the port, now that channel 2 is idle, so the next edge kicks
-    /// the queued frame.
-    #[cold]
-    #[inline(never)]
-    fn release_stalled_slot() {
-        let mask = psx_io::irq::mask();
-        psx_io::irq::set_mask(0);
-        if slot_full() && !psx_gpu::is_draw_done() {
-            if channel_busy() {
-                psx_gpu::submit_linked_list_wait();
-            }
-            psx_gpu::signal_draw_done();
-            unsafe {
-                write_volatile(
-                    addr_of_mut!(QUAKE_PRESENT_RECOVERIES),
-                    read_volatile(addr_of!(QUAKE_PRESENT_RECOVERIES)).wrapping_add(1),
-                );
-            }
-        }
-        psx_io::irq::set_mask(mask);
-    }
-
-    /// Hand one chain (and the flip that exposes the previous frame) to the
-    /// handler. The slot must be empty.
-    #[inline]
-    pub fn publish(head: *const u32, display: u32) {
-        #[cfg(target_arch = "mips")]
-        unsafe {
-            // Publish the packet and preamble stores before the handler can
-            // read the slot.
-            core::arch::asm!("", options(nostack, preserves_flags));
-            write_volatile(addr_of_mut!(QUAKE_PRESENT_DISPLAY), display);
-            write_volatile(addr_of_mut!(QUAKE_PRESENT_HEAD), head as u32);
-        }
-        #[cfg(not(target_arch = "mips"))]
-        let _ = (head, display);
-    }
 }
 
 /// The new back buffer's GPU state, as the first two nodes of the chain the
@@ -557,8 +355,6 @@ pub fn gpu_init_before_interrupts() {
         BUILD_BUFFER = 0;
         GPU_SUBMISSION_PENDING = false;
         DEFERRED_UPLOAD_COUNT = 0;
-        #[cfg(not(feature = "blocking-present"))]
-        core::ptr::write_volatile(addr_of_mut!(present_queue::QUAKE_PRESENT_HEAD), 0);
         FRAME_BUFFER = FrameBuffer::new_strided(WIDTH, HEIGHT, BACK_BUFFER_Y);
         psx_gpu::set_draw_area(0, 0, WIDTH - 1, HEIGHT - 1);
         psx_gpu::set_draw_offset(0, 0);
@@ -598,8 +394,12 @@ pub fn boot_framebuffer() -> &'static mut FrameBuffer {
 #[optimize(size)]
 pub fn start_vblank_counter() {
     psx_rt::interrupts::install_vblank_counter();
-    #[cfg(any(not(feature = "blocking-present"), feature = "irq-epc-probe"))]
-    present_queue::install();
+    // Raises the draw-done flag once, so the first queued frame's edge finds
+    // it set, and registers the direct-access guard.
+    #[cfg(not(feature = "blocking-present"))]
+    psx_rt::present::start();
+    #[cfg(feature = "irq-epc-probe")]
+    irq_epc_probe::install();
 }
 
 /// Configure Quake's 320x240 projection convention.
@@ -693,7 +493,7 @@ pub fn gpu_begin_frame() {
         }
         BUILD_BUFFER ^= 1;
         #[cfg(not(feature = "blocking-present"))]
-        present_queue::wait_arena_free();
+        psx_rt::present::wait_arena_free();
         build_ot().clear();
         // Every queued chain ends on the shared GP0(1Fh) node, which raises
         // the draw-done flag the VBlank handler flips on.
@@ -769,7 +569,7 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
 unsafe fn queue_frame() {
     use psx_gpu::material::TextureMaterial;
 
-    present_queue::wait_slot_empty();
+    psx_rt::present::wait_slot_empty();
     let swap = unsafe { GPU_SUBMISSION_PENDING };
     let fb = unsafe { framebuffer() };
     // The flip exposes the previous frame, whose buffer is the current draw
@@ -828,7 +628,11 @@ unsafe fn queue_frame() {
             SCREEN_COMMAND_COUNT,
         );
     }
-    present_queue::publish(head, display);
+    // SAFETY: the slot is empty (wait_slot_empty above). The chain is this
+    // arena's preamble, ordering table and packets, ending on the shared
+    // GP0(1Fh) node; none of it is rebuilt before wait_arena_free says its
+    // walk has ended.
+    unsafe { psx_rt::present::publish_raw(head, display) };
     unsafe {
         GPU_SUBMISSION_PENDING = true;
     }
