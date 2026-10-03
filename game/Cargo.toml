@@ -141,10 +141,10 @@ renderer-gte-near-classification = ["renderer-block-frustum"]
 # Times the blocking present's waits, so it builds the blocking path.
 hardware-performance = ["blocking-present"]
 # The VBlank-driven present queue is the default: gpu_end_frame publishes the
-# finished frame's chain to a one-entry slot and returns, and the VBlank
-# handler flips and kicks it once the previous chain's GP0(1Fh) has run. This
-# feature selects the old blocking present instead (draw_sync, vblank edge,
-# flip, kick), for A/Bs. See platform.rs.
+# finished frame's chain to psx-rt's present queue (psx_rt::present) and
+# returns, and psx-rt's VBlank handler flips and kicks it once the previous
+# chain's GP0(1Fh) has run. This feature selects the old blocking present
+# instead (wait_idle, vblank edge, flip, kick), for A/Bs. See platform.rs.
 blocking-present = []
 # Diagnostic: record the interrupted PC of every VBlank IRQ in a 1,024-entry
 # ring (QUAKE_IRQ_EPC), to see what code the IRQ lands in.
@@ -155,7 +155,7 @@ hardware-regression = ["hardware-performance"]
 quake-formats = { path = "../crates/quake-formats" }
 quake-core = { path = "../crates/quake-core" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
-psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-256"] }
+psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-256", "present-queue"] }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
