@@ -86,6 +86,8 @@ cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- buil
 
 Set `QUAKE_PSX_FRONTEND` to the standalone PSoXide-emulator frontend executable
 for regression commands. The shipping provenance records all three components.
+`QUAKE_PSX_GUEST_STAGE_ROOT` moves the guest build stage from
+`/tmp/quake-psx-guest-v1`, for a checkout that must not share it.
 
 The output is written to `dist/`:
 
