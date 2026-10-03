@@ -167,7 +167,7 @@ unsafe fn wait_for_pending_submission() {
 /// psx-rt's handler, which this one jumps into, resumes after a GTE command
 /// the IRQ landed on (psx-rt 8055e87f6), so an edge taken on RTPS does not
 /// run it twice. A GTE command in a branch delay slot is still exposed;
-/// `hazard_scan.py` reports any.
+/// the SDK's `hazard-scan` reports any.
 #[cfg(any(not(feature = "blocking-present"), feature = "irq-epc-probe"))]
 pub(crate) mod present_queue {
     use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
@@ -872,9 +872,11 @@ unsafe fn present_blocking() {
             addr_of!(SCREEN_COMMANDS).cast::<usize>(),
             SCREEN_COMMAND_COUNT,
         );
+        // SAFETY: the build buffer's table and the screen commands it links
+        // stay untouched until wait_for_pending_submission has waited this
+        // walk out; GPU_SUBMISSION_PENDING records that it is in flight.
+        psx_gpu::submit_linked_list_raw_async(ot.submit_head());
     }
-
-    ot.submit_async();
     unsafe {
         GPU_SUBMISSION_PENDING = true;
     }
