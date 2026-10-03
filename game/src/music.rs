@@ -9,8 +9,7 @@
 //! Map loads temporarily take ownership of the drive through
 //! [`Music::suspend_for_load`] and [`Music::resume_after_load`].
 
-use psx_io::cdda::{CddaEndDetector, CddaStarter};
-use psx_io::cdrom;
+use psx_io::cd::audio::{EndDetector, PlaybackStarter};
 use quake_core::menu::{DEFAULT_MUSIC_VOLUME, MUSIC_TRACKS, VOLUME_STEPS};
 
 /// First CD-DA track on a mixed-mode disc: track 1 is the data track.
@@ -51,8 +50,8 @@ pub struct Music {
     probed: bool,
     /// Tick the current song was started on, for the now-playing banner.
     announced_at: Option<u32>,
-    starter: CddaStarter,
-    end: CddaEndDetector,
+    starter: PlaybackStarter,
+    end: EndDetector,
     next_poll: u32,
 }
 
@@ -66,8 +65,8 @@ impl Music {
             volume: DEFAULT_MUSIC_VOLUME,
             probed: false,
             announced_at: None,
-            starter: CddaStarter::new().with_spins(SPINS),
-            end: CddaEndDetector::new(IDLE_POLLS_TO_ADVANCE),
+            starter: PlaybackStarter::new().with_spins(SPINS),
+            end: EndDetector::new(IDLE_POLLS_TO_ADVANCE),
             next_poll: 0,
         }
     }
@@ -152,8 +151,8 @@ impl Music {
         if on {
             self.begin_track(tick);
         } else {
-            cdrom::try_pause(SPINS);
-            self.starter = CddaStarter::new().with_spins(SPINS);
+            psx_io::cd::try_pause(SPINS);
+            self.starter = PlaybackStarter::new().with_spins(SPINS);
         }
     }
 
@@ -161,7 +160,7 @@ impl Music {
     #[optimize(size)]
     #[inline(never)]
     fn begin_track(&mut self, tick: u32) {
-        self.starter = CddaStarter::new().with_spins(SPINS);
+        self.starter = PlaybackStarter::new().with_spins(SPINS);
         self.starter.begin(tick);
         self.end.rearm();
         self.next_poll = tick.wrapping_add(POLL_TICKS);
@@ -182,8 +181,8 @@ impl Music {
         if !self.available || !self.enabled {
             return;
         }
-        cdrom::try_pause_until_complete(SPINS);
-        self.starter = CddaStarter::new().with_spins(SPINS);
+        psx_io::cd::try_pause_until_complete(SPINS);
+        self.starter = PlaybackStarter::new().with_spins(SPINS);
         self.announced_at = None;
     }
 
@@ -230,9 +229,9 @@ impl Music {
             absolute.wrapping_sub(psx_io::disc_base::cdda_track_base()),
         );
 
-        if self.starter.started() && tick.wrapping_sub(self.next_poll) < u32::MAX / 2 {
+        if self.starter.has_started() && tick.wrapping_sub(self.next_poll) < u32::MAX / 2 {
             self.next_poll = tick.wrapping_add(POLL_TICKS);
-            let status = cdrom::try_get_stat(SPINS).and_then(|r| r.bytes().first().copied());
+            let status = psx_io::cd::try_status(SPINS).and_then(|r| r.bytes().first().copied());
             if self.end.poll(status) {
                 self.index = (self.index + 1) % TRACK_COUNT;
                 self.begin_track(tick);
@@ -247,12 +246,12 @@ impl Music {
 #[inline(never)]
 fn disc_has_menu_tracks() -> bool {
     // Response is [status, first BCD, last BCD].
-    let Some(response) = cdrom::try_command(GET_TN, &[], SPINS) else {
+    let Some(response) = psx_io::cd::try_command(GET_TN, &[], SPINS) else {
         return false;
     };
     let bytes = response.bytes();
     if bytes.len() < 3 {
         return false;
     }
-    cdrom::bcd_to_bin(bytes[2]) >= TRACKS_NEEDED
+    psx_io::cd::bcd_to_bin(bytes[2]) >= TRACKS_NEEDED
 }

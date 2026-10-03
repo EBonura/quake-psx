@@ -359,7 +359,7 @@ impl AudioBank {
 
     #[optimize(size)]
     fn reset_voices(&mut self) {
-        Voice::key_off(0x00ff_ffff);
+        Voice::release(0x00ff_ffff);
         self.player.silence_all();
         self.player = Player::new(DYNAMIC_VOICES, VIDEO_TICKS_HZ);
         self.channels = [0; DYNAMIC_VOICES.len()];
