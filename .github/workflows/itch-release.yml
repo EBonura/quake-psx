@@ -120,8 +120,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 tools/bootstrap-components.py \
-            --root .psoxide --lock components.lock.json
+          cargo run --locked --manifest-path psoxide-pin/Cargo.toml
 
       - name: Build the provenance-grade standalone disc
         shell: bash

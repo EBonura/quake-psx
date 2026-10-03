@@ -59,7 +59,7 @@ See [COVERAGE.md](COVERAGE.md) for the gameplay checklist and
 - `curl`, `unzip`, and `7z` or `7zz` for the shareware archive
 - Git and an authenticated GitHub CLI (`gh auth login`); release builds verify
   that the pinned PSoXide revision is reachable from its `main` branch
-- Python 3 and `mipsel-none-elf-objdump` for guest validation tools
+- Python 3 for the GPU and renderer analysis scripts in `tools/`
 
 Bootstrap the pinned SDK before compiling the builder. No sibling PSoXide
 checkout is required:
@@ -72,8 +72,8 @@ cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- buil
 ```
 
 `components.lock.json` pins the SDK, emulator support crates, and editor/engine
-sources independently. The SDK is `aa4afd28`, the emulator is `9eff8c8f`, and
-the editor is `71ac91d0`; the lock records their full immutable revisions.
+sources independently. The SDK is `1855cd21`, the emulator is `3d49e63c`, and
+the editor is `3fd4ca11`; the lock records their full immutable revisions.
 The bootstrap verifies imported file hashes before reuse. No external firmware
 is loaded by PSoXide.
 
