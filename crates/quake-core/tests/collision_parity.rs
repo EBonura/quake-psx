@@ -702,7 +702,10 @@ fn oracle_pins_quake_contents_classification() {
         (CONTENTS_WATER, false, false, false, true),
         (CONTENTS_SLIME, false, false, false, true),
         (CONTENTS_LAVA, false, false, false, true),
-        (CONTENTS_SKY, false, false, false, true),
+        // Sky is not a liquid. The original walker also raised in_water here;
+        // nothing in this port reads the flag, and the shared tracer now
+        // reserves it for water, slime and lava.
+        (CONTENTS_SKY, false, false, false, false),
     ];
 
     for (contents, all_solid, in_open, start_solid, in_water) in cases {

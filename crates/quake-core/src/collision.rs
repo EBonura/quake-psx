@@ -609,16 +609,20 @@ mod tests {
     #[test]
     fn a_poisoned_flag_byte_leaves_this_boundary_valid() {
         let mut shared = SharedTrace::default();
-        // SAFETY: the flag slots are the first four bytes of the `#[repr(C)]`
-        // shared trace and each is a `repr(transparent)` `u8`, so writing an
+        // SAFETY: each flag slot is a `repr(transparent)` `u8` at its
+        // `offset_of!` position in the `#[repr(C)]` shared trace, so writing an
         // arbitrary byte through a `*mut u8` produces a valid `SharedTrace`.
         // This is the corruption the boundary exists to absorb.
         unsafe {
             let base = core::ptr::from_mut(&mut shared).cast::<u8>();
-            base.write_volatile(0xe7);
-            base.add(1).write_volatile(0x00);
-            base.add(2).write_volatile(0x02);
-            base.add(3).write_volatile(0xff);
+            base.add(core::mem::offset_of!(SharedTrace, all_solid))
+                .write_volatile(0xe7);
+            base.add(core::mem::offset_of!(SharedTrace, start_solid))
+                .write_volatile(0x00);
+            base.add(core::mem::offset_of!(SharedTrace, in_open))
+                .write_volatile(0x02);
+            base.add(core::mem::offset_of!(SharedTrace, in_water))
+                .write_volatile(0xff);
         }
         // The bytes really are in the struct: the boundary is absorbing them,
         // not being handed a sanitized copy.
@@ -655,11 +659,12 @@ mod tests {
     fn every_flag_byte_crosses_this_boundary_as_a_valid_bool() {
         for byte in 0..=u8::MAX {
             let mut shared = SharedTrace::default();
-            // SAFETY: as above; the first byte is `all_solid`'s slot and every
-            // byte pattern is a valid value there.
+            // SAFETY: as above; every byte pattern is a valid value in
+            // `all_solid`'s slot.
             unsafe {
                 core::ptr::from_mut(&mut shared)
                     .cast::<u8>()
+                    .add(core::mem::offset_of!(SharedTrace, all_solid))
                     .write_volatile(byte);
             }
             let trace = trace_from_shared(shared);
