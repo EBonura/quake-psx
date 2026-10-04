@@ -42,6 +42,7 @@ dependencies = [
  "psx-font",
  "psx-gpu",
  "psx-gte",
+ "psx-hw",
  "psx-io",
  "psx-level",
  "psx-math",
@@ -51,6 +52,7 @@ dependencies = [
  "psx-sfx",
  "psx-spu",
  "psx-telemetry",
+ "psx-tick",
  "psx-vram",
 ]
 
@@ -116,6 +118,7 @@ version = "0.1.0"
 name = "psx-pack"
 version = "0.1.0"
 dependencies = [
+ "psx-hw",
  "psx-io",
 ]
 
@@ -165,6 +168,10 @@ dependencies = [
 
 [[package]]
 name = "psx-telemetry"
+version = "0.1.0"
+
+[[package]]
+name = "psx-tick"
 version = "0.1.0"
 
 [[package]]
