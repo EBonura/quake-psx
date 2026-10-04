@@ -48,6 +48,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     "rust-toolchain.toml",
     "game",
     "tools/visual-parity-cameras.json",
+    "crates/quake-affine",
     "crates/quake-core",
     "crates/quake-formats",
     ".psoxide/sdk/psoxide.ld",
@@ -10373,6 +10374,7 @@ mod provenance_tests {
     fn write_guest_recipe_fixture(root: &Path, hydration_source: &str) {
         for directory in [
             "game/src",
+            "crates/quake-affine/src",
             "crates/quake-core/src",
             "crates/quake-formats/src",
             ".psoxide/sdk",
@@ -10393,6 +10395,16 @@ mod provenance_tests {
         fs::write(
             root.join("tools/visual-parity-cameras.json"),
             b"{\"schema\":1,\"cameras\":[]}",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/quake-affine/Cargo.toml"),
+            b"[package]\nname='quake-affine'\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/quake-affine/src/lib.rs"),
+            b"pub const AFFINE: u8 = 1;\n",
         )
         .unwrap();
         fs::write(

@@ -6,29 +6,31 @@ use core::mem::MaybeUninit;
 use core::ptr::{self, addr_of, addr_of_mut};
 
 #[cfg(not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")))]
-use psx_engine::materialize_classic_affine_indexed_baked_vertices;
+use quake_affine::materialize_classic_affine_indexed_baked_vertices;
 #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
-use psx_engine::submit_classic_affine_batch;
+use quake_affine::submit_classic_affine_batch;
 
 use psx_engine::{
     attributed_clip::{
         clip_convex_plane_uninit, lerp_q12_i32_rounded, ratio_q12_i32, AttributedClipPlane,
         ClipTraversal,
     },
-    compose_classic_alias_transform, materialize_classic_affine_indexed_vertices,
-    submit_classic_affine_scoped_windowed_fan, submit_classic_alias_model,
-    submit_classic_alias_view_model, ClassicAffineBatchSurface, ClassicAffineIndexedCorner,
-    ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit, ClassicAffineVertex,
-    ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
+    compose_model_view_transform,
 };
 #[cfg(feature = "renderer-census")]
-use psx_engine::{
+use quake_affine::{
     census_classic_affine_projected_batch_topology,
     collect_classic_affine_projected_subdivision_requests, ClassicAffineSubdivisionRequest,
     ClassicAffineTopologyCensus,
 };
+use quake_affine::{
+    materialize_classic_affine_indexed_vertices, submit_classic_affine_scoped_windowed_fan,
+    submit_classic_alias_model, submit_classic_alias_view_model, ClassicAffineBatchSurface,
+    ClassicAffineIndexedCorner, ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit,
+    ClassicAffineVertex, ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
+};
 #[cfg(feature = "renderer-quake-specialized-kernel")]
-use psx_engine::{submit_quake_classic_affine_batch_budget, QUAKE_COARSE_ERROR_BUDGET_Q3};
+use quake_affine::{submit_quake_classic_affine_batch_budget, QUAKE_COARSE_ERROR_BUDGET_Q3};
 
 use psx_gpu::material::{BlendMode, TextureMaterial, TextureWindow};
 use psx_gpu::prim::{ClassicTriTextured, QuadTextured, QuadTexturedMaterial, RectFlat};
@@ -2567,7 +2569,7 @@ impl Renderer {
             let model_rotation = Mat3I16::rotate_z(yaw >> 4)
                 .mul(&Mat3I16::rotate_y(pitch >> 4))
                 .mul(&Mat3I16::rotate_x(roll));
-            let (rotation, translation) = compose_classic_alias_transform(
+            let (rotation, translation) = compose_model_view_transform(
                 view.rotation,
                 view.translation,
                 model_rotation,
@@ -3378,7 +3380,7 @@ impl Renderer {
             };
             let model_rotation = Mat3I16::rotate_z((yaw as u16) >> 4)
                 .mul(&Mat3I16::rotate_y((entity.angles.x as u16) >> 4));
-            let (rotation, translation) = compose_classic_alias_transform(
+            let (rotation, translation) = compose_model_view_transform(
                 view.rotation,
                 view.translation,
                 model_rotation,
@@ -3499,7 +3501,7 @@ impl Renderer {
             input.elapsed_ticks,
         );
         self.view_model_bob_phase = bob_phase;
-        let (rotation, translation) = compose_classic_alias_transform(
+        let (rotation, translation) = compose_model_view_transform(
             crate::platform::quake_coordinate_rotation(),
             GteVec3I32::ZERO,
             Mat3I16::IDENTITY,
@@ -3581,7 +3583,7 @@ impl Renderer {
             return next;
         };
         let indexed = map.indexed_vertices().expect("validated PSB4 vertices");
-        let (rotation, translation) = compose_classic_alias_transform(
+        let (rotation, translation) = compose_model_view_transform(
             view.rotation,
             view.translation,
             Mat3I16::IDENTITY,
@@ -5580,7 +5582,7 @@ unsafe fn submit_view_ray_sky_background(
     let samples = unsafe { cached_sky_samples(view.rotation.m, width) };
 
     let submit = || unsafe {
-        psx_bsp::sky::submit_layered_sky_samples_to_slot(
+        let sky = psx_bsp::sky::submit_layered_sky_samples_to_slot(
             texture.texture_page,
             clut_texture(),
             [texture.atlas.x, texture.atlas.y],
@@ -5591,7 +5593,12 @@ unsafe fn submit_view_ray_sky_background(
             background_scroll,
             SKY_OT_SLOT as u16,
             output,
-        )
+        );
+        ClassicAffineSubmit {
+            next_packet: sky.next_packet,
+            packets: sky.packets,
+            hardware_triangles: sky.hardware_triangles,
+        }
     };
     // SAFETY: the sky is submitted after the last batch (see RendererStack),
     // and the SDK's stack-guard proves the call tree fits after the link.

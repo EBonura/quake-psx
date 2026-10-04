@@ -1,0 +1,31 @@
+[package]
+name = "quake-affine"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Quake PSX's classic-affine world and alias-model packet writer"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Hydrated from the repository-level PSoXide pin, like quake-core's.
+psx-engine = { path = "../../.psoxide/engine/crates/psx-engine" }
+psx-gpu = { path = "../../.psoxide/sdk/crates/psx-gpu" }
+psx-gte = { path = "../../.psoxide/sdk/crates/psx-gte" }
+
+[features]
+default = []
+# Visual-exact CPU/GPU trade: after the conservative whole-face gate admits a
+# lattice, rely on the PS1 draw area instead of rejecting each child packet.
+classic-affine-gpu-lattice-clip = []
+# Broader visual-exact form: delegate every child GT3/GT4 rejection to the
+# draw area after the source surface survives its conservative admission gate.
+classic-affine-gpu-polygon-clip = ["classic-affine-gpu-lattice-clip"]
+# Monomorphize the ordinary batch submitter around Quake's one fixed profile
+# so depth/error policy and viewport constants are compile-time facts.
+classic-affine-quake-specialized-kernel = []
+# Error-bounded / quad-lattice fan tessellation (profile fields
+# `subdivide_error_px_q3` and `quad_lattice`). Without it those fields are
+# ignored.
+classic-affine-lattice = []

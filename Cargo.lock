@@ -180,6 +180,15 @@ name = "psxed-format"
 version = "0.1.0"
 
 [[package]]
+name = "quake-affine"
+version = "0.1.0"
+dependencies = [
+ "psx-engine",
+ "psx-gpu",
+ "psx-gte",
+]
+
+[[package]]
 name = "quake-core"
 version = "0.1.0"
 dependencies = [
@@ -217,6 +226,7 @@ dependencies = [
  "psx-telemetry",
  "psx-tick",
  "psx-vram",
+ "quake-affine",
  "quake-core",
  "quake-formats",
 ]
