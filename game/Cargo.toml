@@ -87,18 +87,18 @@ renderer-selection-decimate = []
 renderer-selection-drop-world = ["renderer-selection-decimate"]
 # Visual-exact CPU/GPU trade: retain conservative whole-face rejection, then
 # let the PS1 draw area clip individual lattice packets outside the viewport.
-renderer-gpu-lattice-clip = ["psx-engine/classic-affine-gpu-lattice-clip"]
+renderer-gpu-lattice-clip = ["quake-affine/classic-affine-gpu-lattice-clip"]
 # Broader form which also delegates level-zero GT3/GT4 clipping to the GPU.
-renderer-gpu-polygon-clip = ["psx-engine/classic-affine-gpu-polygon-clip"]
+renderer-gpu-polygon-clip = ["quake-affine/classic-affine-gpu-polygon-clip"]
 # Specialize the ordinary world kernel around QUAKE_REFERENCE rather than
 # carrying a runtime profile through every root and packet decision.
 renderer-quake-specialized-kernel = [
-    "psx-engine/classic-affine-quake-specialized-kernel",
+    "quake-affine/classic-affine-quake-specialized-kernel",
 ]
-# World faces split by their predicted affine warp (psx-engine
+# World faces split by their predicted affine warp (quake-affine
 # `classic-affine-lattice`, profile QUAKE_ERROR_BOUNDED: a 16-pixel budget)
 # instead of the fixed depth bands; wide faces split as quad fans.
-renderer-error-bounded-tessellation = ["psx-engine/classic-affine-lattice"]
+renderer-error-bounded-tessellation = ["quake-affine/classic-affine-lattice"]
 # Quake's dominant baked-corner gather as one fixed inline MIPS schedule.
 # Dynamic light-style and UV-offset faces retain the authoritative generic path.
 renderer-quake-baked-materialize = []
@@ -154,6 +154,7 @@ hardware-regression = ["hardware-performance"]
 [dependencies]
 quake-formats = { path = "../crates/quake-formats" }
 quake-core = { path = "../crates/quake-core" }
+quake-affine = { path = "../crates/quake-affine" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
 psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-256", "present-queue"] }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }

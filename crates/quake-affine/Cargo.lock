@@ -17,17 +17,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "psx-bsp"
-version = "0.1.0"
-dependencies = [
- "psx-engine",
- "psx-gpu",
- "psx-gte",
- "psx-math",
- "psx-pack",
-]
-
-[[package]]
 name = "psx-engine"
 version = "0.1.0"
 dependencies = [
@@ -108,14 +97,6 @@ name = "psx-math"
 version = "0.1.0"
 
 [[package]]
-name = "psx-pack"
-version = "0.1.0"
-dependencies = [
- "psx-hw",
- "psx-io",
-]
-
-[[package]]
 name = "psx-pad"
 version = "0.1.0"
 dependencies = [
@@ -123,10 +104,6 @@ dependencies = [
  "psx-io",
  "psx-math",
 ]
-
-[[package]]
-name = "psx-render-contract"
-version = "0.1.0"
 
 [[package]]
 name = "psx-rt"
@@ -186,47 +163,4 @@ dependencies = [
  "psx-engine",
  "psx-gpu",
  "psx-gte",
-]
-
-[[package]]
-name = "quake-core"
-version = "0.1.0"
-dependencies = [
- "psx-bsp",
- "psx-engine",
- "psx-gte",
- "psx-math",
- "quake-formats",
-]
-
-[[package]]
-name = "quake-formats"
-version = "0.1.0"
-dependencies = [
- "psx-bsp",
-]
-
-[[package]]
-name = "quake-psx"
-version = "0.1.0"
-dependencies = [
- "psx-bsp",
- "psx-engine",
- "psx-font",
- "psx-gpu",
- "psx-gte",
- "psx-io",
- "psx-math",
- "psx-pack",
- "psx-pad",
- "psx-render-contract",
- "psx-rt",
- "psx-sfx",
- "psx-spu",
- "psx-telemetry",
- "psx-tick",
- "psx-vram",
- "quake-affine",
- "quake-core",
- "quake-formats",
 ]

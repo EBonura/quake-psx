@@ -16,6 +16,7 @@ The project contains several independent Cargo workspaces. Run each suite:
 
 ```sh
 cargo test --manifest-path host/quake-build/Cargo.toml
+(cd crates/quake-affine && cargo test && cargo test --all-features)
 (cd crates/quake-cook && cargo test)
 (cd crates/quake-core && cargo test)
 (cd crates/quake-formats && cargo test)
