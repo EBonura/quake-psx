@@ -12,7 +12,36 @@
 /// Casting the full dome to `u8` at a brush corner can cross the byte seam and
 /// makes the PS1 interpolate through most of the texture between adjacent
 /// vertices.
-pub use psx_bsp::sky::directional_texel;
+pub fn directional_texel(mut direction: [i32; 3], layer_width: u8) -> [i32; 2] {
+    direction[2] = direction[2].saturating_mul(3);
+
+    // Keep the squared length inside i32 without changing the direction.
+    while direction[0]
+        .unsigned_abs()
+        .max(direction[1].unsigned_abs())
+        .max(direction[2].unsigned_abs())
+        > 16_000
+    {
+        direction[0] >>= 1;
+        direction[1] >>= 1;
+        direction[2] >>= 1;
+    }
+
+    let length_squared = direction[0]
+        .saturating_mul(direction[0])
+        .saturating_add(direction[1].saturating_mul(direction[1]))
+        .saturating_add(direction[2].saturating_mul(direction[2]));
+    let length = psx_math::int32::isqrt_i32(length_squared).max(1);
+    let denominator = length * 128;
+    let project = |component: i32| {
+        // Original Quake uses `6 * 63 / length` against a 128-texel layer.
+        // Preserve that projection while scaling it to the selected sky mip.
+        let numerator = component * 378 * i32::from(layer_width);
+        numerator / denominator
+    };
+
+    [project(direction[0]), project(direction[1])]
+}
 
 /// Recover a world-space viewing ray from one screen coordinate.
 ///
@@ -65,7 +94,19 @@ pub use psx_bsp::sky::packet_quad_uv;
 /// retained BSP vertex is stored in whole world units. `layer_width` is the
 /// width of one cooked sky half; the original direction scale targets a
 /// 128-texel layer and is reduced proportionally for cooked mip levels.
-pub use psx_bsp::sky::directional_uv;
+pub fn directional_uv(
+    vertex_units: [i16; 3],
+    camera_origin_q12: [i32; 3],
+    layer_width: u8,
+) -> [u8; 2] {
+    let direction = [
+        i32::from(vertex_units[0]).saturating_sub(camera_origin_q12[0] >> 12),
+        i32::from(vertex_units[1]).saturating_sub(camera_origin_q12[1] >> 12),
+        i32::from(vertex_units[2]).saturating_sub(camera_origin_q12[2] >> 12),
+    ];
+    let projected = directional_texel(direction, layer_width);
+    [projected[0] as u8, projected[1] as u8]
+}
 
 #[cfg(test)]
 mod tests {
