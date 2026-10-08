@@ -1,8 +1,8 @@
 # quake-psx
 
-Start with the [PSoXide Demo Disc](https://bonnie-studios.itch.io/psoxide-demo-disc): it includes Quake-PSX
-and the other Bonnie Studios PlayStation demos. Standalone downloads are available
-for testing just this project.
+**[Download the latest version on itch.io](https://bonnie-studios.itch.io/quake-psx)**
+
+It's also on the [PSoXide Demo Disc](https://bonnie-studios.itch.io/psoxide-demo-disc) with the other Bonnie Studios PlayStation games, and you can [play it in your browser](https://bonnie-studios.itch.io/psoxide).
 
 A Rust port of Quake's shareware episode for the original PlayStation, built
 with the [PSoXide](https://github.com/EBonura/PSoXide) SDK.
