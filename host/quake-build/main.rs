@@ -5688,7 +5688,7 @@ fn run_e1m1_chain_once(
 /// Capture the frontend's direct GP0 frame counters for the complete fixed
 /// E1M1 traversal. This is diagnostic evidence, not a timing build: the GPU
 /// log is emulator-owned and does not modify guest RAM, but writing it adds
-/// host work. `tools/analyze_psoxide_gpu.py` derives the gameplay window from
+/// host work. `analyze-psoxide-gpu` (`tools/quake-analysis`) derives the gameplay window from
 /// the same CD-session boundaries as the canonical FPS metric.
 fn run_e1m1_gpu_census(root: &Path, frontend: &Path, regression: &Path) -> Result<()> {
     run_e1m1_gpu_census_named(root, frontend, regression, "e1m1-gpu-census")
@@ -5751,7 +5751,7 @@ fn run_e1m1_gpu_census_named(
          gpu_csv={}\n\
          vram_fnv1a_64=0x{vram_hash:016x}\n\
          display_fnv1a_64=0x{:016x}\n\
-         analyze=python3 tools/analyze_psoxide_gpu.py {} {} {}\n",
+         analyze=cargo run --release --manifest-path tools/quake-analysis/Cargo.toml --bin analyze-psoxide-gpu -- {} {} {}\n",
         probe.total_frames,
         capture.join("gpu.csv").display(),
         display.hash,

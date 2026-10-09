@@ -1,0 +1,32 @@
+[package]
+name        = "quake-analysis"
+version     = "0.1.0"
+edition     = "2021"
+license     = "GPL-2.0-only"
+description = "Host analysis of PSoXide GP0 counters, renderer census logs and PC samples."
+publish     = false
+
+# Its own workspace, like routesim: a developer aid, not part of the shipping
+# builder's package, lockfile, or guest recipe. It has no dependencies.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "analyze-psoxide-gpu"
+path = "src/bin/analyze_psoxide_gpu.rs"
+
+[[bin]]
+name = "analyze-renderer-census"
+path = "src/bin/analyze_renderer_census.rs"
+
+[[bin]]
+name = "symbolize-psoxide-pc"
+path = "src/bin/symbolize_psoxide_pc.rs"
+
+[lints.rust]
+missing_docs = "warn"
+
+[profile.release]
+opt-level = 2

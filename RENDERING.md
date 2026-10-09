@@ -439,7 +439,8 @@ Reproduce the current census with:
 ```sh
 cargo quake-build e1m1-gpu-census \
   --psoxide ../PSoXide/target/release/frontend
-python3 tools/analyze_psoxide_gpu.py \
+cargo run --release --manifest-path tools/quake-analysis/Cargo.toml \
+  --bin analyze-psoxide-gpu -- \
   captures/e1m1-gpu-census/gpu.csv \
   captures/e1m1-gpu-census/route.csv \
   captures/e1m1-gpu-census/cd.csv
@@ -780,7 +781,8 @@ Run the PSoXide-only census and analyzer with:
 ```sh
 cargo quake-build e1m1-renderer-census \
   --psoxide ../PSoXide/target/release/frontend
-python3 tools/analyze_renderer_census.py \
+cargo run --release --manifest-path tools/quake-analysis/Cargo.toml \
+  --bin analyze-renderer-census -- \
   captures/e1m1-renderer-census/run-a/console.log \
   captures/e1m1-renderer-census/run-b/console.log
 ```
@@ -791,7 +793,7 @@ Run the static transfer census with:
 cargo run --release --manifest-path host/quake-build/Cargo.toml --bin quake2-transfer-census
 ```
 
-The action never invokes DuckStation. `tools/analyze_renderer_census.py`
+The action never invokes DuckStation. `analyze-renderer-census` (`tools/quake-analysis`)
 validates the selection funnel, checks every row across both runs, and reports
 net block-test costs rather than gross rejected faces.
 
