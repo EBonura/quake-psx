@@ -60,6 +60,10 @@ perf-fixed-ticks = []
 # that actually held 30 fps would carry. Diagnostic cadence control, not a
 # renderer change; the route still steps deterministically.
 perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
+# Start the options menu's LIGHTS / POSES rows on CLASSIC (id's stepped
+# behaviour) instead of SMOOTH. Measurement and regression knob.
+classic-lights = ["quake-core/classic-lights"]
+classic-poses = ["quake-core/classic-poses"]
 emulator-telemetry = ["psx-telemetry/emit"]
 # Measurement builds only: tag projections with a primitive class (world,
 # model, view model, sprite, sky) through PSoXide's emulator-only class port
