@@ -25,8 +25,9 @@ pub const STALE_TICKS: u32 = 2 * THINK_TICKS;
 pub const SNAP_UNITS: i32 = 128;
 const SNAP_Q12: i32 = SNAP_UNITS << 12;
 
-/// `256 / duration` for glide durations of one to six ticks.
-const RECIPROCAL_Q8: [u32; THINK_TICKS as usize + 1] = [0, 256, 128, 85, 64, 51, 43];
+/// `256 / duration` for glide durations of one to six ticks, padded to eight
+/// so a masked index needs no bounds check.
+const RECIPROCAL_Q8: [u32; 8] = [0, 256, 128, 85, 64, 51, 43, 0];
 
 /// What the sim currently says about one model.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -91,7 +92,7 @@ impl Track {
 
     fn weight(&self, now: u16) -> u32 {
         let elapsed = u32::from(now.wrapping_sub(self.changed));
-        (elapsed * RECIPROCAL_Q8[self.duration as usize]).min(256)
+        (elapsed * RECIPROCAL_Q8[self.duration as usize & 7]).min(256)
     }
 
     fn restart(&mut self, now: u16, to: Pose) {
@@ -147,7 +148,8 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
                 slot = index;
             }
         }
-        let track = &mut self.tracks[slot];
+        // SAFETY: `slot` is a loop index below `SLOTS`.
+        let track = unsafe { self.tracks.get_unchecked_mut(slot) };
         let fresh = !found
             || u32::from(now.wrapping_sub(track.seen)) > STALE_TICKS
             || snaps(&track.to, &current);
@@ -192,35 +194,28 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
 
 #[optimize(size)]
 fn snaps(old: &Pose, new: &Pose) -> bool {
-    if old.model != new.model {
-        return true;
-    }
-    let mut axis = 0;
-    while axis < 3 {
-        if (new.origin[axis].wrapping_sub(old.origin[axis])).abs() > SNAP_Q12 {
-            return true;
-        }
-        axis += 1;
-    }
-    false
+    old.model != new.model
+        || old
+            .origin
+            .iter()
+            .zip(&new.origin)
+            .any(|(&old, &new)| new.wrapping_sub(old).abs() > SNAP_Q12)
 }
 
 /// Origin and angles at `weight_q8` of the way from `from` to `to`.
 ///
-/// Angles take the short way round the circle.
+/// Only yaw turns: a monster's pitch and roll are set by what it is doing,
+/// not walked toward, so they follow `to`. Yaw takes the short way round.
 #[optimize(size)]
 pub fn glide(from: &Pose, to: &Pose, weight_q8: u32) -> ([i32; 3], [i16; 3]) {
     let weight = weight_q8.min(256) as i32;
-    let mut origin = [0i32; 3];
-    let mut angles = [0i16; 3];
-    let mut axis = 0;
-    while axis < 3 {
-        let delta = to.origin[axis].wrapping_sub(from.origin[axis]);
-        origin[axis] = from.origin[axis].wrapping_add((delta * weight + 128) >> 8);
-        let turn = to.angles[axis].wrapping_sub(from.angles[axis]) as i32;
-        angles[axis] = from.angles[axis].wrapping_add(((turn * weight + 128) >> 8) as i16);
-        axis += 1;
+    let mut origin = to.origin;
+    for (value, &start) in origin.iter_mut().zip(&from.origin) {
+        *value = start.wrapping_add((value.wrapping_sub(start) * weight + 128) >> 8);
     }
+    let mut angles = to.angles;
+    let turn = i32::from(to.angles[1].wrapping_sub(from.angles[1]));
+    angles[1] = from.angles[1].wrapping_add(((turn * weight + 128) >> 8) as i16);
     (origin, angles)
 }
 
