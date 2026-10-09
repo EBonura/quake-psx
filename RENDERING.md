@@ -439,7 +439,8 @@ Reproduce the current census with:
 ```sh
 cargo quake-build e1m1-gpu-census \
   --psoxide ../PSoXide/target/release/frontend
-python3 tools/analyze_psoxide_gpu.py \
+cargo run --release --manifest-path tools/quake-analysis/Cargo.toml \
+  --bin analyze-psoxide-gpu -- \
   captures/e1m1-gpu-census/gpu.csv \
   captures/e1m1-gpu-census/route.csv \
   captures/e1m1-gpu-census/cd.csv
@@ -780,7 +781,8 @@ Run the PSoXide-only census and analyzer with:
 ```sh
 cargo quake-build e1m1-renderer-census \
   --psoxide ../PSoXide/target/release/frontend
-python3 tools/analyze_renderer_census.py \
+cargo run --release --manifest-path tools/quake-analysis/Cargo.toml \
+  --bin analyze-renderer-census -- \
   captures/e1m1-renderer-census/run-a/console.log \
   captures/e1m1-renderer-census/run-b/console.log
 ```
@@ -791,7 +793,7 @@ Run the static transfer census with:
 cargo run --release --manifest-path host/quake-build/Cargo.toml --bin quake2-transfer-census
 ```
 
-The action never invokes DuckStation. `tools/analyze_renderer_census.py`
+The action never invokes DuckStation. `analyze-renderer-census` (`tools/quake-analysis`)
 validates the selection funnel, checks every row across both runs, and reports
 net block-test costs rather than gross rejected faces.
 
@@ -2049,7 +2051,7 @@ tick) has main's world, HUD and display hashes with either setting. A fixed-came
 style step is six frames) shows the stepped light going dark at one frame and
 back six frames later, and the smooth light ramping between the two.
 
-### POSES (behind the `smooth-poses` cargo feature, off in the shipping image)
+### POSES (ships, default SMOOTH)
 
 `quake_core::pose` watches a drawn monster's origin, yaw and frame, notices
 when the sim changed them, and returns the pose to draw: origin and yaw glided
@@ -2060,25 +2062,71 @@ two animation frames per byte (`blend_frames`: two multiplies per four bytes
 on 16-bit lanes, weight in sixty-fourths) into the top of the projected-vertex
 scratch and hands them to the unchanged alias submitter, so the blended pose
 lies on the same grid as the authored frames. The view weapon blends the same
-way. Beyond 800 units a model glides but takes the nearer frame. Measured on
-the earlier, larger build: +0.16% on the chain route and +0.50% on the monster
-route (both settings together +0.33% and +0.83%).
+way. Beyond 800 units a model glides but takes the nearer frame. The Options
+page has a POSES row (rows below it sit one lower); CLASSIC is id's stepped
+behaviour.
 
-It is off by default because of the heap. The shipping gate wants at least
-8,192 B free after boot; main has 9,068 B, and the pose code is about 2.7 KB
-of image plus a small tracker allocated on first use. The feature also adds
-the POSES row to Options and moves the rows below it down one; without it the
-row does not exist.
+It was behind the off-by-default `smooth-poses` feature until the heap allowed
+it (below); the feature is now in the default set.
+
+Cost (`e1m1-chain-bench` and `e1m1-monster-route-bench`, 2026-10-09, same
+frontend, one build each, so inside the layout noise band for small deltas):
+
+| | main (a0e3731) | this change, POSES CLASSIC | this change, POSES SMOOTH |
+| --- | --- | --- | --- |
+| chain route work instructions | 2,022,346,647 | 2,023,426,180 (+0.05%) | 2,027,632,459 (+0.26%) |
+| chain route bus cycles | 1,584,043,138 | 1,585,756,973 (+0.11%) | 1,596,039,688 (+0.76%) |
+| chain route VRAM / display hash | 0x04db59d267d9a7d1 / 0x7f6a174585529a45 | same | same |
+| monster route bus cycles | 2,908,175,177 | 2,914,458,517 (+0.22%) | 2,936,736,707 (+0.98%) |
+
+Re-measured on the final tree (merged with main 4bdeb8f, which changed the
+renderer itself), chain route: main 2,027,823,432 work instructions and
+1,586,328,662 bus cycles against 2,032,521,287 (+0.23%) and 1,601,751,734
+(+0.97%) with POSES SMOOTH, hashes still main's. The table above was measured
+before that merge (against a0e3731); its CLASSIC and monster-route columns were
+not repeated.
+
+The chain route compiles the monster think loop out, so no monster animates
+and the hashes stay main's; the +0.65% cycles between CLASSIC and SMOOTH there
+is the view weapon's per-frame pose bookkeeping and blend. The monster route
+(monsters thinking) is not a hash gate: its final frame depends on the build's
+presentation cadence (main and POSES SMOOTH end on 0x6e51b6c8722dc87a, POSES
+CLASSIC on 0x8354de3a8edf5c86), so the pose change is judged on frames (below)
+and the route only has to be deterministic between its two runs.
+
+An 8-frame strip of an E1M1 monster attack at identical simulation state
+(controller polls 203 to 210), main against POSES SMOOTH, shows the smooth pose
+lagging the sim by up to one think and changing every frame instead of every
+second one.
 
 ### Heap
 
-`ship-boot` with LIGHTS and the menu row, POSES off: 9,068 B free, the same as
-main, with the same heap start (symbol growth 684 B, inside the slack the
-image's placement leaves). The bytes
-came from keeping lights small: one shared blend, the gliding table lives in
-the renderer's own copy (no second table in the entity scene), the pose code
-is compiled out, and the rarely run helpers are size-optimized and out of
-line.
+The shipping boot gate keeps its 8,192-byte floor with POSES on. The heap is a
+bump allocator, every pool is allocated once at its full capacity, and the
+largest consumer is the 874,000-byte map arena, so the slack in the smaller
+pools is shipping heap. Measured with `ship-boot` (free bytes after boot and a
+sampled gameplay period):
+
+| step | free |
+| --- | --- |
+| main | 9,068 |
+| movers 64 to 60, triggers 32 to 30, teleports 32 to 17, trains 8 to 6, collision planes 3,000 to 2,960, render textures 128 to 96 (+2,572) | 11,640 |
+| POSES on (image grows 4,096 B of heap start, 352 B tracker, both included) | 7,192, gate fails |
+| sound effect table 255 to 104 records (+1,812) | 9,004, gate passes |
+
+Every trimmed pool stays above Episode 1's measured worst case (57 movers, 28
+triggers, 15 teleports, 4 trains, 2,948 planes, 81 textures, 101 resident
+sounds). The census takes the worst of the four skills the menu offers (the
+loader drops an entity whose spawnflags exclude the current skill: easy
+NOT_EASY, normal NOT_MEDIUM, hard and nightmare NOT_HARD); an easy-only census
+had missed 2 triggers and 4 teleports. The cooker mirrors each bound and
+refuses a map above it, so a recook that outgrows a pool fails the build
+rather than the boot. The render
+entity pool and the map arena margin (7,878 B) were left alone. The render
+entity census now counts only what the loader can give a slot (visible brush
+models, alias spawns, 88 projectile slots and the fireball slots), worst case
+310 of 384 over every skill; the old count of every record said 373 on easy and
+396 on hard.
 
 The `classic-lights` and `classic-poses` features start the rows on
 CLASSIC for benches and regressions.

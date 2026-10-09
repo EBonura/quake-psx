@@ -174,6 +174,7 @@ pub fn run() -> ! {
     psx_rt::tty::println("quake-psx: Rust Start map resident");
 
     let mut input = crate::input::Input::new();
+    let mut rumble = crate::rumble::Rumbler::new();
     let mut menu = quake_core::menu::Menu::new();
     #[cfg(any(
         feature = "episode1-regression",
@@ -265,6 +266,13 @@ pub fn run() -> ! {
         // from it here and only read back after the player has had a turn.
         music.update(audio_tick);
         menu.sync_music(music.available(), music.enabled(), music.track());
+        // Motors: aged by this frame's ticks, silenced in menus and when dead,
+        // and sent with the poll below. Empty calls without the `rumble` feature.
+        if menu.active() || weapon.inventory().health() <= 0 {
+            rumble.quiet();
+        }
+        rumble.tick(elapsed_ticks);
+        input.set_rumble(rumble.request());
         let raw_controls = input.poll(menu.deadzone_radius());
         if let Some(active) = intermission.as_mut() {
             active.elapsed = active.elapsed.saturating_add(elapsed_ticks);
@@ -889,6 +897,7 @@ pub fn run() -> ! {
                 player.punch(recoil);
             }
             if attack.muzzle_flashes() {
+                rumble.fired();
                 // A real `MUZZLEFLASH` dlight on the player, not the
                 // full-screen tint this used to raise: the original has no
                 // screen flash for a shot, and a light at the eye lifts the
@@ -1154,6 +1163,7 @@ pub fn run() -> ! {
         let blood = health_before.saturating_sub(health_after);
         let armor = armor_before.saturating_sub(armor_after);
         presentation.screen_blend_mut().take_damage(blood, armor);
+        rumble.hurt(blood.saturating_add(armor));
         // `Sbar_DamageTake` runs off the same signal as the screen blend.
         pain_face.tick(elapsed_ticks);
         if blood != 0 || armor != 0 {

@@ -265,7 +265,7 @@ const FONT_TPAGE: u16 = 0x008f;
 const MENU_TPAGE: u16 = 0x009f;
 const QPLAQUE_SIZE: (u8, u8) = (32, 144);
 const MAX_LIQUID_TEXTURES: usize = 4;
-const MAX_RENDER_TEXTURES: usize = 128;
+const MAX_RENDER_TEXTURES: usize = crate::asset::RENDER_TEXTURE_CAPACITY;
 const LIQUID_WARP_BYTES: usize = MAX_LIQUID_TEXTURES * quake_core::liquid::LIQUID_TILE_BYTES;
 
 /// The full-screen blends `quake_core::screenblend` can ask for: the sustained
@@ -6639,7 +6639,7 @@ impl CensusLine {
 }
 
 /// QRC5 fields are hexadecimal and positional. Keep this order synchronized
-/// with `tools/analyze_renderer_census.py`.
+/// with `fields` in `tools/quake-analysis/src/census.rs`.
 #[cfg(feature = "renderer-census")]
 #[inline(never)]
 fn emit_renderer_census(frame: u32, census: &RendererCensus) {
