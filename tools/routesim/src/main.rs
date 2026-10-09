@@ -2253,6 +2253,9 @@ fn standing_filter(scene: &Scene) {
 /// `faces`: one line per world face, `index texture flags nx ny nz dist n x y z ...`,
 /// normal in Q12 and already flipped for back-side faces, corners in world units.
 fn dump_faces(scene: &Scene) {
+    for (index, model) in scene.map.brush_models().iter().enumerate().take(3) {
+        eprintln!("model {index}: first face {} count {}", model.first_face, model.face_count);
+    }
     let planes = scene.map.planes();
     let indexed = scene.map.indexed_vertices();
     let plain = if indexed.is_none() { Some(scene.map.vertices()) } else { None };
