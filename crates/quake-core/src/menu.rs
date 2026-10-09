@@ -107,8 +107,16 @@ impl PoseMode {
 
 /// Presentation defaults. See `RENDERING.md` ("Smooth presentation") for the
 /// cost behind each.
-pub const DEFAULT_LIGHT_MODE: LightMode = LightMode::Smooth;
-pub const DEFAULT_POSE_MODE: PoseMode = PoseMode::Smooth;
+pub const DEFAULT_LIGHT_MODE: LightMode = if cfg!(feature = "classic-lights") {
+    LightMode::Classic
+} else {
+    LightMode::Smooth
+};
+pub const DEFAULT_POSE_MODE: PoseMode = if cfg!(feature = "classic-poses") {
+    PoseMode::Classic
+} else {
+    PoseMode::Smooth
+};
 
 /// The Levels page rows, in [`crate::level::LEVEL_NAMES`] order: the cooked
 /// map name and its authored title.
