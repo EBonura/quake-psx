@@ -103,8 +103,8 @@ mod enabled {
             self.small = self.small.saturating_sub(ticks);
             let held = self.hold.min(ticks);
             self.hold -= held;
-            let decayed = u16::from(self.large)
-                .saturating_sub(u16::from(HURT_DECAY) * (ticks - held));
+            let decayed =
+                u16::from(self.large).saturating_sub(u16::from(HURT_DECAY) * (ticks - held));
             self.large = if decayed < u16::from(LARGE_MIN) {
                 0
             } else {
