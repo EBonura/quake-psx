@@ -30,6 +30,7 @@ default = [
     "gameplay-scratchpad-stack",
     "renderer-scratchpad-alias-projection",
     "renderer-error-bounded-tessellation",
+    "smooth-poses",
 ]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
