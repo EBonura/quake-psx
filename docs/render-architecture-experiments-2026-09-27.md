@@ -298,7 +298,7 @@ Detailed local bundles are under `~/Documents/`:
 | `PSoXide-render-mesh-quake-2026-09-27` | Asset remesher, playable BIN/CUEs, raw captures, meshoptimizer source/probes, report |
 
 Each experimental implementation remains in its bundle. The repository keeps
-this synthesis, selected measurements, screenshot exports/generator and the
+this synthesis, selected measurements, screenshot exports and the
 census correction. Original runtime source and game assets remain unchanged.
 
 The screenshot deliverables were generated from the preserved capture bundle by
