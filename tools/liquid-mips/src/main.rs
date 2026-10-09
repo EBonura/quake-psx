@@ -92,7 +92,10 @@ fn asm_lines(liquid_rs: &str) -> Result<Vec<String>> {
         .ok_or("asm! block has no operand list")?
         .0;
     let line = Regex::new(r#"(?m)^[ \t\r\f\v]*"([^"\n]*)","#).map_err(|e| e.to_string())?;
-    let lines: Vec<String> = line.captures_iter(block).map(|c| c[1].to_string()).collect();
+    let lines: Vec<String> = line
+        .captures_iter(block)
+        .map(|c| c[1].to_string())
+        .collect();
     if lines.is_empty() || !lines.iter().any(|l| l == ".set noreorder") {
         return Err("no assembly lines found, or no .set noreorder".into());
     }
@@ -132,7 +135,10 @@ fn expected_tile(source: &[u8], offsets: &[u8]) -> Vec<u8> {
 }
 
 fn sha256(data: &[u8]) -> String {
-    Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn run_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
@@ -156,7 +162,8 @@ struct Options {
 }
 
 fn parse_args(args: &[String]) -> Result<Options> {
-    let default_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/quake-core/src/liquid.rs");
+    let default_source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/quake-core/src/liquid.rs");
     let mut options = Options {
         frontend: PathBuf::new(),
         out: PathBuf::new(),
@@ -169,7 +176,10 @@ fn parse_args(args: &[String]) -> Result<Options> {
     while i < args.len() {
         let flag = args[i].as_str();
         i += 1;
-        let value = args.get(i).cloned().ok_or(format!("{flag} needs a value"))?;
+        let value = args
+            .get(i)
+            .cloned()
+            .ok_or(format!("{flag} needs a value"))?;
         i += 1;
         match flag {
             "--frontend" => {
@@ -194,7 +204,8 @@ fn parse_args(args: &[String]) -> Result<Options> {
 
 fn run(options: &Options) -> Result<()> {
     fs::create_dir_all(&options.out).map_err(|e| e.to_string())?;
-    let source_text = fs::read_to_string(&options.source).map_err(|e| format!("{}: {e}", options.source.display()))?;
+    let source_text = fs::read_to_string(&options.source)
+        .map_err(|e| format!("{}: {e}", options.source.display()))?;
     let lines = asm_lines(&source_text)?;
     let assembly_path = options.out.join("liquid.S");
     let object = options.out.join("liquid.o");
@@ -202,11 +213,24 @@ fn run(options: &Options) -> Result<()> {
     fs::write(&assembly_path, assembly(&lines)).map_err(|e| e.to_string())?;
     run_tool(
         &options.assembler,
-        &["-EL".as_ref(), "-mips1".as_ref(), "-o".as_ref(), object.as_os_str(), assembly_path.as_os_str()],
+        &[
+            "-EL".as_ref(),
+            "-mips1".as_ref(),
+            "-o".as_ref(),
+            object.as_os_str(),
+            assembly_path.as_os_str(),
+        ],
     )?;
     run_tool(
         &options.objcopy,
-        &["-O".as_ref(), "binary".as_ref(), "-j".as_ref(), ".text".as_ref(), object.as_os_str(), raw.as_os_str()],
+        &[
+            "-O".as_ref(),
+            "binary".as_ref(),
+            "-j".as_ref(),
+            ".text".as_ref(),
+            object.as_os_str(),
+            raw.as_os_str(),
+        ],
     )?;
     let routine = fs::read(&raw).map_err(|e| e.to_string())?;
 
@@ -229,7 +253,8 @@ fn run(options: &Options) -> Result<()> {
             ram_path.display().to_string(),
         ]
         .to_vec();
-        let log = fs::File::create(options.out.join(format!("case-{case}.log"))).map_err(|e| e.to_string())?;
+        let log = fs::File::create(options.out.join(format!("case-{case}.log")))
+            .map_err(|e| e.to_string())?;
         let status = Command::new(&command[0])
             .args(&command[1..])
             .stdin(Stdio::null())
@@ -250,8 +275,13 @@ fn run(options: &Options) -> Result<()> {
         }
         let actual = &ram[0x102000..0x103000];
         let mismatch = actual.iter().zip(&expected).filter(|(a, b)| a != b).count();
-        fs::write(options.out.join(format!("case-{case}-actual.bin")), actual).map_err(|e| e.to_string())?;
-        fs::write(options.out.join(format!("case-{case}-expected.bin")), &expected).map_err(|e| e.to_string())?;
+        fs::write(options.out.join(format!("case-{case}-actual.bin")), actual)
+            .map_err(|e| e.to_string())?;
+        fs::write(
+            options.out.join(format!("case-{case}-expected.bin")),
+            &expected,
+        )
+        .map_err(|e| e.to_string())?;
         results.push(json!({
             "case": case,
             "mismatching_texels": mismatch,
@@ -270,7 +300,12 @@ fn run(options: &Options) -> Result<()> {
     });
     let text = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
     fs::write(options.out.join("result.json"), text + "\n").map_err(|e| e.to_string())?;
-    if result["cases"].as_array().expect("cases").iter().any(|c| c["mismatching_texels"] != 0) {
+    if result["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .any(|c| c["mismatching_texels"] != 0)
+    {
         return Err(format!("texel mismatch: {result}"));
     }
     println!("MIPS liquid warp: all 12,288 texels match the scalar reference");
@@ -308,14 +343,26 @@ mod tests {
         let exe = harness(&routine, &source, &offsets);
         assert_eq!(exe.len(), 2048 + 0xF4000);
         assert_eq!(&exe[..8], b"PS-X EXE");
-        assert_eq!(u32::from_le_bytes(exe[0x10..0x14].try_into().unwrap()), 0x8001_0000);
-        assert_eq!(u32::from_le_bytes(exe[0x1C..0x20].try_into().unwrap()), 0xF4000);
-        assert_eq!(u32::from_le_bytes(exe[0x30..0x34].try_into().unwrap()), 0x801F_FF00);
+        assert_eq!(
+            u32::from_le_bytes(exe[0x10..0x14].try_into().unwrap()),
+            0x8001_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(exe[0x1C..0x20].try_into().unwrap()),
+            0xF4000
+        );
+        assert_eq!(
+            u32::from_le_bytes(exe[0x30..0x34].try_into().unwrap()),
+            0x801F_FF00
+        );
         let payload = &exe[2048..];
         assert_eq!(&payload[0x10000..0x10004], &routine);
         assert_eq!(payload[0xF0000], 7);
         assert_eq!(payload[0xF1000 + 63], 63);
-        assert_eq!(u32::from_le_bytes(payload[0..4].try_into().unwrap()), 0x3C04_8010);
+        assert_eq!(
+            u32::from_le_bytes(payload[0..4].try_into().unwrap()),
+            0x3C04_8010
+        );
     }
 
     #[test]
@@ -326,14 +373,19 @@ mod tests {
         assert!(assembly(&lines).starts_with(".text\n.globl liquid\nliquid:\n.set noreorder\n"));
         assert!(assembly(&lines).ends_with("jr $31\nnop\n"));
         // An asm block without .set noreorder, or no block at all, is refused.
-        assert!(asm_lines("unsafe fn warp_tile_64_mips() { core::arch::asm!(\"nop\", in(\"$4\") 0) }").is_err());
+        assert!(asm_lines(
+            "unsafe fn warp_tile_64_mips() { core::arch::asm!(\"nop\", in(\"$4\") 0) }"
+        )
+        .is_err());
         assert!(asm_lines("fn nothing() {}").is_err());
     }
 
     #[test]
     fn oracle_matches_the_dense_resample() {
         let constant = source_tile(0);
-        assert!(expected_tile(&constant, &offsets_for(0)).iter().all(|&t| t == 37));
+        assert!(expected_tile(&constant, &offsets_for(0))
+            .iter()
+            .all(|&t| t == 37));
         let source = source_tile(1);
         let offsets = offsets_for(1);
         let expected = expected_tile(&source, &offsets);
