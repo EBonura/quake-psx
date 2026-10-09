@@ -158,11 +158,13 @@ const GRAPHICS_PICTURE_BYTES: usize = GRAPHICS_PICTURE_ROW_BYTES * GRAPHICS_PICT
 const GRAPHICS_STREAM_ROWS: usize = 8;
 pub(crate) const STREAM_SCRATCH_BYTES: usize = TEXTURE_ROW_BYTES * TEXTURE_READ_ROWS;
 /// Episode 1's measured maximum is 2,948 planes (E1M4). The fixed bound keeps
-/// this transition-owned allocation one-time under the PS1 bump allocator.
-const COLLISION_PLANE_CAPACITY: usize = 3_000;
+/// this transition-owned allocation one-time under the PS1 bump allocator;
+/// the host cooker mirrors it and refuses a map above it.
+const COLLISION_PLANE_CAPACITY: usize = 2_960;
 /// Fixed decoded table for the compact texture records sampled by every
-/// visible world face. Episode 1 stays well below this fail-closed bound.
-const RENDER_TEXTURE_CAPACITY: usize = 128;
+/// visible world face. Episode 1's maximum is 81 (Start and E1M1); the host
+/// cooker mirrors this bound and refuses a map above it.
+pub(crate) const RENDER_TEXTURE_CAPACITY: usize = 96;
 /// Episode 1 authors at most four 64x64 turbulent textures in one map.
 const LIQUID_TEXTURE_CAPACITY: usize = 4;
 const LIQUID_TEXTURE_BYTES: usize = quake_core::liquid::LIQUID_TILE_BYTES;
