@@ -2097,69 +2097,6 @@ impl Renderer {
                     continue;
                 }
 
-                // A floor that another floor covers from above submits alone
-                // and keys back by their gap (see `push_packets_back`).
-                #[cfg(not(feature = "renderer-census"))]
-                if !near && face.flags & FACE_STACK_MASK != 0 && vertex_count >= 3 {
-                    let submitted = unsafe {
-                        flush_world_batch(
-                            batch_vertices.as_mut_ptr().cast(),
-                            batch_vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            batch_surface_count,
-                            next,
-                        )
-                    };
-                    next = submitted.next_packet;
-                    stats.packets = stats.packets.wrapping_add(submitted.packets);
-                    stats.hardware_triangles = stats
-                        .hardware_triangles
-                        .wrapping_add(submitted.hardware_triangles);
-                    batch_vertex_count = 0;
-                    batch_surface_count = 0;
-                    batch_worst_words = 0;
-                    let alone_worst_words = (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
-                    if !packet_capacity(next, end, alone_worst_words) {
-                        stats.packet_overflow_avoided = true;
-                        break;
-                    }
-                    let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
-                    self.materialize_retained_face(indexed, face, unsafe { &*texture }, vertices);
-                    if self.frame_light.is_some() {
-                        self.light_face(visible_index, vertices);
-                    }
-                    batch_surfaces[0].write(ClassicAffineBatchSurface {
-                        first_vertex: 0,
-                        vertex_count: vertex_count as u16,
-                        tpage: unsafe { (*texture).texture_page },
-                        clut: clut_texture(),
-                    });
-                    let first_packet = next;
-                    let submitted = unsafe {
-                        flush_world_batch(
-                            batch_vertices.as_mut_ptr().cast(),
-                            vertex_count,
-                            batch_surfaces.as_ptr().cast(),
-                            1,
-                            next,
-                        )
-                    };
-                    unsafe {
-                        push_packets_back(
-                            first_packet,
-                            submitted.next_packet,
-                            u16::from(face.flags >> FACE_STACK_SHIFT) * STACK_SLOTS_PER_STEP,
-                        )
-                    };
-                    next = submitted.next_packet;
-                    stats.packets = stats.packets.wrapping_add(submitted.packets);
-                    stats.hardware_triangles = stats
-                        .hardware_triangles
-                        .wrapping_add(submitted.hardware_triangles);
-                    stats.visible_faces = stats.visible_faces.saturating_add(1);
-                    continue;
-                }
-
                 let face_worst_words = (reserve_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
                 if batch_vertex_count + reserve_count > BATCH_MAX_VERTICES
                     || batch_surface_count == BATCH_MAX_SURFACES
@@ -2208,6 +2145,37 @@ impl Renderer {
                 if !packet_capacity(next, end, face_worst_words) {
                     stats.packet_overflow_avoided = true;
                     break;
+                }
+
+                // A floor that another floor covers from above submits alone,
+                // after the pending batch's vertices, and keys back by their
+                // gap (see `push_packets_back`).
+                #[cfg(not(feature = "renderer-census"))]
+                if !near && face.flags & FACE_STACK_MASK != 0 && vertex_count >= 3 {
+                    let submitted = unsafe {
+                        self.submit_stacked_floor(
+                            indexed,
+                            face,
+                            &*texture,
+                            visible_index,
+                            batch_vertices
+                                .as_mut_ptr()
+                                .cast::<ClassicAffineVertex>()
+                                .add(batch_vertex_count),
+                            batch_surfaces
+                                .as_mut_ptr()
+                                .cast::<ClassicAffineBatchSurface>()
+                                .add(batch_surface_count),
+                            next,
+                        )
+                    };
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    stats.visible_faces = stats.visible_faces.saturating_add(1);
+                    continue;
                 }
 
                 let vertices = unsafe {
@@ -3342,6 +3310,51 @@ impl Renderer {
             layered_sky_material,
         };
         frame_index
+    }
+
+    /// Submit one covered floor on its own and key its packets back by its
+    /// stack gap. A few faces a frame at most, so it stays out of line and
+    /// small, and out of the world pass's hot body.
+    ///
+    /// # Safety
+    /// `vertices` and `surface` have room for this face's corners and one
+    /// descriptor beyond any pending batch, and `next` for its packets.
+    #[cfg(not(feature = "renderer-census"))]
+    #[inline(never)]
+    #[optimize(size)]
+    unsafe fn submit_stacked_floor(
+        &self,
+        indexed: IndexedVertices<'_>,
+        face: HotFace,
+        texture: &TextureInfo,
+        visible_index: usize,
+        vertices: *mut ClassicAffineVertex,
+        surface: *mut ClassicAffineBatchSurface,
+        next: *mut u32,
+    ) -> ClassicAffineSubmit {
+        let count = face.corner_count as usize;
+        let corners = unsafe { core::slice::from_raw_parts_mut(vertices, count) };
+        self.materialize_retained_face(indexed, face, texture, corners);
+        if self.frame_light.is_some() {
+            self.light_face(visible_index, corners);
+        }
+        unsafe {
+            surface.write(ClassicAffineBatchSurface {
+                first_vertex: 0,
+                vertex_count: count as u16,
+                tpage: texture.texture_page,
+                clut: clut_texture(),
+            })
+        };
+        let submitted = unsafe { flush_world_batch(vertices, count, surface, 1, next) };
+        unsafe {
+            push_packets_back(
+                next,
+                submitted.next_packet,
+                u16::from(face.flags >> FACE_STACK_SHIFT) * STACK_SLOTS_PER_STEP,
+            )
+        };
+        submitted
     }
 
     fn materialize_surface(
