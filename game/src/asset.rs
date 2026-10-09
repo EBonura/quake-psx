@@ -334,7 +334,7 @@ impl ResidentMap {
 
     #[optimize(size)]
     fn commit_load(&mut self, plan: MapLoadPlan) -> Result<(), MapLoadError> {
-        // One 876,000-byte CPU arena cannot retain both maps. Invalidate the public
+        // One 874,000-byte CPU arena cannot retain both maps. Invalidate the public
         // identity before the shared loader destructively reuses that arena,
         // so a short read or cross-reference failure can never masquerade as
         // the old map still being resident. The preflight above removes every
