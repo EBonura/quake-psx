@@ -197,7 +197,10 @@ const VISUAL_HUD_REGION: ImageRegion = ImageRegion::new(0, 184, 320, 56);
 // old 256-step rotation rounded away (about three pixels up). The scene is
 // otherwise the same; the previous world hash was 0x39f7_8f03_ce49_82ef.
 const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0xd213_f42f_66cd_645e;
-const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0x2517_2c84_d9bb_9f60;
+// The HUD strip also holds the world's bottom rows behind the icons, which
+// moved with the view above; the icons and weapon are pixel for pixel the
+// same. The previous HUD hash was 0x2517_2c84_d9bb_9f60.
+const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0xf0ff_5a61_13ca_d7ec;
 // Clear water is on by default, so the fixed camera also draws the canal
 // floor through the surface: 429,605 packets and 546,997 hardware triangles
 // over the 176 captured frames (398,629 and 502,997 with opaque water).
