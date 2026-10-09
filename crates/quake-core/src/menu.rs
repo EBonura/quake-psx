@@ -239,8 +239,22 @@ pub struct MenuView {
 pub const BRIGHTNESS_STEPS: u8 = 8;
 /// Default to displayed level 2; palette rows are indexed from zero.
 pub const DEFAULT_BRIGHTNESS: u8 = 1;
-const BRIGHTNESS_LABELS: [&str; BRIGHTNESS_STEPS as usize] =
-    ["1", "2", "3", "4", "5", "6", "7", "8"];
+/// Row text for each palette row, in the words psx-display uses for its
+/// BRIGHTNESS stepper: `DEFAULT` is the shipped row, the others count away
+/// from it. Quake's pinned engine predates psx-display (the SDK that carries
+/// it no longer builds that engine), so the text is spelt out here; take it
+/// from `Brightness::label_for_level(row - DEFAULT_BRIGHTNESS)` when the pin
+/// next moves.
+const BRIGHTNESS_LABELS: [&str; BRIGHTNESS_STEPS as usize] = [
+    "DARKER 1",
+    "DEFAULT",
+    "BRIGHTER 1",
+    "BRIGHTER 2",
+    "BRIGHTER 3",
+    "BRIGHTER 4",
+    "BRIGHTER 5",
+    "BRIGHTER 6",
+];
 /// Scaled-radial inner radii offered for both DualShock sticks.
 pub const DEADZONE_RADII: [i16; 5] = [12, 20, 28, 36, 44];
 const DEADZONE_LABELS: [&str; DEADZONE_RADII.len()] = ["12", "20", "28", "36", "44"];
@@ -348,7 +362,7 @@ impl MenuView {
                     }],
                 )),
                 3 => Some(MenuRow::valued(
-                    "GAMMA",
+                    "BRIGHTNESS",
                     BRIGHTNESS_LABELS[if self.brightness < BRIGHTNESS_STEPS {
                         self.brightness as usize
                     } else {
@@ -862,6 +876,7 @@ mod tests {
     fn brightness_steps_through_the_palette_rows() {
         let mut menu = Menu::new();
         assert_eq!(menu.view().brightness, DEFAULT_BRIGHTNESS);
+        assert_eq!(BRIGHTNESS_LABELS[DEFAULT_BRIGHTNESS as usize], "DEFAULT");
         menu.update(down());
         menu.update(down());
         menu.update(accept());
@@ -869,7 +884,7 @@ mod tests {
         menu.update(down());
         menu.update(down());
         menu.update(down());
-        assert_eq!(menu.view().row(3).map(|row| row.label), Some("GAMMA"));
+        assert_eq!(menu.view().row(3).map(|row| row.label), Some("BRIGHTNESS"));
         let right = MenuInput {
             right: true,
             ..MenuInput::default()
@@ -878,7 +893,10 @@ mod tests {
             menu.update(right);
         }
         assert_eq!(menu.view().brightness, BRIGHTNESS_STEPS - 1);
-        assert_eq!(menu.view().row(3).and_then(|row| row.value), Some("8"));
+        assert_eq!(
+            menu.view().row(3).and_then(|row| row.value),
+            Some("BRIGHTER 6")
+        );
         let left = MenuInput {
             left: true,
             ..MenuInput::default()
@@ -887,6 +905,10 @@ mod tests {
             menu.update(left);
         }
         assert_eq!(menu.view().brightness, 0);
+        assert_eq!(
+            menu.view().row(3).and_then(|row| row.value),
+            Some("DARKER 1")
+        );
         for _ in 0..(OPTIONS_SOUND_VOLUME_ROW + 1 - 3) {
             menu.update(down());
         }
