@@ -1930,6 +1930,20 @@ trait AffinePacketWriter {
 
     fn profile(&self) -> ClassicAffineProfile;
 
+    /// Where the next packet will be written, for the writers that keep their
+    /// packets in memory; null for the others.
+    #[inline(always)]
+    fn packet_cursor(&self) -> *mut u32 {
+        ptr::null_mut()
+    }
+
+    /// Repair the packets written since `start` for a face whose screen box
+    /// is over the GPU's extent limit: see [`split_oversize_packets`]. Only
+    /// the compact writer has packets to repair.
+    #[cfg_attr(not(feature = "classic-affine-lattice"), allow(dead_code))]
+    #[inline(always)]
+    unsafe fn repair_oversize_packets(&mut self, _start: *mut u32, _budget_words: usize) {}
+
     #[inline(always)]
     fn topology_event(&mut self, _value: u8) {}
 
@@ -1996,6 +2010,17 @@ trait AffinePacketWriter {
 impl AffinePacketWriter for PacketWriter {
     #[cfg(feature = "classic-affine-gpu-lattice-clip")]
     const LATTICE_USES_GPU_CLIP: bool = true;
+
+    #[inline(always)]
+    fn packet_cursor(&self) -> *mut u32 {
+        self.next
+    }
+
+    #[cfg_attr(not(feature = "classic-affine-lattice"), allow(dead_code))]
+    #[inline(always)]
+    unsafe fn repair_oversize_packets(&mut self, start: *mut u32, budget_words: usize) {
+        unsafe { split_oversize_packets(self, start, budget_words) };
+    }
 
     #[inline(always)]
     fn profile(&self) -> ClassicAffineProfile {
@@ -2576,6 +2601,210 @@ fn classic_affine_subdivision_level<T: ClassicAffineSample>(
     level
 }
 
+/// Words the caller reserves in the packet arena for each triangle of a face
+/// before it submits the face (nineteen of the largest packets): the most a
+/// face may write, and so the room [`split_oversize_packets`] works inside.
+pub const WORST_PACKET_WORDS_PER_TRIANGLE: usize = 19 * 13;
+
+/// One vertex of a packet being cut: screen position, packet UV and RGB.
+#[derive(Copy, Clone)]
+struct CutVertex {
+    xy: [i32; 2],
+    uv: [i32; 2],
+    rgb: [i32; 3],
+}
+
+impl CutVertex {
+    /// Read vertex `index` of the packet at `at` (words `[rgb, xy, uv]` from
+    /// word 1, three words each).
+    #[inline(always)]
+    unsafe fn read(at: *const u32, index: usize) -> Self {
+        let [color, xy, uv] = unsafe {
+            [
+                at.add(1 + 3 * index),
+                at.add(2 + 3 * index),
+                at.add(3 + 3 * index),
+            ]
+        }
+        .map(|word| unsafe { ptr::read(word) });
+        Self {
+            xy: [i32::from(xy as i16), i32::from((xy >> 16) as i16)],
+            uv: [(uv & 0xff) as i32, ((uv >> 8) & 0xff) as i32],
+            rgb: [
+                (color & 0xff) as i32,
+                ((color >> 8) & 0xff) as i32,
+                ((color >> 16) & 0xff) as i32,
+            ],
+        }
+    }
+
+    fn middle(a: &Self, b: &Self) -> Self {
+        Self {
+            xy: [(a.xy[0] + b.xy[0]) >> 1, (a.xy[1] + b.xy[1]) >> 1],
+            uv: [(a.uv[0] + b.uv[0]) >> 1, (a.uv[1] + b.uv[1]) >> 1],
+            rgb: [
+                (a.rgb[0] + b.rgb[0]) >> 1,
+                (a.rgb[1] + b.rgb[1]) >> 1,
+                (a.rgb[2] + b.rgb[2]) >> 1,
+            ],
+        }
+    }
+}
+
+/// Whether the GPU would drop a triangle for its size: two vertices more
+/// than 1023 pixels apart across or 511 down.
+fn cut_exceeds_gpu_extent(t: &[CutVertex; 3]) -> bool {
+    let span = |axis: usize| {
+        let v = [t[0].xy[axis], t[1].xy[axis], t[2].xy[axis]];
+        v[0].max(v[1]).max(v[2]) - v[0].min(v[1]).min(v[2])
+    };
+    span(0) > 1023 || span(1) > 511
+}
+
+/// Where cut triangles are appended: the writer's cursor and the end of the
+/// room the face may use.
+struct CutOutput {
+    next: *mut u32,
+    limit: *mut u32,
+    packets: u32,
+    otz: u32,
+    clut_word: u32,
+    tpage_word: u32,
+}
+
+/// Write `triangle` as GT3 packets that fit the GPU's extent: whole when it
+/// does, else its four midpoint triangles, `levels` deep at most. A piece
+/// that does not fit the room left is dropped, as the whole was.
+#[inline(never)]
+#[cfg_attr(target_arch = "mips", optimize(size))]
+unsafe fn cut_triangle(out: &mut CutOutput, t: [CutVertex; 3], levels: u8) {
+    if levels != 0 && cut_exceeds_gpu_extent(&t) {
+        let m = [
+            CutVertex::middle(&t[0], &t[1]),
+            CutVertex::middle(&t[1], &t[2]),
+            CutVertex::middle(&t[2], &t[0]),
+        ];
+        let next = levels - 1;
+        for piece in [
+            [t[0], m[0], m[2]],
+            [m[0], t[1], m[1]],
+            [m[2], m[1], t[2]],
+            [m[0], m[1], m[2]],
+        ] {
+            unsafe { cut_triangle(out, piece, next) };
+        }
+        return;
+    }
+    let words = 1 + ClassicTriTexturedGouraud::WORDS as usize;
+    if unsafe { out.limit.offset_from(out.next) } < words as isize {
+        return;
+    }
+    let pack = |v: &CutVertex| (v.xy[0] as u16 as u32) | ((v.xy[1] as u16 as u32) << 16);
+    let rgb =
+        |v: &CutVertex| (v.rgb[0] as u32) | ((v.rgb[1] as u32) << 8) | ((v.rgb[2] as u32) << 16);
+    let uv = |v: &CutVertex| (v.uv[0] as u32) | ((v.uv[1] as u32) << 8);
+    let packet = [
+        ((ClassicTriTexturedGouraud::WORDS as u32) << 24) | out.otz,
+        0x3400_0000 | rgb(&t[0]),
+        pack(&t[0]),
+        uv(&t[0]) | out.clut_word,
+        rgb(&t[1]),
+        pack(&t[1]),
+        uv(&t[1]) | out.tpage_word,
+        rgb(&t[2]),
+        pack(&t[2]),
+        uv(&t[2]),
+    ];
+    for (index, word) in packet.into_iter().enumerate() {
+        unsafe { ptr::write(out.next.add(index), word) };
+    }
+    out.next = unsafe { out.next.add(words) };
+    out.packets += 1;
+}
+
+/// The GPU drops a primitive over 1023 pixels across or 511 down. Near the
+/// eye the cells of a split face can still be that big, and then the sky or
+/// the wall behind shows through where they should be. For a face whose
+/// screen box is over the limit, walk the packets it wrote from `start`: one
+/// that is over the limit is taken out of the ordering table (its slot becomes
+/// the skip value) and replaced by smaller triangles cut at the edge midpoints
+/// of its screen vertices, which the GPU's affine mapping draws as it would
+/// have drawn the whole, at the packet's own ordering slot. The pieces are
+/// appended inside the room the caller reserved for the face, as many as fit.
+/// Rare, small and out of line: the split paths themselves are untouched.
+#[inline(never)]
+#[cfg_attr(target_arch = "mips", optimize(size))]
+unsafe fn split_oversize_packets(writer: &mut PacketWriter, start: *mut u32, budget_words: usize) {
+    let end = writer.next;
+    let mut out = CutOutput {
+        next: end,
+        limit: unsafe { start.add(budget_words) },
+        packets: 0,
+        otz: 0,
+        clut_word: 0,
+        tpage_word: 0,
+    };
+    let mut at = start;
+    while at < end {
+        let tag = unsafe { ptr::read(at) };
+        let body = (tag >> 24) as usize;
+        // The box of the packet's vertices: if it fits, every triangle in it
+        // does, so only a packet over the limit goes to `cut_packet`.
+        let corners = if body == ClassicQuadTexturedGouraud::WORDS as usize {
+            4
+        } else {
+            3
+        };
+        let (mut x0, mut x1, mut y0, mut y1) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        let mut corner = 0;
+        while corner < corners {
+            let xy = unsafe { ptr::read(at.add(2 + 3 * corner)) };
+            let (x, y) = (i32::from(xy as i16), i32::from((xy >> 16) as i16));
+            x0 = x0.min(x);
+            x1 = x1.max(x);
+            y0 = y0.min(y);
+            y1 = y1.max(y);
+            corner += 1;
+        }
+        if (x1 - x0 > 1023 || y1 - y0 > 511) && tag & 0xffff != 0xffff {
+            unsafe { cut_packet(&mut out, at, tag, corners == 4) };
+        }
+        at = unsafe { at.add(1 + body) };
+    }
+    writer.next = out.next;
+    writer.packets += out.packets;
+}
+
+/// [`split_oversize_packets`] for one packet whose box is over the limit: if
+/// one of the triangles the GPU draws from it is over the limit it leaves the
+/// ordering table and its triangles are cut instead.
+#[cold]
+#[inline(never)]
+#[cfg_attr(target_arch = "mips", optimize(size))]
+unsafe fn cut_packet(out: &mut CutOutput, at: *mut u32, tag: u32, quad: bool) {
+    let v = unsafe {
+        [
+            CutVertex::read(at, 0),
+            CutVertex::read(at, 1),
+            CutVertex::read(at, 2),
+            CutVertex::read(at, if quad { 3 } else { 2 }),
+        ]
+    };
+    let halves = [[v[0], v[1], v[2]], [v[1], v[2], v[3]]];
+    if cut_exceeds_gpu_extent(&halves[0]) || (quad && cut_exceeds_gpu_extent(&halves[1])) {
+        out.otz = tag & 0xffff;
+        out.clut_word = unsafe { ptr::read(at.add(3)) } & 0xffff_0000;
+        out.tpage_word = unsafe { ptr::read(at.add(6)) } & 0xffff_0000;
+        unsafe {
+            ptr::write(at, (tag & 0xffff_0000) | 0xffff);
+            cut_triangle(out, halves[0], 3);
+            if quad {
+                cut_triangle(out, halves[1], 3);
+            }
+        }
+    }
+}
+
 #[inline(always)]
 unsafe fn sorted_tri<W: AffinePacketWriter>(
     writer: &mut W,
@@ -2948,7 +3177,7 @@ mod lattice {
     /// (see [`ClassicAffineProfile::error_gate_depth`]); in front of it the
     /// level is at least [`gpu_extent_level`] of the screen box.
     #[inline(always)]
-    pub(super) unsafe fn error_bounded_face_level(
+    pub(super) unsafe fn error_bounded_face_level_flagged(
         vertices: *const ClassicAffineVertex,
         vertex_count: usize,
         budget_q3: u32,
@@ -2993,7 +3222,7 @@ mod lattice {
         let extent = gpu_extent_level(x1 - x0, y1 - y0);
         // No edge inside the guard band is longer than 2813 px.
         if psx_engine::tess::error_level(2813, z0, z1, budget_q3) == 0 {
-            return extent;
+            return extent | extent_flag(extent);
         }
         let (dx, dy) = ((x1 - x0).min(4095) as u32, (y1 - y0).min(4095) as u32);
         let span = if dx > dy {
@@ -3001,7 +3230,20 @@ mod lattice {
         } else {
             dy + ((dx * 3) >> 3)
         };
-        psx_engine::tess::error_level(span, z0, z1, budget_q3).max(extent)
+        psx_engine::tess::error_level(span, z0, z1, budget_q3).max(extent) | extent_flag(extent)
+    }
+
+    /// Set in the level [`error_bounded_face_level_flagged`] returns when the
+    /// face's screen box is over the GPU's extent limit.
+    pub(super) const EXTENT_BIG: u8 = 0x80;
+
+    #[inline(always)]
+    fn extent_flag(extent: u8) -> u8 {
+        if extent != 0 {
+            EXTENT_BIG
+        } else {
+            0
+        }
     }
 
     #[inline(always)]
@@ -3427,20 +3669,33 @@ unsafe fn submit_classic_affine_projected_fan_into_writer<W: AffinePacketWriter>
         W::USES_LATTICE || (profile.subdivide_error_px_q3 == 0 && !profile.quad_lattice),
         "this writer is built without the lattice paths"
     );
+    #[allow(unused_mut)]
+    let mut extent_repair = false;
+    let repair_start = writer.packet_cursor();
     #[cfg(feature = "classic-affine-lattice")]
     let face_level = if !W::USES_LATTICE {
         PER_ROOT_LEVEL
     } else if profile.subdivide_error_px_q3 != 0 {
-        let level = unsafe {
-            lattice::error_bounded_face_level(
+        let flagged = unsafe {
+            lattice::error_bounded_face_level_flagged(
                 vertices,
                 vertex_count,
                 u32::from(profile.subdivide_error_px_q3),
                 profile.error_gate_depth,
             )
         };
+        let level = flagged & !lattice::EXTENT_BIG;
+        extent_repair = flagged & lattice::EXTENT_BIG != 0;
         if vertex_count == 4 {
             unsafe { lattice::submit_quad_lattice(vertices, generated, writer, level) };
+            if extent_repair {
+                unsafe {
+                    writer.repair_oversize_packets(
+                        repair_start,
+                        (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE,
+                    )
+                };
+            }
             return;
         }
         level
@@ -3566,6 +3821,14 @@ unsafe fn submit_classic_affine_projected_fan_into_writer<W: AffinePacketWriter>
         }
         previous = current;
         current = unsafe { current.add(1) };
+    }
+    if extent_repair {
+        unsafe {
+            writer.repair_oversize_packets(
+                repair_start,
+                (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE,
+            )
+        };
     }
 }
 
@@ -4160,9 +4423,15 @@ mod quake_kernel {
                 continue;
             }
 
-            let level = unsafe {
-                lattice::error_bounded_face_level(first, count, budget, profile.error_gate_depth)
+            let flagged = unsafe {
+                lattice::error_bounded_face_level_flagged(
+                    first,
+                    count,
+                    budget,
+                    profile.error_gate_depth,
+                )
             };
+            let level = flagged & !lattice::EXTENT_BIG;
             if level != 0 {
                 // The split paths read the budget from the profile.
                 let mut lent = material_writer(next_packet, material, profile);
@@ -4171,6 +4440,13 @@ mod quake_kernel {
                         split_quad(first, generated, &mut lent, level);
                     } else {
                         split_fan(first, count, generated, &mut lent, level);
+                    }
+                    if flagged & lattice::EXTENT_BIG != 0 {
+                        split_oversize_packets(
+                            &mut lent,
+                            next_packet,
+                            (count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE,
+                        );
                     }
                 }
                 next_packet = lent.next;
@@ -6825,6 +7101,114 @@ mod tests {
             let w = submit_error_bounded_face(&pentagon, ERROR_BOUNDED);
             assert!(w.quad_count + w.tri_count > 3, "the fan must split");
             assert_within_gpu_extent(&w);
+        }
+
+        /// Submit one camera-space face through Quake's batch kernel and return
+        /// how many packets the GPU would draw (skipped ones, whose slot is
+        /// 0xffff, are not counted) and how many it would drop for their size.
+        fn kernel_packets_for_face(corners: &[[i16; 3]]) -> (usize, usize, usize) {
+            psx_gte::host::reset();
+            scene::set_screen_offset(160 << 16, 120 << 16);
+            scene::set_projection_plane(160);
+            scene::set_average_z_weights(0x155, 0x100);
+            scene::load_rotation(&Mat3I16::IDENTITY);
+            scene::load_translation(Vec3I32::ZERO);
+            let mut vertices = [ClassicAffineVertex::default(); 6 + EXTRA_VERTICES];
+            for (index, position) in corners.iter().enumerate() {
+                vertices[index] = ClassicAffineVertex {
+                    position: *position,
+                    uv: [(index as u8 & 1) * 63, (index as u8 >> 1) * 63],
+                    color: 0x0080_8080,
+                    ..ClassicAffineVertex::default()
+                };
+            }
+            let surface = [ClassicAffineBatchSurface {
+                first_vertex: 0,
+                vertex_count: corners.len() as u16,
+                tpage: 0,
+                clut: 0,
+            }];
+            let mut words = [0u32; 16 * 1024];
+            let submit = unsafe {
+                submit_quake_classic_affine_batch_budget(
+                    vertices.as_mut_ptr(),
+                    corners.len(),
+                    surface.as_ptr(),
+                    1,
+                    words.as_mut_ptr(),
+                    ClassicAffineProfile::QUAKE_ERROR_BOUNDED.subdivide_error_px_q3,
+                )
+            };
+            let written = unsafe { submit.next_packet.offset_from(words.as_ptr()) } as usize;
+            assert!(written <= (corners.len() - 2) * WORST_PACKET_WORDS_PER_TRIANGLE);
+            let (mut at, mut drawn, mut dropped, mut skipped) = (0usize, 0usize, 0usize, 0usize);
+            while at < written {
+                let body = (words[at] >> 24) as usize;
+                if words[at] & 0xffff == 0xffff {
+                    skipped += 1;
+                } else {
+                    let quad = body == ClassicQuadTexturedGouraud::WORDS as usize;
+                    let xy = |corner: usize| {
+                        let word = words[at + 2 + 3 * corner];
+                        [i32::from(word as i16), i32::from((word >> 16) as i16)]
+                    };
+                    let over = |a: [i32; 2], b: [i32; 2], c: [i32; 2]| {
+                        let span = |axis: usize| {
+                            a[axis].max(b[axis]).max(c[axis]) - a[axis].min(b[axis]).min(c[axis])
+                        };
+                        span(0) > 1023 || span(1) > 511
+                    };
+                    drawn += 1;
+                    if over(xy(0), xy(1), xy(2)) || (quad && over(xy(1), xy(2), xy(3))) {
+                        dropped += 1;
+                    }
+                }
+                at += 1 + body;
+            }
+            let _ = skipped;
+            (drawn, dropped, skipped)
+        }
+
+        #[test]
+        fn kernel_wall_beside_the_eye_keeps_every_cell_within_the_gpu_extent() {
+            // A wall 60 units to the side that runs from 40 to 400 deep and
+            // 800 tall, the shape of a lift shaft's wall seen from inside it.
+            // Two lattice levels cut its 800 units into 200-unit rows, and the
+            // row at the near end is 800 px tall: the GPU would drop that
+            // cell and show the sky behind it.
+            let wall = [
+                [-60, -400, 40],
+                [-60, -400, 400],
+                [-60, 400, 400],
+                [-60, 400, 40],
+            ];
+            let (drawn, dropped, skipped) = kernel_packets_for_face(&wall);
+            assert!(skipped > 0, "the wall must have had cells over the limit");
+            assert!(drawn > 16);
+            assert_eq!(
+                dropped, 0,
+                "{dropped} of {drawn} packets exceed the GPU extent"
+            );
+        }
+
+        #[test]
+        fn kernel_fan_beside_the_eye_keeps_every_piece_within_the_gpu_extent() {
+            // The same wall with a fifth corner, which takes the fan's
+            // face-wide level instead of the quad lattice.
+            let wall = [
+                [-60, -400, 40],
+                [-60, -400, 400],
+                [-60, 0, 450],
+                [-60, 400, 400],
+                [-60, 400, 40],
+            ];
+            let (drawn, dropped, skipped) = kernel_packets_for_face(&wall);
+            assert!(skipped > 0, "the fan must have had pieces over the limit");
+            assert!(drawn > 16);
+            assert_eq!(
+                dropped, 0,
+                "{dropped} of {drawn} packets exceed the GPU extent"
+            );
         }
 
         #[test]

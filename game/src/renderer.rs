@@ -212,7 +212,7 @@ pub fn set_hud_mode(mode: HudMode) {
 const DUMMY_LIGHT_STYLE: usize = quake_core::lightstyle::DUMMY_STYLE;
 // Two-level subdivision emits at most 19 packets for one source triangle;
 // 13 words covers the larger textured-Gouraud quad packet.
-const WORST_PACKET_WORDS_PER_TRIANGLE: usize = 19 * 13;
+const WORST_PACKET_WORDS_PER_TRIANGLE: usize = quake_affine::WORST_PACKET_WORDS_PER_TRIANGLE;
 // A scoped windowed polygon adds its GP0(E2) selector and full-window reset.
 const WORST_WINDOWED_PACKET_WORDS_PER_TRIANGLE: usize = 19 * 15;
 const ALIAS_PACKET_WORDS: usize =

@@ -9,7 +9,10 @@
 //! shared engine.
 
 #![no_std]
-#![cfg_attr(target_arch = "mips", feature(asm_experimental_arch))]
+#![cfg_attr(
+    target_arch = "mips",
+    feature(asm_experimental_arch, optimize_attribute)
+)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 #![allow(clippy::too_many_arguments)]
@@ -42,7 +45,7 @@ pub use classic_affine::{
     ClassicAffineSourceVertex, ClassicAffineSubdivisionRequest, ClassicAffineSubmit,
     ClassicAffineTopologyCensus, ClassicAffineTopologyKey, ClassicAffineVertex,
     ClassicAffineWindowedBatchSurface, ClassicAffineWordSourceVertex, ClassicAliasFace,
-    ClassicAliasProjectedVertex, ClassicAliasVertex,
+    ClassicAliasProjectedVertex, ClassicAliasVertex, WORST_PACKET_WORDS_PER_TRIANGLE,
 };
 pub use classic_affine::{quake_error_bounded_profile, QUAKE_COARSE_ERROR_BUDGET_Q3};
 #[cfg(feature = "classic-affine-quake-specialized-kernel")]
