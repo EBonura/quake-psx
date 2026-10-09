@@ -36,6 +36,8 @@
 //! * `route`    - walk a waypoint list from stdin with ordinary movement input.
 //! * `slopes`   - walk every walkable ramp face uphill with ordinary movement input
 //!                and report the ones the player cannot climb.
+//! * `ramps`    - walk every floor step and slope of a map on a grid, uphill into each
+//!                neighbour, and report any the player cannot cross.
 //! * `standing` - read `x y z` Q12 origins on stdin and echo the ones a player can
 //!                stand on (used to find a live player origin in a RAM dump).
 //! * `faces`    - every world face with its effective normal, texture and corners.
@@ -544,6 +546,7 @@ fn main() {
         "route" => run_route(&scene, &args),
         "tape" => run_tape(&scene, &args),
         "slopes" => sweep_slopes(&scene, &args),
+        "ramps" => sweep_ramps(&scene, &args),
         "standing" => standing_filter(&scene),
         "faces" => dump_faces(&scene),
         other => {
@@ -2254,6 +2257,192 @@ fn dump_faces(scene: &Scene) {
             line.push_str(&format!(" {} {} {}", position[0], position[1], position[2]));
         }
         println!("{line}");
+    }
+}
+
+/// `ramps [--grid n] [--rise n] [--ticks n]... [--verbose]`
+///
+/// The grid version of [`sweep_slopes`], independent of how the cooker cut
+/// the surface into faces. Every standable floor of every grid column (default
+/// 16 units) is a start; each of its four neighbours that has a floor between
+/// 1 and `--rise` (default one grid cell, so a 45 degree slope or a 16 unit
+/// stair, both inside what Quake lets a player climb) units above it is a goal.
+/// When the straight line between the two is clear walkable geometry the walk
+/// holds full forward from standstill, once per requested tick batch, and the
+/// pair is reported if the player does not get three quarters of the way to
+/// the goal cell. Run with
+/// `ROUTESIM_OPEN_MOVERS=1` to leave out doors and lifts, which are not the
+/// map's fixed geometry. Exit status 1 when anything blocks.
+fn sweep_ramps(scene: &Scene, args: &[String]) {
+    let mut grid = 16i32;
+    let mut rise = 0i32;
+    let mut tick_list: Vec<u16> = Vec::new();
+    let mut verbose = false;
+    let mut index = 3;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--grid" => {
+                grid = args[index + 1].parse().expect("--grid n");
+                index += 2;
+            }
+            "--rise" => {
+                rise = args[index + 1].parse().expect("--rise n");
+                index += 2;
+            }
+            "--ticks" => {
+                tick_list.push(args[index + 1].parse().expect("--ticks n"));
+                index += 2;
+            }
+            "--verbose" => {
+                verbose = true;
+                index += 1;
+            }
+            other => panic!("unknown ramps argument {other}"),
+        }
+    }
+    if rise == 0 {
+        rise = grid;
+    }
+    if tick_list.is_empty() {
+        tick_list = vec![1, 2, 3, 4];
+    }
+    let world = scene.map.brush_models().get(0).expect("world brush model");
+    let (x0, x1) = (i32::from(world.mins.x), i32::from(world.maxs.x));
+    let (y0, y1) = (i32::from(world.mins.y), i32::from(world.maxs.y));
+    let (z0, z1) = (i32::from(world.mins.z), i32::from(world.maxs.z));
+    let columns_x = ((x1 - x0) / grid + 1) as usize;
+    let columns_y = ((y1 - y0) / grid + 1) as usize;
+    let leaves = scene.map.leaves();
+    let map = &scene.map;
+    let collision = SceneTrace { scene, blocker: std::cell::Cell::new(None) };
+    let mut scratch = TraceScratch::default();
+    let mut movement_scratch = MovementScratch::default();
+    // Every standable origin height in each column, top to bottom.
+    let mut floors: Vec<Vec<i32>> = vec![Vec::new(); columns_x * columns_y];
+    for cy in 0..columns_y {
+        for cx in 0..columns_x {
+            let (x, y) = (x0 + cx as i32 * grid, y0 + cy as i32 * grid);
+            // Walk down the column; every stretch of empty space the hull fits
+            // in drops to one floor, then the scan resumes under that floor.
+            let mut z = z1;
+            while z > z0 - 8 {
+                let here = Vec3I32 { x: x << 12, y: y << 12, z: z << 12 };
+                let probe = scene_trace(scene, here, here, &mut scratch);
+                if probe.start_solid || probe.all_solid {
+                    z -= 8;
+                    continue;
+                }
+                let Some(origin_z) = floor_below(scene, x, y, z, z - z0 + 64, &mut scratch) else {
+                    z -= 8;
+                    continue;
+                };
+                if floors[cy * columns_x + cx].last() != Some(&origin_z) {
+                    floors[cy * columns_x + cx].push(origin_z);
+                }
+                z = origin_z - 32;
+            }
+        }
+    }
+    let (mut tested, mut blocked) = (0u32, 0u32);
+    for cy in 0..columns_y {
+        for cx in 0..columns_x {
+            for &from_z in &floors[cy * columns_x + cx] {
+                for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (cx as i32 + dx, cy as i32 + dy);
+                    if nx < 0 || ny < 0 || nx as usize >= columns_x || ny as usize >= columns_y {
+                        continue;
+                    }
+                    for &to_z in &floors[ny as usize * columns_x + nx as usize] {
+                        let climb = to_z - from_z;
+                        if climb < 1 || climb > rise {
+                            continue;
+                        }
+                        let (sx, sy) = (x0 + cx as i32 * grid, y0 + cy as i32 * grid);
+                        let (gx, gy) = (x0 + nx * grid, y0 + ny * grid);
+                        if !walkable_segment(
+                            scene,
+                            [sx, sy, from_z],
+                            [gx, gy, to_z],
+                            STEP_HEIGHT,
+                            &mut scratch,
+                        ) {
+                            continue;
+                        }
+                        // Liquid is swimming, not walking: a ramp out of a pit
+                        // takes a jump or a look upward there.
+                        let wet = |x: i32, y: i32, z: i32| {
+                            [0, 24, 56].iter().any(|rise| {
+                                point_contents(
+                                    scene,
+                                    Vec3I32 { x: x << 12, y: y << 12, z: (z + rise) << 12 },
+                                ) != quake_core::collision::CONTENTS_EMPTY
+                            })
+                        };
+                        if wet(sx, sy, from_z) || wet(gx, gy, to_z) {
+                            continue;
+                        }
+                        tested += 1;
+                        let yaw = psx_math::atan2_q12(dy, dx);
+                        let mut worst: Option<(u16, i32)> = None;
+                        for &ticks in &tick_list {
+                            let mut state = MovementState::new(Vec3I32 {
+                                x: sx << 12,
+                                y: sy << 12,
+                                z: from_z << 12,
+                            });
+                            let mut reached = false;
+                            for _ in 0..(48 / u32::from(ticks)).max(8) {
+                                state.update_ticks_with_gravity(
+                                    &collision,
+                                    &mut movement_scratch,
+                                    MovementInput {
+                                        forward: 127,
+                                        strafe: 0,
+                                        yaw: yaw & 0x0fff,
+                                        pitch: 0,
+                                        jump: false,
+                                    },
+                                    ticks,
+                                    quake_core::movement::DEFAULT_GRAVITY,
+                                    |point| {
+                                        let leaf = map.point_leaf_index(*point)?;
+                                        Some(leaves.get(leaf)?.contents)
+                                    },
+                                );
+                                let o = state.origin();
+                                let along = (units(o.x) - sx) * dx + (units(o.y) - sy) * dy;
+                                // The goal cell centre can sit against a wall the
+                                // hull cannot touch; three quarters of the way
+                                // across the step is across it.
+                                if along >= grid * 3 / 4 {
+                                    reached = true;
+                                    break;
+                                }
+                            }
+                            if !reached {
+                                let o = state.origin();
+                                let along = (units(o.x) - sx) * dx + (units(o.y) - sy) * dy;
+                                if worst.is_none_or(|(_, w)| along < w) {
+                                    worst = Some((ticks, along));
+                                }
+                            }
+                        }
+                        if let Some((ticks, along)) = worst {
+                            blocked += 1;
+                            println!(
+                                "BLOCKED ({sx},{sy},{from_z}) -> ({gx},{gy},{to_z}) rise {climb}: ticks {ticks} stopped {along} of {grid}"
+                            );
+                        } else if verbose {
+                            println!("ok ({sx},{sy},{from_z}) -> ({gx},{gy},{to_z}) rise {climb}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("RAMPS tested {tested} blocked {blocked}");
+    if blocked != 0 {
+        std::process::exit(1);
     }
 }
 
