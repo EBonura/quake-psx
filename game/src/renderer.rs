@@ -3848,6 +3848,7 @@ impl Renderer {
 
     /// Whether a brush entity's box touches any leaf of the current PVS. The
     /// walk is repeated only when the PVS or the entity's box changes.
+    #[optimize(size)]
     #[inline(never)]
     fn box_touches_visible(&mut self, map: &ResidentMap, index: usize, entity: &RenderEntity) -> bool {
         let key = self
