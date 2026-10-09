@@ -36,6 +36,9 @@
 //! * `route`    - walk a waypoint list from stdin with ordinary movement input.
 //! * `slopes`   - walk every walkable ramp face uphill with ordinary movement input
 //!                and report the ones the player cannot climb.
+//! * `standing` - read `x y z` Q12 origins on stdin and echo the ones a player can
+//!                stand on (used to find a live player origin in a RAM dump).
+//! * `faces`    - every world face with its effective normal, texture and corners.
 //! * `tape`     - replay a recorded `PXITAPE2` input tape through the movement code,
 //!                one frame per controller poll, and print the pose of each.
 //!
@@ -541,6 +544,8 @@ fn main() {
         "route" => run_route(&scene, &args),
         "tape" => run_tape(&scene, &args),
         "slopes" => sweep_slopes(&scene, &args),
+        "standing" => standing_filter(&scene),
+        "faces" => dump_faces(&scene),
         other => {
             eprintln!("unknown mode {other}");
             std::process::exit(2);
@@ -2191,6 +2196,64 @@ fn sweep_slopes(scene: &Scene, args: &[String]) {
     println!("SLOPES tested {tested} blocked {blocked}");
     if blocked != 0 {
         std::process::exit(1);
+    }
+}
+
+/// `standing`: stdin lines of `x y z` as raw Q12 origins; echo those whose hull
+/// is clear of solid and rests within two units of a floor. A dump of guest RAM
+/// holds only a handful of such triples, one of which is the player.
+fn standing_filter(scene: &Scene) {
+    use std::io::BufRead;
+    let mut scratch = TraceScratch::default();
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        let values: Vec<i32> = line.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+        let [x, y, z] = values[..] else { continue };
+        let start = Vec3I32 { x, y, z };
+        let end = Vec3I32 { x, y, z: z - (3 << 12) };
+        let trace = scene_trace(scene, start, end, &mut scratch);
+        if trace.start_solid || trace.all_solid {
+            continue;
+        }
+        if trace.fraction < quake_core::collision::Q12_ONE && trace.normal.z >= 1_800 {
+            println!("{x} {y} {z}");
+        }
+    }
+}
+
+/// `faces`: one line per world face, `index texture flags nx ny nz dist n x y z ...`,
+/// normal in Q12 and already flipped for back-side faces, corners in world units.
+fn dump_faces(scene: &Scene) {
+    let planes = scene.map.planes();
+    let indexed = scene.map.indexed_vertices();
+    let plain = if indexed.is_none() { Some(scene.map.vertices()) } else { None };
+    for (index, face) in scene.map.faces().iter().enumerate() {
+        let Some(plane) = planes.get(face.plane as usize) else { continue };
+        let sign = if face.flags & quake_formats::FACE_BACKSIDE != 0 { -1i32 } else { 1 };
+        let mut line = format!(
+            "{index} {} {} {} {} {} {} {}",
+            face.texture,
+            face.flags,
+            i32::from(plane.normal.x) * sign,
+            i32::from(plane.normal.y) * sign,
+            i32::from(plane.normal.z) * sign,
+            plane.distance * sign,
+            face.vertex_count
+        );
+        for corner in 0..face.vertex_count as usize {
+            let at = face.first_vertex as usize + corner;
+            let position = if let Some(indexed) = indexed {
+                indexed
+                    .corners
+                    .get(at)
+                    .and_then(|c| indexed.positions.get(usize::from(c.position_index)))
+                    .map(|p| p.position)
+            } else {
+                plain.and_then(|p| p.get(at)).map(|v| [v.position.x, v.position.y, v.position.z])
+            };
+            let Some(position) = position else { continue };
+            line.push_str(&format!(" {} {} {}", position[0], position[1], position[2]));
+        }
+        println!("{line}");
     }
 }
 
