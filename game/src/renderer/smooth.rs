@@ -12,7 +12,9 @@ use alloc::boxed::Box;
 use quake_core::pose::{self, Pose, PoseTracker};
 use quake_formats::AliasModelView;
 
-use super::{Renderer, MAX_ALIAS_VERTICES};
+use quake_affine::ClassicAliasProjectedVertex;
+
+use super::Renderer;
 use crate::asset::ResidentMap;
 use crate::entity::RenderEntity;
 
@@ -20,7 +22,7 @@ use crate::entity::RenderEntity;
 /// observed, so this is the most that can be gliding on one screen; an
 /// overflow evicts the longest unseen entry, whose model then draws unglided
 /// for one think.
-const POSE_SLOTS: usize = 24;
+const POSE_SLOTS: usize = 12;
 /// Models further than this from the eye (whole Quake units) glide but do not
 /// blend: a limb moves a pixel or two between frames at that range, so the
 /// nearer of the two frames is indistinguishable and the per-vertex blend is
@@ -29,11 +31,11 @@ pub(super) const BLEND_RANGE_UNITS: i32 = 800;
 /// Tracker key of the first-person weapon. Entity indexes stay below this.
 pub(super) const VIEW_MODEL_KEY: u16 = u16::MAX - 1;
 
-/// Tracker and blend buffer, allocated the first time a smooth pose is drawn
-/// so the classic setting carries none of it.
+/// The tracker, allocated the first time a smooth pose is drawn so the classic
+/// setting carries none of it. The blend buffer is not separate memory: it
+/// borrows the top of the projected-vertex scratch (see `smooth_alias_pose`).
 pub(super) struct PoseState {
     tracker: PoseTracker<POSE_SLOTS>,
-    frame: [u8; MAX_ALIAS_VERTICES * 3],
 }
 
 /// What to draw for one alias model this frame.
@@ -73,7 +75,6 @@ impl Renderer {
         let state = self.pose_state.get_or_insert_with(|| {
             Box::new(PoseState {
                 tracker: PoseTracker::new(),
-                frame: [0; MAX_ALIAS_VERTICES * 3],
             })
         });
         let observed = Pose {
@@ -105,9 +106,28 @@ impl Renderer {
             shown.vertices = from.as_ptr();
         } else if !blend_vertices {
             // Settled enough: the new frame as is.
-        } else if from.len() <= state.frame.len() && from.len() == current.len() {
-            pose::blend_frames(from, current, blend.weight_q8, &mut state.frame[..from.len()]);
-            shown.vertices = state.frame.as_ptr();
+        } else if from.len() == current.len() {
+            // The blended bytes live at the top of the projected-vertex
+            // buffer. The projection pass writes eight bytes per vertex from
+            // the bottom and reads the vertex bytes as it goes, so the two
+            // regions must not meet: a model too big for both is drawn on the
+            // nearer frame instead (none of Episode 1's is).
+            let bytes = from.len();
+            let room = self.alias_projected.len() * core::mem::size_of::<ClassicAliasProjectedVertex>();
+            if bytes / 3 * 8 + bytes <= room {
+                // SAFETY: `bytes <= room`, so the slice lies inside the Vec's
+                // allocation, and nothing else borrows it during this call.
+                let out = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        self.alias_projected.as_mut_ptr().cast::<u8>().add(room - bytes),
+                        bytes,
+                    )
+                };
+                pose::blend_frames(from, current, blend.weight_q8, out);
+                shown.vertices = out.as_ptr();
+            } else if blend.weight_q8 < 128 {
+                shown.vertices = from.as_ptr();
+            }
         }
         shown
     }
