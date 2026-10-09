@@ -2076,6 +2076,17 @@ impl Renderer {
                             mark_window_packets_translucent(next, submitted.next_packet);
                         }
                     }
+                    // A liquid under a platform or bridge (E1M1's slime pit)
+                    // is stacked like any other floor.
+                    if face.flags & FACE_STACK_MASK != 0 {
+                        unsafe {
+                            push_packets_back(
+                                next,
+                                submitted.next_packet,
+                                u16::from(face.flags >> FACE_STACK_SHIFT) * STACK_SLOTS_PER_STEP,
+                            )
+                        };
+                    }
 
                     next = submitted.next_packet;
                     stats.packets = stats.packets.wrapping_add(submitted.packets);

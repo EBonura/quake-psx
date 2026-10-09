@@ -1479,7 +1479,7 @@ fn mark_stacked_floors(
     let mut owners = Vec::new();
     for (index, face) in faces.iter().enumerate().take(world_end) {
         let texture = textures[face.texture as usize];
-        if texture.flags & (TEXTURE_LIQUID | TEXTURE_SKY | TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
+        if texture.flags & (TEXTURE_SKY | TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
             continue;
         }
         let plane = planes
@@ -1875,6 +1875,27 @@ mod tests {
         assert_eq!(codes[1], 5);
         assert_eq!(codes[2], 1);
         assert_eq!(codes[3], 0);
+    }
+
+    /// E1M1's pit stacks a slime pool 24 units under a cobbled platform, and
+    /// the renderer once drew the slime over the cobbles (the tape of
+    /// 2026-10-09). Needs the shareware PAK the builder caches; skipped
+    /// without it.
+    #[test]
+    fn e1m1_codes_its_moss_floor_under_the_platform() {
+        let pak = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.quakepsx/cache/shareware/ID1/PAK0.PAK");
+        let Ok(bytes) = std::fs::read(pak) else { return };
+        let archive = crate::PakArchive::parse(&bytes).unwrap();
+        let map = archive.require("maps/e1m1.bsp").unwrap();
+        let bsp = Bsp::parse(map).unwrap();
+        let (geometry, _) = cook_geometry_staged(&bsp, SkyEncoding::Layered).unwrap();
+        let flags = |face: usize| geometry.faces[face * 10 + 6];
+        let coded = (0..geometry.faces.len() / 10).filter(|&f| flags(f) >> FACE_STACK_SHIFT != 0).count();
+        assert!(coded > 20, "{coded} stacked floors");
+        // Face 301 is the slime surface at -456; face 3178 the platform at -432.
+        assert_eq!(flags(301) >> FACE_STACK_SHIFT, 6);
+        assert_eq!(flags(3178) >> FACE_STACK_SHIFT, 0);
     }
 
     #[test]
