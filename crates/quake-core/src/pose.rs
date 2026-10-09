@@ -62,9 +62,10 @@ impl Blend {
 #[derive(Copy, Clone)]
 struct Track {
     key: u16,
-    seen: u32,
-    changed: u32,
-    duration: u32,
+    /// Ticks, modulo 2^16: only differences under `STALE_TICKS` are read.
+    seen: u16,
+    changed: u16,
+    duration: u8,
     from: Pose,
     to: Pose,
 }
@@ -76,7 +77,7 @@ impl Track {
         key: EMPTY_KEY,
         seen: 0,
         changed: 0,
-        duration: THINK_TICKS,
+        duration: THINK_TICKS as u8,
         from: Pose {
             origin: [0; 3],
             angles: [0; 3],
@@ -91,16 +92,16 @@ impl Track {
         },
     };
 
-    fn weight(&self, now: u32) -> u32 {
-        let elapsed = now.wrapping_sub(self.changed);
+    fn weight(&self, now: u16) -> u32 {
+        let elapsed = u32::from(now.wrapping_sub(self.changed));
         (elapsed * RECIPROCAL_Q8[self.duration as usize]).min(256)
     }
 
-    fn restart(&mut self, now: u32, to: Pose) {
+    fn restart(&mut self, now: u16, to: Pose) {
         self.from = to;
         self.to = to;
         self.changed = now;
-        self.duration = THINK_TICKS;
+        self.duration = THINK_TICKS as u8;
     }
 }
 
@@ -131,6 +132,7 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
     /// to draw it.
     pub fn observe(&mut self, key: u16, now: u32, current: Pose) -> Blend {
         debug_assert!(key != EMPTY_KEY);
+        let now = now as u16;
         let mut slot = SLOTS;
         let mut oldest = 0usize;
         let mut oldest_age = 0u32;
@@ -144,7 +146,7 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
             let age = if track.key == EMPTY_KEY {
                 u32::MAX
             } else {
-                now.wrapping_sub(track.seen)
+                u32::from(now.wrapping_sub(track.seen))
             };
             if age >= oldest_age {
                 oldest_age = age;
@@ -165,7 +167,7 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
         }
 
         let track = &mut self.tracks[slot];
-        let unseen = now.wrapping_sub(track.seen);
+        let unseen = u32::from(now.wrapping_sub(track.seen));
         track.seen = now;
         if unseen > STALE_TICKS {
             track.restart(now, current);
@@ -189,7 +191,7 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
             } else {
                 track.from.frame
             };
-            let gap = now.wrapping_sub(track.changed).clamp(2, THINK_TICKS);
+            let gap = u32::from(now.wrapping_sub(track.changed)).clamp(2, THINK_TICKS) as u8;
             track.from = Pose {
                 origin,
                 angles,
@@ -249,7 +251,7 @@ pub fn glide(from: &Pose, to: &Pose, weight_q8: u32) -> ([i32; 3], [i16; 3]) {
 ///
 /// Four bytes are blended per step as two pairs of 16-bit lanes, one multiply
 /// per pair: with `w` in `0..=64`, a lane of `(b - a + 256) * w` stays below
-/// 2^16, and subtracting the constant `256 * w - 32` per lane leaves
+/// 2^16, and adding 32 and subtracting `256 * w` per lane leaves
 /// `a * 64 + (b - a) * w + 32`, which is never negative, so no lane borrows
 /// from its neighbour. That halves the multiplies (each stalls the pipeline
 /// for six cycles) against blending byte by byte.
@@ -259,7 +261,8 @@ pub fn blend_frames(from: &[u8], to: &[u8], weight_q8: u32, out: &mut [u8]) {
     let words = length / 4;
     let bias = 0x0100_0100u32;
     let lanes = 0x00ff_00ffu32;
-    let rounding = (weight * 256).wrapping_sub(32).wrapping_mul(0x0001_0001);
+    let offset = (weight * 256) * 0x0001_0001;
+    let half = 0x0020_0020u32;
     let mut index = 0;
     while index < words {
         let at = index * 4;
@@ -276,8 +279,8 @@ pub fn blend_frames(from: &[u8], to: &[u8], weight_q8: u32, out: &mut [u8]) {
         let (b_even, b_odd) = (b & lanes, (b >> 8) & lanes);
         let m_even = (b_even + bias - a_even) * weight;
         let m_odd = (b_odd + bias - a_odd) * weight;
-        let even = (((a_even << 6) + m_even - rounding) >> 6) & lanes;
-        let odd = (((a_odd << 6) + m_odd - rounding) >> 6) & lanes;
+        let even = (((a_even << 6) + m_even + half - offset) >> 6) & lanes;
+        let odd = (((a_odd << 6) + m_odd + half - offset) >> 6) & lanes;
         let blended = (even | (odd << 8)).to_le();
         // SAFETY: as above.
         unsafe { core::ptr::write_unaligned(out.as_mut_ptr().add(at).cast::<u32>(), blended) };
