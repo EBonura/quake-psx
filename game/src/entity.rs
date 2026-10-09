@@ -930,11 +930,6 @@ impl EntityScene {
         }
     }
 
-    /// `d_lightstylevalue`, for the renderer's face and entity lighting.
-    pub const fn light_styles(&self) -> &[u16; lightstyle::DUMMY_STYLE + 1] {
-        &self.light_styles
-    }
-
     /// `R_AnimateLight`. `tick` is the original's `(int)(time * 10)`.
     ///
     /// Returns true when the table actually changed, so the caller can skip
