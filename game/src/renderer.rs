@@ -90,6 +90,16 @@ const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x7fff;
 #[cfg(feature = "renderer-cell-liquid-policy")]
 const VISIBLE_SURFACE_INDEX_MASK: u16 = 0x3fff;
 #[cfg(feature = "renderer-cell-policy")]
+/// Bits 5 to 7 of a cooked face's flags: the vertical gap, in steps of four
+/// world units, between an up-facing floor and the floor that covers part of it
+/// from above (`quake-cook`'s `stacked_floor_codes`); zero for every other
+/// face. The covered floor is keyed further back by that gap.
+const FACE_STACK_SHIFT: u8 = 5;
+const FACE_STACK_MASK: u8 = 7 << FACE_STACK_SHIFT;
+/// Ordering-table slots in one stack step: four world units at three GTE
+/// depth units each, a slot being four of those.
+const STACK_SLOTS_PER_STEP: u16 = 3;
+
 const VISIBLE_INVARIANT_FRONT_BIT: u16 = 0x8000;
 #[cfg(feature = "renderer-cell-liquid-policy")]
 const VISIBLE_LIQUID_BIT: u16 = 0x4000;
@@ -2076,6 +2086,69 @@ impl Renderer {
                     continue;
                 }
 
+                // A floor that another floor covers from above submits alone
+                // and keys back by their gap (see `push_packets_back`).
+                #[cfg(not(feature = "renderer-census"))]
+                if !near && face.flags & FACE_STACK_MASK != 0 && vertex_count >= 3 {
+                    let submitted = unsafe {
+                        flush_world_batch(
+                            batch_vertices.as_mut_ptr().cast(),
+                            batch_vertex_count,
+                            batch_surfaces.as_ptr().cast(),
+                            batch_surface_count,
+                            next,
+                        )
+                    };
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    batch_vertex_count = 0;
+                    batch_surface_count = 0;
+                    batch_worst_words = 0;
+                    let alone_worst_words = (vertex_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
+                    if !packet_capacity(next, end, alone_worst_words) {
+                        stats.packet_overflow_avoided = true;
+                        break;
+                    }
+                    let vertices = unsafe { batch_vertices_mut(batch_vertices, 0, vertex_count) };
+                    self.materialize_retained_face(indexed, face, unsafe { &*texture }, vertices);
+                    if self.frame_light.is_some() {
+                        self.light_face(visible_index, vertices);
+                    }
+                    batch_surfaces[0].write(ClassicAffineBatchSurface {
+                        first_vertex: 0,
+                        vertex_count: vertex_count as u16,
+                        tpage: unsafe { (*texture).texture_page },
+                        clut: clut_texture(),
+                    });
+                    let first_packet = next;
+                    let submitted = unsafe {
+                        flush_world_batch(
+                            batch_vertices.as_mut_ptr().cast(),
+                            vertex_count,
+                            batch_surfaces.as_ptr().cast(),
+                            1,
+                            next,
+                        )
+                    };
+                    unsafe {
+                        push_packets_back(
+                            first_packet,
+                            submitted.next_packet,
+                            u16::from(face.flags >> FACE_STACK_SHIFT) * STACK_SLOTS_PER_STEP,
+                        )
+                    };
+                    next = submitted.next_packet;
+                    stats.packets = stats.packets.wrapping_add(submitted.packets);
+                    stats.hardware_triangles = stats
+                        .hardware_triangles
+                        .wrapping_add(submitted.hardware_triangles);
+                    stats.visible_faces = stats.visible_faces.saturating_add(1);
+                    continue;
+                }
+
                 let face_worst_words = (reserve_count - 2) * WORST_PACKET_WORDS_PER_TRIANGLE;
                 if batch_vertex_count + reserve_count > BATCH_MAX_VERTICES
                     || batch_surface_count == BATCH_MAX_SURFACES
@@ -3176,7 +3249,8 @@ impl Renderer {
                 frame_index += 1;
                 continue;
             }
-            if texture_flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 {
+            if texture_flags & (TEXTURE_LIQUID | TEXTURE_SKY) != 0 || face.flags & FACE_STACK_MASK != 0
+            {
                 break;
             }
             let vertex_count = face.corner_count as usize;
@@ -7661,6 +7735,31 @@ unsafe fn mark_window_packets_translucent(mut packet: *mut u32, end: *mut u32) {
         let command = unsafe { packet.add(2) };
         unsafe { ptr::write(command, ptr::read(command) | 0x0200_0000) };
         packet = unsafe { packet.add(data_words as usize + 1) };
+    }
+}
+
+/// Move every packet in `packet..end` back in the ordering table by `slots`
+/// (clamped to the last slot), keeping their order relative to each other.
+///
+/// The world pass keys a packet at the average depth of its corners. Where a
+/// floor lies under another floor that overlaps it, the lower one is behind
+/// the upper one on every ray that meets both, by at least the gap between
+/// them, so keying it that much further back orders the pair correctly
+/// without changing what either looks like. Every packet of a face moves by
+/// the same amount, so a split face's sealing underlay stays behind its
+/// pieces.
+#[optimize(size)]
+unsafe fn push_packets_back(mut packet: *mut u32, end: *mut u32, slots: u16) {
+    let last = u32::from(ClassicAffineProfile::QUAKE_REFERENCE.ot_depth) - 1;
+    while packet < end {
+        let tag = unsafe { ptr::read(packet) };
+        let slot = tag & 0xffff;
+        // A slot of 0xffff marks a packet the OT linker skips.
+        if slot != 0xffff {
+            let moved = (slot + u32::from(slots)).min(last);
+            unsafe { ptr::write(packet, (tag & 0xffff_0000) | moved) };
+        }
+        packet = unsafe { packet.add((tag >> 24) as usize + 1) };
     }
 }
 
