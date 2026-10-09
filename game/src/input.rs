@@ -30,6 +30,12 @@ pub struct Input {
     analog_retry: AnalogRetry,
     /// Consecutive connected polls that answered with an unrecognised ID.
     unknown_polls: u8,
+    /// What the motors are asked for on every poll, and whether the pad has
+    /// been told to take it (`rumble` feature only).
+    #[cfg(feature = "rumble")]
+    motors: psx_pad::Rumble,
+    #[cfg(feature = "rumble")]
+    motors_mapped: bool,
 }
 
 impl Input {
@@ -40,6 +46,10 @@ impl Input {
             last_pad: PadState::NONE,
             analog_retry: AnalogRetry::new(),
             unknown_polls: 0,
+            #[cfg(feature = "rumble")]
+            motors: psx_pad::Rumble::OFF,
+            #[cfg(feature = "rumble")]
+            motors_mapped: false,
         };
         input.last_pad = input.poll_clean_pad();
         input
@@ -55,6 +65,9 @@ impl Input {
     /// depend on transient controller state in emulators and on real pads.
     #[optimize(size)]
     fn poll_clean_pad(&mut self) -> PadState {
+        #[cfg(feature = "rumble")]
+        let sampled = self.poll_motors();
+        #[cfg(not(feature = "rumble"))]
         let sampled = poll_port1();
         let mut pad = if sampled.mode == PadMode::Unknown {
             if sampled.is_connected() {
@@ -93,6 +106,35 @@ impl Input {
             }
         }
         pad
+    }
+
+    /// Poll port 1 with the motors asked for `self.motors`, mapping them first
+    /// on a pad that reports analog and has not been mapped since it appeared.
+    #[cfg(feature = "rumble")]
+    #[optimize(size)]
+    fn poll_motors(&mut self) -> PadState {
+        // SAFETY: a token is a logic guard, not a memory-safety one, and this
+        // is the only code polling port 1.
+        let mut port = unsafe { psx_io::periph::ControllerPort::steal() };
+        let sampled = psx_pad::poll_rumble_on(&mut port, psx_pad::Port::One, self.motors);
+        if !sampled.is_connected() {
+            self.motors_mapped = false;
+        } else if sampled.is_analog() && !self.motors_mapped {
+            // Blocks a few frames, once per plug-in. A pad that refuses is not
+            // asked again until it is unplugged.
+            self.motors_mapped = true;
+            psx_pad::enable_rumble_on(&mut port, psx_pad::Port::One);
+        }
+        sampled
+    }
+
+    /// The motor request sent with every poll from now on.
+    #[inline(always)]
+    pub fn set_rumble(&mut self, #[allow(unused)] rumble: crate::rumble::Request) {
+        #[cfg(feature = "rumble")]
+        {
+            self.motors = rumble;
+        }
     }
 
     /// Produce one gameplay sample for this frame. Analog filtering
