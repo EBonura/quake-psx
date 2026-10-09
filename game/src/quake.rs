@@ -1254,15 +1254,6 @@ pub fn run() -> ! {
     }
 }
 
-/// Build the end-of-level panel for the map that was just finished.
-///
-/// `SelectIntermissionPoint` picks a random `info_intermission`; this port
-/// takes the first authored one so the panel is deterministic, and falls back
-/// to the player's own eye when a map authors none.
-/// Keep this out of line. Inlining changes MIPS register allocation and frame
-/// timing enough to alter the input-driven E1M1 route.
-#[optimize(size)]
-#[inline(never)]
 /// Hand the renderer this frame's lightstyle table (stepped, or gliding under
 /// the LIGHTS option) and the presentation options. One out-of-line call for
 /// the three places a frame is drawn.
@@ -1281,6 +1272,15 @@ fn set_frame_styles(
     );
 }
 
+/// Build the end-of-level panel for the map that was just finished.
+///
+/// `SelectIntermissionPoint` picks a random `info_intermission`; this port
+/// takes the first authored one so the panel is deterministic, and falls back
+/// to the player's own eye when a map authors none.
+/// Keep this out of line. Inlining changes MIPS register allocation and frame
+/// timing enough to alter the input-driven E1M1 route.
+#[optimize(size)]
+#[inline(never)]
 fn begin_intermission(
     world: &crate::asset::ResidentMap,
     entities: &crate::entity::EntityScene,
