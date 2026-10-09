@@ -20,6 +20,12 @@ use crate::platform::{self, StorageError};
 const GLOBAL_SOUND_CHUNK: u32 = 3;
 const VIDEO_TICKS_HZ: u32 = 60;
 const SAMPLES_PER_ADPCM_BLOCK: u32 = 28;
+/// Resident sounds the bank table holds: the 37 global effects plus one map's
+/// own. Episode 1's worst map needs 101, so the table is sized to that rather
+/// than the format's 255-record ceiling (12 bytes each from the bump heap); the
+/// host cooker mirrors this bound and refuses a map above it.
+const AUDIO_EFFECT_CAPACITY: usize = 104;
+const _: () = assert!(AUDIO_EFFECT_CAPACITY <= SOUND_MAX_EFFECTS);
 const MAX_AMBIENT_VOICES: usize = 11;
 const AMBIENT_FIRST_VOICE: u8 = 1;
 // E1M4 authors 31 ordinary ambience points. Equal samples share one hardware
@@ -199,7 +205,7 @@ struct AmbientSource {
 impl AudioBank {
     pub fn new() -> Self {
         Self {
-            effects: Vec::with_capacity(SOUND_MAX_EFFECTS),
+            effects: Vec::with_capacity(AUDIO_EFFECT_CAPACITY),
             global_effect_count: 0,
             global_content_hash: 0,
             global_spu_high_water: 0,
@@ -730,7 +736,7 @@ fn load_versioned_bank(
     let combined_count = retain_count
         .checked_add(records.len())
         .ok_or(AudioLoadError::TooManySounds)?;
-    if combined_count > SOUND_MAX_EFFECTS || retain_count > effects.len() {
+    if combined_count > AUDIO_EFFECT_CAPACITY || retain_count > effects.len() {
         return Err(AudioLoadError::TooManySounds);
     }
     for effect in records.iter() {

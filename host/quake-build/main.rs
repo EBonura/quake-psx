@@ -2181,6 +2181,8 @@ const GUEST_MAX_TRIGGERS: usize = 28;
 const GUEST_MAX_TELEPORTS: usize = 13;
 const GUEST_MAX_TRAINS: usize = 6;
 const GUEST_MAX_FIREBALL_EMITTERS: usize = 16;
+/// `AUDIO_EFFECT_CAPACITY` in `game/src/audio.rs`.
+const GUEST_AUDIO_EFFECT_CAPACITY: usize = 104;
 /// `COLLISION_PLANE_CAPACITY` and `RENDER_TEXTURE_CAPACITY` in `game/src/asset.rs`.
 const GUEST_COLLISION_PLANE_CAPACITY: usize = 2_960;
 const GUEST_RENDER_TEXTURE_CAPACITY: usize = 96;
@@ -3677,6 +3679,7 @@ fn validate_persistent_sound_corpus(root: &Path) -> Result<()> {
     let mut monolithic_bytes = 0usize;
     let mut suffix_bytes = 0usize;
     let mut max_spu = global.spu_high_water;
+    let mut worst_effects = 0usize;
     for map in [
         "start", "e1m1", "e1m2", "e1m3", "e1m4", "e1m5", "e1m6", "e1m7", "e1m8",
     ] {
@@ -3712,13 +3715,20 @@ fn validate_persistent_sound_corpus(root: &Path) -> Result<()> {
             + (local.spu_high_water - quake_formats::SOUND_SPU_BASE) as usize;
         suffix_bytes += sound.len();
         max_spu = max_spu.max(local.spu_high_water);
+        worst_effects = worst_effects.max(global_effects.len() + local_effects.len());
     }
     let persistent_bytes = global_bytes.len() + suffix_bytes;
     if max_spu > SOUND_SPU_END || persistent_bytes >= monolithic_bytes {
         return Err("persistent sound corpus has no validated size or SPU benefit".into());
     }
+    if worst_effects > GUEST_AUDIO_EFFECT_CAPACITY {
+        return Err(format!(
+            "a map needs {worst_effects} resident sounds, the guest holds {GUEST_AUDIO_EFFECT_CAPACITY}"
+        )
+        .into());
+    }
     println!(
-        "QSB1 sound corpus: {monolithic_bytes} -> {persistent_bytes} bytes (-{}), {} global sounds, SPU high-water {max_spu:#x}/{SOUND_SPU_END:#x}",
+        "QSB1 sound corpus: {monolithic_bytes} -> {persistent_bytes} bytes (-{}), {} global sounds, worst map {worst_effects}/{GUEST_AUDIO_EFFECT_CAPACITY} resident sounds, SPU high-water {max_spu:#x}/{SOUND_SPU_END:#x}",
         monolithic_bytes - persistent_bytes,
         global_effects.len(),
     );
