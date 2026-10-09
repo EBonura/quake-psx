@@ -34,6 +34,8 @@
 //! * `reach`    - flood the walkable set from a point as an ASCII height map.
 //! * `path`     - breadth-first walkable route between authored points.
 //! * `route`    - walk a waypoint list from stdin with ordinary movement input.
+//! * `slopes`   - walk every walkable ramp face uphill with ordinary movement input
+//!                and report the ones the player cannot climb.
 //! * `tape`     - replay a recorded `PXITAPE2` input tape through the movement code,
 //!                one frame per controller poll, and print the pose of each.
 //!
@@ -538,6 +540,7 @@ fn main() {
         "reach" => flood_reach(&scene, &args),
         "route" => run_route(&scene, &args),
         "tape" => run_tape(&scene, &args),
+        "slopes" => sweep_slopes(&scene, &args),
         other => {
             eprintln!("unknown mode {other}");
             std::process::exit(2);
@@ -1844,6 +1847,14 @@ fn run_route(scene: &Scene, args: &[String]) {
     }
 }
 
+/// `psx_pad::aim_curve`: 45% linear plus 55% cubic.
+fn aim_curve(value: i32) -> i32 {
+    let value = value.clamp(-128, 128);
+    let magnitude = value.abs();
+    let cubic = magnitude * magnitude / 128 * magnitude / 128;
+    value.signum() * ((magnitude * 45 + cubic * 55) / 100)
+}
+
 /// `tape <tape.pxtape> <polls.txt> [--first-poll N] [--last-poll N] [--yaw Y]`
 ///
 /// Replays a poll-bound `PXITAPE2` recording through the guest's own movement
@@ -1854,15 +1865,8 @@ fn run_route(scene: &Scene, args: &[String]) {
 /// approximation of the recorded session (no monsters, doors dropped through
 /// `ROUTESIM_OPEN_MOVERS`), good for locating where a recorded player stood.
 ///
-/// One line per frame: `poll tick ticks x y z vx vy grounded forward strafe`.
-/// `psx_pad::aim_curve`: 45% linear plus 55% cubic.
-fn aim_curve(value: i32) -> i32 {
-    let value = value.clamp(-128, 128);
-    let magnitude = value.abs();
-    let cubic = magnitude * magnitude / 128 * magnitude / 128;
-    value.signum() * ((magnitude * 45 + cubic * 55) / 100)
-}
-
+/// One line per frame: `poll tick ticks x y z vx vy grounded forward strafe yaw
+/// pitch`.
 fn run_tape(scene: &Scene, args: &[String]) {
     let tape = std::fs::read(&args[3]).expect("tape file");
     assert_eq!(&tape[..8], b"PXITAPE2", "not a PXITAPE2 tape");
@@ -1971,6 +1975,222 @@ fn run_tape(scene: &Scene, args: &[String]) {
             "{poll} {tick} {ticks} {} {} {} {} {} {} {forward} {strafe} {} {}",
             o.x, o.y, o.z, v.x >> 12, v.y >> 12, u8::from(state.grounded()), yaw & 0x0fff, pitch
         );
+    }
+}
+
+/// `slopes [--ticks n]... [--run units] [--verbose]`
+///
+/// Walks every ramp the world offers. A ramp is a face whose plane is
+/// walkable (`quake_core` ground rule, normal Z at least 0.7) but not level.
+/// BSP carving cuts one ramp into many small faces, so the walk is not bound
+/// to a face: it starts 24 units downhill of the face centre and follows the
+/// uphill line for up to `--run` units (default 96) while the hull floor stays
+/// continuous, then holds full forward from standstill at each requested tick
+/// batch (the guest consumes one to four 60 Hz ticks per frame). A ramp is
+/// reported when that straight line is walkable geometry end to end (so a
+/// wall or a ledge is not blamed on the slope) yet the player stops short of
+/// it. Exit status 1 when any ramp blocks.
+fn sweep_slopes(scene: &Scene, args: &[String]) {
+    let mut tick_list: Vec<u16> = Vec::new();
+    let mut verbose = false;
+    let mut run_units = 96.0f64;
+    let mut index = 3;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ticks" => {
+                tick_list.push(args[index + 1].parse().expect("--ticks n"));
+                index += 2;
+            }
+            "--run" => {
+                run_units = args[index + 1].parse().expect("--run units");
+                index += 2;
+            }
+            "--verbose" => {
+                verbose = true;
+                index += 1;
+            }
+            other => panic!("unknown slopes argument {other}"),
+        }
+    }
+    if tick_list.is_empty() {
+        tick_list = vec![1, 2, 3, 4];
+    }
+    const WALKABLE_NORMAL_Z: i32 = 2_867;
+    const LEAD_IN: f64 = 24.0;
+    const SAMPLE: f64 = 4.0;
+    let planes = scene.map.planes();
+    let indexed = scene.map.indexed_vertices();
+    let plain = if indexed.is_none() { Some(scene.map.vertices()) } else { None };
+    let corner_position = |corner: usize| -> Option<[i16; 3]> {
+        if let Some(indexed) = indexed {
+            let position = indexed
+                .positions
+                .get(usize::from(indexed.corners.get(corner)?.position_index))?;
+            Some(position.position)
+        } else {
+            let vertex = plain?.get(corner)?;
+            Some([vertex.position.x, vertex.position.y, vertex.position.z])
+        }
+    };
+    let leaves = scene.map.leaves();
+    let map = &scene.map;
+    let collision = SceneTrace { scene, blocker: std::cell::Cell::new(None) };
+    let mut scratch = TraceScratch::default();
+    let mut movement_scratch = MovementScratch::default();
+    let (mut tested, mut blocked) = (0u32, 0u32);
+    let mut seen: std::collections::HashSet<(i32, i32, i32)> = std::collections::HashSet::new();
+    for (face_index, face) in scene.map.faces().iter().enumerate() {
+        let Some(plane) = planes.get(face.plane as usize) else { continue };
+        // A back-side face looks along the plane's reverse normal.
+        let sign = if face.flags & quake_formats::FACE_BACKSIDE != 0 { -1i32 } else { 1 };
+        let nz = i32::from(plane.normal.z) * sign;
+        if !(WALKABLE_NORMAL_Z..4_080).contains(&nz) {
+            continue;
+        }
+        let (nx, ny) = (
+            f64::from(i32::from(plane.normal.x) * sign) / 4096.0,
+            f64::from(i32::from(plane.normal.y) * sign) / 4096.0,
+        );
+        let polygon: Vec<[f64; 2]> = (0..face.vertex_count as usize)
+            .filter_map(|corner| corner_position(face.first_vertex as usize + corner))
+            .map(|position| [f64::from(position[0]), f64::from(position[1])])
+            .collect();
+        if polygon.len() < 3 {
+            continue;
+        }
+        let flat = (nx * nx + ny * ny).sqrt();
+        let (dx, dy) = (-nx / flat, -ny / flat);
+        let count = polygon.len() as f64;
+        let centre = [
+            polygon.iter().map(|p| p[0]).sum::<f64>() / count,
+            polygon.iter().map(|p| p[1]).sum::<f64>() / count,
+        ];
+        let plane_z = |x: f64, y: f64| -> f64 {
+            (f64::from(plane.distance) * f64::from(sign) / 4096.0 - nx * x - ny * y)
+                / (f64::from(nz) / 4096.0)
+        };
+        // The hull origin that rests on this plane: 24 above the floor plus
+        // the corner of the 32 wide box that meets the slope first.
+        let rest = |x: f64, y: f64| -> i32 {
+            (plane_z(x, y) + 24.0 + 16.0 * (nx.abs() + ny.abs()) / (f64::from(nz) / 4096.0)).round()
+                as i32
+        };
+        let origin_at = |t: f64| -> [i32; 2] {
+            [(centre[0] + dx * t).round() as i32, (centre[1] + dy * t).round() as i32]
+        };
+        let from_xy = origin_at(-LEAD_IN);
+        let key = (from_xy[0].div_euclid(16), from_xy[1].div_euclid(16), (dx * 8.0).round() as i32 * 16 + (dy * 8.0).round() as i32);
+        if !seen.insert(key) {
+            continue;
+        }
+        let Some(start_z) = floor_below(
+            scene,
+            from_xy[0],
+            from_xy[1],
+            rest(f64::from(from_xy[0]), f64::from(from_xy[1])) + STEP_HEIGHT,
+            3 * STEP_HEIGHT,
+            &mut scratch,
+        ) else {
+            if verbose {
+                println!("  skip face {face_index}: no standing floor 24 units downhill");
+            }
+            continue;
+        };
+        // Follow the uphill line while the hull floor stays continuous.
+        let mut end = [from_xy[0], from_xy[1], start_z];
+        let mut previous = start_z;
+        let mut t = -LEAD_IN;
+        while t - (-LEAD_IN) < run_units {
+            t += SAMPLE;
+            let xy = origin_at(t);
+            let Some(floor) =
+                floor_below(scene, xy[0], xy[1], previous + STEP_HEIGHT, 2 * STEP_HEIGHT, &mut scratch)
+            else {
+                break;
+            };
+            // A step is not a ramp: stop where the floor jumps.
+            if (floor - previous).abs() > 6 {
+                break;
+            }
+            previous = floor;
+            end = [xy[0], xy[1], floor];
+        }
+        let start = [from_xy[0], from_xy[1], start_z];
+        let length = (f64::from(end[0] - start[0]).powi(2) + f64::from(end[1] - start[1]).powi(2)).sqrt();
+        // Need the ramp itself on the line, not only the lead-in.
+        if length < LEAD_IN + 16.0 || end[2] - start[2] < 4 {
+            if verbose {
+                println!("  skip face {face_index}: floor line ends after {length:.0} units");
+            }
+            continue;
+        }
+        if !walkable_segment(scene, start, end, STEP_HEIGHT, &mut scratch) {
+            if verbose {
+                println!("  skip face {face_index}: line is not clear walkable geometry");
+            }
+            continue;
+        }
+        tested += 1;
+        let yaw = psx_math::atan2_q12(
+            (dy * 4096.0).round() as i32,
+            (dx * 4096.0).round() as i32,
+        );
+        let mut worst: Option<(u16, f64, [i32; 3])> = None;
+        for &ticks in &tick_list {
+            let mut state = MovementState::new(Vec3I32 {
+                x: start[0] << 12,
+                y: start[1] << 12,
+                z: start[2] << 12,
+            });
+            let mut moved = 0.0f64;
+            // The player covers at most 320 units a second; allow ten times
+            // the time the climb needs before calling it stuck.
+            let frames = ((length / 320.0 * 60.0 / f64::from(ticks)) * 10.0).ceil() as u32 + 8;
+            for _ in 0..frames {
+                state.update_ticks_with_gravity(
+                    &collision,
+                    &mut movement_scratch,
+                    MovementInput {
+                        forward: 127,
+                        strafe: 0,
+                        yaw: yaw & 0x0fff,
+                        pitch: 0,
+                        jump: false,
+                    },
+                    ticks,
+                    quake_core::movement::DEFAULT_GRAVITY,
+                    |point| {
+                        let leaf = map.point_leaf_index(*point)?;
+                        Some(leaves.get(leaf)?.contents)
+                    },
+                );
+                let o = state.origin();
+                moved = f64::from(units(o.x) - start[0]) * dx + f64::from(units(o.y) - start[1]) * dy;
+                if moved >= length {
+                    break;
+                }
+            }
+            if moved < length - 4.0 && worst.is_none_or(|(_, m, _)| moved < m) {
+                let o = state.origin();
+                worst = Some((ticks, moved, [units(o.x), units(o.y), units(o.z)]));
+            }
+        }
+        if let Some((ticks, moved, stuck)) = worst {
+            blocked += 1;
+            println!(
+                "BLOCKED face {face_index} nz {nz} from ({},{},{}) to ({},{},{}) length {length:.0}: ticks {ticks} stopped after {moved:.0} at ({},{},{})",
+                start[0], start[1], start[2], end[0], end[1], end[2], stuck[0], stuck[1], stuck[2]
+            );
+        } else if verbose {
+            println!(
+                "ok      face {face_index} nz {nz} from ({},{},{}) to ({},{},{}) length {length:.0}",
+                start[0], start[1], start[2], end[0], end[1], end[2]
+            );
+        }
+    }
+    println!("SLOPES tested {tested} blocked {blocked}");
+    if blocked != 0 {
+        std::process::exit(1);
     }
 }
 
