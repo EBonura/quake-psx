@@ -44,19 +44,16 @@ pub struct Pose {
 
 /// How to draw a model this frame.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Blend {
-    /// The pose being glided from. The pose being glided to is the one the
-    /// caller passed in.
-    pub from: Pose,
-    /// Progress from `from` (0) to the current pose (256).
+pub struct Shown {
+    /// Where to draw it: the sim's pose glided part of the way from the
+    /// previous one.
+    pub origin: [i32; 3],
+    pub angles: [i16; 3],
+    /// The animation frame being blended from; blend it with the current frame
+    /// by `weight_q8` unless it is the same frame.
+    pub from_frame: u16,
+    /// Progress from the previous pose (0) to the current one (256).
     pub weight_q8: u32,
-}
-
-impl Blend {
-    /// Nothing to blend: draw the current pose as the sim has it.
-    pub const fn settled(&self) -> bool {
-        self.weight_q8 >= 256
-    }
 }
 
 #[derive(Copy, Clone)]
@@ -123,24 +120,21 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
         }
     }
 
-    /// Forget every model, e.g. on a level load.
-    pub fn clear(&mut self) {
-        self.tracks = [Track::EMPTY; SLOTS];
-    }
-
     /// Record the sim's current pose for `key` at tick `now` and return how
     /// to draw it.
-    pub fn observe(&mut self, key: u16, now: u32, current: Pose) -> Blend {
+    #[optimize(size)]
+    #[inline(never)]
+    pub fn observe(&mut self, key: u16, now: u32, current: Pose) -> Shown {
         debug_assert!(key != EMPTY_KEY);
         let now = now as u16;
-        let mut slot = SLOTS;
-        let mut oldest = 0usize;
-        let mut oldest_age = 0u32;
-        let mut index = 0usize;
-        while index < SLOTS {
-            let track = &self.tracks[index];
+        // The entry for `key`, else the one unseen for longest (empty first).
+        let mut slot = 0usize;
+        let mut oldest = 0u32;
+        let mut found = false;
+        for (index, track) in self.tracks.iter().enumerate() {
             if track.key == key {
                 slot = index;
+                found = true;
                 break;
             }
             let age = if track.key == EMPTY_KEY {
@@ -148,42 +142,22 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
             } else {
                 u32::from(now.wrapping_sub(track.seen))
             };
-            if age >= oldest_age {
-                oldest_age = age;
-                oldest = index;
+            if age >= oldest {
+                oldest = age;
+                slot = index;
             }
-            index += 1;
         }
-        if slot == SLOTS {
-            slot = oldest;
-            let track = &mut self.tracks[slot];
-            track.key = key;
-            track.restart(now, current);
-            track.seen = now;
-            return Blend {
-                from: current,
-                weight_q8: 256,
-            };
-        }
-
         let track = &mut self.tracks[slot];
-        let unseen = u32::from(now.wrapping_sub(track.seen));
+        let fresh = !found
+            || u32::from(now.wrapping_sub(track.seen)) > STALE_TICKS
+            || snaps(&track.to, &current);
+        track.key = key;
         track.seen = now;
-        if unseen > STALE_TICKS {
+        if fresh {
             track.restart(now, current);
-            return Blend {
-                from: current,
-                weight_q8: 256,
-            };
-        }
-        if track.to != current {
-            if snaps(&track.to, &current) {
-                track.restart(now, current);
-                return Blend {
-                    from: current,
-                    weight_q8: 256,
-                };
-            }
+        } else if track.to != current {
+            // Continue from where the model was last drawn, so a glide cut
+            // short by the next step does not jump.
             let weight = track.weight(now);
             let (origin, angles) = glide(&track.from, &track.to, weight);
             let frame = if weight >= 128 {
@@ -191,7 +165,7 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
             } else {
                 track.from.frame
             };
-            let gap = u32::from(now.wrapping_sub(track.changed)).clamp(2, THINK_TICKS) as u8;
+            track.duration = u32::from(now.wrapping_sub(track.changed)).clamp(2, THINK_TICKS) as u8;
             track.from = Pose {
                 origin,
                 angles,
@@ -200,15 +174,23 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
             };
             track.to = current;
             track.changed = now;
-            track.duration = gap;
         }
-        Blend {
-            from: track.from,
-            weight_q8: track.weight(now),
+        let weight = track.weight(now);
+        let (origin, angles) = if weight >= 256 {
+            (current.origin, current.angles)
+        } else {
+            glide(&track.from, &current, weight)
+        };
+        Shown {
+            origin,
+            angles,
+            from_frame: track.from.frame,
+            weight_q8: weight,
         }
     }
 }
 
+#[optimize(size)]
 fn snaps(old: &Pose, new: &Pose) -> bool {
     if old.model != new.model {
         return true;
@@ -226,6 +208,7 @@ fn snaps(old: &Pose, new: &Pose) -> bool {
 /// Origin and angles at `weight_q8` of the way from `from` to `to`.
 ///
 /// Angles take the short way round the circle.
+#[optimize(size)]
 pub fn glide(from: &Pose, to: &Pose, weight_q8: u32) -> ([i32; 3], [i16; 3]) {
     let weight = weight_q8.min(256) as i32;
     let mut origin = [0i32; 3];
@@ -308,12 +291,17 @@ mod tests {
         }
     }
 
+    fn unglided(shown: &Shown, current: &Pose) -> bool {
+        shown.weight_q8 >= 256 || shown.from_frame == current.frame && shown.origin == current.origin
+    }
+
     #[test]
     fn first_sight_draws_the_sim_pose() {
         let mut tracker = PoseTracker::<4>::new();
-        let blend = tracker.observe(3, 100, pose(10, 0, 5));
-        assert!(blend.settled());
-        assert_eq!(blend.from, pose(10, 0, 5));
+        let current = pose(10, 0, 5);
+        let shown = tracker.observe(3, 100, current);
+        assert_eq!(shown.origin, current.origin);
+        assert_eq!(shown.from_frame, 5);
     }
 
     #[test]
@@ -322,17 +310,20 @@ mod tests {
         tracker.observe(3, 100, pose(10, 0, 5));
         // Steady for a think, then the sim steps.
         tracker.observe(3, 104, pose(10, 0, 5));
-        let blend = tracker.observe(3, 106, pose(20, 0, 6));
-        assert_eq!(blend.weight_q8, 0);
-        assert_eq!(blend.from, pose(10, 0, 5));
+        let shown = tracker.observe(3, 106, pose(20, 0, 6));
+        assert_eq!(shown.weight_q8, 0);
+        assert_eq!(shown.from_frame, 5);
+        assert_eq!(shown.origin[0], 10 << 12);
         // Half a think later the glide is half way.
-        let blend = tracker.observe(3, 109, pose(20, 0, 6));
-        assert_eq!(blend.weight_q8, 3 * 43);
-        let (origin, _) = glide(&blend.from, &pose(20, 0, 6), blend.weight_q8);
-        assert!(origin[0] > 14 << 12 && origin[0] < 16 << 12);
+        let shown = tracker.observe(3, 109, pose(20, 0, 6));
+        assert_eq!(shown.weight_q8, 3 * 43);
+        assert!(shown.origin[0] > 14 << 12 && shown.origin[0] < 16 << 12);
         // And it lands on the new pose after a full think and holds there.
-        assert!(tracker.observe(3, 112, pose(20, 0, 6)).settled());
-        assert!(tracker.observe(3, 130, pose(20, 0, 6)).settled());
+        for now in [112, 120] {
+            let shown = tracker.observe(3, now, pose(20, 0, 6));
+            assert_eq!(shown.weight_q8, 256);
+            assert_eq!(shown.origin[0], 20 << 12);
+        }
     }
 
     #[test]
@@ -344,11 +335,10 @@ mod tests {
         for _ in 0..40 {
             now += 2;
             x += 4;
-            let blend = tracker.observe(1, now, pose(x, 0, 0));
+            let shown = tracker.observe(1, now, pose(x, 0, 0));
             // A model that moves on every observation starts each glide where
             // the last one was, so it trails by no more than one step.
-            let (origin, _) = glide(&blend.from, &pose(x, 0, 0), blend.weight_q8);
-            assert!(origin[0] >= (x - 4) << 12 && origin[0] <= x << 12);
+            assert!(shown.origin[0] >= (x - 4) << 12 && shown.origin[0] <= x << 12);
         }
     }
 
@@ -359,9 +349,8 @@ mod tests {
         tracker.observe(1, 6, pose(12, 0, 1));
         // Three ticks into the glide the sim steps again.
         let before = tracker.observe(1, 9, pose(12, 0, 1));
-        let (shown, _) = glide(&before.from, &pose(12, 0, 1), before.weight_q8);
         let after = tracker.observe(1, 9, pose(24, 0, 2));
-        assert_eq!(after.from.origin[0], shown[0]);
+        assert_eq!(after.origin[0], before.origin[0]);
         assert_eq!(after.weight_q8, 0);
     }
 
@@ -369,11 +358,16 @@ mod tests {
     fn teleports_models_and_long_absences_snap() {
         let mut tracker = PoseTracker::<4>::new();
         tracker.observe(1, 0, pose(0, 0, 0));
-        assert!(tracker.observe(1, 6, pose(500, 0, 0)).settled());
+        let far = pose(500, 0, 0);
+        let shown = tracker.observe(1, 6, far);
+        assert!(unglided(&shown, &far));
         let mut other = pose(500, 0, 3);
         other.model = 9;
-        assert!(tracker.observe(1, 12, other).settled());
-        assert!(tracker.observe(1, 200, pose(510, 0, 4)).settled());
+        let shown = tracker.observe(1, 12, other);
+        assert_eq!((shown.from_frame, shown.origin), (3, other.origin));
+        let back = pose(510, 0, 4);
+        let shown = tracker.observe(1, 200, back);
+        assert_eq!((shown.from_frame, shown.origin), (4, back.origin));
     }
 
     #[test]
@@ -434,8 +428,8 @@ mod tests {
         // Key 3 evicts key 1 (unseen longest); key 2 keeps its glide state.
         tracker.observe(3, 4, pose(0, 0, 0));
         tracker.observe(2, 6, pose(0, 0, 0));
-        let blend = tracker.observe(2, 8, pose(8, 0, 1));
-        assert_eq!(blend.weight_q8, 0);
-        assert_eq!(blend.from, pose(0, 0, 0));
+        let shown = tracker.observe(2, 8, pose(8, 0, 1));
+        assert_eq!(shown.weight_q8, 0);
+        assert_eq!(shown.from_frame, 0);
     }
 }
