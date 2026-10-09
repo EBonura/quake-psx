@@ -321,7 +321,7 @@ pub fn run() -> ! {
             entities.update();
             audio.spatialize(camera.origin, camera.angles[1]);
             entities.animate_lights(&world, audio_tick);
-            renderer.set_light_styles(entities.light_styles());
+            set_frame_styles(&mut renderer, &mut entities, audio_tick, &menu.view());
             renderer.set_dynamic_lights(&dynamic_lights);
             let _ = renderer.draw_frame(
                 &world,
@@ -448,7 +448,7 @@ pub fn run() -> ! {
             let camera = player.camera();
             audio.spatialize(camera.origin, camera.angles[1]);
             entities.animate_lights(&world, audio_tick);
-            renderer.set_light_styles(entities.light_styles());
+            set_frame_styles(&mut renderer, &mut entities, audio_tick, &view);
             renderer.set_dynamic_lights(&dynamic_lights);
             let view_contents = renderer.view_contents(&world, camera);
             let _ = renderer.draw_frame(
@@ -1205,7 +1205,7 @@ pub fn run() -> ! {
         #[cfg(feature = "visual-parity-regression")]
         let render_light_tick = 0;
         entities.animate_lights(&world, render_light_tick);
-        renderer.set_light_styles(entities.light_styles());
+        set_frame_styles(&mut renderer, &mut entities, render_light_tick, &menu_view);
         renderer.set_dynamic_lights(&dynamic_lights);
         // `V_SetContentsColor (r_viewleaf->contents)` and `r_dowarp`: the tint
         // and the warp follow the leaf the drawn eye is in. The player's
@@ -1252,6 +1252,23 @@ pub fn run() -> ! {
         #[cfg(feature = "episode1-regression")]
         crate::regression::observe_render(_render_stats);
     }
+}
+
+/// Hand the renderer this frame's lightstyle table (stepped, or gliding under
+/// the LIGHTS option) and the presentation options. One out-of-line call for
+/// the three places a frame is drawn.
+#[inline(never)]
+fn set_frame_styles(
+    renderer: &mut crate::renderer::Renderer,
+    entities: &mut crate::entity::EntityScene,
+    tick: u32,
+    view: &quake_core::menu::MenuView,
+) {
+    let smooth = view.light_mode.smooth();
+    let (current, next, weight) = entities.frame_light_styles(tick, smooth);
+    renderer.set_light_styles(current, next, weight, smooth);
+    #[cfg(feature = "smooth-poses")]
+    renderer.set_smooth_poses(view.pose_mode.smooth());
 }
 
 /// Build the end-of-level panel for the map that was just finished.

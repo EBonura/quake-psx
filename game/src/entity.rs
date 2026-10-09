@@ -232,6 +232,10 @@ impl RenderEntity {
     pub const fn is_projectile(&self) -> bool {
         self.projectile
     }
+
+    pub const fn is_monster(&self) -> bool {
+        self.monster.is_some()
+    }
 }
 
 pub struct EntityScene {
@@ -290,6 +294,11 @@ pub struct EntityScene {
     /// The animation tick the table was last written for, so a frame that
     /// lands inside the same tenth of a second does no work.
     light_style_tick: u32,
+    /// The animated styles one animation tick ahead of `light_styles`. Only
+    /// the smooth lighting option reads or writes it.
+    light_styles_next: [u16; lightstyle::DUMMY_STYLE + 1],
+    /// The animation tick `light_styles_next` was written for.
+    light_style_next_tick: u32,
     /// One bit per cooked source index: this `light` is currently off, which
     /// is the original's own `START_OFF` spawnflag after `light_use` has
     /// flipped it. Two lights may share a style, so the state cannot live in
@@ -907,6 +916,8 @@ impl EntityScene {
             intermission: None,
             light_styles: lightstyle::initial_values(),
             light_style_tick: u32::MAX,
+            light_styles_next: lightstyle::initial_values(),
+            light_style_next_tick: u32::MAX,
             light_off: [0; LIGHT_STATE_WORDS],
             skill: 0,
             runes: 0,
@@ -914,11 +925,6 @@ impl EntityScene {
             sight_alert_ticks: 0,
             player_invisible: false,
         }
-    }
-
-    /// `d_lightstylevalue`, for the renderer's face and entity lighting.
-    pub const fn light_styles(&self) -> &[u16; lightstyle::DUMMY_STYLE + 1] {
-        &self.light_styles
     }
 
     /// `R_AnimateLight`. `tick` is the original's `(int)(time * 10)`.
@@ -954,6 +960,40 @@ impl EntityScene {
             };
             entity.light = leaf_light(leaf.lightmap, leaf.light_styles, &styles);
         }
+    }
+
+    /// The style tables for the frame at `vblank`: this tick's, the next
+    /// tick's, and how far the frame is between them (Q8).
+    ///
+    /// Quake steps a style from one letter to the next ten times a second.
+    /// With `smooth` the weight is `phase / 6` and the renderer glides the
+    /// animated styles to it; stepped, the weight is zero and the next table
+    /// is not touched. A face's light is linear in its style values, so
+    /// gliding the style scalar glides every face and entity sample that
+    /// reads it, with no per-face work. Call after
+    /// [`animate_lights`](Self::animate_lights) in the same frame: it reads the
+    /// table that call just wrote.
+    #[optimize(size)]
+    #[inline(never)]
+    pub fn frame_light_styles(
+        &mut self,
+        vblank: u32,
+        smooth: bool,
+    ) -> (
+        &[u16; lightstyle::DUMMY_STYLE + 1],
+        &[u16; lightstyle::DUMMY_STYLE + 1],
+        u32,
+    ) {
+        let mut weight = 0;
+        if smooth {
+            let tick = vblank / LIGHT_STYLE_VBLANKS;
+            if self.light_style_next_tick != tick {
+                self.light_style_next_tick = tick;
+                lightstyle::animate_next(&mut self.light_styles_next, tick);
+            }
+            weight = u32::from(lightstyle::PHASE_WEIGHTS_Q8[(vblank % LIGHT_STYLE_VBLANKS) as usize]);
+        }
+        (&self.light_styles, &self.light_styles_next, weight)
     }
 
     const fn light_is_off(&self, source_index: u16) -> bool {
@@ -1049,6 +1089,7 @@ impl EntityScene {
         // only the switchable half is seeded here.
         self.light_styles = lightstyle::initial_values();
         self.light_style_tick = u32::MAX;
+        self.light_style_next_tick = u32::MAX;
         self.light_off = [0; LIGHT_STATE_WORDS];
         for (source_index, source) in map.entities().iter().enumerate() {
             if !quake_core::targets::is_light_class(source.class_name) {
