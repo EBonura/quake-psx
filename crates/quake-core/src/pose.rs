@@ -29,13 +29,14 @@ const SNAP_Q12: i32 = SNAP_UNITS << 12;
 /// so a masked index needs no bounds check.
 const RECIPROCAL_Q8: [u32; 8] = [0, 256, 128, 85, 64, 51, 43, 0];
 
-/// What the sim currently says about one model.
+/// What the sim currently says about one model. Pitch and roll are not here:
+/// they follow what the model is doing and are never glided.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Pose {
     /// Q20.12 world origin.
     pub origin: [i32; 3],
-    /// Quake angles, `65536` to the turn.
-    pub angles: [i16; 3],
+    /// Quake yaw, `65536` to the turn.
+    pub yaw: i16,
     /// Animation frame of `model`.
     pub frame: u16,
     /// Alias model id. A different model never glides: its frames mean
@@ -49,7 +50,7 @@ pub struct Shown {
     /// Where to draw it: the sim's pose glided part of the way from the
     /// previous one.
     pub origin: [i32; 3],
-    pub angles: [i16; 3],
+    pub yaw: i16,
     /// The animation frame being blended from; blend it with the current frame
     /// by `weight_q8` unless it is the same frame.
     pub from_frame: u16,
@@ -57,6 +58,8 @@ pub struct Shown {
     pub weight_q8: u32,
 }
 
+/// One tracked model. Plain fields, so that starting or updating one is a few
+/// stores rather than a copy of a structure.
 #[derive(Copy, Clone)]
 struct Track {
     key: u16,
@@ -64,8 +67,13 @@ struct Track {
     seen: u16,
     changed: u16,
     duration: u8,
-    from: Pose,
-    to: Pose,
+    model: i16,
+    prev_frame: u16,
+    frame: u16,
+    prev_yaw: i16,
+    yaw: i16,
+    prev_origin: [i32; 3],
+    origin: [i32; 3],
 }
 
 const EMPTY_KEY: u16 = u16::MAX;
@@ -76,31 +84,29 @@ impl Track {
         seen: 0,
         changed: 0,
         duration: THINK_TICKS as u8,
-        from: Pose {
-            origin: [0; 3],
-            angles: [0; 3],
-            frame: 0,
-            model: 0,
-        },
-        to: Pose {
-            origin: [0; 3],
-            angles: [0; 3],
-            frame: 0,
-            model: 0,
-        },
+        model: 0,
+        prev_frame: 0,
+        frame: 0,
+        prev_yaw: 0,
+        yaw: 0,
+        prev_origin: [0; 3],
+        origin: [0; 3],
     };
 
     fn weight(&self, now: u16) -> u32 {
         let elapsed = u32::from(now.wrapping_sub(self.changed));
         (elapsed * RECIPROCAL_Q8[self.duration as usize & 7]).min(256)
     }
+}
 
-    fn restart(&mut self, now: u16, to: Pose) {
-        self.from = to;
-        self.to = to;
-        self.changed = now;
-        self.duration = THINK_TICKS as u8;
-    }
+/// `from + (to - from) * weight`, rounded.
+fn lerp(from: i32, to: i32, weight: u32) -> i32 {
+    from.wrapping_add((to.wrapping_sub(from) * weight as i32 + 128) >> 8)
+}
+
+/// Yaw the short way round the circle.
+fn lerp_yaw(from: i16, to: i16, weight: u32) -> i16 {
+    from.wrapping_add(lerp(0, i32::from(to.wrapping_sub(from)), weight) as i16)
 }
 
 /// A small fixed table of the models currently being glided, keyed by the
@@ -125,7 +131,7 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
     /// to draw it.
     #[optimize(size)]
     #[inline(never)]
-    pub fn observe(&mut self, key: u16, now: u32, current: Pose) -> Shown {
+    pub fn observe(&mut self, key: u16, now: u32, current: &Pose) -> Shown {
         debug_assert!(key != EMPTY_KEY);
         let now = now as u16;
         // The entry for `key`, else the one unseen for longest (empty first).
@@ -150,73 +156,59 @@ impl<const SLOTS: usize> PoseTracker<SLOTS> {
         }
         // SAFETY: `slot` is a loop index below `SLOTS`.
         let track = unsafe { self.tracks.get_unchecked_mut(slot) };
-        let fresh = !found
+        let stale = !found
             || u32::from(now.wrapping_sub(track.seen)) > STALE_TICKS
-            || snaps(&track.to, &current);
-        track.key = key;
+            || track.model != current.model
+            || track
+                .origin
+                .iter()
+                .zip(&current.origin)
+                .any(|(&old, &new)| new.wrapping_sub(old).abs() > SNAP_Q12);
         track.seen = now;
-        if fresh {
-            track.restart(now, current);
-        } else if track.to != current {
+        if stale {
+            track.key = key;
+            track.model = current.model;
+            track.changed = now;
+            track.duration = THINK_TICKS as u8;
+            track.prev_frame = current.frame;
+            track.prev_yaw = current.yaw;
+            track.prev_origin = current.origin;
+            track.frame = current.frame;
+            track.yaw = current.yaw;
+            track.origin = current.origin;
+        } else if track.frame != current.frame
+            || track.yaw != current.yaw
+            || track.origin != current.origin
+        {
             // Continue from where the model was last drawn, so a glide cut
             // short by the next step does not jump.
             let weight = track.weight(now);
-            let (origin, angles) = glide(&track.from, &track.to, weight);
-            let frame = if weight >= 128 {
-                track.to.frame
-            } else {
-                track.from.frame
-            };
-            track.duration = u32::from(now.wrapping_sub(track.changed)).clamp(2, THINK_TICKS) as u8;
-            track.from = Pose {
-                origin,
-                angles,
-                frame,
-                model: current.model,
-            };
-            track.to = current;
+            for (from, &to) in track.prev_origin.iter_mut().zip(&track.origin) {
+                *from = lerp(*from, to, weight);
+            }
+            track.prev_yaw = lerp_yaw(track.prev_yaw, track.yaw, weight);
+            if weight >= 128 {
+                track.prev_frame = track.frame;
+            }
+            track.duration =
+                u32::from(now.wrapping_sub(track.changed)).clamp(2, THINK_TICKS) as u8;
             track.changed = now;
+            track.frame = current.frame;
+            track.yaw = current.yaw;
+            track.origin = current.origin;
         }
         let weight = track.weight(now);
-        let (origin, angles) = if weight >= 256 {
-            (current.origin, current.angles)
-        } else {
-            glide(&track.from, &current, weight)
-        };
+        let mut origin = current.origin;
+        for (to, &from) in origin.iter_mut().zip(&track.prev_origin) {
+            *to = lerp(from, *to, weight);
+        }
         Shown {
             origin,
-            angles,
-            from_frame: track.from.frame,
+            yaw: lerp_yaw(track.prev_yaw, current.yaw, weight),
+            from_frame: track.prev_frame,
             weight_q8: weight,
         }
     }
-}
-
-#[optimize(size)]
-fn snaps(old: &Pose, new: &Pose) -> bool {
-    old.model != new.model
-        || old
-            .origin
-            .iter()
-            .zip(&new.origin)
-            .any(|(&old, &new)| new.wrapping_sub(old).abs() > SNAP_Q12)
-}
-
-/// Origin and angles at `weight_q8` of the way from `from` to `to`.
-///
-/// Only yaw turns: a monster's pitch and roll are set by what it is doing,
-/// not walked toward, so they follow `to`. Yaw takes the short way round.
-#[optimize(size)]
-pub fn glide(from: &Pose, to: &Pose, weight_q8: u32) -> ([i32; 3], [i16; 3]) {
-    let weight = weight_q8.min(256) as i32;
-    let mut origin = to.origin;
-    for (value, &start) in origin.iter_mut().zip(&from.origin) {
-        *value = start.wrapping_add((value.wrapping_sub(start) * weight + 128) >> 8);
-    }
-    let mut angles = to.angles;
-    let turn = i32::from(to.angles[1].wrapping_sub(from.angles[1]));
-    angles[1] = from.angles[1].wrapping_add(((turn * weight + 128) >> 8) as i16);
-    (origin, angles)
 }
 
 /// Blend two animation frames of one model into `out`, byte by byte:
@@ -280,7 +272,7 @@ mod tests {
     fn pose(x: i32, yaw: i16, frame: u16) -> Pose {
         Pose {
             origin: [x << 12, 0, 0],
-            angles: [0, yaw, 0],
+            yaw,
             frame,
             model: 7,
         }
@@ -294,7 +286,7 @@ mod tests {
     fn first_sight_draws_the_sim_pose() {
         let mut tracker = PoseTracker::<4>::new();
         let current = pose(10, 0, 5);
-        let shown = tracker.observe(3, 100, current);
+        let shown = tracker.observe(3, 100, &current);
         assert_eq!(shown.origin, current.origin);
         assert_eq!(shown.from_frame, 5);
     }
@@ -302,20 +294,20 @@ mod tests {
     #[test]
     fn a_think_starts_a_glide_from_the_previous_pose() {
         let mut tracker = PoseTracker::<4>::new();
-        tracker.observe(3, 100, pose(10, 0, 5));
+        tracker.observe(3, 100, &pose(10, 0, 5));
         // Steady for a think, then the sim steps.
-        tracker.observe(3, 104, pose(10, 0, 5));
-        let shown = tracker.observe(3, 106, pose(20, 0, 6));
+        tracker.observe(3, 104, &pose(10, 0, 5));
+        let shown = tracker.observe(3, 106, &pose(20, 0, 6));
         assert_eq!(shown.weight_q8, 0);
         assert_eq!(shown.from_frame, 5);
         assert_eq!(shown.origin[0], 10 << 12);
         // Half a think later the glide is half way.
-        let shown = tracker.observe(3, 109, pose(20, 0, 6));
+        let shown = tracker.observe(3, 109, &pose(20, 0, 6));
         assert_eq!(shown.weight_q8, 3 * 43);
         assert!(shown.origin[0] > 14 << 12 && shown.origin[0] < 16 << 12);
         // And it lands on the new pose after a full think and holds there.
         for now in [112, 120] {
-            let shown = tracker.observe(3, now, pose(20, 0, 6));
+            let shown = tracker.observe(3, now, &pose(20, 0, 6));
             assert_eq!(shown.weight_q8, 256);
             assert_eq!(shown.origin[0], 20 << 12);
         }
@@ -326,11 +318,11 @@ mod tests {
         let mut tracker = PoseTracker::<4>::new();
         let mut now = 0;
         let mut x = 0;
-        tracker.observe(1, now, pose(x, 0, 0));
+        tracker.observe(1, now, &pose(x, 0, 0));
         for _ in 0..40 {
             now += 2;
             x += 4;
-            let shown = tracker.observe(1, now, pose(x, 0, 0));
+            let shown = tracker.observe(1, now, &pose(x, 0, 0));
             // A model that moves on every observation starts each glide where
             // the last one was, so it trails by no more than one step.
             assert!(shown.origin[0] >= (x - 4) << 12 && shown.origin[0] <= x << 12);
@@ -340,11 +332,11 @@ mod tests {
     #[test]
     fn an_interrupted_glide_continues_from_where_it_was_drawn() {
         let mut tracker = PoseTracker::<4>::new();
-        tracker.observe(1, 0, pose(0, 0, 0));
-        tracker.observe(1, 6, pose(12, 0, 1));
+        tracker.observe(1, 0, &pose(0, 0, 0));
+        tracker.observe(1, 6, &pose(12, 0, 1));
         // Three ticks into the glide the sim steps again.
-        let before = tracker.observe(1, 9, pose(12, 0, 1));
-        let after = tracker.observe(1, 9, pose(24, 0, 2));
+        let before = tracker.observe(1, 9, &pose(12, 0, 1));
+        let after = tracker.observe(1, 9, &pose(24, 0, 2));
         assert_eq!(after.origin[0], before.origin[0]);
         assert_eq!(after.weight_q8, 0);
     }
@@ -352,31 +344,27 @@ mod tests {
     #[test]
     fn teleports_models_and_long_absences_snap() {
         let mut tracker = PoseTracker::<4>::new();
-        tracker.observe(1, 0, pose(0, 0, 0));
+        tracker.observe(1, 0, &pose(0, 0, 0));
         let far = pose(500, 0, 0);
-        let shown = tracker.observe(1, 6, far);
+        let shown = tracker.observe(1, 6, &far);
         assert!(unglided(&shown, &far));
         let mut other = pose(500, 0, 3);
         other.model = 9;
-        let shown = tracker.observe(1, 12, other);
+        let shown = tracker.observe(1, 12, &other);
         assert_eq!((shown.from_frame, shown.origin), (3, other.origin));
         let back = pose(510, 0, 4);
-        let shown = tracker.observe(1, 200, back);
+        let shown = tracker.observe(1, 200, &back);
         assert_eq!((shown.from_frame, shown.origin), (4, back.origin));
     }
 
     #[test]
     fn yaw_takes_the_short_way_round() {
-        let from = pose(0, -300, 0);
-        let to = pose(0, 300, 0);
-        let (_, angles) = glide(&from, &to, 128);
-        assert_eq!(angles[1], 0);
+        assert_eq!(lerp_yaw(-300, 300, 128), 0);
         // Across the wrap: 65000 -> 600 is a 1136 turn, not a 64400 one.
-        let from = pose(0, 65000u32 as u16 as i16, 0);
-        let to = pose(0, 600, 0);
-        let (_, angles) = glide(&from, &to, 128);
-        let expected = (65000u32 as u16 as i16).wrapping_add(568);
-        assert_eq!(angles[1], expected);
+        let from = 65000u32 as u16 as i16;
+        assert_eq!(lerp_yaw(from, 600, 128), from.wrapping_add(568));
+        assert_eq!(lerp_yaw(from, 600, 0), from);
+        assert_eq!(lerp_yaw(from, 600, 256), 600);
     }
 
     #[test]
@@ -418,12 +406,12 @@ mod tests {
     #[test]
     fn a_full_table_reuses_the_longest_unseen_entry() {
         let mut tracker = PoseTracker::<2>::new();
-        tracker.observe(1, 0, pose(0, 0, 0));
-        tracker.observe(2, 2, pose(0, 0, 0));
+        tracker.observe(1, 0, &pose(0, 0, 0));
+        tracker.observe(2, 2, &pose(0, 0, 0));
         // Key 3 evicts key 1 (unseen longest); key 2 keeps its glide state.
-        tracker.observe(3, 4, pose(0, 0, 0));
-        tracker.observe(2, 6, pose(0, 0, 0));
-        let shown = tracker.observe(2, 8, pose(8, 0, 1));
+        tracker.observe(3, 4, &pose(0, 0, 0));
+        tracker.observe(2, 6, &pose(0, 0, 0));
+        let shown = tracker.observe(2, 8, &pose(8, 0, 1));
         assert_eq!(shown.weight_q8, 0);
         assert_eq!(shown.from_frame, 0);
     }

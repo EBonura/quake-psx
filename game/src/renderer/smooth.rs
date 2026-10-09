@@ -43,7 +43,7 @@ pub(super) struct PoseState {
 /// What to draw for one alias model this frame.
 pub(super) struct SmoothPose {
     pub origin: [i32; 3],
-    pub angles: [i16; 3],
+    pub yaw: i16,
     /// The vertex bytes to project: a model frame, or the scratch blend.
     pub vertices: *const u8,
 }
@@ -63,7 +63,7 @@ impl Renderer {
     ) -> SmoothPose {
         let pose = Pose {
             origin: [entity.origin.x, entity.origin.y, entity.origin.z],
-            angles: [entity.angles.x, entity.angles.y, entity.angles.z],
+            yaw: entity.angles.y,
             frame: frame as u16,
             model: entity.model_id,
         };
@@ -71,7 +71,7 @@ impl Renderer {
         let dy = (entity.origin.y.wrapping_sub(eye.y) >> 12).clamp(-4096, 4096);
         let dz = (entity.origin.z.wrapping_sub(eye.z) >> 12).clamp(-4096, 4096);
         let near = dx * dx + dy * dy + dz * dz <= BLEND_RANGE_UNITS * BLEND_RANGE_UNITS;
-        self.smooth_pose_core(model, key, pose, current, near)
+        self.smooth_pose_core(model, key, &pose, current, near)
     }
 
     /// The first-person weapon's vertex bytes this frame, blended between its
@@ -86,11 +86,11 @@ impl Renderer {
     ) -> *const u8 {
         let pose = Pose {
             origin: [0; 3],
-            angles: [0; 3],
+            yaw: 0,
             frame: frame as u16,
             model: model.header().id,
         };
-        self.smooth_pose_core(model, VIEW_MODEL_KEY, pose, current, true)
+        self.smooth_pose_core(model, VIEW_MODEL_KEY, &pose, current, true)
             .vertices
     }
 
@@ -119,7 +119,7 @@ impl Renderer {
         &mut self,
         model: AliasModelView<'_>,
         key: u16,
-        pose: Pose,
+        pose: &Pose,
         current: &[u8],
         near: bool,
     ) -> SmoothPose {
@@ -131,7 +131,7 @@ impl Renderer {
         let shown = state.tracker.observe(key, self.pose_clock, pose);
         let mut result = SmoothPose {
             origin: shown.origin,
-            angles: shown.angles,
+            yaw: shown.yaw,
             vertices: current.as_ptr(),
         };
         if shown.weight_q8 >= 256 || shown.from_frame == pose.frame {
