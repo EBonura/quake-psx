@@ -44,7 +44,7 @@ Host tests use the scalar implementation, so also execute the actual MIPS inline
 assembly when changing liquid rendering or its instruction schedule:
 
 ```sh
-python3 tools/test-liquid-mips.py \
+cargo run --release --manifest-path tools/liquid-mips/Cargo.toml -- \
   --frontend ../PSoXide-editor/target/release/frontend \
   --out /tmp/quake-liquid-mips-check
 ```

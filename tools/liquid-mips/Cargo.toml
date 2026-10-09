@@ -1,0 +1,20 @@
+[package]
+name        = "quake-liquid-mips"
+version     = "0.1.0"
+edition     = "2021"
+license     = "GPL-2.0-only"
+description = "Host gate: run the actual inline MIPS liquid warp in the headless emulator against a scalar oracle."
+publish     = false
+
+# Its own workspace, like routesim: a developer gate, not part of the shipping
+# builder's package, lockfile, or guest recipe.
+[workspace]
+
+[[bin]]
+name = "quake-liquid-mips"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2       = "0.10"
+regex      = "1"
