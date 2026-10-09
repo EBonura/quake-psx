@@ -240,17 +240,55 @@ pub fn glide(from: &Pose, to: &Pose, weight_q8: u32) -> ([i32; 3], [i16; 3]) {
 }
 
 /// Blend two animation frames of one model into `out`, byte by byte:
-/// `from + (to - from) * weight`, rounded to nearest.
+/// `from + (to - from) * weight`, rounded to nearest, with the weight
+/// quantized to sixty-fourths.
 ///
 /// The frames are the cooked alias vertex bytes (three per vertex). The three
 /// slices should have the same length; the shortest decides how many bytes are
 /// written.
+///
+/// Four bytes are blended per step as two pairs of 16-bit lanes, one multiply
+/// per pair: with `w` in `0..=64`, a lane of `(b - a + 256) * w` stays below
+/// 2^16, and subtracting the constant `256 * w - 32` per lane leaves
+/// `a * 64 + (b - a) * w + 32`, which is never negative, so no lane borrows
+/// from its neighbour. That halves the multiplies (each stalls the pipeline
+/// for six cycles) against blending byte by byte.
 pub fn blend_frames(from: &[u8], to: &[u8], weight_q8: u32, out: &mut [u8]) {
-    let weight = weight_q8.min(256) as i32;
-    for ((out, &from), &to) in out.iter_mut().zip(from).zip(to) {
-        let from = i32::from(from);
-        let delta = i32::from(to) - from;
-        *out = (from + ((delta * weight + 128) >> 8)) as u8;
+    let weight = weight_q8.min(256) >> 2;
+    let length = out.len().min(from.len()).min(to.len());
+    let words = length / 4;
+    let bias = 0x0100_0100u32;
+    let lanes = 0x00ff_00ffu32;
+    let rounding = (weight * 256).wrapping_sub(32).wrapping_mul(0x0001_0001);
+    let mut index = 0;
+    while index < words {
+        let at = index * 4;
+        // SAFETY: `at + 4 <= length`, so every read and the write are inside
+        // the three slices; the accesses are unaligned-safe.
+        let (a, b) = unsafe {
+            (
+                core::ptr::read_unaligned(from.as_ptr().add(at).cast::<u32>()),
+                core::ptr::read_unaligned(to.as_ptr().add(at).cast::<u32>()),
+            )
+        };
+        let (a, b) = (u32::from_le(a), u32::from_le(b));
+        let (a_even, a_odd) = (a & lanes, (a >> 8) & lanes);
+        let (b_even, b_odd) = (b & lanes, (b >> 8) & lanes);
+        let m_even = (b_even + bias - a_even) * weight;
+        let m_odd = (b_odd + bias - a_odd) * weight;
+        let even = (((a_even << 6) + m_even - rounding) >> 6) & lanes;
+        let odd = (((a_odd << 6) + m_odd - rounding) >> 6) & lanes;
+        let blended = (even | (odd << 8)).to_le();
+        // SAFETY: as above.
+        unsafe { core::ptr::write_unaligned(out.as_mut_ptr().add(at).cast::<u32>(), blended) };
+        index += 1;
+    }
+    let mut at = words * 4;
+    while at < length {
+        let from = u32::from(from[at]);
+        let to = u32::from(to[at]);
+        out[at] = ((from * 64 + to * weight + 32 - from * weight) >> 6) as u8;
+        at += 1;
     }
 }
 
@@ -360,6 +398,29 @@ mod tests {
         assert_eq!(out, to);
         blend_frames(&from, &to, 128, &mut out);
         assert_eq!(out, [128, 128, 11, 100]);
+    }
+
+    #[test]
+    fn swar_blend_matches_the_scalar_reference_for_every_pair_and_weight() {
+        // Every (from, to) byte pair at every weight, laid out so each lane
+        // position and the unaligned tail are exercised.
+        for weight in (0..=256u32).step_by(7).chain([255, 256]) {
+            let w = weight.min(256) >> 2;
+            for from in 0..=255u32 {
+                let from_bytes: [u8; 11] = core::array::from_fn(|i| (from as u8).wrapping_add(i as u8));
+                for to in (0..=255u32).step_by(5).chain([255]) {
+                    let to_bytes: [u8; 11] = core::array::from_fn(|i| (to as u8).wrapping_sub(i as u8 * 3));
+                    let mut out = [0u8; 11];
+                    blend_frames(&from_bytes, &to_bytes, weight, &mut out);
+                    for i in 0..11 {
+                        let a = u32::from(from_bytes[i]);
+                        let b = u32::from(to_bytes[i]);
+                        let expected = ((a * (64 - w) + b * w + 32) >> 6) as u8;
+                        assert_eq!(out[i], expected, "w={weight} a={a} b={b} i={i}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
