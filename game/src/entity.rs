@@ -970,18 +970,27 @@ impl EntityScene {
         }
     }
 
-    /// The style table with the animated styles glided between this tick's
-    /// pattern letter and the next one, for the frame at `vblank`.
+    /// The style table for the frame at `vblank`: the stepped table, or with
+    /// `smooth` the animated styles glided between this tick's pattern letter
+    /// and the next one.
     ///
     /// Quake steps a style from one letter to the next ten times a second;
-    /// this returns the value `phase / 6` of the way there. A face's light is
-    /// linear in its style values, so gliding the style scalar glides every
-    /// face and every entity sample that reads it, with no per-face work.
-    /// Call after [`animate_lights`](Self::animate_lights) in the same frame:
-    /// it reads the table that call just wrote, and it leaves the stepped
-    /// table, the entity relight and `light_use` exactly as they were.
+    /// the smooth table is the value `phase / 6` of the way there. A face's
+    /// light is linear in its style values, so gliding the style scalar
+    /// glides every face and every entity sample that reads it, with no
+    /// per-face work. Call after [`animate_lights`](Self::animate_lights) in
+    /// the same frame: it reads the table that call just wrote, and it leaves
+    /// the stepped table, the entity relight and `light_use` as they were.
+    #[optimize(size)]
     #[inline(never)]
-    pub fn smooth_light_styles(&mut self, vblank: u32) -> &[u16; lightstyle::DUMMY_STYLE + 1] {
+    pub fn frame_light_styles(
+        &mut self,
+        vblank: u32,
+        smooth: bool,
+    ) -> &[u16; lightstyle::DUMMY_STYLE + 1] {
+        if !smooth {
+            return &self.light_styles;
+        }
         let tick = vblank / LIGHT_STYLE_VBLANKS;
         if self.light_style_next_tick != tick {
             self.light_style_next_tick = tick;

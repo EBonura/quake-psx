@@ -69,7 +69,6 @@ use crate::entity::{model_rotates, LightningBeam, RenderEntity};
 use crate::platform::QuakeViewTransform;
 
 mod smooth;
-use smooth::within_blend_range;
 
 const GPU_ARENA_BYTES: usize = 0x21000;
 const GPU_ARENA_WORDS: usize = GPU_ARENA_BYTES / core::mem::size_of::<u32>();
@@ -1388,9 +1387,15 @@ impl Renderer {
     /// The table is owned by `EntityScene`, because `light_use` writes it and
     /// the entity relight reads it; the renderer only samples it per face.
     #[inline(never)]
-    pub fn set_light_styles(&mut self, styles: &[u16; DUMMY_LIGHT_STYLE + 1], smooth: bool) {
+    pub fn set_light_styles(
+        &mut self,
+        styles: &[u16; DUMMY_LIGHT_STYLE + 1],
+        smooth_lights: bool,
+        smooth_poses: bool,
+    ) {
         self.light_styles = *styles;
-        self.smooth_lights = smooth;
+        self.smooth_lights = smooth_lights;
+        self.smooth_poses = smooth_poses;
     }
 
     /// Adopt the gameplay layer's live `cl_dlights` for this frame.
@@ -3440,15 +3445,13 @@ impl Renderer {
             let mut draw_origin = [entity.origin.x, entity.origin.y, entity.origin.z];
             let mut draw_angles = [entity.angles.x, entity.angles.y, entity.angles.z];
             if self.smooth_poses && entity.is_monster() {
-                let smoothed = self.smooth_alias_pose(
+                let smoothed = self.smooth_entity_pose(
                     model,
                     self.visible_entity_indices[visible],
-                    draw_origin,
-                    draw_angles,
-                    entity.model_id,
+                    entity,
                     frame,
                     vertices,
-                    within_blend_range(camera.origin, entity.origin),
+                    camera.origin,
                 );
                 vertex_bytes = smoothed.vertices;
                 draw_origin = smoothed.origin;
@@ -3574,18 +3577,7 @@ impl Renderer {
         // world origin to glide, so only the vertex bytes change.
         let mut vertex_bytes = vertices.as_ptr();
         if self.smooth_poses {
-            vertex_bytes = self
-                .smooth_alias_pose(
-                    model,
-                    smooth::VIEW_MODEL_KEY,
-                    [0; 3],
-                    [0; 3],
-                    header.id,
-                    frame,
-                    vertices,
-                    true,
-                )
-                .vertices;
+            vertex_bytes = self.smooth_view_model_vertices(model, frame, vertices);
         }
 
         // The retained renderer magnifies alias view models by 2^3 and uses
