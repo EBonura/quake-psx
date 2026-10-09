@@ -69,6 +69,7 @@ use crate::entity::{model_rotates, LightningBeam, RenderEntity};
 use crate::platform::QuakeViewTransform;
 
 mod smooth;
+use smooth::within_blend_range;
 
 const GPU_ARENA_BYTES: usize = 0x21000;
 const GPU_ARENA_WORDS: usize = GPU_ARENA_BYTES / core::mem::size_of::<u32>();
@@ -3447,6 +3448,7 @@ impl Renderer {
                     entity.model_id,
                     frame,
                     vertices,
+                    within_blend_range(camera.origin, entity.origin),
                 );
                 vertex_bytes = smoothed.vertices;
                 draw_origin = smoothed.origin;
@@ -3581,6 +3583,7 @@ impl Renderer {
                     header.id,
                     frame,
                     vertices,
+                    true,
                 )
                 .vertices;
         }
