@@ -1210,6 +1210,27 @@ unsafe fn materialize_quake_baked_inline(
     }
 }
 
+/// Brush entities the renderer remembers a box-versus-PVS answer for.
+const BOX_VISIBILITY_ENTRIES: usize = 16;
+
+/// One remembered answer: whether the entity's box touched a leaf in the
+/// PVS, for the box it had when asked.
+#[derive(Copy, Clone)]
+struct BoxVisibility {
+    index: u16,
+    bounds: [i16; 6],
+    /// 0 unknown, 1 hidden, 2 visible.
+    state: u8,
+}
+
+impl BoxVisibility {
+    const UNKNOWN: Self = Self {
+        index: 0,
+        bounds: [0; 6],
+        state: 0,
+    };
+}
+
 pub struct Renderer {
     arena: usize,
     frame: u32,
@@ -1233,6 +1254,11 @@ pub struct Renderer {
     visibility: [u8; MAX_VISIBILITY_BYTES],
     visible_leaf_count: usize,
     cached_visibility: Option<(u32, usize, u16)>,
+    /// What `box_touches_visible` last learned about brush entities whose
+    /// centre sits in solid, valid for the PVS it was learned under
+    /// (`cached_visibility`) and for the bounds it was asked about.
+    box_visibility_key: Option<(u32, usize, u16)>,
+    box_visibility: [BoxVisibility; BOX_VISIBILITY_ENTRIES],
     /// The camera does not move inside a frame, but `prepare_visibility`,
     /// `mark_visible_faces`, `water_portal` and the view-model lighting each
     /// located it independently. One memo collapses five BSP descents to one.
@@ -1297,6 +1323,8 @@ impl Renderer {
             visibility: [0; MAX_VISIBILITY_BYTES],
             visible_leaf_count: 0,
             cached_visibility: None,
+            box_visibility_key: None,
+            box_visibility: [BoxVisibility::UNKNOWN; BOX_VISIBILITY_ENTRIES],
             cached_camera_leaf: None,
             active_water_plane: -1,
             water_portal_key: None,
@@ -3278,7 +3306,23 @@ impl Renderer {
                 stats.projectile_entities = stats.projectile_entities.saturating_add(1);
             }
             if !self.point_visible(entity.leaf_index as usize) {
-                continue;
+                // A brush submodel whose centre sits in solid (leaf 0: a lift
+                // car sunk into its pit, a button set in its wall) is visible
+                // through any leaf its box touches, as in Quake's
+                // `SV_FindTouchedLeafs`; the centre says nothing about it.
+                // Frustum first, and the answer is remembered per PVS.
+                if entity.model_id >= 0
+                    || entity.leaf_index != 0
+                    || scene::is_aabb_outside_clip4(
+                        entity.clip_mins,
+                        entity.clip_maxs,
+                        &frustum,
+                        0x0f,
+                    )
+                    || !self.box_touches_visible(map, index, entity)
+                {
+                    continue;
+                }
             }
             if entity.is_projectile() {
                 stats.pvs_projectile_entities = stats.pvs_projectile_entities.saturating_add(1);
@@ -3800,6 +3844,43 @@ impl Renderer {
         let leaf = map.point_leaf_index(point);
         self.cached_camera_leaf = Some((map.generation(), point, leaf));
         leaf
+    }
+
+    /// Whether a brush entity's box touches any leaf of the current PVS. The
+    /// walk is repeated only when the PVS or the entity's box changes.
+    #[inline(never)]
+    fn box_touches_visible(&mut self, map: &ResidentMap, index: usize, entity: &RenderEntity) -> bool {
+        let key = self
+            .cached_visibility
+            .map(|(generation, leaf, portal)| (generation, leaf, portal));
+        if self.box_visibility_key != key {
+            self.box_visibility_key = key;
+            self.box_visibility = [BoxVisibility::UNKNOWN; BOX_VISIBILITY_ENTRIES];
+        }
+        let bounds = [
+            entity.clip_mins[0],
+            entity.clip_mins[1],
+            entity.clip_mins[2],
+            entity.clip_maxs[0],
+            entity.clip_maxs[1],
+            entity.clip_maxs[2],
+        ];
+        // Slots are shared by index modulo their count; a clash only costs a
+        // second walk.
+        let slot = index % BOX_VISIBILITY_ENTRIES;
+        let memo = self.box_visibility[slot];
+        if memo.state != 0 && usize::from(memo.index) == index && memo.bounds == bounds {
+            return memo.state == 2;
+        }
+        let touches = map.box_touches_leaf(entity.clip_mins, entity.clip_maxs, |leaf| {
+            self.point_visible(leaf)
+        });
+        self.box_visibility[slot] = BoxVisibility {
+            index: index as u16,
+            bounds,
+            state: 1 + u8::from(touches),
+        };
+        touches
     }
 
     fn point_visible(&self, leaf_index: usize) -> bool {

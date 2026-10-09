@@ -732,6 +732,90 @@ impl ResidentMap {
         }
     }
 
+    /// Whether any non-solid leaf the whole-unit box touches satisfies
+    /// `wanted`: Quake's `SV_FindTouchedLeafs` walk, which an entity is
+    /// visible through when ANY leaf it touches is in the viewer's PVS.
+    ///
+    /// A single leaf lookup at the box centre is not equivalent. A mover
+    /// whose centre sinks into solid (an elevator car lowering into its pit)
+    /// resolves to leaf 0 while its deck is still in plain view.
+    #[optimize(size)]
+    pub fn box_touches_leaf(
+        &self,
+        mins: [i16; 3],
+        maxs: [i16; 3],
+        mut wanted: impl FnMut(usize) -> bool,
+    ) -> bool {
+        const STACK: usize = 48;
+        let nodes = self.render_nodes();
+        let planes = self.collision_planes();
+        let mut stack = [0i16; STACK];
+        stack[0] = self.world_render_head_node;
+        let mut depth = 1usize;
+        let mut budget = nodes.len().saturating_mul(2).max(1);
+        while depth > 0 {
+            depth -= 1;
+            let node_index = stack[depth];
+            if node_index < 0 {
+                let leaf = (-1i32 - node_index as i32) as usize;
+                if leaf != 0 && wanted(leaf) {
+                    return true;
+                }
+                continue;
+            }
+            if budget == 0 {
+                // A malformed tree cannot hide the entity.
+                return true;
+            }
+            budget -= 1;
+            let node = unsafe { nodes.get_unchecked(node_index as usize) };
+            let plane = unsafe { planes.get_unchecked(node.plane as usize) };
+            let (low, high) = match plane.kind {
+                0 | 1 | 2 => {
+                    let axis = plane.kind as usize;
+                    (i32::from(mins[axis]) << 12, i32::from(maxs[axis]) << 12)
+                }
+                _ => {
+                    let normal = [
+                        i32::from(plane.normal.x),
+                        i32::from(plane.normal.y),
+                        i32::from(plane.normal.z),
+                    ];
+                    let mut low = 0i32;
+                    let mut high = 0i32;
+                    for axis in 0..3 {
+                        let near = i32::from(mins[axis]) << 12;
+                        let far = i32::from(maxs[axis]) << 12;
+                        let (a, b) = if normal[axis] >= 0 {
+                            (near, far)
+                        } else {
+                            (far, near)
+                        };
+                        low = low.wrapping_add(mul_q12_i32_wide(a, normal[axis]));
+                        high = high.wrapping_add(mul_q12_i32_wide(b, normal[axis]));
+                    }
+                    (low, high)
+                }
+            };
+            // `point_leaf_index` takes children[0] when the point is in
+            // front of the plane (`dot - distance > 0`).
+            let front = high.wrapping_sub(plane.distance) > 0;
+            let back = low.wrapping_sub(plane.distance) <= 0;
+            if depth + 2 > STACK {
+                return true;
+            }
+            if back {
+                stack[depth] = node.children[1];
+                depth += 1;
+            }
+            if front {
+                stack[depth] = node.children[0];
+                depth += 1;
+            }
+        }
+        false
+    }
+
     /// Temporarily lend the map loader's retained transfer buffer to another
     /// load-time subsystem. The world keeps no references into this buffer,
     /// and callers must restore it before the next map or graphics load.
