@@ -2176,11 +2176,14 @@ fn validate_monster_population(
 /// cooked shareware maps author, so a pool can never silently drop authored
 /// content the way the ambient voice pool is checked.
 const GUEST_MAX_RENDER_ENTITIES: usize = 384;
-const GUEST_MAX_MOVERS: usize = 64;
-const GUEST_MAX_TRIGGERS: usize = 32;
-const GUEST_MAX_TELEPORTS: usize = 32;
-const GUEST_MAX_TRAINS: usize = 8;
+const GUEST_MAX_MOVERS: usize = 60;
+const GUEST_MAX_TRIGGERS: usize = 28;
+const GUEST_MAX_TELEPORTS: usize = 13;
+const GUEST_MAX_TRAINS: usize = 6;
 const GUEST_MAX_FIREBALL_EMITTERS: usize = 16;
+/// `COLLISION_PLANE_CAPACITY` and `RENDER_TEXTURE_CAPACITY` in `game/src/asset.rs`.
+const GUEST_COLLISION_PLANE_CAPACITY: usize = 2_960;
+const GUEST_RENDER_TEXTURE_CAPACITY: usize = 96;
 const GUEST_MAX_FIREBALLS: usize = 32;
 
 const GUEST_MAX_TARGET_ACTIONS: usize = 128;
@@ -3372,6 +3375,20 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
             return Err(format!(
                 "cooked {map} has {face_count} faces; expected {} and renderer capacity is {MAX_RENDER_FACE_COUNT}",
                 EXPECTED_FACE_COUNTS[map_index]
+            )
+            .into());
+        }
+        // The collision-plane and render-texture tables are allocated once at
+        // these capacities (`game/src/asset.rs`), so a map above either one
+        // would fail to load on the disc.
+        let plane_count = resident.planes().len();
+        let texture_count = resident.textures().len();
+        if plane_count > GUEST_COLLISION_PLANE_CAPACITY
+            || texture_count > GUEST_RENDER_TEXTURE_CAPACITY
+        {
+            return Err(format!(
+                "cooked {map} has {plane_count} planes and {texture_count} textures; the guest \
+                 holds {GUEST_COLLISION_PLANE_CAPACITY} and {GUEST_RENDER_TEXTURE_CAPACITY}"
             )
             .into());
         }
