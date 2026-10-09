@@ -3455,7 +3455,7 @@ impl Renderer {
                 );
                 vertex_bytes = smoothed.vertices;
                 draw_origin = smoothed.origin;
-                draw_angles = smoothed.angles;
+                draw_angles[1] = smoothed.yaw;
             }
             let yaw = if model_rotates(header) {
                 rotating_yaw
