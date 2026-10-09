@@ -192,7 +192,11 @@ const VISUAL_WORLD_REGION: ImageRegion = ImageRegion::new(0, 0, 320, 184);
 const VISUAL_HUD_REGION: ImageRegion = ImageRegion::new(0, 184, 320, 56);
 // Advance one simulation tick per rendered frame so renderer speed cannot
 // change the animation sampled by this camera.
-const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0x39f7_8f03_ce49_82ef;
+// The owner camera's pitch (43) is not a multiple of 16, so drawing the view
+// at the player's full angle resolution moved the picture by the 11 units the
+// old 256-step rotation rounded away (about three pixels up). The scene is
+// otherwise the same; the previous world hash was 0x39f7_8f03_ce49_82ef.
+const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0xd213_f42f_66cd_645e;
 const EXPECTED_VISUAL_HUD_FNV1A64: u64 = 0x2517_2c84_d9bb_9f60;
 // Clear water is on by default, so the fixed camera also draws the canal
 // floor through the surface: 429,605 packets and 546,997 hardware triangles
