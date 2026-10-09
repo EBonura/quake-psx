@@ -1058,6 +1058,33 @@ fn floor_below(
     drop: i32,
     scratch: &mut TraceScratch,
 ) -> Option<i32> {
+    floor_below_normal(scene, x, y, z, drop, 1_800, scratch)
+}
+
+/// [`floor_below`] with the least floor normal Z (Q12) it accepts. The
+/// pathfinders take anything above 1,800 as floor; the ramp sweeps want only
+/// ground a player can stand on, which `quake_core` puts at 2,867.
+fn floor_below_normal(
+    scene: &Scene,
+    x: i32,
+    y: i32,
+    z: i32,
+    drop: i32,
+    least_normal_z: i16,
+    scratch: &mut TraceScratch,
+) -> Option<i32> {
+    floor_below_checked(scene, x, y, z, drop, least_normal_z, scratch)
+}
+
+fn floor_below_checked(
+    scene: &Scene,
+    x: i32,
+    y: i32,
+    z: i32,
+    drop: i32,
+    least_normal_z: i16,
+    scratch: &mut TraceScratch,
+) -> Option<i32> {
     let start = Vec3I32 {
         x: x << 12,
         y: y << 12,
@@ -1076,7 +1103,7 @@ fn floor_below(
         return None;
     }
     // A wall the drop grazed is not a floor.
-    if trace.normal.z < 1_800 {
+    if trace.normal.z < least_normal_z {
         return None;
     }
     Some((trace.end.z >> 12) + 1)
@@ -2332,7 +2359,9 @@ fn sweep_ramps(scene: &Scene, args: &[String]) {
                     z -= 8;
                     continue;
                 }
-                let Some(origin_z) = floor_below(scene, x, y, z, z - z0 + 64, &mut scratch) else {
+                let Some(origin_z) =
+                    floor_below_normal(scene, x, y, z, z - z0 + 64, 2_867, &mut scratch)
+                else {
                     z -= 8;
                     continue;
                 };
@@ -2366,6 +2395,25 @@ fn sweep_ramps(scene: &Scene, args: &[String]) {
                             STEP_HEIGHT,
                             &mut scratch,
                         ) {
+                            continue;
+                        }
+                        // A ramp or step is wide: both neighbours either side of
+                        // the walk must climb the same amount, or this is a
+                        // wall corner and not a ramp.
+                        let beside = |ax: i32, ay: i32, z: i32| -> bool {
+                            if ax < 0 || ay < 0 || ax as usize >= columns_x || ay as usize >= columns_y {
+                                return false;
+                            }
+                            floors[ay as usize * columns_x + ax as usize]
+                                .iter()
+                                .any(|&f| (f - z).abs() <= 2)
+                        };
+                        let (px, py) = (dy.abs(), dx.abs());
+                        if !(beside(cx as i32 + px, cy as i32 + py, from_z)
+                            && beside(cx as i32 - px, cy as i32 - py, from_z)
+                            && beside(nx + px, ny + py, to_z)
+                            && beside(nx - px, ny - py, to_z))
+                        {
                             continue;
                         }
                         // Liquid is swimming, not walking: a ramp out of a pit
