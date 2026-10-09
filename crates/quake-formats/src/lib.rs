@@ -594,11 +594,12 @@ pub const TEXTURE_LAYERED_SKY: u8 = 64;
 /// (1,100,000), a generic budget for any XBSP world. The shareware Episode 1
 /// corpus is fully known at build time, so this is Quake policy instead: the
 /// largest indexed PSB5 map (`e1m3`) needs about 856 KiB after the canonical
-/// render-node expansion. A measured 24 KiB structural-growth margin frees the
-/// old PSB1 arena's unused heap
-/// without making routine recooks brittle. `assert_cooked_maps_fit` loads every
+/// render-node expansion. A measured structural-growth margin (about 9.6 KiB since
+/// the arena was trimmed by 4,000 bytes to pay for the lift car's visibility
+/// test) frees the old PSB1 arena's unused heap without making routine recooks
+/// brittle. `assert_cooked_maps_fit` loads every
 /// map through this exact capacity and pins the measured high-water mark.
-pub const RESIDENT_MAP_ARENA_BYTES: usize = 880_000;
+pub const RESIDENT_MAP_ARENA_BYTES: usize = 876_000;
 
 /// One packed `pic_t` record in the Rust-cooked `gfx.dat` index.
 pub const GRAPHICS_PICTURE_RECORD_BYTES: usize = 6;
