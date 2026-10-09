@@ -1765,7 +1765,7 @@ fn validate_geometry_parity(root: &Path, pak_path: &Path) -> Result<()> {
         return Err("Episode 1 contains no rendered layered sky".into());
     }
     println!(
-        "authored Easy monster population fits the guest pools: worst map {worst_monsters} monsters, worst render slots {worst_render_slots}/{MAX_RENDER_ENTITIES}, densest body cluster {worst_cluster}/{MAX_BODY_CANDIDATES} ({})",
+        "authored monster population (worst skill) fits the guest pools: worst map {worst_monsters} monsters, worst render slots {worst_render_slots}/{MAX_RENDER_ENTITIES}, densest body cluster {worst_cluster}/{MAX_BODY_CANDIDATES} ({})",
         monster_census.join(", ")
     );
     println!(
@@ -2025,15 +2025,38 @@ struct MonsterPopulation {
 }
 
 /// Prove, from the cooked entity and model lumps of a real map, that the
-/// authored Easy monster population fits every fixed guest pool it touches:
+/// authored monster population fits every fixed guest pool it touches:
 /// the render-entity table, the per-trace body candidate set, and the alias
 /// model each monster's authored frame ranges index into.
+///
+/// Every skill the menu offers is checked (the loader drops an entity whose
+/// spawnflags exclude the current skill); the result is the worst of them.
 fn validate_monster_population(
     map: &str,
     entity_bytes: &[u8],
     model_bytes: &[u8],
 ) -> Result<MonsterPopulation> {
-    const NOT_EASY: u16 = 0x0100;
+    let mut worst = MonsterPopulation {
+        monsters: 0,
+        render_slots: 0,
+        densest_cluster: 0,
+    };
+    for skill in 0..SKILL_COUNT {
+        let population =
+            validate_monster_population_for_skill(map, entity_bytes, model_bytes, skill)?;
+        worst.monsters = worst.monsters.max(population.monsters);
+        worst.render_slots = worst.render_slots.max(population.render_slots);
+        worst.densest_cluster = worst.densest_cluster.max(population.densest_cluster);
+    }
+    Ok(worst)
+}
+
+fn validate_monster_population_for_skill(
+    map: &str,
+    entity_bytes: &[u8],
+    model_bytes: &[u8],
+    skill: u8,
+) -> Result<MonsterPopulation> {
     // The body broad phase in `EntityScene::monster_step_bodies` keeps every
     // candidate within one step plus the largest body and hull.
     const CLUSTER_UNITS: i64 = 128 + 64;
@@ -2046,7 +2069,7 @@ fn validate_monster_population(
     let mut render_slots = PROJECTILE_RENDER_SLOTS;
     let mut origins: Vec<(i32, i32, i32)> = Vec::new();
     for entity in entities.iter().skip(2) {
-        if entity.spawn_flags & NOT_EASY != 0 {
+        if quake_core::targets::excluded_for_skill(entity.spawn_flags, skill) {
             continue;
         }
         // Every authored entity the guest renders occupies one slot.
@@ -2129,7 +2152,7 @@ fn validate_monster_population(
             })
             .unwrap_or_default();
         for (index, entity) in entities.iter().enumerate() {
-            if entity.spawn_flags & NOT_EASY != 0 {
+            if quake_core::targets::excluded_for_skill(entity.spawn_flags, skill) {
                 continue;
             }
             let Some(kind) = MonsterKind::from_class_name(entity.class_name) else {
@@ -2236,13 +2259,33 @@ impl PoolCensus {
 }
 
 /// Per-map worst case for every fixed guest pool this port added or grew.
+///
+/// The guest's entity loader drops an entity whose spawnflags exclude the
+/// current skill (`quake_core::targets::excluded_for_skill`) and the menu
+/// offers every skill, so each pool bound has to cover the worst of them.
 fn validate_runtime_pools(
     map: &str,
     bsp: &Bsp<'_>,
     runtime: &RecordSlice<'_, MapEntity>,
 ) -> Result<PoolCensus> {
-    // Skill zero is what ships; a NOT_EASY entity never spawns.
-    let spawned = |entity: &MapEntity| entity.spawn_flags & 0x0100 == 0;
+    let mut worst = PoolCensus::default();
+    for skill in 0..SKILL_COUNT {
+        worst.merge(validate_runtime_pools_for_skill(map, bsp, runtime, skill)?);
+    }
+    Ok(worst)
+}
+
+/// Skills the Options menu offers: easy, normal, hard, nightmare.
+const SKILL_COUNT: u8 = 4;
+
+fn validate_runtime_pools_for_skill(
+    map: &str,
+    bsp: &Bsp<'_>,
+    runtime: &RecordSlice<'_, MapEntity>,
+    skill: u8,
+) -> Result<PoolCensus> {
+    let spawned =
+        |entity: &MapEntity| !quake_core::targets::excluded_for_skill(entity.spawn_flags, skill);
     let count = |predicate: &dyn Fn(&MapEntity) -> bool| {
         runtime
             .iter()
@@ -2297,7 +2340,7 @@ fn validate_runtime_pools(
     // `total_monsters` for the intermission panel. The counter is a u16 pair,
     // so the assertion is that the authored Easy population of every map fits
     // the panel's own numeric field rather than a pool slot.
-    let monsters = usize::from(quake_core::level::count_authored(runtime, 0));
+    let monsters = usize::from(quake_core::level::count_authored(runtime, skill));
     if monsters > usize::from(u16::MAX) {
         return Err(
             format!("{map} authors {monsters} killable monsters, the counter is u16").into(),
@@ -2332,9 +2375,10 @@ fn validate_runtime_pools(
         ),
     ] {
         if worst > capacity {
-            return Err(
-                format!("{map} authors {worst} {label}, guest capacity is {capacity}").into(),
-            );
+            return Err(format!(
+                "{map} authors {worst} {label} on skill {skill}, guest capacity is {capacity}"
+            )
+            .into());
         }
     }
     // Episode gates are counted in the render budget above but only spawn with
