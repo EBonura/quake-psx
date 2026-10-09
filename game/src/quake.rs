@@ -453,8 +453,8 @@ pub fn run() -> ! {
             let camera = player.camera();
             audio.spatialize(camera.origin, camera.angles[1]);
             entities.animate_lights(&world, audio_tick);
-            renderer.set_smooth_poses(menu.view().pose_mode.smooth());
-            if menu.view().light_mode.smooth() {
+            renderer.set_smooth_poses(view.pose_mode.smooth());
+            if view.light_mode.smooth() {
                 renderer.set_light_styles(entities.smooth_light_styles(audio_tick), true);
             } else {
                 renderer.set_light_styles(entities.light_styles(), false);
@@ -1215,8 +1215,8 @@ pub fn run() -> ! {
         #[cfg(feature = "visual-parity-regression")]
         let render_light_tick = 0;
         entities.animate_lights(&world, render_light_tick);
-        renderer.set_smooth_poses(menu.view().pose_mode.smooth());
-        if menu.view().light_mode.smooth() {
+        renderer.set_smooth_poses(menu_view.pose_mode.smooth());
+        if menu_view.light_mode.smooth() {
             renderer.set_light_styles(entities.smooth_light_styles(render_light_tick), true);
         } else {
             renderer.set_light_styles(entities.light_styles(), false);
