@@ -23,6 +23,7 @@ pub mod menu;
 pub mod monster;
 pub mod movement;
 pub mod mover;
+pub mod pose;
 pub mod push;
 pub mod screenblend;
 pub mod secrets;
