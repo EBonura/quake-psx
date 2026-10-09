@@ -1,5 +1,6 @@
 //! Quake BSP world rendering through PSoXide's classic-affine path.
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
@@ -66,6 +67,8 @@ use quake_formats::{
 use crate::asset::{texture_rect, EpisodeMap, ResidentMap};
 use crate::entity::{model_rotates, LightningBeam, RenderEntity};
 use crate::platform::QuakeViewTransform;
+
+mod smooth;
 
 const GPU_ARENA_BYTES: usize = 0x21000;
 const GPU_ARENA_WORDS: usize = GPU_ARENA_BYTES / core::mem::size_of::<u32>();
@@ -1283,6 +1286,15 @@ pub struct Renderer {
     visible_entity_indices: Vec<u16>,
     cached_frustum: Option<(Camera, [AabbClipPlane; 4])>,
     light_styles: [u16; DUMMY_LIGHT_STYLE + 1],
+    /// `light_styles` is the gliding table, so an alias model's tint is
+    /// resampled from it at draw time instead of using the stepped sample the
+    /// entity scene stored on the last tenth-of-a-second boundary.
+    smooth_lights: bool,
+    /// Blend and glide monster and weapon poses between 0.1 s sim steps.
+    smooth_poses: bool,
+    /// The 60 Hz animation clock of the frame being drawn.
+    pose_clock: u32,
+    pose_state: Option<Box<smooth::PoseState>>,
     frame_light: Option<DynamicLight>,
     /// This frame's GTE projection plane (160, or the water warp's).
     projection_plane: u16,
@@ -1340,6 +1352,10 @@ impl Renderer {
             visible_entity_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             cached_frustum: None,
             light_styles,
+            smooth_lights: false,
+            smooth_poses: false,
+            pose_clock: 0,
+            pose_state: None,
             frame_light: None,
             projection_plane: 160,
             view_model_bob_phase: 0,
@@ -1371,8 +1387,9 @@ impl Renderer {
     /// The table is owned by `EntityScene`, because `light_use` writes it and
     /// the entity relight reads it; the renderer only samples it per face.
     #[inline(never)]
-    pub fn set_light_styles(&mut self, styles: &[u16; DUMMY_LIGHT_STYLE + 1]) {
+    pub fn set_light_styles(&mut self, styles: &[u16; DUMMY_LIGHT_STYLE + 1], smooth: bool) {
         self.light_styles = *styles;
+        self.smooth_lights = smooth;
     }
 
     /// Adopt the gameplay layer's live `cl_dlights` for this frame.
@@ -1597,6 +1614,7 @@ impl Renderer {
         // showed it, leaving a strip of sky at the screen edge. Rounding here
         // leaves the projection bit-identical.
         camera.origin = whole_unit_origin(camera.origin);
+        self.pose_clock = animation_tick_60hz;
         crate::platform::gpu_begin_frame();
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_begin(psx_telemetry::stage::RENDER);
@@ -3417,33 +3435,51 @@ impl Renderer {
             );
             debug_assert_eq!(faces.as_ptr() as usize & 3, 0);
 
+            let mut vertex_bytes = vertices.as_ptr();
+            let mut draw_origin = [entity.origin.x, entity.origin.y, entity.origin.z];
+            let mut draw_angles = [entity.angles.x, entity.angles.y, entity.angles.z];
+            if self.smooth_poses && entity.is_monster() {
+                let smoothed = self.smooth_alias_pose(
+                    model,
+                    self.visible_entity_indices[visible],
+                    draw_origin,
+                    draw_angles,
+                    entity.model_id,
+                    frame,
+                    vertices,
+                );
+                vertex_bytes = smoothed.vertices;
+                draw_origin = smoothed.origin;
+                draw_angles = smoothed.angles;
+            }
             let yaw = if model_rotates(header) {
                 rotating_yaw
             } else {
-                entity.angles.y
+                draw_angles[1]
             };
             let model_rotation = Mat3I16::rotate_z((yaw as u16) >> 4)
-                .mul(&Mat3I16::rotate_y((entity.angles.x as u16) >> 4));
+                .mul(&Mat3I16::rotate_y((draw_angles[0] as u16) >> 4));
             let (rotation, translation) = compose_model_view_transform(
                 view.rotation,
                 view.translation,
                 model_rotation,
                 GteVec3I16::new(header.offset.x, header.offset.y, header.offset.z),
-                GteVec3I32::new(
-                    entity.origin.x >> 12,
-                    entity.origin.y >> 12,
-                    entity.origin.z >> 12,
-                ),
+                GteVec3I32::new(draw_origin[0] >> 12, draw_origin[1] >> 12, draw_origin[2] >> 12),
                 GteVec3I16::new(header.scale.x, header.scale.y, header.scale.z),
             );
             scene::load_rotation(&rotation);
             scene::load_translation(translation);
+            let stored_light = if self.smooth_lights {
+                self.smooth_entity_light(map, entity)
+            } else {
+                entity.light
+            };
             let light =
-                (i32::from(entity.light) + self.dynamic_light_at(entity.origin)).min(255) as u32;
+                (i32::from(stored_light) + self.dynamic_light_at(entity.origin)).min(255) as u32;
             let tint = light | (light << 8) | (light << 16);
             let submitted = unsafe {
                 submit_classic_alias_model(
-                    vertices.as_ptr().cast::<ClassicAliasVertex>(),
+                    vertex_bytes.cast::<ClassicAliasVertex>(),
                     header.vertex_count as usize,
                     faces.as_ptr().cast::<ClassicAliasFace>(),
                     face_count,
@@ -3532,6 +3568,22 @@ impl Renderer {
             .frame_bytes(frame)
             .expect("validated view-model frame");
         let faces = model.triangle_bytes(0).expect("validated view-model skin");
+        // Smooth poses blend the gun between its 0.1 s frames. It has no
+        // world origin to glide, so only the vertex bytes change.
+        let mut vertex_bytes = vertices.as_ptr();
+        if self.smooth_poses {
+            vertex_bytes = self
+                .smooth_alias_pose(
+                    model,
+                    smooth::VIEW_MODEL_KEY,
+                    [0; 3],
+                    [0; 3],
+                    header.id,
+                    frame,
+                    vertices,
+                )
+                .vertices;
+        }
 
         // The retained renderer magnifies alias view models by 2^3 and uses
         // only Quake's coordinate basis, not the player's world-facing view
@@ -3581,7 +3633,7 @@ impl Renderer {
             view_model::update_light(self.view_model_light, camera_light, input.muzzle_flash);
         let submitted = unsafe {
             submit_classic_alias_view_model(
-                vertices.as_ptr().cast::<ClassicAliasVertex>(),
+                vertex_bytes.cast::<ClassicAliasVertex>(),
                 header.vertex_count as usize,
                 faces.as_ptr().cast::<ClassicAliasFace>(),
                 face_count,
@@ -5328,15 +5380,17 @@ unsafe fn audit_scoped_window_packets(start: *mut u32, end: *mut u32) -> ScopedW
 /// keeps its Back row above the 240-line display edge.
 #[optimize(size)]
 fn options_row_top(_view: MenuView) -> i16 {
-    60
+    56
 }
 
 #[optimize(size)]
 fn options_row_pitch(view: MenuView) -> i16 {
+    // Sixteen rows with the music block, thirteen without: both must end above
+    // the bottom of the 240-line screen.
     if view.music_available {
-        12
+        10
     } else {
-        15
+        12
     }
 }
 

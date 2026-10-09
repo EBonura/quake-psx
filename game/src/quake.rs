@@ -321,7 +321,12 @@ pub fn run() -> ! {
             entities.update();
             audio.spatialize(camera.origin, camera.angles[1]);
             entities.animate_lights(&world, audio_tick);
-            renderer.set_light_styles(entities.light_styles());
+            renderer.set_smooth_poses(menu.view().pose_mode.smooth());
+            if menu.view().light_mode.smooth() {
+                renderer.set_light_styles(entities.smooth_light_styles(audio_tick), true);
+            } else {
+                renderer.set_light_styles(entities.light_styles(), false);
+            }
             renderer.set_dynamic_lights(&dynamic_lights);
             let _ = renderer.draw_frame(
                 &world,
@@ -448,7 +453,12 @@ pub fn run() -> ! {
             let camera = player.camera();
             audio.spatialize(camera.origin, camera.angles[1]);
             entities.animate_lights(&world, audio_tick);
-            renderer.set_light_styles(entities.light_styles());
+            renderer.set_smooth_poses(menu.view().pose_mode.smooth());
+            if menu.view().light_mode.smooth() {
+                renderer.set_light_styles(entities.smooth_light_styles(audio_tick), true);
+            } else {
+                renderer.set_light_styles(entities.light_styles(), false);
+            }
             renderer.set_dynamic_lights(&dynamic_lights);
             let view_contents = renderer.view_contents(&world, camera);
             let _ = renderer.draw_frame(
@@ -1205,7 +1215,12 @@ pub fn run() -> ! {
         #[cfg(feature = "visual-parity-regression")]
         let render_light_tick = 0;
         entities.animate_lights(&world, render_light_tick);
-        renderer.set_light_styles(entities.light_styles());
+        renderer.set_smooth_poses(menu.view().pose_mode.smooth());
+        if menu.view().light_mode.smooth() {
+            renderer.set_light_styles(entities.smooth_light_styles(render_light_tick), true);
+        } else {
+            renderer.set_light_styles(entities.light_styles(), false);
+        }
         renderer.set_dynamic_lights(&dynamic_lights);
         // `V_SetContentsColor (r_viewleaf->contents)` and `r_dowarp`: the tint
         // and the warp follow the leaf the drawn eye is in. The player's

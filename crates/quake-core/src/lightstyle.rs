@@ -112,6 +112,48 @@ pub fn animate(values: &mut [u16; DUMMY_STYLE + 1], tick: u32) {
     }
 }
 
+/// The animated styles at the tick AFTER `tick`, for [`blend`]'s upper end.
+///
+/// Switchable styles are left as the caller holds them, like [`animate`]: a
+/// light that has been used flips at once in the original and has nothing to
+/// glide toward.
+#[optimize(size)]
+pub fn animate_next(values: &mut [u16; DUMMY_STYLE + 1], tick: u32) {
+    animate(values, tick.wrapping_add(1));
+}
+
+/// Q8 weights for the six 60 Hz vblanks inside one 10 Hz lightstyle tick.
+///
+/// `phase / 6` in Q8, truncated; phase 0 is exactly the original's value for
+/// the tick, so a smoothed table agrees with the stepped one at every tick
+/// boundary and only differs between them.
+pub const PHASE_WEIGHTS_Q8: [u16; 6] = [0, 42, 85, 128, 170, 213];
+
+/// Rewrite the animated styles of `out` as `current + (next - current) * w`.
+///
+/// Style 0 and the switchable styles (32 and up) are copied from `current`,
+/// because the original never animates them. One multiply per animated style
+/// and no division: `current` and `next` carry the per-tick pattern lookups,
+/// which cost a division each and only change ten times a second.
+///
+/// `weight_q8` is `0..=256`; zero returns `current` exactly.
+#[optimize(size)]
+pub fn blend(
+    out: &mut [u16; DUMMY_STYLE + 1],
+    current: &[u16; DUMMY_STYLE + 1],
+    next: &[u16; DUMMY_STYLE + 1],
+    weight_q8: u32,
+) {
+    *out = *current;
+    let mut style = 1usize;
+    while style < FIRST_SWITCHABLE_STYLE {
+        let from = current[style] as i32;
+        let to = next[style] as i32;
+        out[style] = (from + (((to - from) * weight_q8 as i32 + 128) >> 8)) as u16;
+        style += 1;
+    }
+}
+
 /// A fresh table: style 0 at this port's normal, every predefined style at its
 /// own tick zero, every switchable style on, and the dummy slot dark.
 ///
@@ -239,5 +281,69 @@ mod tests {
         assert_eq!(sample_leaf([120, 0], [0, DUMMY_STYLE as u8], &values), 120);
         assert_eq!(sample_leaf([255, 255], [63, 63], &values), 255);
         assert_eq!(sample_leaf([255, 255], [255, 255], &values), 0);
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn blend_agrees_with_the_stepped_table_at_phase_zero() {
+        let mut current = initial_values();
+        animate(&mut current, 7);
+        let mut next = initial_values();
+        animate_next(&mut next, 7);
+        let mut smooth = initial_values();
+        blend(&mut smooth, &current, &next, u32::from(PHASE_WEIGHTS_Q8[0]));
+        assert_eq!(smooth, current);
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn blend_reaches_the_next_tick_and_stays_between() {
+        let mut current = initial_values();
+        animate(&mut current, 3);
+        let mut next = initial_values();
+        animate_next(&mut next, 3);
+        let mut smooth = initial_values();
+        blend(&mut smooth, &current, &next, 256);
+        assert_eq!(smooth, next);
+        for phase in 0..PHASE_WEIGHTS_Q8.len() {
+            blend(&mut smooth, &current, &next, u32::from(PHASE_WEIGHTS_Q8[phase]));
+            for style in 0..=DUMMY_STYLE {
+                let low = current[style].min(next[style]);
+                let high = current[style].max(next[style]);
+                assert!((low..=high).contains(&smooth[style]), "style {style} phase {phase}");
+            }
+        }
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn blend_never_moves_style_zero_or_the_switchable_styles() {
+        let mut current = initial_values();
+        current[33] = switched_value(false);
+        animate(&mut current, 5);
+        let mut next = current;
+        animate_next(&mut next, 5);
+        next[33] = switched_value(true);
+        let mut smooth = current;
+        blend(&mut smooth, &current, &next, 128);
+        assert_eq!(smooth[0], NORMAL_VALUE);
+        assert_eq!(smooth[33], SWITCHED_OFF_VALUE);
+        assert_eq!(smooth[DUMMY_STYLE], 0);
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn strobe_becomes_a_ramp() {
+        // Style 4 is "mamamama...": off and on every tick. Halfway through an
+        // on tick the smoothed value is half way to off.
+        let mut current = initial_values();
+        animate(&mut current, 0);
+        let mut next = initial_values();
+        animate_next(&mut next, 0);
+        let mut smooth = initial_values();
+        blend(&mut smooth, &current, &next, 128);
+        assert_eq!(current[4], SWITCHED_ON_VALUE);
+        assert_eq!(next[4], 0);
+        assert_eq!(smooth[4], SWITCHED_ON_VALUE / 2);
     }
 }
