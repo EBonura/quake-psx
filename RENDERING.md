@@ -2077,6 +2077,13 @@ frontend, one build each, so inside the layout noise band for small deltas):
 | chain route VRAM / display hash | 0x04db59d267d9a7d1 / 0x7f6a174585529a45 | same | same |
 | monster route bus cycles | 2,908,175,177 | 2,914,458,517 (+0.22%) | 2,936,736,707 (+0.98%) |
 
+Re-measured on the final tree (merged with main 4bdeb8f, which changed the
+renderer itself), chain route: main 2,027,823,432 work instructions and
+1,586,328,662 bus cycles against 2,032,521,287 (+0.23%) and 1,601,751,734
+(+0.97%) with POSES SMOOTH, hashes still main's. The table above was measured
+before that merge (against a0e3731); its CLASSIC and monster-route columns were
+not repeated.
+
 The chain route compiles the monster think loop out, so no monster animates
 and the hashes stay main's; the +0.65% cycles between CLASSIC and SMOOTH there
 is the view weapon's per-frame pose bookkeeping and blend. The monster route
