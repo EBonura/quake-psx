@@ -61,19 +61,21 @@ use crate::pusher::{push_pass, PushBlocker, Rider};
 // unreachable heap objects in the shipping image.
 const MAX_RENDER_ENTITIES: usize = 384;
 const MAX_CHANGE_LEVELS: usize = 4;
-// The verified shareware corpus peaks at 57 supported brush movers and 26
-// touch triggers in one map. These closed-corpus bounds leave seven and six
-// slots respectively; the host cooker mirrors them and rejects any future map
-// that would exceed either pool before a disc is built.
-const MAX_MOVERS: usize = 64;
+// The verified shareware corpus peaks at 57 supported brush movers, 26 touch
+// triggers, 11 teleport volumes and 4 trains in one map. These closed-corpus
+// bounds leave three, two, two and two slots respectively; the host cooker
+// mirrors them and rejects any future map that would exceed a pool before a
+// disc is built. Each Vec below is allocated once at its full capacity from
+// the bump heap, so every slot of slack is shipping heap.
+const MAX_MOVERS: usize = 60;
 /// A door's `LinkDoors` chain id is the index of a mover, and a frame's fired
 /// chains travel as one bit each.
 const _: () = assert!(MAX_MOVERS <= 64);
 /// `spawn_field` volumes on one map. The shareware maps author at most three.
 const MAX_DOOR_FIELDS: usize = 8;
-const MAX_TRIGGERS: usize = 32;
-const MAX_TELEPORTS: usize = 32;
-const MAX_TRAINS: usize = 8;
+const MAX_TRIGGERS: usize = 28;
+const MAX_TELEPORTS: usize = 13;
+const MAX_TRAINS: usize = 6;
 const MAX_ROCKETS: usize = 8;
 const MAX_GRENADES: usize = 8;
 const MAX_FIREBALL_EMITTERS: usize = 16;
