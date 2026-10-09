@@ -8,6 +8,15 @@ description = "Platform-independent Rust simulation primitives for Quake PSX"
 [lib]
 path = "src/lib.rs"
 
+[features]
+# Measurement knobs: start the presentation options on id's stepped behaviour
+# instead of the smooth defaults, so a bench or a regression can pin either.
+classic-lights = []
+classic-poses = []
+# Blend and glide monster and weapon poses between the 0.1 s sim steps, and
+# show the POSES row. Off in the shipping image: it does not fit the heap floor.
+smooth-poses = []
+
 [dependencies]
 quake-formats = { path = "../quake-formats" }
 # Hydrated from the repository-level PSoXide pin. Until convergence commit

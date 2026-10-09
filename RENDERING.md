@@ -2002,3 +2002,83 @@ and sits, by Quake's linker script, next to the batch kernel and its leaves
 Tried and dropped: splitting the fast loop into a pick pass and a gather
 pass (fewer live values on paper; LLVM still spilled them, and the larger
 body overflowed the 4 KB placement).
+
+## 2026-10-09: smooth presentation (LIGHTS, POSES)
+
+Quake steps light styles at 10 Hz and thinks monsters and the view weapon at
+10 Hz, so a flickering light snaps and a walking monster changes pose in
+0.1 s jumps. Two Options rows, written from Quake's own documented behaviour
+and this port's code, put an integer glide between those steps. Both keep id's
+behaviour one press away, and the sim is untouched: what changes is what the
+frame shows.
+
+### LIGHTS (ships, default SMOOTH)
+
+Every face's light is `lightmap0 * style0 + lightmap1 * style1`, so the whole
+animation is the 65-entry style table the entity scene rewrites on the
+ten-hertz boundary. The glide interpolates that scalar table, not the faces:
+`EntityScene::frame_light_styles` returns this tick's table, the next tick's
+(`animate_next`, computed once per tick) and the phase as a Q8 weight
+(`vblank % 6`, so 0, 42, 85, 128, 170, 213), and `Renderer::set_light_styles`
+blends the animated styles 1..31 into its own copy with one multiply each.
+Style 0 and the switchable styles 32 and up are copied, so `light_use`
+switches still act at once. Phase zero is exactly the stepped value, so the
+table agrees with id's at every tick boundary and glides toward the next
+letter between them (a strobe such as style 4 becomes a ramp). Alias models
+resample their tint from the gliding table at draw time (`R_LightPoint` over
+the entity's leaf); the view weapon already reads the camera leaf through the
+same table.
+
+Faces whose only style is 0 are baked at cook time and have nothing to glide,
+so the steady torches and flames of Episode 1 stay steady. The optional extra
+flicker on those is not implemented. It needs a per-face torch channel at cook
+time: a style-0 face would be cooked as two channels (most of the light on
+style 0, a small share on a torch style), which takes it off the baked
+materializer path and, because style 0 is 256 here against the 264 the baker
+uses, cannot reproduce today's pixels exactly in the stepped setting. That
+needs its own change with its own parity gate.
+
+Cost on the E1M1 chain route (`e1m1-chain-bench`, build 8fdde01 plus this
+change, work instructions outside the vblank spin and CD reads): main
+2,018,452,396, stepped setting 2,018,558,407 (+0.005%, code placement),
+smooth 2,022,346,647 (+0.19% over stepped). The CPU cycle log (issue plus
+RAM, I-cache, store and mul/div stalls) gives the same +0.2% within layout
+noise. Both settings leave the route's final VRAM and display hashes equal to
+main's, and the pinned E1M1 owner-camera visual parity capture (frozen style
+tick) has main's world, HUD and display hashes with either setting. A fixed-camera strip of the E1M1 style 10 fluorescent flicker (one
+style step is six frames) shows the stepped light going dark at one frame and
+back six frames later, and the smooth light ramping between the two.
+
+### POSES (behind the `smooth-poses` cargo feature, off in the shipping image)
+
+`quake_core::pose` watches a drawn monster's origin, yaw and frame, notices
+when the sim changed them, and returns the pose to draw: origin and yaw glided
+from the previous pose over the length of the last step (clamped to 2..6
+ticks), and the previous frame to blend from. A move over 128 units, a model
+change or 12 ticks unseen restarts the glide instead. The renderer blends the
+two animation frames per byte (`blend_frames`: two multiplies per four bytes
+on 16-bit lanes, weight in sixty-fourths) into the top of the projected-vertex
+scratch and hands them to the unchanged alias submitter, so the blended pose
+lies on the same grid as the authored frames. The view weapon blends the same
+way. Beyond 800 units a model glides but takes the nearer frame. Measured on
+the earlier, larger build: +0.16% on the chain route and +0.50% on the monster
+route (both settings together +0.33% and +0.83%).
+
+It is off by default because of the heap. The shipping gate wants at least
+8,192 B free after boot; main has 9,068 B, and the pose code is about 2.7 KB
+of image plus a small tracker allocated on first use. The feature also adds
+the POSES row to Options and moves the rows below it down one; without it the
+row does not exist.
+
+### Heap
+
+`ship-boot` with LIGHTS and the menu row, POSES off: 9,068 B free, the same as
+main, with the same heap start (symbol growth 684 B, inside the slack the
+image's placement leaves). The bytes
+came from keeping lights small: one shared blend, the gliding table lives in
+the renderer's own copy (no second table in the entity scene), the pose code
+is compiled out, and the rarely run helpers are size-optimized and out of
+line.
+
+The `classic-lights` and `classic-poses` features start the rows on
+CLASSIC for benches and regressions.
