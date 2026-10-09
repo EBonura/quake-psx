@@ -24,7 +24,7 @@ use crate::entity::RenderEntity;
 /// observed, so this is the most that can be gliding on one screen; an
 /// overflow evicts the longest unseen entry, whose model then draws unglided
 /// for one think.
-const POSE_SLOTS: usize = 12;
+const POSE_SLOTS: usize = 8;
 /// Tracker key of the first-person weapon. Entity indexes stay below this.
 const VIEW_MODEL_KEY: u16 = u16::MAX - 1;
 /// Models further than this from the eye (whole Quake units) glide but do not
@@ -51,6 +51,7 @@ pub(super) struct SmoothPose {
 impl Renderer {
     /// A monster's pose this frame, glided and blended from its last think.
     #[optimize(size)]
+    #[inline(never)]
     pub(super) fn smooth_entity_pose(
         &mut self,
         model: AliasModelView<'_>,
@@ -76,6 +77,7 @@ impl Renderer {
     /// The first-person weapon's vertex bytes this frame, blended between its
     /// 0.1 s frames. It has no world origin to glide.
     #[optimize(size)]
+    #[inline(never)]
     pub(super) fn smooth_view_model_vertices(
         &mut self,
         model: AliasModelView<'_>,
@@ -96,6 +98,7 @@ impl Renderer {
     /// `R_LightPoint` over the entity's leaf, read now rather than at the last
     /// tenth-of-a-second boundary.
     #[optimize(size)]
+    #[inline(never)]
     pub(super) fn smooth_entity_light(&self, map: &ResidentMap, entity: &RenderEntity) -> u8 {
         match map.leaves().get(entity.leaf_index as usize) {
             Some(leaf) => quake_core::lightstyle::sample_leaf(
