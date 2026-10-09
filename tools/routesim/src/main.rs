@@ -34,6 +34,8 @@
 //! * `reach`    - flood the walkable set from a point as an ASCII height map.
 //! * `path`     - breadth-first walkable route between authored points.
 //! * `route`    - walk a waypoint list from stdin with ordinary movement input.
+//! * `tape`     - replay a recorded `PXITAPE2` input tape through the movement code,
+//!                one frame per controller poll, and print the pose of each.
 //!
 //! Movers are placed where they SPAWN, not where their brush was authored,
 //! because those are different places for two of them. An untargeted
@@ -535,6 +537,7 @@ fn main() {
         "path" => find_path(&scene, &args),
         "reach" => flood_reach(&scene, &args),
         "route" => run_route(&scene, &args),
+        "tape" => run_tape(&scene, &args),
         other => {
             eprintln!("unknown mode {other}");
             std::process::exit(2);
@@ -1838,6 +1841,136 @@ fn run_route(scene: &Scene, args: &[String]) {
     } else {
         println!("ROUTE STUCK: {last}");
         std::process::exit(1);
+    }
+}
+
+/// `tape <tape.pxtape> <polls.txt> [--first-poll N] [--last-poll N] [--yaw Y]`
+///
+/// Replays a poll-bound `PXITAPE2` recording through the guest's own movement
+/// and collision. `polls.txt` holds one `poll route_tick` pair per line (the
+/// first route tick at which the emulator reported each controller poll); the
+/// ticks a frame consumes are the route ticks since the previous poll, which
+/// is what the guest's 60 Hz clock hands the player on a real run. It is an
+/// approximation of the recorded session (no monsters, doors dropped through
+/// `ROUTESIM_OPEN_MOVERS`), good for locating where a recorded player stood.
+///
+/// One line per frame: `poll tick ticks x y z vx vy grounded forward strafe`.
+/// `psx_pad::aim_curve`: 45% linear plus 55% cubic.
+fn aim_curve(value: i32) -> i32 {
+    let value = value.clamp(-128, 128);
+    let magnitude = value.abs();
+    let cubic = magnitude * magnitude / 128 * magnitude / 128;
+    value.signum() * ((magnitude * 45 + cubic * 55) / 100)
+}
+
+fn run_tape(scene: &Scene, args: &[String]) {
+    let tape = std::fs::read(&args[3]).expect("tape file");
+    assert_eq!(&tape[..8], b"PXITAPE2", "not a PXITAPE2 tape");
+    let count = u32::from_le_bytes(tape[8..12].try_into().unwrap()) as usize;
+    let tape_first = u32::from_le_bytes(tape[12..16].try_into().unwrap()) as usize;
+    let polls_text = std::fs::read_to_string(&args[4]).expect("poll tick file");
+    let mut poll_tick = std::collections::HashMap::new();
+    for line in polls_text.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(poll), Some(tick)) = (parts.next(), parts.next()) {
+            poll_tick.insert(poll.parse::<usize>().unwrap(), tick.parse::<i64>().unwrap());
+        }
+    }
+    let mut first_poll = tape_first;
+    let mut last_poll = tape_first + count - 1;
+    let start = scene.map.entities().get(1).expect("cooked info_player_start");
+    let mut yaw = start.angles.y as u16;
+    let mut pitch = 0i32;
+    let mut index = 5usize;
+    while index < args.len() {
+        let number = args.get(index + 1).and_then(|raw| raw.parse::<i64>().ok()).unwrap_or(0);
+        match args[index].as_str() {
+            "--first-poll" => first_poll = number as usize,
+            "--last-poll" => last_poll = number as usize,
+            "--yaw" => yaw = number as u16,
+            other => panic!("unknown tape argument {other}"),
+        }
+        index += 2;
+    }
+    let sample = |poll: usize| -> (u16, [u8; 4]) {
+        let at = 16 + (poll - tape_first) * 6;
+        (
+            u16::from_le_bytes([tape[at], tape[at + 1]]),
+            [tape[at + 2], tape[at + 3], tape[at + 4], tape[at + 5]],
+        )
+    };
+    let mut state = MovementState::new(start.origin);
+    let mut scratch = MovementScratch::default();
+    let collision = SceneTrace { scene, blocker: std::cell::Cell::new(None) };
+    let leaves = scene.map.leaves();
+    let map = &scene.map;
+    // The guest's default stick dead zone (`DEADZONE_RADII[2]`).
+    let dead = 28i32;
+    let mut previous_tick = poll_tick.get(&first_poll).copied().unwrap_or(0);
+    for poll in first_poll..=last_poll {
+        let Some(&tick) = poll_tick.get(&poll) else { continue };
+        let ticks = (tick - previous_tick).clamp(1, 4) as u16;
+        previous_tick = tick;
+        let (buttons, sticks) = sample(poll);
+        let (lx, ly) = (i32::from(sticks[2]) - 128, i32::from(sticks[3]) - 128);
+        let (mut strafe, mut forward) = (0i32, 0i32);
+        let magnitude = psx_math::int32::isqrt_i32(lx * lx + ly * ly);
+        if magnitude > dead {
+            let scaled = (((magnitude - dead) * 127) / (127 - dead).max(1)).min(127);
+            strafe = -((lx * scaled) / magnitude).clamp(-127, 127);
+            forward = -((ly * scaled) / magnitude);
+        }
+        let (rx, ry) = (i32::from(sticks[0]) - 128, i32::from(sticks[1]) - 128);
+        let (mut look_yaw, mut look_pitch) = (0i32, 0i32);
+        let rmag = psx_math::int32::isqrt_i32(rx * rx + ry * ry);
+        if rmag > dead {
+            let scaled = (((rmag - dead) * 127) / (127 - dead).max(1)).min(127);
+            look_yaw = aim_curve(-((rx * scaled) / rmag).clamp(-127, 127));
+            look_pitch = aim_curve(((ry * scaled) / rmag).clamp(-127, 127));
+        }
+        const UP: u16 = 1 << 4;
+        const RIGHT: u16 = 1 << 5;
+        const DOWN: u16 = 1 << 6;
+        const LEFT: u16 = 1 << 7;
+        const TRIANGLE: u16 = 1 << 12;
+        const CROSS: u16 = 1 << 14;
+        if buttons & TRIANGLE == 0 {
+            if buttons & UP != 0 { forward = 127; }
+            if buttons & DOWN != 0 { forward = -127; }
+            if buttons & RIGHT != 0 { strafe = -127; }
+            if buttons & LEFT != 0 { strafe = 127; }
+        }
+        // `Player::update_look`: yaw and pitch advance per tick, 32 and 24 Q12
+        // angle units at full deflection.
+        yaw = yaw.wrapping_add(((look_yaw * 32 / 127) * i32::from(ticks)) as i16 as u16);
+        pitch = (pitch + (look_pitch * 24 / 127) * i32::from(ticks)).clamp(-1012, 1012);
+        if let Some(teleport) = scene.teleport_at(state.origin()) {
+            yaw = teleport.destination_yaw;
+            state.teleport_with_velocity(teleport.destination, teleport.exit_velocity);
+        }
+        state.update_ticks_with_gravity(
+            &collision,
+            &mut scratch,
+            MovementInput {
+                forward: forward as i16,
+                strafe: strafe as i16,
+                yaw: yaw & 0x0fff,
+                pitch: 0,
+                jump: buttons & CROSS != 0,
+            },
+            ticks,
+            env_num("ROUTESIM_GRAVITY", 800).clamp(0, u16::MAX as i32) as u16,
+            |point| {
+                let leaf = map.point_leaf_index(*point)?;
+                Some(leaves.get(leaf)?.contents)
+            },
+        );
+        let o = state.origin();
+        let v = state.velocity();
+        println!(
+            "{poll} {tick} {ticks} {} {} {} {} {} {} {forward} {strafe} {} {}",
+            o.x, o.y, o.z, v.x >> 12, v.y >> 12, u8::from(state.grounded()), yaw & 0x0fff, pitch
+        );
     }
 }
 
