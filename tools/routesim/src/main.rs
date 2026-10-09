@@ -38,6 +38,8 @@
 //!                and report the ones the player cannot climb.
 //! * `ramps`    - walk every floor step and slope of a map on a grid, uphill into each
 //!                neighbour, and report any the player cannot cross.
+//! * `traps`    - stand a player on every floor of a map and report the places it cannot
+//!                walk out of in any of eight directions.
 //! * `standing` - read `x y z` Q12 origins on stdin and echo the ones a player can
 //!                stand on (used to find a live player origin in a RAM dump).
 //! * `faces`    - every world face with its effective normal, texture and corners.
@@ -547,6 +549,7 @@ fn main() {
         "tape" => run_tape(&scene, &args),
         "slopes" => sweep_slopes(&scene, &args),
         "ramps" => sweep_ramps(&scene, &args),
+        "traps" => sweep_traps(&scene, &args),
         "standing" => standing_filter(&scene),
         "faces" => dump_faces(&scene),
         other => {
@@ -2493,6 +2496,104 @@ fn sweep_ramps(scene: &Scene, args: &[String]) {
     }
     println!("RAMPS tested {tested} blocked {blocked}");
     if blocked != 0 {
+        std::process::exit(1);
+    }
+}
+
+/// `traps [--grid n] [--verbose]`
+///
+/// Puts a standing player on every floor of every grid column (default 16
+/// units), holds full forward toward each of eight headings from standstill
+/// for 24 two-tick frames, and reports a position from which none of them
+/// moves it more than four units. A real map has a few of these (a pit's
+/// bottom corner, a closed alcove); a cluster of them on open floor or a
+/// ramp is a place the movement code wedges a player. Doors and lifts are
+/// left out with `ROUTESIM_OPEN_MOVERS=1`, and liquid is skipped.
+fn sweep_traps(scene: &Scene, args: &[String]) {
+    let mut grid = 16i32;
+    let mut index = 3;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--grid" => {
+                grid = args[index + 1].parse().expect("--grid n");
+                index += 2;
+            }
+            other => panic!("unknown traps argument {other}"),
+        }
+    }
+    let world = scene.map.brush_models().get(0).expect("world brush model");
+    let (x0, x1) = (i32::from(world.mins.x), i32::from(world.maxs.x));
+    let (y0, y1) = (i32::from(world.mins.y), i32::from(world.maxs.y));
+    let (z0, z1) = (i32::from(world.mins.z), i32::from(world.maxs.z));
+    let leaves = scene.map.leaves();
+    let map = &scene.map;
+    let collision = SceneTrace { scene, blocker: std::cell::Cell::new(None) };
+    let mut scratch = TraceScratch::default();
+    let mut movement_scratch = MovementScratch::default();
+    let (mut tested, mut trapped) = (0u32, 0u32);
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            let mut z = z1;
+            while z > z0 - 8 {
+                let here = Vec3I32 { x: x << 12, y: y << 12, z: z << 12 };
+                let probe = scene_trace(scene, here, here, &mut scratch);
+                if probe.start_solid || probe.all_solid {
+                    z -= 8;
+                    continue;
+                }
+                let Some(origin_z) =
+                    floor_below_normal(scene, x, y, z, z - z0 + 64, 2_867, &mut scratch)
+                else {
+                    z -= 8;
+                    continue;
+                };
+                z = origin_z - 32;
+                let wet = [0, 24, 56].iter().any(|rise| {
+                    point_contents(scene, Vec3I32 { x: x << 12, y: y << 12, z: (origin_z + rise) << 12 })
+                        != quake_core::collision::CONTENTS_EMPTY
+                });
+                if wet {
+                    continue;
+                }
+                tested += 1;
+                let mut best = 0i32;
+                for heading in 0..8u16 {
+                    let yaw = heading * 512;
+                    let mut state = MovementState::new(Vec3I32 {
+                        x: x << 12,
+                        y: y << 12,
+                        z: origin_z << 12,
+                    });
+                    for _ in 0..24 {
+                        state.update_ticks_with_gravity(
+                            &collision,
+                            &mut movement_scratch,
+                            MovementInput { forward: 127, strafe: 0, yaw, pitch: 0, jump: false },
+                            2,
+                            quake_core::movement::DEFAULT_GRAVITY,
+                            |point| {
+                                let leaf = map.point_leaf_index(*point)?;
+                                Some(leaves.get(leaf)?.contents)
+                            },
+                        );
+                    }
+                    let o = state.origin();
+                    let (dx, dy) = (units(o.x) - x, units(o.y) - y);
+                    best = best.max(dx.abs().max(dy.abs()));
+                }
+                if best <= 4 {
+                    trapped += 1;
+                    println!("TRAPPED ({x},{y},{origin_z}) best move {best}");
+                }
+            }
+            x += grid;
+        }
+        y += grid;
+    }
+    println!("TRAPS tested {tested} trapped {trapped}");
+    if trapped != 0 {
         std::process::exit(1);
     }
 }
