@@ -6639,7 +6639,7 @@ impl CensusLine {
 }
 
 /// QRC5 fields are hexadecimal and positional. Keep this order synchronized
-/// with `tools/analyze_renderer_census.py`.
+/// with `fields` in `tools/quake-analysis/src/census.rs`.
 #[cfg(feature = "renderer-census")]
 #[inline(never)]
 fn emit_renderer_census(frame: u32, census: &RendererCensus) {

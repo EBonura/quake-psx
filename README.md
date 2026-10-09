@@ -160,6 +160,7 @@ deadzone, brightness, HUD, water-warp and translucent-water settings.
 | `crates/quake-cook/` | Quake asset conversion |
 | `host/quake-build/` | Host build tool, disc packager and emulator test runner |
 | `tools/routesim/` | Host route and collision inspection tool |
+| `tools/quake-analysis/` | Host reports on GP0 counters, renderer census logs and PC samples |
 | `tools/cfg/` | Quake resource maps used by the cooker |
 | `id1psx/` | Ignored generated game data |
 | `dist/` | Ignored standalone build output |
