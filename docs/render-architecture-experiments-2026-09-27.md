@@ -298,15 +298,12 @@ Detailed local bundles are under `~/Documents/`:
 | `PSoXide-render-mesh-quake-2026-09-27` | Asset remesher, playable BIN/CUEs, raw captures, meshoptimizer source/probes, report |
 
 Each experimental implementation remains in its bundle. The repository keeps
-this synthesis, selected measurements, screenshot exports/generator and the
+this synthesis, selected measurements, screenshot exports and the
 census correction. Original runtime source and game assets remain unchanged.
 
-Regenerate the screenshot deliverables from the preserved capture bundle:
-
-```sh
-python3 -B docs/render-architecture-2026-09-27/make_comparisons.py \
-  "$HOME/Documents/PSoXide-render-mesh-quake-2026-09-27"
-```
+The screenshot deliverables were generated from the preserved capture bundle by
+`docs/render-architecture-2026-09-27/make_comparisons.py`, which has since been
+removed (it stays in git history).
 
 The viewer embeds all five PNGs and works offline when opened directly.
 `screenshot-provenance.json` records source paths within the bundle, camera,

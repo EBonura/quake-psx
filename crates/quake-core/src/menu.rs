@@ -56,6 +56,71 @@ impl HudMode {
     }
 }
 
+/// How the ten-hertz lightstyle patterns reach the screen.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum LightMode {
+    /// id's behaviour: a style steps from one pattern letter to the next ten
+    /// times a second.
+    Classic,
+    /// The style value glides from one letter to the next between the steps.
+    Smooth,
+}
+
+impl LightMode {
+    #[optimize(size)]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "CLASSIC",
+            Self::Smooth => "SMOOTH",
+        }
+    }
+
+    #[optimize(size)]
+    pub const fn smooth(self) -> bool {
+        matches!(self, Self::Smooth)
+    }
+}
+
+/// How the ten-hertz monster and weapon poses reach the screen.
+#[cfg(feature = "smooth-poses")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PoseMode {
+    /// id's behaviour: origin, yaw and animation frame change in 0.1 s steps.
+    Classic,
+    /// Origin and yaw glide and animation frames blend between the steps.
+    Smooth,
+}
+
+#[cfg(feature = "smooth-poses")]
+impl PoseMode {
+    #[optimize(size)]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "CLASSIC",
+            Self::Smooth => "SMOOTH",
+        }
+    }
+
+    #[optimize(size)]
+    pub const fn smooth(self) -> bool {
+        matches!(self, Self::Smooth)
+    }
+}
+
+/// Presentation defaults. See `RENDERING.md` ("Smooth presentation") for the
+/// cost behind each.
+pub const DEFAULT_LIGHT_MODE: LightMode = if cfg!(feature = "classic-lights") {
+    LightMode::Classic
+} else {
+    LightMode::Smooth
+};
+#[cfg(feature = "smooth-poses")]
+pub const DEFAULT_POSE_MODE: PoseMode = if cfg!(feature = "classic-poses") {
+    PoseMode::Classic
+} else {
+    PoseMode::Smooth
+};
+
 /// The Levels page rows, in [`crate::level::LEVEL_NAMES`] order: the cooked
 /// map name and its authored title.
 pub const LEVEL_ROWS: [&str; 9] = [
@@ -146,6 +211,11 @@ pub struct MenuView {
     pub water_alpha: bool,
     /// Compact console overlay or the original two-tier status bar.
     pub hud_mode: HudMode,
+    /// Stepped or gliding lightstyles.
+    pub light_mode: LightMode,
+    /// Stepped or blended monster and weapon poses.
+    #[cfg(feature = "smooth-poses")]
+    pub pose_mode: PoseMode,
     /// The `skill` cvar a new game starts on. Start's own skill doors overwrite
     /// it the moment the player walks one, exactly like the original.
     pub skill: u8,
@@ -186,10 +256,16 @@ pub const VOLUME_STEPS: u8 = 10;
 pub const DEFAULT_SOUND_VOLUME: u8 = 7;
 /// `bgmvolume 1`, the original music default.
 pub const DEFAULT_MUSIC_VOLUME: u8 = VOLUME_STEPS;
-pub const OPTIONS_SOUND_VOLUME_ROW: u8 = 9;
-pub const OPTIONS_MUSIC_ROW: u8 = 10;
-pub const OPTIONS_MUSIC_VOLUME_ROW: u8 = 11;
-pub const OPTIONS_TRACK_ROW: u8 = 12;
+pub const OPTIONS_LIGHTS_ROW: u8 = 9;
+/// The POSES row exists only in builds with the `smooth-poses` feature; the
+/// rows below it move down by one when it does.
+#[cfg(feature = "smooth-poses")]
+pub const OPTIONS_POSES_ROW: u8 = 10;
+const POSES_ROWS: u8 = cfg!(feature = "smooth-poses") as u8;
+pub const OPTIONS_SOUND_VOLUME_ROW: u8 = 10 + POSES_ROWS;
+pub const OPTIONS_MUSIC_ROW: u8 = OPTIONS_SOUND_VOLUME_ROW + 1;
+pub const OPTIONS_MUSIC_VOLUME_ROW: u8 = OPTIONS_SOUND_VOLUME_ROW + 2;
+pub const OPTIONS_TRACK_ROW: u8 = OPTIONS_SOUND_VOLUME_ROW + 3;
 
 impl MenuView {
     #[optimize(size)]
@@ -219,7 +295,7 @@ impl MenuView {
     /// music, music volume, and track are conditional.
     #[optimize(size)]
     pub const fn options_back_row(self) -> u8 {
-        10 + 3 * self.music_available as u8
+        OPTIONS_SOUND_VOLUME_ROW + 1 + 3 * self.music_available as u8
     }
 
     #[optimize(size)]
@@ -300,6 +376,9 @@ impl MenuView {
                         DEFAULT_SKILL as usize
                     }],
                 )),
+                OPTIONS_LIGHTS_ROW => Some(MenuRow::valued("LIGHTS", self.light_mode.label())),
+                #[cfg(feature = "smooth-poses")]
+                OPTIONS_POSES_ROW => Some(MenuRow::valued("POSES", self.pose_mode.label())),
                 OPTIONS_SOUND_VOLUME_ROW => Some(MenuRow::plain("SOUND VOLUME")),
                 OPTIONS_MUSIC_ROW if self.music_available => Some(MenuRow::valued(
                     "MUSIC",
@@ -357,6 +436,9 @@ pub struct Menu {
     water_warp: bool,
     water_alpha: bool,
     hud_mode: HudMode,
+    light_mode: LightMode,
+    #[cfg(feature = "smooth-poses")]
+    pose_mode: PoseMode,
     skill: u8,
     sound_volume: u8,
     music_available: bool,
@@ -391,6 +473,9 @@ impl Menu {
             water_warp: true,
             water_alpha: true,
             hud_mode: DEFAULT_HUD_MODE,
+            light_mode: DEFAULT_LIGHT_MODE,
+            #[cfg(feature = "smooth-poses")]
+            pose_mode: DEFAULT_POSE_MODE,
             skill: DEFAULT_SKILL,
             sound_volume: DEFAULT_SOUND_VOLUME,
             music_available: false,
@@ -425,6 +510,9 @@ impl Menu {
             water_warp: self.water_warp,
             water_alpha: self.water_alpha,
             hud_mode: self.hud_mode,
+            light_mode: self.light_mode,
+            #[cfg(feature = "smooth-poses")]
+            pose_mode: self.pose_mode,
             skill: self.skill,
             sound_volume: self.sound_volume,
             music_available: self.music_available,
@@ -624,6 +712,26 @@ impl Menu {
                     } else {
                         self.skill = self.skill.saturating_sub(1);
                     }
+                } else if self.selected == OPTIONS_LIGHTS_ROW
+                    && (input.left || input.right || input.accept)
+                {
+                    self.pending_sound = Some(MenuSound::Adjust);
+                    self.light_mode = match self.light_mode {
+                        LightMode::Classic => LightMode::Smooth,
+                        LightMode::Smooth => LightMode::Classic,
+                    };
+                } else if POSES_ROWS == 1
+                    && self.selected == OPTIONS_SOUND_VOLUME_ROW - 1
+                    && (input.left || input.right || input.accept)
+                {
+                    self.pending_sound = Some(MenuSound::Adjust);
+                    #[cfg(feature = "smooth-poses")]
+                    {
+                        self.pose_mode = match self.pose_mode {
+                            PoseMode::Classic => PoseMode::Smooth,
+                            PoseMode::Smooth => PoseMode::Classic,
+                        };
+                    }
                 } else if self.selected == OPTIONS_SOUND_VOLUME_ROW && (input.left || input.right) {
                     self.pending_sound = Some(MenuSound::Adjust);
                     if input.right {
@@ -779,7 +887,7 @@ mod tests {
             menu.update(left);
         }
         assert_eq!(menu.view().brightness, 0);
-        for _ in 0..7 {
+        for _ in 0..(OPTIONS_SOUND_VOLUME_ROW + 1 - 3) {
             menu.update(down());
         }
         assert_eq!(menu.update(accept()), None);
@@ -888,6 +996,47 @@ mod tests {
 
     #[optimize(size)]
     #[test]
+    fn presentation_rows_toggle_light_and_pose_modes() {
+        let mut menu = Menu::new();
+        menu.update(down());
+        menu.update(down());
+        menu.update(accept());
+        assert_eq!(menu.view().light_mode, DEFAULT_LIGHT_MODE);
+        #[cfg(feature = "smooth-poses")]
+        assert_eq!(menu.view().pose_mode, DEFAULT_POSE_MODE);
+        for _ in 0..OPTIONS_LIGHTS_ROW {
+            menu.update(down());
+        }
+        let before = menu.view().light_mode;
+        assert_eq!(menu.update(accept()), None);
+        assert_ne!(menu.view().light_mode, before);
+        assert_eq!(
+            menu.view().row(OPTIONS_LIGHTS_ROW),
+            Some(MenuRow::valued("LIGHTS", menu.view().light_mode.label()))
+        );
+        assert_eq!(menu.update(accept()), None);
+        assert_eq!(menu.view().light_mode, before);
+        #[cfg(feature = "smooth-poses")]
+        {
+            menu.update(down());
+            assert_eq!(menu.view().selected, OPTIONS_POSES_ROW);
+            let before = menu.view().pose_mode;
+            let right = MenuInput {
+                right: true,
+                ..MenuInput::default()
+            };
+            assert_eq!(menu.update(right), None);
+            assert_ne!(menu.view().pose_mode, before);
+            assert_eq!(
+                menu.view().row(OPTIONS_POSES_ROW),
+                Some(MenuRow::valued("POSES", menu.view().pose_mode.label()))
+            );
+        }
+        assert_eq!(menu.take_sound(), Some(MenuSound::Adjust));
+    }
+
+    #[optimize(size)]
+    #[test]
     fn clear_water_defaults_on_and_can_be_disabled() {
         let mut menu = Menu::new();
         menu.update(down());
@@ -935,15 +1084,18 @@ mod tests {
         menu.update(accept());
         assert_eq!(menu.view().page, MenuPage::Options);
         // Silent disc: sound volume remains useful, BACK still last.
-        assert_eq!(menu.view().row_count(), 11);
+        assert_eq!(menu.view().row_count(), OPTIONS_SOUND_VOLUME_ROW + 2);
         assert_eq!(
             menu.view().row(OPTIONS_SOUND_VOLUME_ROW),
             Some(MenuRow::plain("SOUND VOLUME"))
         );
-        assert_eq!(menu.view().row(10), Some(MenuRow::plain("BACK")));
+        assert_eq!(
+            menu.view().row(OPTIONS_SOUND_VOLUME_ROW + 1),
+            Some(MenuRow::plain("BACK"))
+        );
 
         menu.sync_music(true, true, 0);
-        assert_eq!(menu.view().row_count(), 14);
+        assert_eq!(menu.view().row_count(), OPTIONS_TRACK_ROW + 2);
         assert_eq!(
             menu.view().row(OPTIONS_MUSIC_ROW),
             Some(MenuRow::valued("MUSIC", "ON"))
@@ -956,7 +1108,10 @@ mod tests {
             menu.view().row(OPTIONS_TRACK_ROW),
             Some(MenuRow::valued("TRACK", MUSIC_TRACKS[0]))
         );
-        assert_eq!(menu.view().row(13), Some(MenuRow::plain("BACK")));
+        assert_eq!(
+            menu.view().row(OPTIONS_TRACK_ROW + 1),
+            Some(MenuRow::plain("BACK"))
+        );
 
         let left = MenuInput {
             left: true,
@@ -987,13 +1142,16 @@ mod tests {
         menu.update(down());
         menu.update(accept());
         menu.sync_music(true, true, 0);
-        for _ in 0..13 {
+        for _ in 0..OPTIONS_TRACK_ROW + 1 {
             menu.update(down());
         }
-        assert_eq!(menu.view().selected, 13);
+        assert_eq!(menu.view().selected, OPTIONS_TRACK_ROW + 1);
         menu.sync_music(false, true, 0);
-        assert_eq!(menu.view().selected, 10);
-        assert_eq!(menu.view().row(10), Some(MenuRow::plain("BACK")));
+        assert_eq!(menu.view().selected, OPTIONS_SOUND_VOLUME_ROW + 1);
+        assert_eq!(
+            menu.view().row(OPTIONS_SOUND_VOLUME_ROW + 1),
+            Some(MenuRow::plain("BACK"))
+        );
     }
 
     #[optimize(size)]
