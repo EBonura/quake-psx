@@ -2101,17 +2101,23 @@ sampled gameplay period):
 | step | free |
 | --- | --- |
 | main | 9,068 |
-| movers 64 to 60, triggers 32 to 28, teleports 32 to 13, trains 8 to 6, collision planes 3,000 to 2,960, render textures 128 to 96 (+2,796) | 11,864 |
-| POSES on (image grows 4,096 B of heap start, 352 B tracker, both included) | 7,416, gate fails |
-| sound effect table 255 to 104 records (+1,812) | 9,228, gate passes |
+| movers 64 to 60, triggers 32 to 30, teleports 32 to 17, trains 8 to 6, collision planes 3,000 to 2,960, render textures 128 to 96 (+2,572) | 11,640 |
+| POSES on (image grows 4,096 B of heap start, 352 B tracker, both included) | 7,192, gate fails |
+| sound effect table 255 to 104 records (+1,812) | 9,004, gate passes |
 
-Every trimmed pool stays above Episode 1's measured worst case (57 movers, 26
-triggers, 11 teleports, 4 trains, 2,948 planes, 81 textures, 101 resident
-sounds), and the cooker mirrors each bound and refuses a map above it, so a
-recook that outgrows a pool fails the build rather than the boot. The render
-entity pool (373 of 384 slots) and the map arena margin (7,878 B) were left
-alone: the pool's eleven spare slots may serve entities spawned at run time,
-which was not audited here.
+Every trimmed pool stays above Episode 1's measured worst case (57 movers, 28
+triggers, 15 teleports, 4 trains, 2,948 planes, 81 textures, 101 resident
+sounds). The census takes the worst of the four skills the menu offers (the
+loader drops an entity whose spawnflags exclude the current skill: easy
+NOT_EASY, normal NOT_MEDIUM, hard and nightmare NOT_HARD); an easy-only census
+had missed 2 triggers and 4 teleports. The cooker mirrors each bound and
+refuses a map above it, so a recook that outgrows a pool fails the build
+rather than the boot. The render
+entity pool and the map arena margin (7,878 B) were left alone. The render
+entity census now counts only what the loader can give a slot (visible brush
+models, alias spawns, 88 projectile slots and the fireball slots), worst case
+310 of 384 over every skill; the old count of every record said 373 on easy and
+396 on hard.
 
 The `classic-lights` and `classic-poses` features start the rows on
 CLASSIC for benches and regressions.

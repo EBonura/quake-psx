@@ -2017,6 +2017,32 @@ const MAX_BODY_CANDIDATES: usize = 16;
 /// Fixed projectile render slots the guest installs in every map: eight
 /// rockets, sixty nails, eight grenades, twelve monster missiles.
 const PROJECTILE_RENDER_SLOTS: usize = 8 + 60 + 8 + 12;
+/// `CLASS_MISC_FIREBALL`: a lava-ball spout, which takes fireball slots rather
+/// than a slot of its own.
+const CLASS_MISC_FIREBALL: u8 = 0x34;
+/// Classes `render_spawn` in `game/src/entity.rs` turns into an alias entity
+/// when the record has no model of its own (`0x27` only with spawnflag 1 and
+/// `0x44` in both variants; the flag is ignored here, an upper bound).
+const GUEST_ALIAS_SPAWN_CLASSES: [u8; 42] = [
+    0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2b,
+    0x2c, 0x2d, 0x31, 0x32, 0x33, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+    0x41, 0x42, 0x43, 0x44, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+];
+
+/// Whether the guest's entity loader can give this record a render slot: a
+/// visible brush model (`brush_model_is_visible`) or an alias entity
+/// (`render_spawn`). An upper bound: a few classes it handles earlier never
+/// reach either path. A fireball spout takes none.
+fn guest_takes_render_slot(entity: &MapEntity) -> bool {
+    if entity.model < 0 {
+        return matches!(
+            entity.class_name,
+            0x0a | 0x0b | 0x0c | 0x0d | 0x0e | 0x0f | 0x10 | 0x11 | 0x12 | 0x35
+        );
+    }
+    entity.class_name != CLASS_MISC_FIREBALL
+        && (entity.model > 0 || GUEST_ALIAS_SPAWN_CLASSES.contains(&entity.class_name))
+}
 
 struct MonsterPopulation {
     monsters: usize,
@@ -2067,16 +2093,16 @@ fn validate_monster_population_for_skill(
 
     let mut monsters = 0usize;
     let mut render_slots = PROJECTILE_RENDER_SLOTS;
+    let mut fireball_emitters = 0usize;
     let mut origins: Vec<(i32, i32, i32)> = Vec::new();
     for entity in entities.iter().skip(2) {
         if quake_core::targets::excluded_for_skill(entity.spawn_flags, skill) {
             continue;
         }
         // Every authored entity the guest renders occupies one slot.
-        if entity.model != 0 || entity.class_name != 0 {
-            // Counting exactly is the loader's job; the bound below is what
-            // matters, so count every non-worldspawn record conservatively.
-            render_slots += 1;
+        render_slots += usize::from(guest_takes_render_slot(&entity));
+        if entity.class_name == CLASS_MISC_FIREBALL {
+            fireball_emitters += 1;
         }
         let Some(kind) = MonsterKind::from_class_name(entity.class_name) else {
             continue;
@@ -2104,6 +2130,7 @@ fn validate_monster_population_for_skill(
         ));
     }
 
+    render_slots += (fireball_emitters * FIREBALLS_PER_EMITTER).min(GUEST_MAX_FIREBALLS);
     if render_slots > MAX_RENDER_ENTITIES {
         return Err(format!(
             "{map} needs {render_slots} render slots but the guest pool holds {MAX_RENDER_ENTITIES}"
@@ -2207,8 +2234,8 @@ fn validate_monster_population_for_skill(
 /// content the way the ambient voice pool is checked.
 const GUEST_MAX_RENDER_ENTITIES: usize = 384;
 const GUEST_MAX_MOVERS: usize = 60;
-const GUEST_MAX_TRIGGERS: usize = 28;
-const GUEST_MAX_TELEPORTS: usize = 13;
+const GUEST_MAX_TRIGGERS: usize = 30;
+const GUEST_MAX_TELEPORTS: usize = 17;
 const GUEST_MAX_TRAINS: usize = 6;
 const GUEST_MAX_FIREBALL_EMITTERS: usize = 16;
 /// `AUDIO_EFFECT_CAPACITY` in `game/src/audio.rs`.
@@ -2304,25 +2331,13 @@ fn validate_runtime_pools_for_skill(
     let teleports = count(&|entity| entity.class_name == 0x52 && brush(entity));
     let emitters = count(&|entity| entity.class_name == 0x34);
     let gates = count(&|entity| matches!(entity.class_name, 0x0a | 0x0e) && brush(entity));
-    // Every brush model this port renders, plus the alias entities, plus the
+    // Every brush model and alias entity this port renders, plus the
     // projectile slots that are installed unconditionally, plus the lava-ball
     // slots the spouted maps add.
-    let brush_models = count(&|entity| {
-        matches!(
-            entity.class_name,
-            0x0a | 0x0b | 0x0c | 0x0d | 0x0e | 0x0f | 0x10 | 0x11 | 0x12 | 0x35
-        ) && brush(entity)
-    });
-    let alias = count(&|entity| !brush(entity));
-    let projectile_slots = GUEST_MAX_ROCKETS
-        + GUEST_NAIL_POOL_CAPACITY
-        + GUEST_MAX_GRENADES
-        + if emitters == 0 {
-            0
-        } else {
-            GUEST_MAX_FIREBALLS
-        };
-    let render = brush_models + alias + projectile_slots;
+    let rendered = count(&|entity| guest_takes_render_slot(entity));
+    let projectile_slots =
+        PROJECTILE_RENDER_SLOTS + (emitters * FIREBALLS_PER_EMITTER).min(GUEST_MAX_FIREBALLS);
+    let render = rendered + projectile_slots;
 
     let fan_out = runtime
         .iter()
@@ -4262,7 +4277,10 @@ fn force_guest_relink(stage: &Path) -> Result<()> {
     if deps.is_dir() {
         for entry in fs::read_dir(&deps)? {
             let path = entry?.path();
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
             if name.starts_with("quake_psx-") && name.ends_with(".exe") {
                 fs::remove_file(&path)?;
             }
