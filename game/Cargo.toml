@@ -65,6 +65,10 @@ perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
 classic-lights = ["quake-core/classic-lights"]
 classic-poses = ["quake-core/classic-poses"]
 smooth-poses = ["quake-core/smooth-poses"]
+# DualShock rumble on damage and gunfire. Needs the SDK's motor API (the pad
+# integration branch: psx_pad::Rumble, poll_rumble_on, enable_rumble_on), which
+# the pinned SDK does not have yet, so this does not build until the pin moves.
+rumble = []
 emulator-telemetry = ["psx-telemetry/emit"]
 # Measurement builds only: tag projections with a primitive class (world,
 # model, view model, sprite, sky) through PSoXide's emulator-only class port
