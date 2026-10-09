@@ -437,13 +437,29 @@ pub const fn quake_coordinate_rotation() -> Mat3I16 {
     }
 }
 
+/// The camera's X, then Y, then Z rotation at the full 4096-per-turn angle
+/// resolution `Player::view_angles` carries.
+///
+/// `Mat3I16::rotate_xyz` takes 256 steps per turn, so passing it `angle >> 4`
+/// drew the view in 1.4 degree steps (five pixels at the screen centre): a
+/// slow turn or look arrived as jumps, and the strafe roll, which never
+/// exceeds two degrees, took only the values 0, +1.4 and (arithmetic shift of
+/// a negative angle) -2.8. `rotate_x_q12` and `rotate_y_q12` interpolate the
+/// same table, and agree with `rotate_x` and `rotate_y` exactly on every
+/// multiple of 16.
+fn quake_view_rotation(angles: [i16; 3]) -> Mat3I16 {
+    let roll = angles[2] as u16;
+    let (c, s) = (psx_math::cos_q12(roll) as i16, psx_math::sin_q12(roll) as i16);
+    Mat3I16::rotate_x_q12(angles[0] as u16)
+        .mul(&Mat3I16::rotate_y_q12(angles[1] as u16))
+        .mul(&Mat3I16 {
+            m: [[c, -s, 0], [s, c, 0], [0, 0, 0x1000]],
+        })
+}
+
 /// Load the Quake view transform directly into the GTE.
 pub fn load_quake_camera(origin_q12: [i32; 3], angles: [i16; 3]) -> QuakeViewTransform {
-    let view = Mat3I16::rotate_xyz(
-        (angles[0] as u16) >> 4,
-        (angles[1] as u16) >> 4,
-        (angles[2] as u16) >> 4,
-    );
+    let view = quake_view_rotation(angles);
     let coordinates = quake_coordinate_rotation();
     let rotation = scene::compose_rotation_scheduled(&view, &coordinates);
     scene::load_rotation(&rotation);

@@ -20,6 +20,14 @@ const TEXTURE_NULL: u8 = 0x80;
 const FACE_BACKSIDE: u8 = 1;
 const FACE_BAKED_UV: u8 = 2;
 const FACE_BAKED_LIGHT: u8 = 4;
+/// Bits 5 to 7 of a face's flags: how far an up-facing floor lies under
+/// another floor that overlaps it from above (see [`stacked_floor_codes`]),
+/// in steps of [`STACK_GAP_STEP`] units; zero for every other face.
+const FACE_STACK_SHIFT: u8 = 5;
+const STACK_GAP_STEP: i32 = 4;
+/// Largest vertical gap the stack code describes. Floors further apart
+/// belong to different storeys, which the PVS never shows through each other.
+const STACK_GAP_LIMIT: i32 = 7 * STACK_GAP_STEP;
 const MAX_LIGHT_STYLES: usize = 64;
 const NORMAL_LIGHT_STYLE_VALUE: u32 = 12 * 22;
 
@@ -227,6 +235,7 @@ pub(crate) fn cook_geometry_staged(
     update_leaf_lighting(&mark_surfaces, &faces, &vertices, &mut leaves)?;
     fit_vertex_light(bsp, &faces, &face_lightmaps, &mut vertices);
     bake_vertices(&textures, &mut faces, &mut vertices);
+    mark_stacked_floors(bsp, &textures, &planes, &face_offsets, &mut faces, &vertices)?;
 
     let geometry = GeometryLumps {
         texture_data: Vec::new(),
@@ -1348,6 +1357,156 @@ fn update_leaf_lighting(
     Ok(())
 }
 
+/// One up-facing horizontal face, reduced to what the stacking test needs.
+#[derive(Clone, Debug, PartialEq)]
+struct FloorShape {
+    /// Corners in plan view (world units, the face's own winding).
+    plan: Vec<[f64; 2]>,
+    /// Height of the face's plane in world units.
+    z: i32,
+}
+
+/// For each floor, how far under an overlapping floor it lies, as a code
+/// from 1 to 7 in steps of [`STACK_GAP_STEP`] units (rounded up), or 0 when
+/// no floor overlaps it from above within [`STACK_GAP_LIMIT`].
+///
+/// The renderer sorts packets by the average depth of their corners, which
+/// cannot order a floor against the floor that covers part of it from above:
+/// a big lower floor and a smaller upper one average to the same depth over
+/// a wide range of views, and the wrong one wins. The pair is not ambiguous
+/// in space. The player's eye is above both floors (a floor facing away is
+/// never drawn), so wherever they overlap on screen the lower one is behind
+/// by at least their vertical gap divided by the sine of the view angle.
+/// This code carries that gap to the renderer, which keys the lower floor
+/// that far back. The smallest gap to any covering floor is used, the
+/// conservative one.
+fn stacked_floor_codes(floors: &[FloorShape]) -> Vec<u8> {
+    let bounds: Vec<[f64; 4]> = floors
+        .iter()
+        .map(|floor| {
+            let mut b = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+            for corner in &floor.plan {
+                b[0] = b[0].min(corner[0]);
+                b[1] = b[1].max(corner[0]);
+                b[2] = b[2].min(corner[1]);
+                b[3] = b[3].max(corner[1]);
+            }
+            b
+        })
+        .collect();
+    let mut codes = vec![0u8; floors.len()];
+    for (lower, floor) in floors.iter().enumerate() {
+        let mut gap = i32::MAX;
+        for (upper, above) in floors.iter().enumerate() {
+            let rise = above.z - floor.z;
+            if upper == lower || rise < 1 || rise > STACK_GAP_LIMIT || rise >= gap {
+                continue;
+            }
+            let (a, b) = (&bounds[lower], &bounds[upper]);
+            if a[0] >= b[1] || b[0] >= a[1] || a[2] >= b[3] || b[2] >= a[3] {
+                continue;
+            }
+            if plan_overlap_area(&floor.plan, &above.plan) > 1.0 {
+                gap = rise;
+            }
+        }
+        if gap != i32::MAX {
+            codes[lower] = ((gap + STACK_GAP_STEP - 1) / STACK_GAP_STEP) as u8;
+        }
+    }
+    codes
+}
+
+/// Area of the intersection of two convex polygons (Sutherland-Hodgman).
+fn plan_overlap_area(subject: &[[f64; 2]], clip: &[[f64; 2]]) -> f64 {
+    fn area(points: &[[f64; 2]]) -> f64 {
+        let mut sum = 0.0;
+        for index in 0..points.len() {
+            let (p, q) = (points[index], points[(index + 1) % points.len()]);
+            sum += p[0] * q[1] - q[0] * p[1];
+        }
+        sum / 2.0
+    }
+    let mut clip = clip.to_vec();
+    if area(&clip) < 0.0 {
+        clip.reverse();
+    }
+    let mut output = subject.to_vec();
+    for edge in 0..clip.len() {
+        let (a, b) = (clip[edge], clip[(edge + 1) % clip.len()]);
+        let side = |p: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        let input = core::mem::take(&mut output);
+        let Some(&last) = input.last() else { break };
+        let mut previous = last;
+        for current in input {
+            let (inside, was_inside) = (side(current) >= 0.0, side(previous) >= 0.0);
+            if inside != was_inside {
+                let (sc, sp) = (side(current), side(previous));
+                let t = sp / (sp - sc);
+                output.push([
+                    previous[0] + t * (current[0] - previous[0]),
+                    previous[1] + t * (current[1] - previous[1]),
+                ]);
+            }
+            if inside {
+                output.push(current);
+            }
+            previous = current;
+        }
+    }
+    if output.len() < 3 {
+        0.0
+    } else {
+        area(&output).abs()
+    }
+}
+
+/// Write [`stacked_floor_codes`] into the flags of the world model's faces.
+fn mark_stacked_floors(
+    bsp: &Bsp<'_>,
+    textures: &[CookTexture],
+    planes: &[u8],
+    face_offsets: &[usize],
+    faces: &mut [CookFace],
+    vertices: &[CookVertex],
+) -> Result<(), CookError> {
+    let models = bsp.lump(BspLump::Models);
+    let world_count = nonnegative(i32_at(models, 60)?, "world face count")?;
+    let world_end = *face_offsets
+        .get(world_count)
+        .ok_or_else(|| CookError::new("world face end is out of bounds"))?;
+    let mut floors = Vec::new();
+    let mut owners = Vec::new();
+    for (index, face) in faces.iter().enumerate().take(world_end) {
+        let texture = textures[face.texture as usize];
+        if texture.flags & (TEXTURE_SKY | TEXTURE_INVISIBLE | TEXTURE_NULL) != 0 {
+            continue;
+        }
+        let plane = planes
+            .get(face.plane as usize * 14..face.plane as usize * 14 + 6)
+            .ok_or_else(|| CookError::new("face plane is out of bounds"))?;
+        let normal_z = i16::from_le_bytes([plane[4], plane[5]]);
+        let up = if face.flags & FACE_BACKSIDE != 0 { -i32::from(normal_z) } else { i32::from(normal_z) };
+        if up < 4090 {
+            continue;
+        }
+        let corners = &vertices
+            [face.first_vertex as usize..face.first_vertex as usize + face.vertex_count as usize];
+        floors.push(FloorShape {
+            plan: corners
+                .iter()
+                .map(|v| [f64::from(v.position[0]), f64::from(v.position[1])])
+                .collect(),
+            z: i32::from(corners[0].position[2]),
+        });
+        owners.push(index);
+    }
+    for (code, owner) in stacked_floor_codes(&floors).into_iter().zip(owners) {
+        faces[owner].flags |= code << FACE_STACK_SHIFT;
+    }
+    Ok(())
+}
+
 fn bake_vertices(textures: &[CookTexture], faces: &mut [CookFace], vertices: &mut [CookVertex]) {
     for face in faces {
         let texture = textures[face.texture as usize];
@@ -1665,6 +1824,78 @@ mod tests {
             height,
             levels: [&[], &[], &[], &[]],
         }
+    }
+
+    fn floor(plan: &[[f64; 2]], z: i32) -> FloorShape {
+        FloorShape { plan: plan.to_vec(), z }
+    }
+
+    #[test]
+    fn a_floor_under_an_overlapping_floor_is_coded_by_the_gap() {
+        let square = |x: f64, y: f64, size: f64| {
+            [[x, y], [x + size, y], [x + size, y + size], [x, y + size]]
+        };
+        let codes = stacked_floor_codes(&[
+            floor(&square(0.0, 0.0, 128.0), -456),
+            floor(&square(96.0, 32.0, 64.0), -432),
+        ]);
+        // 24 units under: six steps of four.
+        assert_eq!(codes, vec![6, 0]);
+    }
+
+    #[test]
+    fn floors_that_only_touch_or_are_too_far_apart_are_left_alone() {
+        let square = |x: f64, size: f64| [[x, 0.0], [x + size, 0.0], [x + size, size], [x, size]];
+        assert_eq!(
+            stacked_floor_codes(&[floor(&square(0.0, 64.0), 0), floor(&square(64.0, 64.0), 24)]),
+            vec![0, 0]
+        );
+        assert_eq!(
+            stacked_floor_codes(&[floor(&square(0.0, 64.0), 0), floor(&square(0.0, 64.0), 200)]),
+            vec![0, 0]
+        );
+        assert_eq!(
+            stacked_floor_codes(&[floor(&square(0.0, 64.0), 0), floor(&square(0.0, 64.0), 0)]),
+            vec![0, 0]
+        );
+    }
+
+    #[test]
+    fn the_nearest_covering_floor_sets_the_code_and_a_wide_gap_clamps() {
+        let square = [[0.0, 0.0], [64.0, 0.0], [64.0, 64.0], [0.0, 64.0]];
+        let codes = stacked_floor_codes(&[
+            floor(&square, 0),
+            floor(&square, 9),
+            floor(&square, 28),
+            floor(&square, 29),
+        ]);
+        // The nearest covering floor sets each code: 9 for the floor at 0, 19 for
+        // the one at 9, 1 for the one at 28, none above 29.
+        assert_eq!(codes[0], 3);
+        assert_eq!(codes[1], 5);
+        assert_eq!(codes[2], 1);
+        assert_eq!(codes[3], 0);
+    }
+
+    /// E1M1's pit stacks a slime pool 24 units under a cobbled platform, and
+    /// the renderer once drew the slime over the cobbles (the tape of
+    /// 2026-10-09). Needs the shareware PAK the builder caches; skipped
+    /// without it.
+    #[test]
+    fn e1m1_codes_its_moss_floor_under_the_platform() {
+        let pak = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.quakepsx/cache/shareware/ID1/PAK0.PAK");
+        let Ok(bytes) = std::fs::read(pak) else { return };
+        let archive = crate::PakArchive::parse(&bytes).unwrap();
+        let map = archive.require("maps/e1m1.bsp").unwrap();
+        let bsp = Bsp::parse(map).unwrap();
+        let (geometry, _) = cook_geometry_staged(&bsp, SkyEncoding::Layered).unwrap();
+        let flags = |face: usize| geometry.faces[face * 10 + 6];
+        let coded = (0..geometry.faces.len() / 10).filter(|&f| flags(f) >> FACE_STACK_SHIFT != 0).count();
+        assert!(coded > 20, "{coded} stacked floors");
+        // Face 301 is the slime surface at -456; face 3178 the platform at -432.
+        assert_eq!(flags(301) >> FACE_STACK_SHIFT, 6);
+        assert_eq!(flags(3178) >> FACE_STACK_SHIFT, 0);
     }
 
     #[test]
