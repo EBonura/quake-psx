@@ -21,6 +21,11 @@ use crate::entity::RenderEntity;
 /// overflow evicts the longest unseen entry, whose model then draws unglided
 /// for one think.
 const POSE_SLOTS: usize = 24;
+/// Models further than this from the eye (whole Quake units) glide but do not
+/// blend: a limb moves a pixel or two between frames at that range, so the
+/// nearer of the two frames is indistinguishable and the per-vertex blend is
+/// the one cost of this feature that scales with what is on screen.
+pub(super) const BLEND_RANGE_UNITS: i32 = 800;
 /// Tracker key of the first-person weapon. Entity indexes stay below this.
 pub(super) const VIEW_MODEL_KEY: u16 = u16::MAX - 1;
 
@@ -63,6 +68,7 @@ impl Renderer {
         model_id: i16,
         frame: usize,
         current: &[u8],
+        blend_vertices: bool,
     ) -> SmoothPose {
         let state = self.pose_state.get_or_insert_with(|| {
             Box::new(PoseState {
@@ -95,8 +101,10 @@ impl Renderer {
         let Some(from) = model.frame_bytes(from_frame) else {
             return shown;
         };
-        if blend.weight_q8 == 0 {
+        if blend.weight_q8 == 0 || (!blend_vertices && blend.weight_q8 < 128) {
             shown.vertices = from.as_ptr();
+        } else if !blend_vertices {
+            // Settled enough: the new frame as is.
         } else if from.len() <= state.frame.len() && from.len() == current.len() {
             pose::blend_frames(from, current, blend.weight_q8, &mut state.frame[..from.len()]);
             shown.vertices = state.frame.as_ptr();
@@ -118,4 +126,14 @@ impl Renderer {
             None => entity.light,
         }
     }
+}
+
+/// True when `origin` is close enough to the eye for a per-vertex blend to be
+/// worth its cost.
+#[inline]
+pub(super) fn within_blend_range(eye: quake_formats::Vec3I32, origin: quake_formats::Vec3I32) -> bool {
+    let dx = (origin.x.wrapping_sub(eye.x) >> 12).clamp(-4096, 4096);
+    let dy = (origin.y.wrapping_sub(eye.y) >> 12).clamp(-4096, 4096);
+    let dz = (origin.z.wrapping_sub(eye.z) >> 12).clamp(-4096, 4096);
+    dx * dx + dy * dy + dz * dz <= BLEND_RANGE_UNITS * BLEND_RANGE_UNITS
 }
