@@ -43,6 +43,7 @@ mod quake;
 #[cfg(feature = "episode1-regression")]
 mod regression;
 mod renderer;
+mod rumble;
 #[cfg(feature = "start-route-regression")]
 mod start_route_regression;
 #[cfg(feature = "survival-regression")]
