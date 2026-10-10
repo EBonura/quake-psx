@@ -28,9 +28,9 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Editor revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "f15f123a70bcf029ad74d3b35400aaa0ba298ed3";
+const PSOXIDE_REV: &str = "fecde607594c2bf3d65874798eb245069f940500";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "4adb872f05357e00b011553683d79d401483a666";
+const PSOXIDE_SDK_REV: &str = "b73448b61f6fe79a9af2693728d84b3e7231ff76";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -59,6 +59,8 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     ".psoxide/engine/crates/psx-level",
     ".psoxide/engine/crates/psx-render-contract",
     ".psoxide/sdk/crates/psx-asset",
+    ".psoxide/sdk/crates/psx-cdstream",
+    ".psoxide/sdk/crates/psx-display",
     ".psoxide/sdk/crates/psx-font",
     ".psoxide/sdk/crates/psx-gpu",
     ".psoxide/sdk/crates/psx-gte",
@@ -120,6 +122,8 @@ members = [
     "crates/psx-asset",
     "crates/psx-pack",
     "crates/psx-tick",
+    "crates/psx-cdstream",
+    "crates/psx-display",
 ]
 
 [workspace.package]
@@ -147,6 +151,8 @@ psx-gte = { path = "crates/psx-gte" }
 psx-gte-core = { path = "crates/psx-gte-core" }
 psx-pad = { path = "crates/psx-pad" }
 psx-tick = { path = "crates/psx-tick" }
+psx-cdstream = { path = "crates/psx-cdstream" }
+psx-display = { path = "crates/psx-display" }
 psx-vram = { path = "crates/psx-vram" }
 psx-font = { path = "crates/psx-font" }
 psx-math = { path = "crates/psx-math" }

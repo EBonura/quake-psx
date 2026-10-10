@@ -92,7 +92,7 @@ dependencies = [
 [[package]]
 name = "psoxide-link"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=4adb872f05357e00b011553683d79d401483a666#4adb872f05357e00b011553683d79d401483a666"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=b73448b61f6fe79a9af2693728d84b3e7231ff76#b73448b61f6fe79a9af2693728d84b3e7231ff76"
 dependencies = [
  "serde_json",
 ]
@@ -102,6 +102,7 @@ name = "psx-asset"
 version = "0.1.0"
 dependencies = [
  "psx-gte",
+ "psx-hw",
  "psxed-format",
 ]
 
@@ -109,6 +110,7 @@ dependencies = [
 name = "psx-audio-cook"
 version = "0.1.0"
 dependencies = [
+ "psx-hw",
  "psxed-format",
 ]
 
@@ -124,10 +126,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-cdstream"
+version = "0.1.0"
+dependencies = [
+ "psx-hw",
+ "psx-io",
+ "psx-rt",
+]
+
+[[package]]
+name = "psx-display"
+version = "0.1.0"
+dependencies = [
+ "psx-gpu",
+ "psx-hw",
+]
+
+[[package]]
 name = "psx-engine"
 version = "0.1.0"
 dependencies = [
  "psx-asset",
+ "psx-cdstream",
  "psx-font",
  "psx-gpu",
  "psx-gte",
@@ -160,6 +180,7 @@ dependencies = [
 name = "psx-gpu"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "psx-hw",
  "psx-io",
 ]
@@ -169,6 +190,7 @@ name = "psx-gte"
 version = "0.1.0"
 dependencies = [
  "psx-gte-core",
+ "psx-hw",
 ]
 
 [[package]]
@@ -207,7 +229,6 @@ version = "0.1.0"
 name = "psx-pack"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
  "psx-io",
 ]
 
@@ -236,6 +257,7 @@ dependencies = [
 name = "psx-settings"
 version = "0.1.0"
 dependencies = [
+ "psx-display",
  "psx-pad",
 ]
 
@@ -258,6 +280,9 @@ dependencies = [
 [[package]]
 name = "psx-telemetry"
 version = "0.1.0"
+dependencies = [
+ "psx-hw",
+]
 
 [[package]]
 name = "psx-tick"
