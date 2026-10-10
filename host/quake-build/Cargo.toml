@@ -49,7 +49,7 @@ path = "../../tests/pusher_atomicity.rs"
 # The hydration helper and the guest SDK resolve from the same published
 # revision. The build verifies this lockfile source before copying any SDK
 # inputs into the content-addressed guest stage.
-psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "b389cedda86869cb1fcffb68d51b06a23b4b013f" }
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "36ead4b0c71e0b9a3311e86faf77966f1ef44fdc" }
 quake-cook = { path = "../../crates/quake-cook" }
 quake-core = { path = "../../crates/quake-core" }
 quake-formats = { path = "../../crates/quake-formats" }
