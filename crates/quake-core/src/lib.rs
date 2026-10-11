@@ -13,6 +13,7 @@ pub mod collision;
 pub mod combat;
 pub mod door;
 pub mod effects;
+pub mod electrode;
 pub mod hud;
 pub mod level;
 pub mod level_session;

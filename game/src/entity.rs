@@ -287,6 +287,9 @@ pub struct EntityScene {
     fireball_render_start: Option<u16>,
     lightning_beam: Option<LightningBeam>,
     lightning_beam_frames: u8,
+    event_lightning: quake_core::electrode::LightningEvent,
+    lightning_pair: Option<[usize; 2]>,
+    event_lightning_beam: Option<LightningBeam>,
     secrets: SecretCounter,
     monsters: MonsterCounter,
     /// `SelectIntermissionPoint`: the camera the end-of-level panel uses.
@@ -548,6 +551,8 @@ pub struct GameplayResult {
     /// `lightning_fire`'s zap and the voice Chthon answers it with, both
     /// placed on him because the trap and its target share the one room.
     pub boss_shock_sound: Option<SoundEvent>,
+    /// Accepted map discharge, separate from Chthon's pain voice.
+    pub event_lightning_sound: Option<SoundEvent>,
     /// `boss_death9`'s `TE_LAVASPLASH` origin, on the shock that kills him.
     pub boss_death_origin: Option<Vec3I32>,
 }
@@ -914,6 +919,9 @@ impl EntityScene {
             fireball_render_start: None,
             lightning_beam: None,
             lightning_beam_frames: 0,
+            event_lightning: Default::default(),
+            lightning_pair: None,
+            event_lightning_beam: None,
             secrets: SecretCounter::new(),
             monsters: MonsterCounter::new(),
             intermission: None,
@@ -1083,6 +1091,9 @@ impl EntityScene {
         self.fireball_render_start = None;
         self.lightning_beam = None;
         self.lightning_beam_frames = 0;
+        self.event_lightning = Default::default();
+        self.lightning_pair = None;
+        self.event_lightning_beam = None;
         self.sight_index = 0;
         self.sight_alert_ticks = 0;
         self.player_invisible = false;
@@ -2366,6 +2377,11 @@ impl EntityScene {
         self.lightning_beam
     }
 
+    pub const fn event_lightning_beam(&self) -> Option<LightningBeam> {
+        self.event_lightning_beam
+    }
+
+
     pub fn attack_admission(&self) -> AttackAdmission {
         AttackAdmission {
             nail: self.nails.iter().any(Option::is_none),
@@ -3534,6 +3550,27 @@ impl EntityScene {
         let ticks = elapsed_ticks.clamp(1, 4);
         let sources = map.entities();
         let mut result = GameplayResult::default();
+        let held_pair = self.lightning_pair.map(|pair| pair.map(|index|
+            (index, matches!(self.movers[index].policy.state(),
+                QuakeMoverState::Top | QuakeMoverState::Bottom))));
+        let beam_advance = self.event_lightning.advance(ticks);
+        if beam_advance.expired {
+            self.event_lightning_beam = None;
+            if let Some(pair) = self.lightning_pair.take() {
+                for index in pair {
+                    let mover = &mut self.movers[index];
+                    let before = mover.policy.state();
+                    mover.policy.return_to_bottom();
+                    let entity = self.entities[mover.render_index as usize];
+                    for sound in mover_sound_events(mover.source.class_name, mover.source.noise,
+                        before, mover.policy.state()).iter() {
+                        result.push_mover_sound(SoundEvent::at(sound,
+                            bounds_center(entity.clip_mins, entity.clip_maxs))
+                            .on(entity.source_index, crate::audio::CHAN_VOICE));
+                    }
+                }
+            }
+        }
         let mut actions = TargetActions::new();
         if let Err(error) = self.targets.tick(ticks, &sources, &mut actions) {
             result.target_error = Some(error);
@@ -3906,7 +3943,19 @@ impl EntityScene {
             // `tick` report the advance keeps the parked ones free.
             let mut moved = false;
             let mut tick_sound_count = 0usize;
-            for _ in 0..ticks {
+            for tick_index in 0..ticks {
+                // An expiry inside this batch holds its original prefix,
+                // then moves down only for the remaining ticks. A newly
+                // accepted use suspends endpoint waits for the whole batch.
+                let was_held = if self.event_lightning.just_started() {
+                    self.lightning_pair.is_some_and(|pair| pair.contains(&mover_index))
+                } else {
+                    held_pair.is_some_and(|pair| pair.iter()
+                        .any(|&(index, settled)| index == mover_index && settled))
+                };
+                let held = self.event_lightning.holds_tick(beam_advance, was_held,
+                    self.movers[mover_index].policy.state(), tick_index);
+                if held { continue; }
                 let tick = self.movers[mover_index].policy.tick_with_sound();
                 moved |= tick.moved;
                 if let Some(sound) = tick.sound.filter(|_| tick_sound_count < 4) {
@@ -4254,11 +4303,13 @@ impl EntityScene {
                             }
                         }
                     }
-                    TargetAction::ShockBoss(_) => {
-                        if let Some((sound, death_origin)) = self.shock_boss() {
+                    TargetAction::ShockBoss(source_index) => {
+                        if self.use_event_lightning(map, source_index, result) == Some(true) {
+                          if let Some((sound, death_origin)) = self.shock_boss() {
                             result.boss_shock_sound = sound;
                             result.boss_shocks = result.boss_shocks.saturating_add(1);
                             result.boss_death_origin = result.boss_death_origin.or(death_origin);
+                          }
                         }
                     }
                     TargetAction::FireShooter(source_index) => {
@@ -6577,6 +6628,44 @@ impl EntityScene {
             SoundEvent::at(runtime.kind().sight_sound(), entity.origin)
                 .on(entity.source_index, crate::audio::CHAN_VOICE),
         )
+    }
+
+    /// Resolve the original implicit target through cooked IDs and actual
+    /// movers. No map model number, driver assertion or synthetic state can
+    /// authorize a discharge.
+    fn use_event_lightning(&mut self, map: &ResidentMap, source_index: u16,
+        result: &mut GameplayResult) -> Option<bool> {
+        let sources = map.entities();
+        let event = sources.get(source_index as usize)?;
+        if event.target == 0 { return None; }
+        let mut pair = [0usize; 2];
+        let mut count = 0;
+        for (index, source) in sources.iter().enumerate() {
+            if source.target != event.target || source.class_name == 0x09
+                || !self.targets.is_enabled(index as u16) { continue; }
+            if source.class_name != 0x0c { return None; }
+            pair[count] = self.movers.iter().position(|mover|
+                self.entities[mover.render_index as usize].source_index == index as u16)?;
+            count += 1;
+            if count == 2 { break; }
+        }
+        if count != 2 { return None; }
+        let shock = self.event_lightning.begin(pair.map(|index| self.movers[index].policy.state()))?;
+        self.lightning_pair = Some(pair);
+        let bounds = pair.map(|index| {
+            let entity = self.entities[self.movers[index].render_index as usize];
+            [entity.clip_mins, entity.clip_maxs].map(|bounds| Vec3I32 {
+                x: i32::from(bounds[0]) << 12,
+                y: i32::from(bounds[1]) << 12,
+                z: i32::from(bounds[2]) << 12,
+            })
+        });
+        let [start, end] = quake_core::electrode::beam_endpoints(bounds);
+        self.event_lightning_beam = Some(LightningBeam { start, end });
+        // Original resource mapping: 73 sound/misc/power.wav.
+        result.event_lightning_sound = Some(SoundEvent::at(0x73, event.origin)
+            .on(source_index, crate::audio::CHAN_VOICE));
+        Some(shock)
     }
 
     /// One `event_lightning` shock of the authored Chthon kill chain. The

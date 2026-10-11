@@ -338,7 +338,7 @@ pub fn run() -> ! {
                 false,
                 false,
                 entities.entities(),
-                None,
+                [None, None],
                 presentation.explosion_effects().active(),
                 presentation.impact_particles().active(),
                 entities.rotating_yaw(),
@@ -466,7 +466,7 @@ pub fn run() -> ! {
                 view.water_warp && view_contents <= quake_core::screenblend::CONTENTS_WATER,
                 view.water_alpha,
                 entities.entities(),
-                None,
+                [None, None],
                 presentation.explosion_effects().active(),
                 presentation.impact_particles().active(),
                 entities.rotating_yaw(),
@@ -729,6 +729,9 @@ pub fn run() -> ! {
         }
         // `boss_pain` and `boss_death1`. The shock chain has been raising and
         // killing Chthon in silence: the voice was picked but never played.
+        if let Some(sound) = gameplay.event_lightning_sound {
+            play_sound_event(&mut audio, sound, audio_tick);
+        }
         if let Some(sound) = gameplay.boss_shock_sound {
             play_sound_event(&mut audio, sound, audio_tick);
         }
@@ -1230,7 +1233,7 @@ pub fn run() -> ! {
             menu.view().water_warp && view_contents <= quake_core::screenblend::CONTENTS_WATER,
             menu.view().water_alpha,
             entities.entities(),
-            entities.lightning_beam(),
+            [entities.lightning_beam(), entities.event_lightning_beam()],
             presentation.explosion_effects().active(),
             presentation.impact_particles().active(),
             entities.rotating_yaw(),

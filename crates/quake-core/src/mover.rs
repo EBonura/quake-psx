@@ -587,6 +587,16 @@ impl QuakeMover {
         self.activate();
     }
 
+    /// An authored callback can order a door down independently of its wait.
+    /// The lightning beam uses this when its one-second hold ends.
+    pub fn return_to_bottom(&mut self) {
+        if self.state != QuakeMoverState::Bottom {
+            self.state = QuakeMoverState::Down;
+            self.wait_remaining = 0;
+            self.driver.set_open(false);
+        }
+    }
+
     const fn is_secret(&self) -> bool {
         matches!(self.extra, MoverExtra::SecretForwardLeg { .. })
     }
@@ -991,6 +1001,46 @@ mod tests {
             model: -1,
             ..MapEntity::default()
         }
+    }
+
+    #[test]
+    fn electrode_expiry_batch_matches_each_actual_mover_tick() {
+        use crate::electrode::LightningEvent;
+        let mut source = source(CLASS_FUNC_DOOR);
+        source.speed = 240;
+        source.wait = 20 << 12;
+        let mut mover = QuakeMover::from_entity(source,
+            model(Vec3I16 { x: 64, y: 8, z: 8 })).unwrap().unwrap();
+        mover.activate();
+        while mover.state() != QuakeMoverState::Top { mover.tick(); }
+        let mut event = LightningEvent::default();
+        assert_eq!(event.begin([QuakeMoverState::Top; 2]), Some(true));
+        assert!(!event.advance(58).expired);
+        let before = mover.transform();
+        let advance = |mover: &mut QuakeMover, event: &mut LightningEvent, ticks| {
+            let settled = matches!(mover.state(), QuakeMoverState::Top | QuakeMoverState::Bottom);
+            let budget = event.advance(ticks);
+            if budget.expired { mover.return_to_bottom(); }
+            for tick in 0..ticks {
+                if !event.holds_tick(budget, settled, mover.state(), tick) { mover.tick(); }
+            }
+        };
+        let (mut batched, mut batch_event) = (mover, event);
+        advance(&mut batched, &mut batch_event, 4);
+        for _ in 0..4 { advance(&mut mover, &mut event, 1); }
+        assert_eq!(mover, batched);
+        assert_eq!(event, batch_event);
+        assert_eq!(mover.state(), QuakeMoverState::Down);
+        assert_eq!(before.origin.x - mover.transform().origin.x, 8 << 12);
+    }
+
+    #[test]
+    fn a_bottom_discharge_does_not_stop_a_subsequent_button_activation() {
+        use crate::electrode::LightningEvent;
+        let mut event = LightningEvent::default();
+        assert_eq!(event.begin([QuakeMoverState::Bottom; 2]), Some(false));
+        let budget = event.advance(4);
+        assert!(!event.holds_tick(budget, true, QuakeMoverState::Up, 0));
     }
 
     #[test]

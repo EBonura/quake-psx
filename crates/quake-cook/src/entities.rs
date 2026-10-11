@@ -153,6 +153,12 @@ pub fn cook_entities(
         if let Some(value) = entity.get("target") {
             record.target = targets.add(value)?;
         }
+        // lightning_use finds the first two entities whose target is the
+        // literal "lightning". Bind that implicit name in the same cooked
+        // target namespace, rather than hardcoding map models or numeric IDs.
+        if entity.class_name == "event_lightning" {
+            record.target = targets.add("lightning")?;
+        }
         if let Some(value) = entity.get("killtarget") {
             record.kill_target = targets.add(value)?;
         }
@@ -496,5 +502,33 @@ mod tests {
         assert_eq!(table.add("door").unwrap(), 1);
         assert_eq!(table.add("door").unwrap(), 1);
         assert_eq!(table.add("or").unwrap(), 3);
+    }
+
+    #[test]
+    fn lightning_implicit_name_binds_actual_electrode_targets_in_either_order() {
+        for event_first in [true, false] {
+            let event = "{\"classname\" \"event_lightning\" \"targetname\" \"t14\"}";
+            let doors = "{\"classname\" \"func_door\" \"target\" \"lightning\" \"model\" \"*1\"}\
+                {\"classname\" \"func_door\" \"target\" \"lightning\" \"model\" \"*2\"}";
+            let text = if event_first { format!("{{\"classname\" \"worldspawn\"}}{event}{doors}") }
+                else { format!("{{\"classname\" \"worldspawn\"}}{doors}{event}") };
+            let mut bytes = vec![0; 124];
+            bytes[..4].copy_from_slice(&29i32.to_le_bytes());
+            bytes[4..8].copy_from_slice(&124i32.to_le_bytes());
+            bytes[8..12].copy_from_slice(&(text.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+            // A valid empty mip-texture lump still contains its count word.
+            let textures_offset = bytes.len() as i32;
+            bytes[20..24].copy_from_slice(&textures_offset.to_le_bytes());
+            bytes[24..28].copy_from_slice(&4i32.to_le_bytes());
+            bytes.extend_from_slice(&0i32.to_le_bytes());
+            let bsp = Bsp::parse(&bytes).unwrap();
+            let cooked = cook_entities(&bsp, "00 worldspawn\n09 event_lightning\n0c func_door\n", "", "").unwrap();
+            let targets: Vec<_> = cooked.entities.chunks_exact(50).skip(2)
+                .map(|record| u16::from_le_bytes([record[16], record[17]])).collect();
+            assert_eq!(targets.len(), 3);
+            assert_ne!(targets[0], 0);
+            assert!(targets.iter().all(|target| *target == targets[0]));
+        }
     }
 }

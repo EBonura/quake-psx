@@ -1643,7 +1643,7 @@ impl Renderer {
         water_warp: bool,
         water_alpha: bool,
         entities: &[RenderEntity],
-        lightning_beam: Option<LightningBeam>,
+        lightning_beams: [Option<LightningBeam>; 2],
         explosion_effects: impl Iterator<Item = ExplosionEffect>,
         impact_particles: impl Iterator<Item = ImpactParticle>,
         rotating_yaw: i16,
@@ -2315,7 +2315,7 @@ impl Renderer {
         next =
             self.draw_impact_particles(map, impact_particles, camera, view, next, end, &mut stats);
 
-        if let Some(beam) = lightning_beam {
+        for beam in lightning_beams.into_iter().flatten() {
             next = self.draw_lightning_beam(map, beam, view, next, end, &mut stats);
         }
 
