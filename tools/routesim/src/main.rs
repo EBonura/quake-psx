@@ -1886,6 +1886,11 @@ fn run_route(scene: &Scene, args: &[String]) {
 }
 
 /// `psx_pad::aim_curve`: 45% linear plus 55% cubic.
+// Guest Player::update passes its signed view angle as a masked Q12 turn.
+fn movement_pitch_from_view(pitch: i32) -> u16 {
+    pitch as u16 & 0x0fff
+}
+
 fn aim_curve(value: i32) -> i32 {
     let value = value.clamp(-128, 128);
     let magnitude = value.abs();
@@ -1997,7 +2002,7 @@ fn run_tape(scene: &Scene, args: &[String]) {
                 forward: forward as i16,
                 strafe: strafe as i16,
                 yaw: yaw & 0x0fff,
-                pitch: 0,
+                pitch: movement_pitch_from_view(pitch),
                 jump: buttons & CROSS != 0,
             },
             ticks,
@@ -2601,6 +2606,17 @@ fn sweep_traps(scene: &Scene, args: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tape_movement_pitch_matches_guest_signed_q12_convention() {
+        for angle in [-8193i32, -4096, -1012, -512, -1, 0, 1, 512, 1012, 4096, 8193] {
+            let guest_angle = angle as i16;
+            assert_eq!(movement_pitch_from_view(angle), guest_angle as u16 & 0x0fff);
+        }
+        assert_eq!(movement_pitch_from_view(-512), 3584);
+        assert_eq!(movement_pitch_from_view(0), 0);
+        assert_eq!(movement_pitch_from_view(512), 512);
+    }
 
     /// The bug this covers: `walk_to` used to clear `LAST_VISITED` but not
     /// `LAST_TELEPORTED`, so a multi-goal `path` carried leg one's arrivals
