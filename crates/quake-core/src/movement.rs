@@ -476,9 +476,10 @@ impl MovementState {
             return events;
         }
         // `PlayerPreThink`: `if (self.waterlevel == 2) CheckWaterJump();`
-        if self.water_level == 2 && self.check_water_jump(collision, scratch, input.yaw) {
+        let launched_water_jump =
+            self.water_level == 2 && self.check_water_jump(collision, scratch, input.yaw);
+        if launched_water_jump {
             self.grounded = false;
-            self.velocity.z = WATER_JUMP_OUT_SPEED_Q12;
             self.jump_latched = true;
             self.water_jump_ticks = WATER_JUMP_TICKS;
         }
@@ -511,8 +512,12 @@ impl MovementState {
         let impact_velocity;
         if self.water_level >= 2 {
             apply_friction(&mut self.velocity, self.water_level);
-            impact_velocity = self.velocity.z;
-            self.water_move(collision, scratch, input);
+            impact_velocity = if launched_water_jump {
+                WATER_JUMP_OUT_SPEED_Q12
+            } else {
+                self.velocity.z
+            };
+            self.water_move(collision, scratch, input, launched_water_jump);
         } else {
             if self.grounded {
                 apply_friction(&mut self.velocity, 0);
@@ -730,6 +735,7 @@ impl MovementState {
         collision: &C,
         scratch: &mut MovementScratch,
         input: MovementInput,
+        launched_water_jump: bool,
     ) {
         let (mut direction, mut speed) = swim_wish_velocity(input);
         if speed == 0 {
@@ -742,6 +748,12 @@ impl MovementState {
         }
         speed = speed.saturating_mul(7) / 10;
         accelerate(&mut self.velocity, direction, speed, false);
+        // Original client input runs before PlayerPreThink's automatic
+        // launch. Apply its vertical impulse after water acceleration but
+        // before collision, so the first tick cannot damp that launch.
+        if launched_water_jump {
+            self.velocity.z = WATER_JUMP_OUT_SPEED_Q12;
+        }
         let _ = fly_move(collision, scratch, &mut self.origin, &mut self.velocity);
     }
 
@@ -2122,6 +2134,9 @@ mod tests {
         );
         assert!(released.water_jump_ticks > 0 && held.water_jump_ticks > 0);
         assert_eq!(released, held);
+        // Client input acceleration precedes PlayerPreThink's launch; with
+        // a clear vertical trace, its 225-unit launch survives this move.
+        assert_eq!(released.velocity.z, WATER_JUMP_OUT_SPEED_Q12);
         assert!(released.jump_latched);
         assert_eq!(released.water_jump_ticks, WATER_JUMP_TICKS);
         // Once the flag was already active at entry, held Cross is ignored.
