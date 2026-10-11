@@ -483,25 +483,29 @@ impl MovementState {
             self.water_jump_ticks = WATER_JUMP_TICKS;
         }
 
-        if input.jump {
-            if self.water_level >= 2 {
-                self.grounded = false;
-                self.velocity.z = match self.water_type {
-                    CONTENTS_SLIME => SLIME_JUMP_SPEED_Q12,
-                    CONTENTS_LAVA => LAVA_JUMP_SPEED_Q12,
-                    _ => WATER_JUMP_SPEED_Q12,
-                };
-                if !self.jump_latched {
-                    events.insert(MovementEvents::SWIM);
+        // PlayerJump returns while FL_WATERJUMP is set, including the
+        // tick where CheckWaterJump first activates the automatic launch.
+        if self.water_jump_ticks == 0 {
+            if input.jump {
+                if self.water_level >= 2 {
+                    self.grounded = false;
+                    self.velocity.z = match self.water_type {
+                        CONTENTS_SLIME => SLIME_JUMP_SPEED_Q12,
+                        CONTENTS_LAVA => LAVA_JUMP_SPEED_Q12,
+                        _ => WATER_JUMP_SPEED_Q12,
+                    };
+                    if !self.jump_latched {
+                        events.insert(MovementEvents::SWIM);
+                    }
+                } else if self.grounded && !self.jump_latched {
+                    self.grounded = false;
+                    self.velocity.z = self.velocity.z.saturating_add(JUMP_SPEED_Q12);
+                    events.insert(MovementEvents::JUMP);
                 }
-            } else if self.grounded && !self.jump_latched {
-                self.grounded = false;
-                self.velocity.z = self.velocity.z.saturating_add(JUMP_SPEED_Q12);
-                events.insert(MovementEvents::JUMP);
+                self.jump_latched = true;
+            } else {
+                self.jump_latched = false;
             }
-            self.jump_latched = true;
-        } else {
-            self.jump_latched = false;
         }
 
         let impact_velocity;
@@ -1437,6 +1441,26 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_swimming_jump_still_processes_cross() {
+        let initial = MovementState::new(Vec3I32 { x: 0, y: 0, z: 256 << 12 });
+        let mut held = initial;
+        let mut released = initial;
+        let held_events = held.update_ticks(
+            &OpenWater, &mut MovementScratch::default(),
+            MovementInput { jump: true, ..MovementInput::default() },
+            1, |_| Some(CONTENTS_WATER),
+        );
+        released.update_ticks(
+            &OpenWater, &mut MovementScratch::default(),
+            MovementInput::default(), 1, |_| Some(CONTENTS_WATER),
+        );
+        assert_eq!(held.water_jump_ticks, 0);
+        assert!(held.velocity.z > released.velocity.z);
+        assert!(held_events.events.contains(MovementEvents::SWIM));
+        assert!(held.jump_latched);
+    }
+
+    #[test]
     fn swimming_forward_follows_the_view_pitch() {
         // Looking up 45 degrees (negative pitch in Quake's turn) and holding
         // forward must rise, level must not, and looking down must sink
@@ -2055,6 +2079,75 @@ mod tests {
             }
             true
         }
+    }
+
+    #[test]
+    fn water_jump_launch_ignores_cross_on_first_and_later_ticks() {
+        let initial = MovementState::new(Vec3I32 {
+            x: -12 << 12,
+            y: 0,
+            z: 8 << 12,
+        });
+        let collision = Ledge { height: 40 };
+        let mut released = initial;
+        let mut held = initial;
+        let contents = |point: &Vec3I32| {
+            Some(if point.z < 20 << 12 {
+                CONTENTS_WATER
+            } else {
+                CONTENTS_EMPTY
+            })
+        };
+        released.update_ticks(
+            &collision,
+            &mut MovementScratch::default(),
+            MovementInput {
+                forward: 127,
+                jump: false,
+                ..MovementInput::default()
+            },
+            1,
+            contents,
+        );
+        held.update_ticks(
+            &collision,
+            &mut MovementScratch::default(),
+            MovementInput {
+                forward: 127,
+                jump: true,
+                ..MovementInput::default()
+            },
+            1,
+            contents,
+        );
+        assert!(released.water_jump_ticks > 0 && held.water_jump_ticks > 0);
+        assert_eq!(released, held);
+        assert!(released.jump_latched);
+        assert_eq!(released.water_jump_ticks, WATER_JUMP_TICKS);
+        // Once the flag was already active at entry, held Cross is ignored.
+        let mut a = released;
+        let mut b = released;
+        a.update_ticks(
+            &collision,
+            &mut MovementScratch::default(),
+            MovementInput {
+                jump: false,
+                ..MovementInput::default()
+            },
+            1,
+            contents,
+        );
+        b.update_ticks(
+            &collision,
+            &mut MovementScratch::default(),
+            MovementInput {
+                jump: true,
+                ..MovementInput::default()
+            },
+            1,
+            contents,
+        );
+        assert_eq!(a, b);
     }
 
     fn walks_up(height: i32) -> bool {
