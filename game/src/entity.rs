@@ -5694,17 +5694,7 @@ impl EntityScene {
                 MonsterMissileKind::Gib,
                 ZOMBIE_GIB_MODEL_ID,
                 damage,
-                Vec3I32 {
-                    x: shooter
-                        .origin
-                        .x
-                        .saturating_add(forward.x.saturating_mul(i32::from(offset[0]))),
-                    y: shooter
-                        .origin
-                        .y
-                        .saturating_add(forward.y.saturating_mul(i32::from(offset[0]))),
-                    z: shooter.origin.z.saturating_add(i32::from(offset[2]) << 12),
-                },
+                quake_core::monster::zombie_gib_origin(shooter.origin, shooter.angles.y, offset),
                 Vec3I32 {
                     x: forward.x.saturating_mul(600) / 60,
                     y: forward.y.saturating_mul(600) / 60,

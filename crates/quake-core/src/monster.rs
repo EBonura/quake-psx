@@ -23,6 +23,24 @@
 
 use quake_formats::Vec3I32;
 
+/// Place a thrown zombie gib relative to the upright monster's facing.
+/// The authored throw height includes the 24-unit feet-to-origin offset.
+/// Missile aiming and flight are separate from this hand placement.
+pub fn zombie_gib_origin(origin: Vec3I32, yaw: i16, offset: [i16; 3]) -> Vec3I32 {
+    let heading = yaw as u16 & 0x0fff;
+    let forward_x = psx_math::cos_q12(heading);
+    let forward_y = psx_math::sin_q12(heading);
+    let forward = i32::from(offset[0]);
+    let right = i32::from(offset[1]);
+    Vec3I32 {
+        x: origin.x.saturating_add(forward_x.saturating_mul(forward))
+            .saturating_add(forward_y.saturating_mul(right)),
+        y: origin.y.saturating_add(forward_y.saturating_mul(forward))
+            .saturating_sub(forward_x.saturating_mul(right)),
+        z: origin.z.saturating_add((i32::from(offset[2]) - 24) << 12),
+    }
+}
+
 pub const CLASS_ARMY: u8 = 0x36;
 pub const CLASS_BOSS: u8 = 0x37;
 pub const CLASS_DEMON: u8 = 0x38;
@@ -2042,6 +2060,45 @@ pub fn predicted_target(target: Vec3I32, velocity: Vec3I32) -> Vec3I32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zombie_gib_all_authored_throws_use_the_hand_and_feet_height() {
+        let origin = Vec3I32 { x: 100 << 12, y: -50 << 12, z: 80 << 12 };
+        for (state, frame_offset, expected) in [
+            (MonsterState::Missile, 12, [90, -28, 86]),
+            (MonsterState::MeleeB, 12, [90, -26, 85]),
+            (MonsterState::MeleeC, 11, [88, -31, 85]),
+        ] {
+            let mut runtime = MonsterRuntime::new(MonsterKind::Zombie, 1);
+            runtime.frame = first_frame(MonsterKind::Zombie, state) + frame_offset;
+            let (attack, _, _) = runtime.attack_frame_event(state, visible(300));
+            let Some(MonsterAttack::ZombieGib { damage, offset }) = attack else {
+                panic!("authored zombie throw did not emit its gib");
+            };
+            assert_eq!(damage, 10);
+            assert_eq!(zombie_gib_origin(origin, 0, offset), Vec3I32 {
+                x: expected[0] << 12, y: expected[1] << 12, z: expected[2] << 12,
+            });
+        }
+    }
+
+    #[test]
+    fn zombie_gib_hand_rotates_with_actual_facing_and_signed_wrapped_yaw() {
+        let origin = Vec3I32::default();
+        for (yaw, expected) in [(0, [-10, 22, 6]), (1024, [-22, -10, 6]),
+            (2048, [10, -22, 6]), (-1024, [22, 10, 6]), (-4096, [-10, 22, 6])] {
+            assert_eq!(zombie_gib_origin(origin, yaw, [-10, -22, 30]), Vec3I32 {
+                x: expected[0] << 12, y: expected[1] << 12, z: expected[2] << 12,
+            });
+        }
+    }
+
+    #[test]
+    fn zombie_gib_authored_height_is_relative_to_feet_not_entity_origin() {
+        let origin = Vec3I32 { z: 100 << 12, ..Vec3I32::default() };
+        assert_eq!(zombie_gib_origin(origin, 0, [0, 0, 24]), origin);
+        assert_eq!(zombie_gib_origin(origin, 1024, [0, 0, 0]).z, 76 << 12);
+    }
 
     const EVERY_KIND: [MonsterKind; 9] = [
         MonsterKind::Soldier,
