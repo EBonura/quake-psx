@@ -46,7 +46,7 @@ mod quake;
 mod regression;
 mod renderer;
 mod rumble;
-#[cfg(feature = "start-route-regression")]
+#[cfg(any(feature = "start-route-regression", feature = "e1m1-normal-journey"))]
 mod start_route_regression;
 #[cfg(feature = "survival-regression")]
 mod survival_regression;

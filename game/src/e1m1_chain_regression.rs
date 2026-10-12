@@ -345,6 +345,10 @@ static mut DETOUR: usize = 0;
 static mut BEST_DISTANCE: i32 = i32::MAX;
 
 pub fn map_loaded(map: EpisodeMap) {
+    #[cfg(feature = "e1m1-normal-journey")]
+    if map == EpisodeMap::Start {
+        return;
+    }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         match map {
@@ -380,7 +384,19 @@ pub fn map_loaded(map: EpisodeMap) {
     }
 }
 
+#[cfg(feature = "e1m1-normal-journey")]
+pub fn observe_health(health: i16) {
+    // Reuse an otherwise unused probe word; never mutate the inventory.
+    unsafe {
+        write_volatile(addr_of_mut!((*addr_of_mut!(PROBE)).shock_count), health.max(0) as u32);
+    }
+}
+
 pub fn controls(map: EpisodeMap, player: &Player) -> InputFrame {
+    #[cfg(feature = "e1m1-normal-journey")]
+    if map == EpisodeMap::Start {
+        return crate::start_route_regression::controls(map, player);
+    }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         if read_volatile(addr_of_mut!((*probe).failure_code)) != 0
@@ -495,6 +511,10 @@ pub fn controls(map: EpisodeMap, player: &Player) -> InputFrame {
 }
 
 pub fn observe(map: EpisodeMap, gameplay: GameplayResult, entities: &EntityScene) {
+    #[cfg(feature = "e1m1-normal-journey")]
+    if map == EpisodeMap::Start {
+        return;
+    }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         if map != EpisodeMap::E1M1 || read_volatile(addr_of_mut!((*probe).failure_code)) != 0 {

@@ -197,7 +197,9 @@ pub fn run() -> ! {
         feature = "visual-parity-regression",
         feature = "hardware-regression"
     ))]
-    menu.close_for_game();
+    if !cfg!(feature = "e1m1-normal-journey") {
+        menu.close_for_game();
+    }
     let mut intermission: Option<Intermission> = None;
     // Game logic ticks at 60 Hz on the shared psx-tick clock. A frame consumes
     // every tick owed since the last one, at most four (the batch the monster
@@ -449,7 +451,11 @@ pub fn run() -> ! {
         #[cfg(feature = "start-route-regression")]
         let controls = crate::start_route_regression::controls(world.map(), &player);
         #[cfg(feature = "e1m1-chain-regression")]
-        let controls = crate::e1m1_chain_regression::controls(world.map(), &player);
+        let controls = if cfg!(feature = "e1m1-normal-journey") && menu.active() {
+            apply_look_settings(raw_controls, &menu)
+        } else {
+            crate::e1m1_chain_regression::controls(world.map(), &player)
+        };
         #[cfg(feature = "e1m2-e1m3-route-regression")]
         let controls =
             crate::e1m2_e1m3_route_regression::controls(world.map(), &entities, &player, &weapon);
@@ -457,6 +463,9 @@ pub fn run() -> ! {
         let controls = crate::survival_regression::controls(world.map(), &player, &weapon);
         #[cfg(feature = "episode1-route-regression")]
         let controls = crate::episode1_regression::controls(&world, &entities, &player);
+
+        #[cfg(feature = "e1m1-normal-journey")]
+        crate::e1m1_chain_regression::observe_health(weapon.inventory().health());
 
         if menu.active() {
             let view = menu.view();
@@ -777,6 +786,8 @@ pub fn run() -> ! {
         crate::start_route_regression::observe(world.map(), gameplay);
         #[cfg(feature = "e1m1-chain-regression")]
         crate::e1m1_chain_regression::observe(world.map(), gameplay, &entities);
+        #[cfg(feature = "e1m1-normal-journey")]
+        crate::start_route_regression::observe(world.map(), gameplay);
         let pickup = entities.collect_pickups(&world, player_mins, player_maxs, &mut weapon);
         #[cfg(feature = "e1m2-e1m3-route-regression")]
         crate::e1m2_e1m3_route_regression::observe(
@@ -1408,7 +1419,11 @@ fn initial_map() -> crate::asset::EpisodeMap {
     }
     #[cfg(feature = "e1m1-chain-regression")]
     {
-        return crate::asset::EpisodeMap::E1M1;
+        return if cfg!(feature = "e1m1-normal-journey") {
+            crate::asset::EpisodeMap::Start
+        } else {
+            crate::asset::EpisodeMap::E1M1
+        };
     }
     #[cfg(feature = "bestiary-regression")]
     {
@@ -1737,6 +1752,10 @@ fn reset_level_state(
     crate::start_route_regression::map_loaded(_map);
     #[cfg(feature = "e1m1-chain-regression")]
     crate::e1m1_chain_regression::map_loaded(_map);
+    #[cfg(feature = "e1m1-normal-journey")]
+    if matches!(_map, crate::asset::EpisodeMap::Start | crate::asset::EpisodeMap::E1M1) {
+        crate::start_route_regression::map_loaded(_map);
+    }
     #[cfg(feature = "e1m2-e1m3-route-regression")]
     crate::e1m2_e1m3_route_regression::map_loaded(_map);
     #[cfg(feature = "survival-regression")]
