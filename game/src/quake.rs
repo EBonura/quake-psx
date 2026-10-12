@@ -197,7 +197,7 @@ pub fn run() -> ! {
         feature = "visual-parity-regression",
         feature = "hardware-regression"
     ))]
-    if !cfg!(feature = "e1m1-normal-journey") {
+    if !cfg!(feature = "e1m1-normal-journey") && !cfg!(feature = "e1m2-normal-journey") {
         menu.close_for_game();
     }
     let mut intermission: Option<Intermission> = None;
@@ -463,8 +463,16 @@ pub fn run() -> ! {
             combat.unwrap_or_else(|| crate::e1m1_chain_regression::controls(world.map(), &player))
         };
         #[cfg(feature = "e1m2-e1m3-route-regression")]
-        let controls =
-            crate::e1m2_e1m3_route_regression::controls(world.map(), &entities, &player, &weapon);
+        let controls = if cfg!(feature = "e1m2-normal-journey")
+            && (menu.active() || world.map() == crate::asset::EpisodeMap::Start) {
+            apply_look_settings(raw_controls, &menu)
+        } else {
+            #[cfg(feature = "e1m2-normal-journey")]
+            let combat = crate::e1m2_e1m3_route_regression::combat_controls(&world, &entities, &player);
+            #[cfg(not(feature = "e1m2-normal-journey"))]
+            let combat: Option<crate::input::InputFrame> = None;
+            combat.unwrap_or_else(|| crate::e1m2_e1m3_route_regression::controls(world.map(), &entities, &player, &weapon))
+        };
         #[cfg(feature = "survival-regression")]
         let controls = crate::survival_regression::controls(world.map(), &player, &weapon);
         #[cfg(feature = "episode1-route-regression")]
@@ -472,6 +480,8 @@ pub fn run() -> ! {
 
         #[cfg(feature = "e1m1-normal-journey")]
         crate::e1m1_chain_regression::observe_health(weapon.inventory().health());
+        #[cfg(feature = "e1m2-normal-journey")]
+        crate::e1m2_e1m3_route_regression::observe_health(weapon.inventory().health());
 
         if menu.active() {
             let view = menu.view();
@@ -1103,7 +1113,7 @@ pub fn run() -> ! {
             feature = "arsenal-regression",
             feature = "start-route-regression",
             all(feature = "e1m1-chain-regression", not(feature = "route-monsters")),
-            feature = "e1m2-e1m3-route-regression",
+            all(feature = "e1m2-e1m3-route-regression", not(feature = "e1m2-normal-journey")),
             feature = "survival-regression",
             feature = "systems-regression"
         )))]
@@ -1437,7 +1447,8 @@ fn initial_map() -> crate::asset::EpisodeMap {
     }
     #[cfg(feature = "e1m2-e1m3-route-regression")]
     {
-        return crate::asset::EpisodeMap::E1M2;
+        return if cfg!(feature = "e1m2-normal-journey") { crate::asset::EpisodeMap::Start }
+            else { crate::asset::EpisodeMap::E1M2 };
     }
     #[cfg(feature = "survival-regression")]
     {

@@ -54,6 +54,8 @@ route-monsters = ["e1m1-chain-regression"]
 # Ordinary title and START entry, live enemies, then E1M1 authored exit.
 e1m1-normal-journey = ["route-monsters"]
 e1m2-e1m3-route-regression = ["emulator-telemetry"]
+# Ordinary map-menu entry with authored enemies retained.
+e1m2-normal-journey = ["e1m2-e1m3-route-regression"]
 systems-regression = ["emulator-telemetry"]
 survival-regression = ["emulator-telemetry"]
 visual-parity-regression = ["emulator-telemetry"]

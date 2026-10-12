@@ -243,6 +243,7 @@ enum Action {
     StartRouteRegress,
     E1m1ChainRegress,
     E1m1NormalBuild,
+    E1m2NormalBuild,
     E1m1ChainBench,
     E1m1MonsterRouteBench,
     E1m1SelectionCacheBench,
@@ -489,6 +490,14 @@ fn real_main() -> Result<()> {
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(&root, &build, Some("e1m1-normal-journey"), false)?;
+        }
+        Action::E1m2NormalBuild => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m2-normal-journey");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(&root, &build, Some("e1m2-normal-journey"), false)?;
         }
         Action::E1m1ChainRegress => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2722,6 +2731,7 @@ fn parse_cli() -> Result<Cli> {
             | "visual-parity-regress"
             | "e1m1-chain-regress"
             | "e1m1-normal-build"
+            | "e1m2-normal-build"
             | "e1m1-chain-bench"
             | "e1m1-monster-route-bench"
             | "e1m1-selection-cache-bench"
@@ -2780,6 +2790,7 @@ fn parse_cli() -> Result<Cli> {
                     "visual-parity-regress" => Action::VisualParityRegress,
                     "e1m1-chain-regress" => Action::E1m1ChainRegress,
                     "e1m1-normal-build" => Action::E1m1NormalBuild,
+                    "e1m2-normal-build" => Action::E1m2NormalBuild,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
                     "e1m1-selection-cache-bench" => Action::E1m1SelectionCacheBench,
@@ -8890,6 +8901,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-start-route-regression"
             | "build-psoxide-e1m1-chain-regression"
             | "build-psoxide-e1m1-normal-journey"
+            | "build-psoxide-e1m2-normal-journey"
             | "build-psoxide-e1m1-selection-cache-bench"
             | "build-psoxide-e1m1-topology-cache-bench"
             | "build-psoxide-e1m1-indexed-projection-bench"

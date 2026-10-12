@@ -7188,7 +7188,7 @@ impl EntityScene {
         }
     }
 
-    #[cfg(feature = "e1m1-normal-journey")]
+    #[cfg(any(feature = "e1m1-normal-journey", feature = "e1m2-normal-journey"))]
     pub fn regression_point_visible(&self, map: &ResidentMap, start: Vec3I32, end: Vec3I32) -> bool {
         let mut scratch = TraceScratch::default();
         let mut trace = Trace::default();
@@ -7932,7 +7932,7 @@ impl EntityScene {
         None
     }
 
-    #[cfg(any(feature = "combat-regression", feature = "arsenal-regression", feature = "e1m1-normal-journey"))]
+    #[cfg(any(feature = "combat-regression", feature = "arsenal-regression", feature = "e1m1-normal-journey", feature = "e1m2-normal-journey"))]
     pub fn regression_monster_health(&self, source_index: u16) -> Option<i16> {
         self.entities
             .iter()
