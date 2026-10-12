@@ -418,7 +418,7 @@ pub fn combat_controls(map: &crate::asset::ResidentMap, entities: &EntityScene, 
     Some(InputFrame {
         look: [(i32::from(dyaw) * 4).clamp(-127, 127) as i16,
                (i32::from(dpitch) * 4).clamp(-127, 127) as i16],
-        held: if dyaw.abs() <= 24 && dpitch.abs() <= 24 { button::R1 } else { 0 },
+        held: if dyaw.abs() <= 24 && dpitch.abs() <= 24 { button::R2 } else { 0 },
         ..InputFrame::default()
     })
 }
