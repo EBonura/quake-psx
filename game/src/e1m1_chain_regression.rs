@@ -394,7 +394,7 @@ pub fn combat_controls(map: &crate::asset::ResidentMap, entities: &EntityScene, 
         let dx = (e.origin.x - from.x) >> 12;
         let dy = (e.origin.y - from.y) >> 12;
         let d = dx.abs().max(dy.abs());
-        let center = psx_math::Vec3I32 {
+        let center = psx_bsp::Vec3I32 {
             x: e.origin.x, y: e.origin.y,
             z: e.origin.z + ((i32::from(e.clip_mins[2]) + i32::from(e.clip_maxs[2])) << 11),
         };
