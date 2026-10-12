@@ -1215,6 +1215,15 @@ pub fn map_loaded(map: EpisodeMap) {
                     addr_of_mut!((*probe).player_state),
                     mechanisms | E1M2_CHANGELEVEL,
                 );
+                #[cfg(feature = "e1m2-normal-journey")]
+                {
+                    // This single-map package finishes only after the shipping
+                    // changelevel has actually loaded E1M3. No E1M3 route claim.
+                    state.stage = Stage::Complete;
+                    write_volatile(addr_of_mut!((*probe).phase), PHASE_COMPLETE);
+                    write_volatile(addr_of_mut!((*probe).complete), 1);
+                }
+                #[cfg(not(feature = "e1m2-normal-journey"))]
                 set_stage(state, probe, Stage::E1M3ToGoldLift, PHASE_E1M3);
             }
             EpisodeMap::E1M4 if state.stage == Stage::AwaitE1M4 => {
@@ -1496,6 +1505,7 @@ pub fn controls(
                     walk_stage_stay(state, probe, player, E1M2_TO_CHANGELEVEL)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ToGoldLift => walk_stage(
                 state,
                 probe,
@@ -1503,6 +1513,7 @@ pub fn controls(
                 E1M3_TO_GOLD_LIFT,
                 Stage::E1M3RideGoldLiftDown,
             ),
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3RideGoldLiftDown => {
                 if z <= -300
                     && entities.regression_route_mover_state(87) == Some(QuakeMoverState::Top)
@@ -1512,6 +1523,7 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ToGoldKey => {
                 if weapon.inventory().keys() & 2 != 0 {
                     add_mechanism(probe, E1M3_GOLD_KEY);
@@ -1521,6 +1533,7 @@ pub fn controls(
                     walk_stage_stay(state, probe, player, E1M3_TO_GOLD_KEY)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ToKeyLiftTrigger => walk_stage(
                 state,
                 probe,
@@ -1528,6 +1541,7 @@ pub fn controls(
                 E1M3_KEY_TO_LIFT_TRIGGER,
                 Stage::E1M3AwaitKeyLift,
             ),
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3AwaitKeyLift => {
                 if entities.regression_route_mover_state(87) == Some(QuakeMoverState::Top) {
                     add_mechanism(probe, E1M3_KEY_LIFT_TRIGGERED);
@@ -1535,6 +1549,7 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3BoardKeyLift => walk_stage(
                 state,
                 probe,
@@ -1542,6 +1557,7 @@ pub fn controls(
                 E1M3_BOARD_KEY_LIFT,
                 Stage::E1M3RideKeyLift,
             ),
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3RideKeyLift => {
                 if z >= -130
                     && entities.regression_route_mover_state(87) == Some(QuakeMoverState::Bottom)
@@ -1551,6 +1567,7 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ReturnToIntersection => walk_stage(
                 state,
                 probe,
@@ -1558,6 +1575,7 @@ pub fn controls(
                 E1M3_RETURN_TO_INTERSECTION,
                 Stage::E1M3SelectShotgun,
             ),
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3SelectShotgun => {
                 let chord = button::TRIANGLE | button::UP | button::RIGHT;
                 let input = InputFrame {
@@ -1568,6 +1586,7 @@ pub fn controls(
                 set_stage(state, probe, Stage::E1M3ShootStairButton, PHASE_E1M3);
                 input
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ShootStairButton => {
                 let mut input = look_toward(
                     player,
@@ -1580,6 +1599,7 @@ pub fn controls(
                 input.held = button::R2;
                 input
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3AwaitStaircase => {
                 if (24..=28).all(|source_index| {
                     entities.regression_route_mover_state(source_index)
@@ -1590,6 +1610,7 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ToGoldDoor => walk_stage(
                 state,
                 probe,
@@ -1597,6 +1618,7 @@ pub fn controls(
                 E1M3_TO_GOLD_DOOR,
                 Stage::E1M3ThroughGoldDoor,
             ),
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ThroughGoldDoor => {
                 if read_volatile(addr_of_mut!((*probe).player_state)) & E1M3_GOLD_DOOR != 0 {
                     walk_stage(
@@ -1610,6 +1632,7 @@ pub fn controls(
                     movement_input(player, -500 - x, -203 - y, false)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3AfterGoldDoor => {
                 let mechanisms = read_volatile(addr_of_mut!((*probe).player_state));
                 if mechanisms & E1M3_SECRET_DOORS != 0 {
@@ -1619,6 +1642,7 @@ pub fn controls(
                     walk_stage_stay(state, probe, player, E1M3_TO_SECRET_DOORS)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3AwaitSecretDoors => {
                 if entities.regression_route_mover_state(54) == Some(QuakeMoverState::Top)
                     && entities.regression_route_mover_state(55) == Some(QuakeMoverState::Top)
@@ -1627,6 +1651,7 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ThroughSecretDoors => {
                 let mechanisms = read_volatile(addr_of_mut!((*probe).player_state));
                 let passage = E1M3_TRAIN | E1M3_TRAPDOOR | E1M3_UNDERWATER_GATE;
@@ -1641,6 +1666,7 @@ pub fn controls(
                     walk_stage_stay(state, probe, player, E1M3_THROUGH_SECRET_DOORS)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3AwaitTrapdoor => {
                 let mechanisms = read_volatile(addr_of_mut!((*probe).player_state));
                 if mechanisms & E1M3_TRAPDOOR != 0
@@ -1650,7 +1676,9 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3Dive => walk_stage(state, probe, player, E1M3_DIVE, Stage::E1M3Underwater),
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3Underwater => {
                 if read_volatile(addr_of_mut!((*probe).player_state)) & E1M3_CORRIDOR_BUTTON != 0 {
                     set_stage(state, probe, Stage::E1M3AwaitCorridorDoors, PHASE_E1M3);
@@ -1659,6 +1687,7 @@ pub fn controls(
                     walk_stage_stay(state, probe, player, E1M3_UNDERWATER_ROUTE)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3AwaitCorridorDoors => {
                 if (110..=111).chain(113..=114).all(|source_index| {
                     entities.regression_route_mover_state(source_index)
@@ -1668,6 +1697,7 @@ pub fn controls(
                 }
                 InputFrame::default()
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ToEndButton => {
                 if read_volatile(addr_of_mut!((*probe).player_state)) & E1M3_END_BUTTON != 0 {
                     set_stage(state, probe, Stage::E1M3RideEndLift, PHASE_E1M3);
@@ -1676,6 +1706,7 @@ pub fn controls(
                     walk_stage_stay(state, probe, player, E1M3_TO_END_BUTTON)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3RideEndLift => {
                 if z > 500 {
                     add_mechanism(probe, E1M3_END_LIFT_RIDDEN);
@@ -1685,8 +1716,11 @@ pub fn controls(
                     movement_input(player, 1360 - x, 432 - y, false)
                 }
             }
+            #[cfg(not(feature = "e1m2-normal-journey"))]
             Stage::E1M3ToChangelevel => walk_stage_stay(state, probe, player, E1M3_TO_CHANGELEVEL),
             Stage::AwaitE1M3 | Stage::AwaitE1M4 | Stage::Complete => InputFrame::default(),
+            #[cfg(feature = "e1m2-normal-journey")]
+            _ => InputFrame::default(),
         }
     }
 }
@@ -1699,7 +1733,7 @@ pub fn observe(
     weapon: &WeaponState,
 ) {
     #[cfg(feature = "e1m2-normal-journey")]
-    if map == EpisodeMap::Start { return; }
+    if map != EpisodeMap::E1M2 { return; }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         let state = &mut *addr_of_mut!(STATE);
