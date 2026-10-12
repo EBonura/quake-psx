@@ -56,6 +56,9 @@ e1m1-normal-journey = ["route-monsters"]
 e1m2-e1m3-route-regression = ["emulator-telemetry"]
 # Ordinary map-menu entry with authored enemies retained.
 e1m2-normal-journey = ["e1m2-e1m3-route-regression"]
+# One continuous journey: title, START, then every Episode 1 map in turn with
+# live enemies, each map under its own controller.
+e1-chain-journey = ["e1m1-normal-journey", "e1m2-normal-journey"]
 systems-regression = ["emulator-telemetry"]
 survival-regression = ["emulator-telemetry"]
 visual-parity-regression = ["emulator-telemetry"]

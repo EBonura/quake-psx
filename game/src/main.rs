@@ -22,6 +22,8 @@ mod bonnie;
 mod combat_regression;
 #[cfg(feature = "e1m1-chain-regression")]
 mod e1m1_chain_regression;
+#[cfg(feature = "e1m2-normal-journey")]
+mod journey_combat;
 #[cfg(feature = "e1m2-e1m3-route-regression")]
 mod e1m2_e1m3_route_regression;
 mod entity;
@@ -129,7 +131,8 @@ compile_error!("monster-jump regression cannot be combined with another regressi
     ),
     all(
         feature = "e1m2-e1m3-route-regression",
-        feature = "e1m1-chain-regression"
+        feature = "e1m1-chain-regression",
+        not(feature = "e1-chain-journey")
     ),
     all(feature = "e1m2-e1m3-route-regression", feature = "ambient-regression"),
     all(

@@ -460,16 +460,30 @@ pub fn run() -> ! {
             } else { None };
             #[cfg(not(feature = "e1m1-normal-journey"))]
             let combat: Option<crate::input::InputFrame> = None;
-            combat.unwrap_or_else(|| crate::e1m1_chain_regression::controls(world.map(), &player))
+            combat.unwrap_or_else(|| {
+                // The episode chain hands every later map to its own controller.
+                if cfg!(feature = "e1-chain-journey")
+                    && !matches!(world.map(), crate::asset::EpisodeMap::Start | crate::asset::EpisodeMap::E1M1)
+                {
+                    crate::input::InputFrame::default()
+                } else {
+                    crate::e1m1_chain_regression::controls(world.map(), &player)
+                }
+            })
         };
         #[cfg(feature = "e1m2-e1m3-route-regression")]
-        let controls = if cfg!(feature = "e1m2-normal-journey")
+        let controls = if cfg!(feature = "e1-chain-journey")
+            && (menu.active()
+                || matches!(world.map(), crate::asset::EpisodeMap::Start | crate::asset::EpisodeMap::E1M1))
+        {
+            controls
+        } else if cfg!(feature = "e1m2-normal-journey")
             && (menu.active() || world.map() == crate::asset::EpisodeMap::Start) {
             apply_look_settings(raw_controls, &menu)
         } else {
-            #[cfg(feature = "e1m2-normal-journey")]
-            let combat = crate::e1m2_e1m3_route_regression::combat_controls(&world, &entities, &player);
-            #[cfg(not(feature = "e1m2-normal-journey"))]
+            #[cfg(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))]
+            let combat = crate::e1m2_e1m3_route_regression::combat_controls(&world, &entities, &player, weapon.shells());
+            #[cfg(not(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey")))]
             let combat: Option<crate::input::InputFrame> = None;
             combat.unwrap_or_else(|| crate::e1m2_e1m3_route_regression::controls(world.map(), &entities, &player, &weapon))
         };
@@ -480,7 +494,7 @@ pub fn run() -> ! {
 
         #[cfg(feature = "e1m1-normal-journey")]
         crate::e1m1_chain_regression::observe_health(weapon.inventory().health());
-        #[cfg(feature = "e1m2-normal-journey")]
+        #[cfg(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))]
         crate::e1m2_e1m3_route_regression::observe_health(weapon.inventory().health());
 
         if menu.active() {
@@ -834,7 +848,11 @@ pub fn run() -> ! {
         }
         if let Some((destination, no_intermission, _)) = pending_change_level {
             #[cfg(any(feature = "start-route-regression", feature = "e1m1-normal-journey"))]
-            crate::start_route_regression::transition_requested(world.map(), destination);
+            if !cfg!(feature = "e1-chain-journey")
+                || matches!(world.map(), crate::asset::EpisodeMap::Start | crate::asset::EpisodeMap::E1M1)
+            {
+                crate::start_route_regression::transition_requested(world.map(), destination);
+            }
             #[cfg(feature = "e1m2-e1m3-route-regression")]
             crate::e1m2_e1m3_route_regression::transition_requested(world.map(), destination);
             // The arsenal probe drives the player through five maps by hand
@@ -1113,7 +1131,10 @@ pub fn run() -> ! {
             feature = "arsenal-regression",
             feature = "start-route-regression",
             all(feature = "e1m1-chain-regression", not(feature = "route-monsters")),
-            all(feature = "e1m2-e1m3-route-regression", not(feature = "e1m2-normal-journey")),
+            all(
+                feature = "e1m2-e1m3-route-regression",
+                not(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))
+            ),
             feature = "survival-regression",
             feature = "systems-regression"
         )))]

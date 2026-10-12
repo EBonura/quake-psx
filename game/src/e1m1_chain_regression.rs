@@ -349,6 +349,11 @@ pub fn map_loaded(map: EpisodeMap) {
     if map == EpisodeMap::Start {
         return;
     }
+    // After E1M2 loads, later maps belong to the next controllers.
+    #[cfg(feature = "e1-chain-journey")]
+    if !matches!(map, EpisodeMap::E1M1 | EpisodeMap::E1M2) {
+        return;
+    }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         match map {

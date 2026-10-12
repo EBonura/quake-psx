@@ -25,3 +25,20 @@ after any guest change set `E1M1_PROBE` to the address of `quake_psx::e1m1_chain
 `receipts/e1m1-exit.trajectory.txt` samples the run (health, position, route
 step, mechanism bits). Health reaches 200 from the map's mega health, and the
 E1M2 arrival health of 100 is the original `SetChangeParms` cap.
+
+## Not yet proven
+
+E1M2 and later edges have no receipt. `e1-chain-journey` (`cargo quake-build e1-chain-build`)
+links the START, E1M1 and E1M2 controllers into one image so a single run
+carries the inventory across the E1M1 exit. It currently fails in E1M1:
+
+* The image is 14 KiB larger than the E1M1 image, whose heap has 8 KiB to
+  spare, so it panics at boot in the allocator. Building it with
+  `QUAKE_PSX_JOURNEY_STACK_RESERVE=0xB000` (measured stack depth 32.6 KiB)
+  boots.
+* The E1M1 route's survival is not robust: the same controller survives to the
+  exit in the E1M1 image and dies in the chain image. The only difference is
+  guest code size and frame timing. The route has no health or armour
+  pickups and the controller fights from a standstill, so grunt fire during
+  the long loop around the bridge room drains it (about 8 health per second
+  of exposure).

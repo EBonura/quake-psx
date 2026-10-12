@@ -148,6 +148,17 @@ fn main() {
         linker_source.contains(stack_marker),
         "PSoXide linker stack marker changed; re-audit Quake's stack reserve"
     );
+    // Diagnostic journey images carry extra controller code; one of them may
+    // trade a measured amount of stack slack for heap. Shipping never sets it.
+    println!("cargo:rerun-if-env-changed=QUAKE_PSX_JOURNEY_STACK_RESERVE");
+    let stack_reserve = env::var("QUAKE_PSX_JOURNEY_STACK_RESERVE")
+        .ok()
+        .filter(|value| {
+            env::var_os("CARGO_FEATURE_E1_CHAIN_JOURNEY").is_some()
+                && value.starts_with("0x")
+                && value[2..].chars().all(|c| c.is_ascii_hexdigit())
+        })
+        .unwrap_or_else(|| "0xD000".to_string());
     let quake_linker =
         PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("quake-psoxide.ld");
     // The world pass alternates, batch after batch, between the ordinary
@@ -166,7 +177,7 @@ fn main() {
     fs::write(
         &quake_linker,
         linker_source
-            .replacen(stack_marker, "STACK_RESERVE = 0xD000;", 1)
+            .replacen(stack_marker, &format!("STACK_RESERVE = {stack_reserve};"), 1)
             .replacen(text_marker, &world_pass, 1),
     )
     .unwrap_or_else(|error| panic!("write {}: {error}", quake_linker.display()));

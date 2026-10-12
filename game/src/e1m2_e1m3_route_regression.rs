@@ -1196,6 +1196,9 @@ static mut STATE: RouteState = RouteState::new();
 pub fn map_loaded(map: EpisodeMap) {
     #[cfg(feature = "e1m2-normal-journey")]
     if map == EpisodeMap::Start { return; }
+    // The chain's earlier maps belong to the START and E1M1 controllers.
+    #[cfg(feature = "e1-chain-journey")]
+    if matches!(map, EpisodeMap::Start | EpisodeMap::E1M1) { return; }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         let state = &mut *addr_of_mut!(STATE);
@@ -1243,44 +1246,26 @@ pub fn map_loaded(map: EpisodeMap) {
     }
 }
 
-#[cfg(feature = "e1m2-normal-journey")]
-pub fn combat_controls(map: &crate::asset::ResidentMap, entities: &EntityScene, player: &Player) -> Option<InputFrame> {
+#[cfg(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))]
+pub fn combat_controls(
+    map: &crate::asset::ResidentMap,
+    entities: &EntityScene,
+    player: &Player,
+    shells: u16,
+) -> Option<InputFrame> {
     // Keep the authored use-only and shootable-button negative probes isolated.
-    if unsafe { matches!((*addr_of_mut!(STATE)).stage, Stage::E1M2RejectUse | Stage::E1M2SelectShotgun | Stage::E1M2ShootButton | Stage::E1M2HoldOpen) } { return None; }
-    let from = player.camera().origin;
-    let target = entities.entities().iter().filter(|e| {
-        e.is_monster() && e.visible
-            && entities.regression_monster_health(e.source_index).is_some_and(|hp| hp > 0)
-    }).filter_map(|e| {
-        let dx = (e.origin.x - from.x) >> 12;
-        let dy = (e.origin.y - from.y) >> 12;
-        let d = dx.abs().max(dy.abs());
-        // clip_mins/maxs are world-space render bounds, not local offsets.
-        let center = e.origin;
-        (d < 384 && entities.regression_point_visible(map, from, center)).then_some((d, e))
-    }).min_by_key(|(d, _)| *d)?.1;
-    let dx = (target.origin.x - from.x) >> 12;
-    let dy = (target.origin.y - from.y) >> 12;
-    let dz = (target.origin.z - from.z) >> 12;
-    let horizontal = psx_math::int32::isqrt_i32(dx * dx + dy * dy);
-    let yaw = psx_math::atan2_q12(dy, dx) as i16;
-    let pitch = psx_math::atan2_q12(-dz, horizontal) as i16;
-    let delta = |a: i16, b: i16| -> i16 {
-        let d = (i32::from(a as u16) - i32::from(b as u16)) & 4095;
-        (if d > 2048 { d - 4096 } else { d }) as i16
-    };
-    let dyaw = delta(yaw, player.view_angles[1]);
-    let dpitch = delta(pitch, player.view_angles[0]);
-    // Stop walking while changing aim, so movement never uses an old yaw.
-    Some(InputFrame {
-        look: [(i32::from(dyaw) * 4).clamp(-127, 127) as i16,
-               (i32::from(dpitch) * 4).clamp(-127, 127) as i16],
-        held: if dyaw.abs() <= 24 && dpitch.abs() <= 24 { crate::input_policy::button::R2 } else { 0 },
-        ..InputFrame::default()
-    })
+    if unsafe {
+        matches!(
+            (*addr_of_mut!(STATE)).stage,
+            Stage::E1M2RejectUse | Stage::E1M2SelectShotgun | Stage::E1M2ShootButton | Stage::E1M2HoldOpen
+        )
+    } {
+        return None;
+    }
+    crate::journey_combat::controls(map, entities, player, shells)
 }
 
-#[cfg(feature = "e1m2-normal-journey")]
+#[cfg(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))]
 pub fn observe_health(health: i16) {
     // Reuse an otherwise unused probe word; never mutate the inventory.
     unsafe {
@@ -1730,6 +1715,8 @@ pub fn observe(
 ) {
     #[cfg(feature = "e1m2-normal-journey")]
     if map != EpisodeMap::E1M2 { return; }
+    #[cfg(feature = "e1-chain-journey")]
+    if matches!(map, EpisodeMap::Start | EpisodeMap::E1M1) { return; }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         let state = &mut *addr_of_mut!(STATE);
@@ -1912,6 +1899,8 @@ pub fn observe(
 }
 
 pub fn transition_requested(map: EpisodeMap, destination: EpisodeMap) {
+    #[cfg(feature = "e1-chain-journey")]
+    if matches!(map, EpisodeMap::Start | EpisodeMap::E1M1) { return; }
     unsafe {
         let probe = addr_of_mut!(PROBE);
         let state = &mut *addr_of_mut!(STATE);
