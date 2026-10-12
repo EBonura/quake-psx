@@ -454,7 +454,13 @@ pub fn run() -> ! {
         let controls = if cfg!(feature = "e1m1-normal-journey") && menu.active() {
             apply_look_settings(raw_controls, &menu)
         } else {
-            crate::e1m1_chain_regression::controls(world.map(), &player)
+            #[cfg(feature = "e1m1-normal-journey")]
+            let combat = if world.map() == crate::asset::EpisodeMap::E1M1 {
+                crate::e1m1_chain_regression::combat_controls(&world, &entities, &player)
+            } else { None };
+            #[cfg(not(feature = "e1m1-normal-journey"))]
+            let combat: Option<crate::input::InputFrame> = None;
+            combat.unwrap_or_else(|| crate::e1m1_chain_regression::controls(world.map(), &player))
         };
         #[cfg(feature = "e1m2-e1m3-route-regression")]
         let controls =
