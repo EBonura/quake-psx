@@ -5675,21 +5675,10 @@ impl EntityScene {
             z: forward.z.saturating_mul(units_per_second) / 60,
         };
         let (kind, model_id, damage, origin, velocity, lifetime) = match attack {
-            MonsterAttack::Grenade { damage } => (
-                MonsterMissileKind::Grenade,
-                GRENADE_MODEL_ID,
-                damage,
-                Vec3I32 {
-                    z: shooter.origin.z.saturating_add(16 << 12),
-                    ..shooter.origin
-                },
-                Vec3I32 {
-                    x: forward.x.saturating_mul(600) / 60,
-                    y: forward.y.saturating_mul(600) / 60,
-                    z: (200 << 12) / 60,
-                },
-                150,
-            ),
+            MonsterAttack::Grenade { damage } => {
+                let (origin, velocity) = quake_core::monster::ogre_grenade_launch(shooter.origin, forward);
+                (MonsterMissileKind::Grenade, GRENADE_MODEL_ID, damage, origin, velocity, 150)
+            },
             MonsterAttack::ZombieGib { damage, offset } => (
                 MonsterMissileKind::Gib,
                 ZOMBIE_GIB_MODEL_ID,

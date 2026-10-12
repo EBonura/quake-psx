@@ -41,6 +41,16 @@ pub fn zombie_gib_origin(origin: Vec3I32, yaw: i16, offset: [i16; 3]) -> Vec3I32
     }
 }
 
+/// Ogre grenades start at the monster entity origin, without a muzzle lift.
+/// Keep the existing horizontal aim and 200-unit vertical launch speed.
+pub fn ogre_grenade_launch(origin: Vec3I32, forward_q12: Vec3I32) -> (Vec3I32, Vec3I32) {
+    (origin, Vec3I32 {
+        x: forward_q12.x.saturating_mul(600) / 60,
+        y: forward_q12.y.saturating_mul(600) / 60,
+        z: (200 << 12) / 60,
+    })
+}
+
 pub const CLASS_ARMY: u8 = 0x36;
 pub const CLASS_BOSS: u8 = 0x37;
 pub const CLASS_DEMON: u8 = 0x38;
@@ -2314,6 +2324,30 @@ mod tests {
             run_until(&mut runtime, visible(distance), 200, |runtime, _| {
                 runtime.state() == MonsterState::Run
             });
+        }
+    }
+
+    #[test]
+    fn actual_ogre_attack_launch_preserves_entity_origin_and_trajectory() {
+        let mut ogre = wake(MonsterKind::Ogre, 3, 400);
+        let action = run_until(&mut ogre, visible(400), 400, |_, action| {
+            matches!(action.attack, Some(MonsterAttack::Grenade { .. }))
+        });
+        assert_eq!(action.attack, Some(MonsterAttack::Grenade { damage: 40 }));
+        assert_eq!(action.sound_id, Some(GRENADE_LAUNCH_SOUND));
+        // Non-integral Q12 positions catch a hidden floor/feet conversion.
+        let shooter = Vec3I32 { x: -(128 << 12) + 17, y: (64 << 12) + 31, z: (72 << 12) + 9 };
+        for forward in [
+            Vec3I32 { x: 4096, y: 0, z: 0 },
+            Vec3I32 { x: 0, y: -4096, z: 0 },
+            Vec3I32 { x: 2896, y: 0, z: 2896 },
+        ] {
+            let (origin, velocity) = ogre_grenade_launch(shooter, forward);
+            assert_eq!(origin, shooter);
+            assert_eq!(velocity.x, forward.x * 10);
+            assert_eq!(velocity.y, forward.y * 10);
+            assert_eq!(velocity.z, (200 << 12) / 60);
+            assert_ne!(origin.z, shooter.z + (16 << 12));
         }
     }
 
