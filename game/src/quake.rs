@@ -817,7 +817,7 @@ pub fn run() -> ! {
             presentation.set_centerprint(CenterprintText::Fixed(text), CENTERPRINT_TICKS);
         }
         if let Some((destination, no_intermission, _)) = pending_change_level {
-            #[cfg(feature = "start-route-regression")]
+            #[cfg(any(feature = "start-route-regression", feature = "e1m1-normal-journey"))]
             crate::start_route_regression::transition_requested(world.map(), destination);
             #[cfg(feature = "e1m2-e1m3-route-regression")]
             crate::e1m2_e1m3_route_regression::transition_requested(world.map(), destination);

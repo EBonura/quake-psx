@@ -146,6 +146,16 @@ pub fn map_loaded(map: EpisodeMap) {
     unsafe {
         let state = &mut *addr_of_mut!(STATE);
         let probe = addr_of_mut!(PROBE);
+        // The ordinary title preloads START; New Game reloads that same map
+        // before this controller has issued its first movement sample.
+        #[cfg(feature = "e1m1-normal-journey")]
+        if state.initialized
+            && matches!(state.stage, RouteStage::MoveToEasy)
+            && map == EpisodeMap::Start
+            && read_volatile(addr_of_mut!((*probe).total_frames)) == 0
+        {
+            return;
+        }
         match (state.initialized, state.stage, map) {
             (false, RouteStage::MoveToEasy, EpisodeMap::Start) => {
                 state.initialized = true;
