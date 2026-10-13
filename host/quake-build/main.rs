@@ -4818,7 +4818,12 @@ fn shipping_environment_conflicts(
 ) -> Vec<String> {
     let mut conflicts = variables
         .into_iter()
-        .filter_map(|(name, _)| {
+        .filter_map(|(name, value)| {
+            // The configured cache forwards the recorded compiler command.
+            // Other wrappers can change the shipping artifact.
+            if name == "RUSTC_WRAPPER" && value == "/opt/homebrew/bin/sccache" {
+                return None;
+            }
             let name = name.to_string_lossy();
             shipping_environment_variable_is_unsafe(&name).then(|| name.to_string())
         })
@@ -10730,6 +10735,12 @@ mod provenance_tests {
 
     #[test]
     fn shipping_environment_gate_covers_compiler_flags_wrappers_targets_and_profiles() {
+        assert!(shipping_environment_conflicts([
+            (OsString::from("RUSTC_WRAPPER"), OsString::from("/opt/homebrew/bin/sccache")),
+        ]).is_empty());
+        assert_eq!(shipping_environment_conflicts([
+            (OsString::from("RUSTC_WRAPPER"), OsString::from("/tmp/other-wrapper")),
+        ]), vec!["RUSTC_WRAPPER"]);
         for name in [
             "RUSTFLAGS",
             "CARGO_ENCODED_RUSTFLAGS",
