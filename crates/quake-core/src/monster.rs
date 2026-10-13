@@ -472,6 +472,9 @@ pub struct MonsterThinkInput {
     /// is a QuakeC global, and [`MonsterRuntime`] is exactly full at
     /// twenty-four bytes.
     pub nightmare: bool,
+    /// Existing actor health. `sham_melee` checks `self.health == 600`;
+    /// carrying it per think avoids duplicating it in the fixed runtime.
+    pub self_health: i16,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -1295,10 +1298,10 @@ impl MonsterRuntime {
             MonsterKind::Knight => false,
             MonsterKind::Shambler if input.distance < MONSTER_MELEE_RANGE => {
                 // sham_melee: smash above 0.6, right swing above 0.3, else
-                // left swing. The full-health smash override needs health the
-                // runtime does not carry, so it is not modelled.
+                // left swing. Original bytecode also forces a smash at exactly
+                // 600 health, after drawing chance even when that override wins.
                 let chance = self.random_fraction_q12();
-                let state = if chance > Q12_ONE * 3 / 5 {
+                let state = if chance > Q12_ONE * 3 / 5 || input.self_health == 600 {
                     MonsterState::Melee
                 } else if chance > Q12_ONE * 3 / 10 {
                     MonsterState::MeleeC
@@ -2121,6 +2124,79 @@ mod tests {
         MonsterKind::Demon,
         MonsterKind::Boss,
     ];
+
+    #[test]
+    fn full_health_shambler_smashes_after_exactly_one_choice_draw() {
+        let mut exercised_override = false;
+        for seed in 0..256 {
+            let mut runtime = MonsterRuntime::new(MonsterKind::Shambler, seed);
+            let mut reference = runtime;
+            let chance = reference.random_fraction_q12();
+            exercised_override |= chance <= Q12_ONE * 3 / 5;
+            assert!(runtime.try_begin_attack(MonsterThinkInput {
+                self_health: 600, ..visible(50)
+            }));
+            assert_eq!(runtime.state(), MonsterState::Melee);
+            assert_eq!(runtime.random_state, reference.random_state);
+        }
+        assert!(exercised_override);
+        assert_eq!(core::mem::size_of::<MonsterRuntime>(), 24);
+        assert_eq!(core::mem::size_of::<MonsterThinkInput>(), 32);
+    }
+
+    #[test]
+    fn wounded_shambler_keeps_all_three_original_melee_choices() {
+        let mut choices = [false; 3];
+        for health in [599, 601] {
+            for seed in 0..256 {
+                let mut runtime = MonsterRuntime::new(MonsterKind::Shambler, seed);
+                let mut reference = runtime;
+                let chance = reference.random_fraction_q12();
+                let (state, index) = if chance > Q12_ONE * 3 / 5 {
+                    (MonsterState::Melee, 0)
+                } else if chance > Q12_ONE * 3 / 10 {
+                    (MonsterState::MeleeC, 1)
+                } else {
+                    (MonsterState::MeleeB, 2)
+                };
+                assert!(runtime.try_begin_attack(MonsterThinkInput {
+                    self_health: health, ..visible(50)
+                }));
+                assert_eq!(runtime.state(), state);
+                assert_eq!(runtime.random_state, reference.random_state);
+                choices[index] = true;
+            }
+        }
+        assert_eq!(choices, [true; 3]);
+    }
+
+    #[test]
+    fn selected_shambler_smash_preserves_full_animation_and_damage() {
+        let mut runtime = wake(MonsterKind::Shambler, 17, 50);
+        let input = MonsterThinkInput { self_health: 600, ..visible(50) };
+        assert!(runtime.try_begin_attack(input));
+        let mut reference = runtime;
+        let expected_damage = ((i32::from(reference.random_fraction_q12())
+            + i32::from(reference.random_fraction_q12())
+            + i32::from(reference.random_fraction_q12())) * 40
+            / i32::from(Q12_ONE)) as i16;
+        let movement = [2, 6, 6, 5, 4, 1, 0, 0, 0, 0, 5, 4];
+        for (offset, units) in movement.into_iter().enumerate() {
+            assert_eq!(runtime.frame(), 35 + offset as u16);
+            let action = next_think(&mut runtime, input);
+            assert_eq!(action.move_units, units);
+            if offset == 9 {
+                assert_eq!(action.attack, Some(MonsterAttack::Contact {
+                    damage: expected_damage, reach: MONSTER_MELEE_RANGE,
+                }));
+                assert_eq!(action.sound_id, Some(SHAMBLER_SMACK_SOUND));
+                assert_eq!(runtime.random_state, reference.random_state);
+            } else {
+                assert_eq!(action.attack, None);
+            }
+        }
+        assert_eq!(runtime.state(), MonsterState::Run);
+    }
 
     fn visible(distance: i32) -> MonsterThinkInput {
         MonsterThinkInput {
