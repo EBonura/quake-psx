@@ -36,6 +36,8 @@ mod monster_regression;
 #[cfg(feature = "monsterjump-regression")]
 mod monsterjump_regression;
 mod music;
+#[cfg(feature = "monster-code-overlay")]
+mod monster_code;
 mod platform;
 mod player;
 mod pusher;

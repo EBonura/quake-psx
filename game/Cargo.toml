@@ -10,10 +10,12 @@ name = "quake-psx"
 path = "src/main.rs"
 
 [features]
+monster-code-overlay = ["quake-core/monster-code-overlay", "dep:psx-residency"]
 # The accepted renderer stack (RENDERING.md): image-exact on the E1M1 chain
 # route (VRAM/display FNV identical to the plain build) and 24.314 fps
 # against 21.219 there on 2026-09-02, so it is what the disc ships.
 default = [
+    "monster-code-overlay",
     "renderer-selection-cache",
     "renderer-block-frustum",
     "renderer-gpu-polygon-clip",
@@ -167,6 +169,7 @@ quake-core = { path = "../crates/quake-core" }
 quake-affine = { path = "../crates/quake-affine" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
 psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-256", "present-queue"] }
+psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }

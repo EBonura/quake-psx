@@ -83,6 +83,8 @@ pub fn run() -> ! {
     // PSoXide target allocator is intentionally monotonic, so allowing each
     // transition to grow a fresh collection would eventually exhaust PS1 RAM.
     let mut world = crate::asset::ResidentMap::new();
+    #[cfg(feature = "monster-code-overlay")]
+    let mut monster_code = crate::monster_code::MonsterCode::new();
     if world.load_graphics().is_err() {
         psx_rt::tty::println("quake-psx: Rust graphics load failed");
         psx_rt::halt();
@@ -127,6 +129,8 @@ pub fn run() -> ! {
         &mut music,
         &mut renderer,
         &mut presentation,
+        #[cfg(feature = "monster-code-overlay")]
+        &mut monster_code,
     ) else {
         psx_rt::tty::println("quake-psx: Rust initial level load failed");
         psx_rt::halt();
@@ -315,6 +319,8 @@ pub fn run() -> ! {
                     &mut music,
                     &mut renderer,
                     &mut presentation,
+                    #[cfg(feature = "monster-code-overlay")]
+                    &mut monster_code,
                 ) else {
                     psx_rt::tty::println("quake-psx: Rust level transition failed");
                     psx_rt::halt();
@@ -391,6 +397,8 @@ pub fn run() -> ! {
                     &mut music,
                     &mut renderer,
                     &mut presentation,
+                    #[cfg(feature = "monster-code-overlay")]
+                    &mut monster_code,
                 ) else {
                     psx_rt::tty::println("quake-psx: Rust new game load failed");
                     psx_rt::halt();
@@ -529,6 +537,23 @@ pub fn run() -> ! {
         }
         play_movement_audio(&mut audio, player_frame, audio_tick);
         let survival = weapon.tick_survival(survival_input(player_frame, elapsed_ticks));
+        #[cfg(feature = "monster-code-overlay")]
+        monster_code.tick_bubbles(&world, presentation.impact_particles_mut(), elapsed_ticks,
+            player.origin(), player.water_level()).unwrap_or_else(|_| {
+                psx_rt::tty::println("quake-psx: bubble code admission failed");
+                psx_rt::halt()
+            });
+        #[cfg(not(feature = "monster-code-overlay"))]
+        presentation.impact_particles_mut().tick_death_bubbles(
+            elapsed_ticks,
+            player.origin(),
+            // Dead frames skip movement and return a default PlayerFrame;
+            // the corpse's retained water state remains authoritative.
+            player.water_level(),
+            |origin| world.point_leaf_index(origin)
+                .and_then(|leaf| world.leaves().get(leaf))
+                .is_some_and(|leaf| leaf.contents <= quake_core::movement::CONTENTS_WATER),
+        );
         #[cfg(feature = "survival-regression")]
         crate::survival_regression::observe(player_frame, survival, &weapon);
         for &sound in survival.sounds() {
@@ -542,12 +567,11 @@ pub fn run() -> ! {
             presentation.screen_blend_mut().pick_up();
         }
         // `DeathSound`'s submerged branch also calls `DeathBubbles(20)`. The
-        // fixed pool renders the original sprite with a bounded five-bubble
-        // burst; see `spawn_death_bubbles` for the remaining timing tradeoff.
+        // fixed pool renders the original sprite, one birth per 0.1 seconds.
         if survival.death_bubbles {
             presentation
                 .impact_particles_mut()
-                .spawn_death_bubbles(player.origin());
+                .spawn_death_bubbles();
         }
         // `GibPlayer`: the corpse bursts around the dead view.
         if survival.gibbed {
@@ -570,6 +594,8 @@ pub fn run() -> ! {
                 &mut music,
                 &mut renderer,
                 &mut presentation,
+                #[cfg(feature = "monster-code-overlay")]
+                &mut monster_code,
             ) else {
                 psx_rt::tty::println("quake-psx: Rust respawn level load failed");
                 psx_rt::halt();
@@ -589,6 +615,8 @@ pub fn run() -> ! {
                 &mut music,
                 &mut renderer,
                 &mut presentation,
+                #[cfg(feature = "monster-code-overlay")]
+                &mut monster_code,
             ) else {
                 psx_rt::tty::println("quake-psx: Rust regression map load failed");
                 psx_rt::halt();
@@ -609,6 +637,8 @@ pub fn run() -> ! {
                     &mut music,
                     &mut renderer,
                     &mut presentation,
+                    #[cfg(feature = "monster-code-overlay")]
+                    &mut monster_code,
                 ) else {
                     psx_rt::tty::println("quake-psx: Rust bestiary stage load failed");
                     psx_rt::halt();
@@ -821,6 +851,8 @@ pub fn run() -> ! {
                 &mut music,
                 &mut renderer,
                 &mut presentation,
+                #[cfg(feature = "monster-code-overlay")]
+                &mut monster_code,
             ) else {
                 psx_rt::tty::println("quake-psx: Rust level transition failed");
                 psx_rt::halt();
@@ -1002,6 +1034,8 @@ pub fn run() -> ! {
                 &mut music,
                 &mut renderer,
                 &mut presentation,
+                #[cfg(feature = "monster-code-overlay")]
+                &mut monster_code,
             ) else {
                 psx_rt::tty::println("quake-psx: Rust systems regression map load failed");
                 psx_rt::halt();
@@ -1057,6 +1091,7 @@ pub fn run() -> ! {
             feature = "systems-regression"
         )))]
         {
+            #[cfg(not(feature = "monster-code-overlay"))]
             let missiles = entities.update_monster_missiles(
                 &world,
                 player_mins,
@@ -1064,15 +1099,18 @@ pub fn run() -> ! {
                 &mut weapon,
                 elapsed_ticks,
             );
+            #[cfg(feature = "monster-code-overlay")]
+            let (missiles, monsters) = monster_code.update_monsters(
+                &world, &mut entities, player.origin(), player.velocity(),
+                player_mins, player_maxs, fire_held, &mut weapon, elapsed_ticks,
+            ).unwrap_or_else(|_| {
+                psx_rt::tty::println("quake-psx: monster code admission failed");
+                psx_rt::halt()
+            });
+            #[cfg(not(feature = "monster-code-overlay"))]
             let monsters = entities.update_monsters(
-                &world,
-                player.origin(),
-                player.velocity(),
-                player_mins,
-                player_maxs,
-                fire_held,
-                &mut weapon,
-                elapsed_ticks,
+                &world, player.origin(), player.velocity(), player_mins,
+                player_maxs, fire_held, &mut weapon, elapsed_ticks,
             );
             // `barrel_explode` for any misc_explobox killed this frame, by
             // any weapon or by another explosion.
@@ -1587,6 +1625,8 @@ fn load_level(
     music: &mut crate::music::Music,
     renderer: &mut crate::renderer::Renderer,
     presentation: &mut LevelPresentation,
+    #[cfg(feature = "monster-code-overlay")]
+    monster_code: &mut crate::monster_code::MonsterCode,
 ) -> Option<crate::player::Player> {
     #[cfg(feature = "hardware-performance")]
     crate::platform::hardware_performance_pause();
@@ -1595,13 +1635,18 @@ fn load_level(
     // the one place the drive changes hands. Even a residency hit reloads the
     // map's sound bank, so the handoff is unconditional.
     music.suspend_for_load();
+    #[cfg(feature = "monster-code-overlay")]
+    monster_code.release(world);
 
     let loaded = if world.is_resident(map) {
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::debug_log("quake-psx: map residency hit");
-        reset_level_state(world, map, entities, audio, presentation)
+        reset_level_state(world, map, entities, audio, presentation,
+            #[cfg(feature = "monster-code-overlay")] monster_code,
+        )
     } else {
         let Some(loading_picture) = world.picture(quake_formats::GraphicsPictureId::Disc) else {
+            music.resume_after_load(psx_rt::interrupts::vblank_count());
             #[cfg(feature = "hardware-performance")]
             crate::platform::hardware_performance_resume();
             return None;
@@ -1614,10 +1659,24 @@ fn load_level(
                 debug_assert_eq!(residency.generation(), world.generation());
                 #[cfg(feature = "emulator-telemetry")]
                 psx_telemetry::emit::debug_log("quake-psx: map residency miss loaded");
-                reset_level_state(world, map, entities, audio, presentation)
+                reset_level_state(world, map, entities, audio, presentation,
+            #[cfg(feature = "monster-code-overlay")] monster_code,
+        )
             },
         )
     };
+
+    #[cfg(feature = "monster-code-overlay")]
+    let loaded = loaded.and_then(|player| {
+        // All world texture and sound transfers have returned synchronously.
+        // Only now may their existing transfer allocation become executable.
+        if monster_code.install(world, crate::monster_code::Image::Monsters).is_err() {
+            monster_code.release(world);
+            None
+        } else {
+            Some(player)
+        }
+    });
 
     if loaded.is_none() {
         if let Some(disc) = world.picture(quake_formats::GraphicsPictureId::Disc) {
@@ -1643,8 +1702,22 @@ fn reset_level_state(
     entities: &mut crate::entity::EntityScene,
     audio: &mut crate::audio::AudioBank,
     presentation: &mut LevelPresentation,
+    #[cfg(feature = "monster-code-overlay")]
+    monster_code: &mut crate::monster_code::MonsterCode,
 ) -> Option<crate::player::Player> {
     let player = crate::player::Player::from_start(world, entities.runes())?;
+    #[cfg(feature = "monster-code-overlay")]
+    {
+        if monster_code.install(world, crate::monster_code::Image::Doors).is_err() {
+            monster_code.release(world);
+            return None;
+        }
+        let loaded = monster_code.load_entities(world, entities);
+        // Door code is no longer executing before map audio borrows the buffer.
+        monster_code.release(world);
+        loaded.ok()?.ok()?;
+    }
+    #[cfg(not(feature = "monster-code-overlay"))]
     entities.load(world).ok()?;
     let camera = player.camera();
     let mut stream_scratch = world.take_stream_scratch();

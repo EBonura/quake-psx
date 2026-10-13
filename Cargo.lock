@@ -149,6 +149,13 @@ name = "psx-render-contract"
 version = "0.1.0"
 
 [[package]]
+name = "psx-residency"
+version = "0.1.0"
+dependencies = [
+ "psx-rt",
+]
+
+[[package]]
 name = "psx-rt"
 version = "0.1.0"
 dependencies = [
@@ -244,6 +251,7 @@ dependencies = [
  "psx-pack",
  "psx-pad",
  "psx-render-contract",
+ "psx-residency",
  "psx-rt",
  "psx-sfx",
  "psx-spu",

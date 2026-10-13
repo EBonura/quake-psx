@@ -814,6 +814,9 @@ impl MonsterRuntime {
         (self.think_ticks as u16).saturating_add(elapsed) >= MONSTER_THINK_TICKS
     }
 
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"),
+        link_section = ".overlay.quake_monsters.text")]
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     pub fn advance_ticks(
         &mut self,
         elapsed_ticks: u16,
@@ -1053,6 +1056,9 @@ impl MonsterRuntime {
         }
     }
 
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"),
+        link_section = ".overlay.quake_monsters.text")]
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     fn think(&mut self, input: MonsterThinkInput) -> MonsterAction {
         let mut action = self.think_frame(input);
         if self.leaping() {
@@ -2068,6 +2074,18 @@ pub fn predicted_target(target: Vec3I32, velocity: Vec3I32) -> Vec3I32 {
         y: target.y.saturating_sub(velocity.y / 5),
         z: target.z.saturating_sub(velocity.z / 5),
     }
+}
+
+/// Same-compilation typed entry. The original state machine and arithmetic
+/// remain in `advance_ticks`; the game binds this call only under an arena lease.
+#[cfg(feature = "monster-code-overlay")]
+#[cfg_attr(target_arch = "mips", link_section = ".overlay.quake_monsters.text")]
+#[inline(never)]
+#[no_mangle]
+pub fn quake_monster_advance(runtime: &mut MonsterRuntime, elapsed: u16, input: MonsterThinkInput)
+    -> Option<MonsterAction>
+{
+    runtime.advance_ticks(elapsed, input)
 }
 
 #[cfg(test)]

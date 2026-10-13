@@ -56,6 +56,16 @@ use crate::asset::{EpisodeMap, ResidentMap};
 use crate::audio::Attenuation;
 use crate::pusher::{push_pass, PushBlocker, Rider};
 
+#[cfg(feature = "monster-code-overlay")]
+use crate::monster_code::quake_monster_call as advance_monster;
+#[cfg(not(feature = "monster-code-overlay"))]
+#[inline]
+fn advance_monster(runtime: &mut MonsterRuntime, elapsed: u16, input: MonsterThinkInput)
+    -> Option<quake_core::monster::MonsterAction>
+{
+    runtime.advance_ticks(elapsed, input)
+}
+
 // Host validation proves the Episode 1 high-water is 373 after every fixed
 // projectile slot is installed. Keep eleven spares without paying for 128
 // unreachable heap objects in the shipping image.
@@ -886,6 +896,12 @@ struct GrenadeProjectile {
 }
 
 impl EntityScene {
+    /// Include dormant bosses and crucified/dead monsters: their later
+    /// activation and animation must retain the same original think code.
+    #[cfg(feature = "monster-code-overlay")]
+    pub(crate) fn needs_monster_code(&self) -> bool {
+        self.entities.iter().any(|entity| entity.monster.is_some())
+    }
     pub fn new() -> Self {
         Self {
             entities: Vec::with_capacity(MAX_RENDER_ENTITIES),
@@ -1241,7 +1257,12 @@ impl EntityScene {
                     return Err(EntityLoadError::TooMany);
                 }
                 let render_index = self.entities.len();
-                let mover = QuakeMover::from_entity(source, model).map_err(|error| {
+                let mover = {
+                    #[cfg(feature = "monster-code-overlay")]
+                    { crate::monster_code::quake_mover_call(source, model) }
+                    #[cfg(not(feature = "monster-code-overlay"))]
+                    { QuakeMover::from_entity(source, model) }
+                }.map_err(|error| {
                     EntityLoadError::BadMover {
                         entity: source_index as u16,
                         error,
@@ -1469,6 +1490,9 @@ impl EntityScene {
             }
         }
         self.drop_spawns_to_floor(map);
+        #[cfg(feature = "monster-code-overlay")]
+        crate::monster_code::quake_door_call(self, map)?;
+        #[cfg(not(feature = "monster-code-overlay"))]
         self.link_doors(map)?;
         self.rocket_render_start =
             self.install_projectile_render_slots(map, ROCKET_MODEL_ID, MAX_ROCKETS)?;
@@ -1615,6 +1639,9 @@ impl EntityScene {
     /// members' closed bounds. It never moves with the doors.
     #[inline(never)]
     #[optimize(size)]
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"),
+        link_section = ".overlay.quake_doors.text")]
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     fn link_doors(&mut self, map: &ResidentMap) -> Result<(), EntityLoadError> {
         self.link_door_chains(map);
         for index in 0..self.movers.len() {
@@ -1772,6 +1799,9 @@ impl EntityScene {
     }
 
     #[optimize(size)]
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"),
+        link_section = ".overlay.quake_doors.text")]
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     fn link_door_chains(&mut self, map: &ResidentMap) {
         let sources = map.entities();
         let door = |scene: &Self, index: usize| -> Option<(u16, [i16; 3], [i16; 3])> {
@@ -4718,7 +4748,7 @@ impl EntityScene {
             // never move, and never attack, so none of the per-frame geometry
             // below applies to them.
             if runtime.crucified() {
-                let action = runtime.advance_ticks(elapsed_ticks, MonsterThinkInput::default());
+                let action = advance_monster(&mut runtime, elapsed_ticks, MonsterThinkInput::default());
                 self.entities[index].monster = Some(runtime);
                 if let Some(action) = action {
                     self.entities[index].frame = action.frame;
@@ -4860,7 +4890,7 @@ impl EntityScene {
                 nightmare: self.nightmare(),
                 self_health: self.entities[index].health,
             };
-            let action = runtime.advance_ticks(elapsed_ticks, input);
+            let action = advance_monster(&mut runtime, elapsed_ticks, input);
             self.entities[index].monster = Some(runtime);
             let Some(action) = action else {
                 index += 1;
@@ -6265,6 +6295,7 @@ impl EntityScene {
     /// ogre grenade and the lava ball also splash whatever takes damage
     /// around them.
     #[inline(never)]
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"), link_section = ".overlay.quake_monsters.text")]
     pub fn update_monster_missiles(
         &mut self,
         map: &ResidentMap,
@@ -9648,4 +9679,12 @@ fn model_clip_radius(header: AliasModelHeader) -> i16 {
     let floor = isqrt_i32(squared);
     let radius = floor.saturating_add(i32::from(floor.saturating_mul(floor) != squared));
     radius.clamp(1, i16::MAX as i32) as i16
+}
+
+#[cfg(feature = "monster-code-overlay")]
+#[cfg_attr(target_arch = "mips", link_section = ".overlay.quake_doors.text")]
+#[inline(never)]
+#[no_mangle]
+pub fn quake_door_link(scene: &mut EntityScene, world: &ResidentMap) -> Result<(), EntityLoadError> {
+    scene.link_doors(world)
 }

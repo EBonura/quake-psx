@@ -181,6 +181,8 @@ pub(crate) struct ResidentLiquidTexture {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MapLoadError {
+    /// Gameplay still owns the existing transfer allocation as executable code.
+    TransferBorrowed,
     Storage(StorageError),
     Format,
     TooLarge,
@@ -321,6 +323,9 @@ impl ResidentMap {
 
     #[optimize(size)]
     fn prepare_load(&mut self, map: EpisodeMap) -> Result<MapLoadPlan, MapLoadError> {
+        if self.stream_scratch.capacity() != STREAM_SCRATCH_BYTES {
+            return Err(MapLoadError::TransferBorrowed);
+        }
         let index = self.index_for(map)?;
         let chunk_len = platform::chunk_size(map.chunk_id()).map_err(MapLoadError::Storage)?;
         if chunk_len != index.file_len() {
@@ -431,6 +436,9 @@ impl ResidentMap {
 
     #[optimize(size)]
     pub fn load_graphics(&mut self) -> Result<(), MapLoadError> {
+        if self.stream_scratch.capacity() != STREAM_SCRATCH_BYTES {
+            return Err(MapLoadError::TransferBorrowed);
+        }
         let file_len = platform::chunk_size(GRAPHICS_CHUNK).map_err(MapLoadError::Storage)?;
         if file_len < (GRAPHICS_CLUT_BYTES + 2 + GRAPHICS_PICTURE_BYTES) as u32 {
             return Err(MapLoadError::Format);

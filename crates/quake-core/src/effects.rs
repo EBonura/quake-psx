@@ -5,6 +5,7 @@
 //! spawning an explosion therefore cannot allocate or perturb simulation.
 
 use quake_formats::{Vec3I16, Vec3I32};
+use crate::traps::TrapRandom;
 
 /// Maximum simultaneous explosion sprites retained by the guest.
 pub const MAX_EXPLOSION_EFFECTS: usize = 4;
@@ -121,6 +122,7 @@ pub struct ImpactParticle {
     age_ticks: u8,
     kind: ParticleKind,
     active: bool,
+    bubble_frame_index: u8,
 }
 
 impl ImpactParticle {
@@ -130,6 +132,7 @@ impl ImpactParticle {
         age_ticks: 0,
         kind: ParticleKind::Blood,
         active: false,
+        bubble_frame_index: 0,
     };
 
     /// The ramp this particle's kind fades along, without alpha blending.
@@ -170,11 +173,7 @@ impl ImpactParticle {
     }
 
     pub const fn bubble_frame(self) -> usize {
-        if self.age_ticks >= self.kind.life_ticks() / 2 {
-            1
-        } else {
-            0
-        }
+        self.bubble_frame_index as usize
     }
 }
 
@@ -195,9 +194,56 @@ const RING: [(i8, i8); 12] = [
     (14, -8),
 ];
 
-/// Lateral offset in whole units of each death bubble, which doubles as its
-/// sideways drift. A fixed fan stands in for `bubble_bob`'s wander.
-const BUBBLE_FAN: [(i8, i8); 5] = [(0, 0), (5, -4), (-4, 5), (4, 4), (-5, -3)];
+const DEATH_BUBBLES: u8 = 20;
+const DEATH_BUBBLE_INTERVAL: u8 = 6; // original nextthink = time + 0.1
+const BUBBLE_THINK_INTERVAL: u8 = 30; // original nextthink = time + 0.5
+const MAX_DEATH_BUBBLES: usize = DEATH_BUBBLES as usize * 2;
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct DeathBubble {
+    origin: [f32; 3],
+    velocity: [f32; 3],
+    until_think: u8,
+    count: u8,
+    active: bool,
+}
+
+impl DeathBubble {
+    const EMPTY: Self = Self {
+        origin: [0.0; 3], velocity: [0.0; 3], until_think: 0,
+        count: 0, active: false,
+    };
+
+    #[inline(never)]
+    #[optimize(size)]
+    fn particle(self) -> ImpactParticle {
+        ImpactParticle {
+            origin: Vec3I32 {
+                x: (self.origin[0] * 4096.0) as i32,
+                y: (self.origin[1] * 4096.0) as i32,
+                z: (self.origin[2] * 4096.0) as i32,
+            },
+            velocity: Vec3I16 { x: 0, y: 0, z: 0 },
+            age_ticks: 0, kind: ParticleKind::Bubble, active: self.active,
+            bubble_frame_index: u8::from(self.count >= 10),
+        }
+    }
+}
+
+/// Original `bubble_bob` arithmetic, retaining float reset thresholds.
+#[inline(never)]
+#[optimize(size)]
+fn bubble_velocity(mut velocity: [f32; 3], random: [f32; 3]) -> [f32; 3] {
+    for axis in 0..2 {
+        velocity[axis] += -10.0 + random[axis] * 20.0;
+        if velocity[axis] > 10.0 { velocity[axis] = 5.0; }
+        if velocity[axis] < -10.0 { velocity[axis] = -5.0; }
+    }
+    velocity[2] = (velocity[2] + 10.0) + random[2] * 10.0;
+    if velocity[2] < 10.0 { velocity[2] = 15.0; }
+    if velocity[2] > 30.0 { velocity[2] = 25.0; }
+    velocity
+}
 
 /// Whole-unit stand-in for `rand()%6-3`, walked by the pool's write cursor so
 /// a trail scatters without a random source.
@@ -213,14 +259,18 @@ fn approx_length(delta: Vec3I32) -> i32 {
     longest + (x + y + z - longest) / 3
 }
 
-/// Reused fixed pool for every deterministic world particle: weapon-hit
-/// blood, projectile trails, explosion bursts and the two splashes. One pool
-/// means one draw loop and one bound on how much a bad frame can cost.
+/// Fixed normal-particle pool plus the complete single-player death-bubble
+/// family. They share the draw loop but retain independent storage/lifetimes.
 pub struct ImpactParticles {
     slots: [ImpactParticle; MAX_IMPACT_PARTICLES],
     next: usize,
     map_token: u32,
     map_known: bool,
+    bubble_remaining: u8,
+    bubble_until_next: u8,
+    bubble_random: TrapRandom,
+    bubbles: [DeathBubble; MAX_DEATH_BUBBLES],
+    next_bubble: usize,
 }
 
 impl ImpactParticles {
@@ -231,6 +281,11 @@ impl ImpactParticles {
             next: 0,
             map_token: 0,
             map_known: false,
+            bubble_remaining: 0,
+            bubble_until_next: 0,
+            bubble_random: TrapRandom::new(0),
+            bubbles: [DeathBubble::EMPTY; MAX_DEATH_BUBBLES],
+            next_bubble: 0,
         }
     }
 
@@ -241,6 +296,11 @@ impl ImpactParticles {
             self.next = 0;
             self.map_token = token;
             self.map_known = true;
+            self.bubble_remaining = 0;
+            self.bubble_until_next = 0;
+            self.bubble_random = TrapRandom::new(token as u16);
+            self.bubbles = [DeathBubble::EMPTY; MAX_DEATH_BUBBLES];
+            self.next_bubble = 0;
         }
     }
 
@@ -345,13 +405,13 @@ impl ImpactParticles {
     /// `PlayerDie` only reaches on the non-gib path, and only when the corpse
     /// is at `waterlevel == 3`. It spawns a bubble spawner that emits twenty
     /// `progs/s_bubble.spr` entities over two seconds, each one bobbing up
-    /// under `bubble_bob` (misc.qc) and popping when it breaks the surface.
+    /// under `bubble_bob` (misc.qc). Splitting checks the parent's waterlevel;
+    /// the child is already created, and counter twenty ends each lifetime.
     ///
-    /// The renderer now draws the original two-frame sprite. Five bounded
-    /// slots are released in one burst rather than twenty over two seconds,
-    /// with a fixed lateral fan standing in for `bubble_bob`'s wander. They do
-    /// not test the water surface or split on contact, but they keep rising for
-    /// two seconds and no longer substitute flat particles for the artwork.
+    /// Births use the owner's current position and water level at each think,
+    /// rather than caching the corpse position or emitting a single burst.
+    /// The original two-frame sprite is retained. The forty possible bubbles
+    /// have their own storage so blood and projectile trails cannot erase them.
     ///
     /// This is also NOT the `air_bubbles` map entity. That one is `remove
     /// (self)` in misc.qc, so the two E1M4 authors are no-ops in the original
@@ -360,41 +420,106 @@ impl ImpactParticles {
     /// Cold and never inlined: it runs once per drowning death.
     #[cold]
     #[inline(never)]
-    pub fn spawn_death_bubbles(&mut self, origin: Vec3I32) {
-        let mut index = 0usize;
-        while index < BUBBLE_FAN.len() {
-            self.push_bubble(origin, index);
-            index += 1;
+    pub fn spawn_death_bubbles(&mut self) {
+        self.bubble_remaining = DEATH_BUBBLES;
+        self.bubble_until_next = DEATH_BUBBLE_INTERVAL;
+    }
+
+    /// Whether the timed spawner or an existing original bubble needs a tick.
+    #[inline(always)]
+    pub fn has_death_bubble_work(&self) -> bool {
+        self.bubble_remaining != 0 || self.bubbles.iter().any(|bubble| bubble.active)
+    }
+
+    /// Advance the spawner only on gameplay ticks. Original progs checks the
+    /// owner at its 0.1-second deadline, not on every intervening render.
+    #[inline(never)]
+    #[optimize(size)]
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"), link_section = ".overlay.quake_monsters.text")]
+    pub fn tick_death_bubbles<F>(&mut self, mut ticks: u16, owner: Vec3I32, water_level: u8, mut submerged: F)
+    where F: FnMut(Vec3I32) -> bool {
+        while ticks != 0 {
+            if !self.has_death_bubble_work() {
+                return;
+            }
+            // Advance the fixed simulation clock in order, including births
+            // inside a multi-tick frame. Float integration stays identical
+            // when the renderer groups the same ticks into different frames.
+            let seconds = 1.0 / 60.0;
+            for bubble in &mut self.bubbles {
+                if !bubble.active { continue; }
+                for axis in 0..3 { bubble.origin[axis] += bubble.velocity[axis] * seconds; }
+                bubble.until_think -= 1;
+            }
+            if self.bubble_remaining != 0 { self.bubble_until_next -= 1; }
+            ticks -= 1;
+            for index in 0..self.bubbles.len() {
+                if !self.bubbles[index].active || self.bubbles[index].until_think != 0 { continue; }
+                self.bubbles[index].count += 1;
+                if self.bubbles[index].count == 4 {
+                    self.bubbles[index].count = 10;
+                    let mut child = self.bubbles[index];
+                    child.until_think = BUBBLE_THINK_INTERVAL;
+                    self.insert_bubble(child);
+                    // `bubble_split` creates the child before checking the
+                    // parent's waterlevel, and copies velocity before bobbing.
+                    if !submerged(self.bubbles[index].particle().origin) {
+                        self.bubbles[index].active = false;
+                    }
+                }
+                if self.bubbles[index].count == 20 {
+                    self.bubbles[index].active = false;
+                    continue;
+                }
+                let random = [
+                    self.bubble_random.next() as f32 / 65536.0,
+                    self.bubble_random.next() as f32 / 65536.0,
+                    self.bubble_random.next() as f32 / 65536.0,
+                ];
+                self.bubbles[index].velocity = bubble_velocity(self.bubbles[index].velocity, random);
+                self.bubbles[index].until_think = BUBBLE_THINK_INTERVAL;
+            }
+            if self.bubble_remaining != 0 && self.bubble_until_next == 0 {
+                if water_level != 3 {
+                    self.bubble_remaining = 0;
+                } else {
+                    self.push_bubble(owner);
+                    self.bubble_remaining -= 1;
+                    self.bubble_until_next = DEATH_BUBBLE_INTERVAL;
+                }
+            }
         }
     }
 
-    /// One bubble of the burst above, out of line on purpose: `push` writes a
-    /// twenty-four byte slot and wraps the cursor, so five inlined copies of
-    /// it cost about four hundred bytes of image that a build with under two
-    /// kilobytes of heap to spare cannot pay for. One call each instead.
+    /// Each new bubble begins at owner.origin + '0 0 24', with the original
+    /// '0 0 15' initial velocity, retained as original float world units/second.
     #[cold]
     #[inline(never)]
-    fn push_bubble(&mut self, origin: Vec3I32, index: usize) {
+    #[optimize(size)]
+    fn push_bubble(&mut self, origin: Vec3I32) {
         /// `bubble_spawner.origin_z = origin_z + 24`, the one number this
         /// keeps from the original.
         const SPAWN_HEIGHT_UNITS: i32 = 24;
-        /// Base rise in the pool's Q8 units per tick, about twenty-two units
-        /// a second, which is the band `bubble_bob` randomises inside.
-        const RISE: i16 = 96;
-        let (x, y) = BUBBLE_FAN[index];
-        self.push(
-            Vec3I32 {
-                x: origin.x + ((x as i32) << 12),
-                y: origin.y + ((y as i32) << 12),
-                z: origin.z + (SPAWN_HEIGHT_UNITS << 12),
-            },
-            Vec3I16 {
-                x: (x as i16) << 2,
-                y: (y as i16) << 2,
-                z: RISE + ((index as i16) << 3),
-            },
-            ParticleKind::Bubble,
-        );
+        self.insert_bubble(DeathBubble {
+            origin: [origin.x as f32 / 4096.0, origin.y as f32 / 4096.0,
+                origin.z as f32 / 4096.0 + SPAWN_HEIGHT_UNITS as f32],
+            velocity: [0.0, 0.0, 15.0], until_think: BUBBLE_THINK_INTERVAL,
+            count: 0, active: true,
+        });
+    }
+
+    #[inline(never)]
+    #[optimize(size)]
+    fn insert_bubble(&mut self, bubble: DeathBubble) {
+        for distance in 0..self.bubbles.len() {
+            let index = (self.next_bubble + distance) % self.bubbles.len();
+            if !self.bubbles[index].active {
+                self.bubbles[index] = bubble;
+                self.next_bubble = (index + 1) % self.bubbles.len();
+                return;
+            }
+        }
+        debug_assert!(false, "one player death exceeds its original bubble bound");
     }
 
     /// Claim the next slot, replacing the oldest particle once full.
@@ -409,6 +534,7 @@ impl ImpactParticles {
             age_ticks: 0,
             kind,
             active: true,
+            bubble_frame_index: 0,
         };
         self.next = (self.next + 1) % self.slots.len();
     }
@@ -443,8 +569,14 @@ impl ImpactParticles {
     /// Active particles in stable slot order, without allocating.
     pub fn active(&self) -> impl Iterator<Item = ImpactParticle> + '_ {
         self.slots.iter().copied().filter(|slot| slot.active)
+            .chain(self.bubbles.iter().copied().filter(|bubble| bubble.active).map(DeathBubble::particle))
     }
 }
+
+const _: () = assert!(core::mem::size_of::<ImpactParticle>() == 24);
+const _: () = assert!(core::mem::size_of::<DeathBubble>() == 28);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<ImpactParticles>() == 2100);
 
 impl Default for ImpactParticles {
     fn default() -> Self {
@@ -710,37 +842,75 @@ mod tests {
         Vec3I32 { x, y: 0, z: 0 }
     }
 
-    /// The bounded `DeathBubbles`: every sprite starts above the corpse, they
-    /// all climb rather than falling like blood, and they spread as they go so
-    /// the burst does not read as one image.
     #[test]
-    fn death_bubbles_start_above_the_corpse_and_rise() {
+    fn death_bubbles_birth_split_and_expiry_follow_original_deadlines() {
         let mut particles = ImpactParticles::new();
         particles.enter_map(1);
-        particles.spawn_death_bubbles(Vec3I32 { x: 0, y: 0, z: 0 });
-        let born: Vec<ImpactParticle> = particles.active().collect();
-        assert_eq!(born.len(), 5);
-        assert!(born.iter().all(|slot| slot.origin.z >= 24 << 12));
-
-        particles.tick(6);
-        let risen: Vec<ImpactParticle> = particles.active().collect();
-        assert_eq!(risen.len(), 5);
-        for (before, after) in born.iter().zip(risen.iter()) {
-            assert!(
-                after.origin.z > before.origin.z,
-                "a bubble sank: {} then {}",
-                before.origin.z,
-                after.origin.z
-            );
-        }
-        // Four of the five carry lateral drift, so the column widens.
-        assert!(risen.iter().any(|slot| slot.origin.x != 0));
-        assert!(risen.iter().any(|slot| slot.origin.y != 0));
-
-        // They age out of the shared pool like every other particle; nothing
-        // here pops them at a water surface, because nothing tracks one.
-        particles.tick(u16::from(ParticleKind::Bubble.life_ticks()));
+        particles.spawn_death_bubbles();
+        particles.tick_death_bubbles(5, point(0), 3, |_| true);
         assert_eq!(particles.active().count(), 0);
+        particles.tick_death_bubbles(1, point(0), 3, |_| true);
+        let born: Vec<ImpactParticle> = particles.active().collect();
+        assert_eq!(born.len(), 1);
+        assert_eq!(born[0].origin.z, 24 << 12);
+        assert_eq!(born[0].bubble_frame(), 0);
+        particles.tick_death_bubbles(114, point(0), 3, |_| true);
+        assert_eq!(particles.active().count(), 20);
+        assert!(particles.active().all(|b| b.bubble_frame() == 0));
+        particles.tick_death_bubbles(6, point(0), 3, |_| true);
+        assert_eq!(particles.active().count(), 21);
+        assert_eq!(particles.active().filter(|b| b.bubble_frame() == 1).count(), 2);
+        particles.tick_death_bubbles(114, point(0), 3, |_| true);
+        assert_eq!(particles.active().count(), 40);
+        assert!(particles.active().all(|b| b.bubble_frame() == 1));
+        particles.tick_death_bubbles(299, point(0), 3, |_| true);
+        assert_eq!(particles.active().count(), 2);
+        particles.tick_death_bubbles(1, point(0), 3, |_| true);
+        assert_eq!(particles.active().count(), 0);
+    }
+
+    #[test]
+    fn bubble_clock_is_batch_independent_and_does_not_consume_normal_fx() {
+        let mut batched = ImpactParticles::new();
+        batched.enter_map(2);
+        for _ in 0..5 { batched.spawn_blood(point(100)); }
+        batched.spawn_death_bubbles();
+        batched.tick_death_bubbles(240, point(0), 3, |_| true);
+        assert_eq!(batched.active().filter(|p| !p.is_bubble()).count(), MAX_IMPACT_PARTICLES);
+        assert_eq!(batched.active().filter(|p| p.is_bubble()).count(), 40);
+        let mut stepped = ImpactParticles::new();
+        stepped.enter_map(2);
+        stepped.spawn_death_bubbles();
+        for _ in 0..240 { stepped.tick_death_bubbles(1, point(0), 3, |_| true); }
+        assert_eq!(batched.bubbles, stepped.bubbles);
+    }
+
+    #[test]
+    fn original_bob_resets_preserve_strict_float_thresholds() {
+        assert_eq!(bubble_velocity([10.0,-10.0,20.0], [0.5,0.5,0.0]), [10.0,-10.0,30.0]);
+        assert_eq!(bubble_velocity([11.0,-11.0,21.0], [0.5,0.5,0.0]), [5.0,-5.0,25.0]);
+        assert_eq!(bubble_velocity([0.0,0.0,-1.0], [0.5,0.5,0.0]), [0.0,0.0,15.0]);
+        assert_eq!(bubble_velocity([f32::from_bits(10.0f32.to_bits()+1),0.0,20.0], [0.5,0.5,0.0])[0],5.0);
+    }
+
+    #[test]
+    fn water_checks_happen_at_birth_and_split_and_new_map_clears_state() {
+        let mut particles = ImpactParticles::new();
+        particles.enter_map(3);
+        particles.spawn_death_bubbles();
+        particles.tick_death_bubbles(5, point(0), 0, |_| false);
+        assert_eq!(particles.bubble_remaining,20);
+        particles.tick_death_bubbles(1, point(0), 0, |_| false);
+        assert_eq!(particles.bubble_remaining,0);
+        particles.push_bubble(point(0));
+        particles.tick_death_bubbles(119, point(0), 0, |_| false);
+        assert_eq!(particles.active().count(),1);
+        particles.tick_death_bubbles(1, point(0), 0, |_| false);
+        // The original child is created before its parent fails waterlevel.
+        assert_eq!(particles.active().count(),1);
+        assert_eq!(particles.active().next().unwrap().bubble_frame(),1);
+        particles.enter_map(4);
+        assert_eq!(particles.active().count(),0);
     }
 
     #[test]

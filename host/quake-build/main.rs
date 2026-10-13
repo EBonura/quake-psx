@@ -30,7 +30,7 @@ const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402d
 // Editor revision required by the shipping provenance and remote-main guard.
 const PSOXIDE_REV: &str = "fb2a9ab476d19faa0ccfc84b767fbead9a370bb5";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "36ead4b0c71e0b9a3311e86faf77966f1ef44fdc";
+const PSOXIDE_SDK_REV: &str = "5e112a7876d2ca3950ee0365937d5b2cc07f8b21";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -39,6 +39,8 @@ const SHIPPING_GUEST_PROFILE: &str = "release";
 const SHIPPING_CARGO_HOME: &str = "/tmp/quake-psx-cargo-home-v1";
 const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
 const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
+mod monster_code;
+
 const GUEST_RECIPE_PATHS: &[&str] = &[
     // The guest's workspace root: its manifest carries the release profile
     // and its lockfile is the guest's.
@@ -58,6 +60,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     ".psoxide/engine/crates/psx-engine",
     ".psoxide/engine/crates/psx-level",
     ".psoxide/engine/crates/psx-render-contract",
+    ".psoxide/sdk/crates/psx-residency",
     ".psoxide/sdk/crates/psx-asset",
     ".psoxide/sdk/crates/psx-cdstream",
     ".psoxide/sdk/crates/psx-display",
@@ -119,6 +122,7 @@ members = [
     "crates/psx-spu",
     "crates/psx-sfx",
     "crates/psx-telemetry",
+    "crates/psx-residency",
     "crates/psx-asset",
     "crates/psx-pack",
     "crates/psx-tick",
@@ -4505,6 +4509,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     // rustflags outright, so everything the build needs travels together
     // here.
     command.env("RUSTFLAGS", rustflags.join(" "));
+    command.env("CARGO_TARGET_DIR", game.join("target"));
     // The map is only rewritten by a link, and cargo re-uplifts an earlier
     // feature set's executable without linking, which would leave another
     // build's map beside it. Remove the linked outputs so this build links.
@@ -4512,6 +4517,9 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     run(&mut command)?;
     verify_guest_stage(&stage.path, &recipe)?;
     let staged_exe = game_exe(&stage.path);
+    if fs::read(&staged_exe)?.starts_with(b"\x7fELF") {
+        monster_code::compose(root, &staged_exe, &map)?;
+    } else {
     if !delay_slot_nops {
         // Reroute every branch whose delay-slot load the branch target (or
         // fall-through, or jump-table target) consumes one instruction too
@@ -4533,6 +4541,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         "stack-guard",
         &[staged_exe.as_os_str(), map.as_os_str()],
     )?;
+    }
     if let Some(requested) = GUEST_LINK_MAP.get() {
         fs::copy(&map, requested)?;
     }
@@ -4560,6 +4569,11 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
     }
     fs::create_dir_all(&stage)?;
     fs::copy(root.join("id1psx/gfx.dat"), stage.join("chunk_1.dat"))?;
+    for (name, id) in [("monsters", 4), ("doors", 5)] {
+        fs::copy(root.join(format!("game/target/overlay-{name}.pak")),
+            stage.join(format!("chunk_{id}.dat")))?;
+    }
+
     fs::copy(
         root.join("id1psx/maps/episode.qidx"),
         stage.join("chunk_2.qidx"),
@@ -4819,8 +4833,8 @@ fn shipping_environment_conflicts(
     let mut conflicts = variables
         .into_iter()
         .filter_map(|(name, value)| {
-            // The configured cache forwards the recorded compiler command.
-            // Other wrappers can change the shipping artifact.
+            // The shared compiler cache forwards the recorded compiler command
+            // unchanged. Other wrappers can alter the shipping artifact.
             if name == "RUSTC_WRAPPER" && value == "/opt/homebrew/bin/sccache" {
                 return None;
             }

@@ -250,6 +250,8 @@ impl QuakeMover {
     /// PSoXide driver. Unsupported entity classes remain ordinary brush
     /// models and return `Ok(None)`.
     #[optimize(size)]
+    #[inline(never)]
+    #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"), link_section = ".overlay.quake_doors.text")]
     pub fn from_entity(
         source: MapEntity,
         model: BrushModel,
@@ -2123,4 +2125,14 @@ mod button_tests {
         assert!(button.take_damage(1));
         assert_eq!(button.health(), 40);
     }
+}
+
+/// Same-compilation typed entry for the map-load-only mover constructor.
+#[cfg(feature = "monster-code-overlay")]
+#[inline(never)]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".overlay.quake_doors.text")]
+pub fn quake_mover_from_entity(source: MapEntity, model: BrushModel)
+    -> Result<Option<QuakeMover>, QuakeMoverError> {
+    QuakeMover::from_entity(source, model)
 }

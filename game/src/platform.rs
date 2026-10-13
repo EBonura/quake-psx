@@ -902,14 +902,22 @@ fn cache_index(chunk_id: u32) -> Option<usize> {
 }
 
 unsafe fn entry_for(chunk_id: u32) -> Option<PackEntry> {
-    let index = cache_index(chunk_id)?;
-    if let Some(entry) = unsafe { ASSET_CACHE[index] } {
-        return Some(entry);
+    let index = cache_index(chunk_id);
+    if let Some(index) = index {
+        if let Some(entry) = unsafe { ASSET_CACHE[index] } {
+            return Some(entry);
+        }
+    } else if !matches!(chunk_id, 4 | 5) || unsafe { STORAGE_STREAM_ACTIVE } {
+        return None;
     }
+    // Cold code uses the existing reader without reserving additional cache
+    // slots. Installation reads each package only at a quiescent map boundary.
     let reader = unsafe { &mut *addr_of_mut!(READER) };
     let sector = unsafe { &mut *addr_of_mut!(SECTOR) };
     let entry = find_entry(reader, WORLD_PACK_DEFAULT_LBA, chunk_id, sector)?;
-    unsafe { ASSET_CACHE[index] = Some(entry) };
+    if let Some(index) = index {
+        unsafe { ASSET_CACHE[index] = Some(entry) };
+    }
     Some(entry)
 }
 

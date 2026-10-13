@@ -172,8 +172,17 @@ fn main() {
     .unwrap_or_else(|error| panic!("write {}: {error}", quake_linker.display()));
 
     // The shipping executable and repository implementation are Rust-only.
+    let monster_overlay = env::var_os("CARGO_FEATURE_MONSTER_CODE_OVERLAY").is_some();
+    if monster_overlay {
+        let overlay_linker = manifest.join("monster-overlay.ld");
+        println!("cargo:rerun-if-changed={}", overlay_linker.display());
+        // Select compiler-owned cold jump tables before the resident wildcard,
+        // then preserve same-link relocation ownership for the shared packer.
+        println!("cargo:rustc-link-arg=-T{}", overlay_linker.display());
+        println!("cargo:rustc-link-arg=--emit-relocs");
+    }
     println!("cargo:rustc-link-arg=-T{}", quake_linker.display());
-    if env::var_os("QUAKE_PSX_RUST_DEBUG").is_none() {
+    if !monster_overlay && env::var_os("QUAKE_PSX_RUST_DEBUG").is_none() {
         println!("cargo:rustc-link-arg=--oformat=binary");
     }
     println!("cargo:rerun-if-env-changed=QUAKE_PSX_RUST_DEBUG");
