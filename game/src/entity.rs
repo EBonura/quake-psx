@@ -4858,7 +4858,7 @@ impl EntityScene {
                 goal: patrol.map(|corner| corner.origin),
                 pack_alert,
                 nightmare: self.nightmare(),
-                self_health: snapshot.health,
+                self_health: self.entities[index].health,
             };
             let action = runtime.advance_ticks(elapsed_ticks, input);
             self.entities[index].monster = Some(runtime);
