@@ -252,20 +252,12 @@ pub fn prepare(
         files.push(path);
     }
 
-    let names = LOOPS
-        .iter()
-        .map(|(name, _)| format!("\"{}\"", name.to_ascii_uppercase()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let generated = format!(
-        "{}pub const XA_SONG_NAMES: [&str; {}] = [{names}];\n",
-        fs::read_to_string(&map)?,
-        LOOPS.len()
-    ) + &format!(
-        "/// Copies of each loop laid end to end in its XA channel: XA_SONGS holds the\n\
+    let generated = fs::read_to_string(&map)?
+        + &format!(
+            "/// Copies of each loop laid end to end in its XA channel: XA_SONGS holds the\n\
          /// milliseconds of all of them, so one pass is that divided by this.\n\
          pub const XA_REPEATS: u32 = {REPEATS};\n"
-    );
+        );
     let guest_map = root.join("game/src/music_map.rs");
     if fs::read_to_string(&guest_map).ok().as_deref() != Some(generated.as_str()) {
         fs::write(&guest_map, generated)?;

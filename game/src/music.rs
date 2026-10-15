@@ -30,20 +30,11 @@ use quake_core::menu::{DEFAULT_MUSIC_VOLUME, VOLUME_STEPS};
 
 include!("music_map.rs");
 
-/// How long the now-playing banner stays up once a loop starts. Four seconds:
-/// long enough to read twice, gone before it reads as HUD. Public so the
-/// renderer can time its slide against the same clock.
-pub const BANNER_TICKS: u32 = 240;
-
 /// The drive's own mixer level (`0x80` is unity). The SPU's CD volume carries
 /// the fades and the Options slider.
 const DRIVE_VOLUME: u8 = 0x80;
 
 const SONG_COUNT: usize = XA_SONGS.len();
-
-/// Loop names, in the order the builder gave them to `xa-pack`.
-/// Shown in the banner.
-pub const SONG_NAMES: [&str; SONG_COUNT] = XA_SONG_NAMES;
 
 /// Length of each loop in ticks, from the encoder's song table, so the
 /// schedule times a loop by the audio it actually carries.
@@ -86,8 +77,6 @@ pub struct Music {
     files: [(u32, u32); XA_FILE_COUNT],
     /// The SDK's XA player; it owns the CD token once the files are found.
     player: Option<Player>,
-    /// Tick the current loop was started on, for the now-playing banner.
-    announced_at: Option<u32>,
     schedule: Schedule,
 }
 
@@ -103,7 +92,6 @@ impl Music {
             seeded: false,
             files: [(0, 0); XA_FILE_COUNT],
             player: None,
-            announced_at: None,
             schedule: schedule(),
         }
     }
@@ -118,24 +106,6 @@ impl Music {
     #[optimize(size)]
     pub const fn enabled(&self) -> bool {
         self.enabled
-    }
-
-    /// The loop to announce and how long it has been up, while it is recent
-    /// enough to announce. The popup follows the schedule rather than the
-    /// menu: switched off, there is nothing playing to name.
-    #[optimize(size)]
-    #[inline(never)]
-    pub fn now_playing(&self, tick: u32) -> Option<(&'static str, u32)> {
-        let at = self.announced_at?;
-        let song = self.schedule.playing()?;
-        if !self.available || !self.enabled {
-            return None;
-        }
-        let elapsed = tick.wrapping_sub(at);
-        if elapsed > BANNER_TICKS {
-            return None;
-        }
-        Some((SONG_NAMES[song as usize], elapsed))
     }
 
     /// Adopt the Options page's music rows. The menu is refreshed from this
@@ -199,7 +169,6 @@ impl Music {
     fn silence(&mut self) {
         self.stop_drive();
         self.schedule.halt();
-        self.announced_at = None;
         self.set_fade(0);
     }
 
@@ -251,8 +220,7 @@ impl Music {
         trace("restart", tick, u32::MAX, 0);
     }
 
-    /// One tick: run the schedule, and while a loop is up, watch for the end
-    /// of a pass.
+    /// One tick: run the schedule.
     #[optimize(size)]
     #[inline(never)]
     pub fn update(&mut self, tick: u32) {
@@ -269,7 +237,6 @@ impl Music {
             }
             Step::Stop => {
                 self.stop_drive();
-                self.announced_at = None;
                 self.set_fade(0);
                 #[cfg(feature = "music-trace")]
                 trace("stop", tick, u32::MAX, 0);
@@ -311,7 +278,6 @@ impl Music {
             0,
         );
         if started {
-            self.announced_at = Some(tick);
         } else {
             // The drive refused a command. Give the loop up and try again
             // after the next silence rather than hammering a busy drive.

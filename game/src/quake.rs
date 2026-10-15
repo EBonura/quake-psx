@@ -351,7 +351,6 @@ pub fn run() -> ! {
                 None,
                 None,
                 Some(view),
-                music.now_playing(audio_tick),
                 presentation.screen_blend(),
             );
             continue;
@@ -476,7 +475,6 @@ pub fn run() -> ! {
                 None,
                 Some(view),
                 None,
-                music.now_playing(audio_tick),
                 presentation.screen_blend(),
             );
             continue;
@@ -1283,7 +1281,6 @@ pub fn run() -> ! {
             centerprint_text,
             None,
             None,
-            music.now_playing(audio_tick),
             presentation.screen_blend(),
         );
         #[cfg(feature = "combat-regression")]
