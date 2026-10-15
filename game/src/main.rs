@@ -33,6 +33,8 @@ mod input_policy;
 mod intro;
 #[cfg(feature = "monster-regression")]
 mod monster_regression;
+#[cfg(feature = "spawn-probe")]
+mod spawn_probe;
 #[cfg(feature = "monsterjump-regression")]
 mod monsterjump_regression;
 mod music;

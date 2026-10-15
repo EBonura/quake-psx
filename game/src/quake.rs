@@ -190,6 +190,7 @@ pub fn run() -> ! {
         feature = "bestiary-regression",
         feature = "start-route-regression",
         feature = "e1m1-chain-regression",
+        feature = "e1m1-spawn-regression",
         feature = "e1m2-e1m3-route-regression",
         feature = "survival-regression",
         feature = "episode1-route-regression",
@@ -494,7 +495,8 @@ pub fn run() -> ! {
             feature = "combat-regression",
             feature = "arsenal-regression",
             feature = "monster-regression",
-            feature = "monsterjump-regression"
+            feature = "monsterjump-regression",
+            feature = "e1m1-spawn-regression"
         )))]
         let player_frame = if weapon.inventory().health() > 0 {
             if menu.view().noclip {
@@ -514,13 +516,16 @@ pub fn run() -> ! {
             feature = "combat-regression",
             feature = "arsenal-regression",
             feature = "monster-regression",
-            feature = "monsterjump-regression"
+            feature = "monsterjump-regression",
+            feature = "e1m1-spawn-regression"
         ))]
         let player_frame = crate::player::PlayerFrame::default();
         #[cfg(feature = "arsenal-regression")]
         crate::arsenal_regression::prepare(&world, &mut entities, &mut player, &mut weapon);
         #[cfg(feature = "monster-regression")]
         crate::monster_regression::prepare(&world, &mut entities, &mut player, &mut weapon);
+        #[cfg(feature = "e1m1-spawn-regression")]
+        crate::spawn_probe::prepare(&mut player);
         player.set_dead(weapon.inventory().health() <= 0);
         // `V_ParseDamage` runs off the damage message the server sends. This
         // port has no message layer, so the same signal is taken from the
@@ -1166,6 +1171,8 @@ pub fn run() -> ! {
             damage_impulse = add_vec(damage_impulse, knockback);
             #[cfg(feature = "monster-regression")]
             crate::monster_regression::observe(&entities, &weapon, monsters.unwrap_or_default());
+            #[cfg(feature = "spawn-probe")]
+            crate::spawn_probe::observe(&entities, &world, player.origin(), elapsed_ticks);
             #[cfg(feature = "bestiary-regression")]
             crate::bestiary_regression::observe(&entities, &weapon);
             #[cfg(feature = "monsterjump-regression")]
@@ -1402,6 +1409,10 @@ fn initial_map() -> crate::asset::EpisodeMap {
     {
         return crate::asset::EpisodeMap::E1M1;
     }
+    #[cfg(feature = "e1m1-spawn-regression")]
+    {
+        return crate::asset::EpisodeMap::E1M1;
+    }
     #[cfg(feature = "monsterjump-regression")]
     {
         return crate::monsterjump_regression::initial_map();
@@ -1441,6 +1452,7 @@ fn initial_map() -> crate::asset::EpisodeMap {
         feature = "monsterjump-regression",
         feature = "bestiary-regression",
         feature = "e1m1-chain-regression",
+        feature = "e1m1-spawn-regression",
         feature = "e1m2-e1m3-route-regression",
         feature = "survival-regression",
         feature = "episode1-route-regression",

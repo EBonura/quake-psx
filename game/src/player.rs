@@ -241,7 +241,8 @@ impl Player {
         feature = "combat-regression",
         feature = "arsenal-regression",
         feature = "monster-regression",
-        feature = "monsterjump-regression"
+        feature = "monsterjump-regression",
+        feature = "e1m1-spawn-regression"
     ))]
     pub fn place_camera(&mut self, eye: Vec3I32, angles: [i16; 3]) {
         self.movement.teleport(Vec3I32 {

@@ -483,9 +483,15 @@ pub struct MonsterAction {
     /// Units to move along the facing yaw this think. Negative values move
     /// backwards, which is how Quake's `ai_pain` recoil is expressed.
     pub move_units: i16,
+    /// `ai_face`: turn the heading toward the enemy. In an attack state with a
+    /// move distance this is `ai_charge`, which also walks toward the enemy.
     pub face_target: bool,
     /// Turn toward [`MonsterThinkInput::goal`] instead of the enemy.
     pub face_goal: bool,
+    /// `ai_run`: walk toward the enemy with `movetogoal`. The heading is not
+    /// aimed here; `SV_StepDirection` and `SV_NewChaseDir` pick it, so the
+    /// host owns the turn and the step together.
+    pub chase: bool,
     pub attack: Option<MonsterAttack>,
     pub sound_id: Option<i16>,
     /// The voice is `ATTN_IDLE` rather than `ATTN_NORM`. Quake clips an idle
@@ -1068,6 +1074,7 @@ impl MonsterRuntime {
             action.move_units = 0;
             action.face_target = false;
             action.face_goal = false;
+            action.chase = false;
         }
         action
     }
@@ -1199,7 +1206,7 @@ impl MonsterRuntime {
                 action.frame = self.frame;
             }
             MonsterState::Run => {
-                action.face_target = true;
+                action.chase = true;
                 if input.visible && self.try_begin_attack(input) {
                     action.frame = self.frame;
                     if let Some(sound) = self.enter_attack_sound() {
@@ -2394,7 +2401,7 @@ mod tests {
                 action.move_units != 0
             });
             assert!(moved.move_units > 0, "{kind:?} run cadence is zero");
-            assert!(moved.face_target, "{kind:?} does not track the player");
+            assert!(moved.chase, "{kind:?} does not chase the player");
         }
     }
 
@@ -3089,7 +3096,7 @@ mod tests {
         assert!(!ogre.set_enemy(MonsterEnemy::Player));
         assert_eq!(ogre.enemy(), MonsterEnemy::Player);
         let action = next_think(&mut ogre, visible(300));
-        assert!(action.face_target && !action.activated);
+        assert!(action.chase && !action.activated);
 
         let hidden = MonsterThinkInput {
             distance: 900,

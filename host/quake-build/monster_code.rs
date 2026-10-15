@@ -150,6 +150,13 @@ pub(super) fn compose(root: &Path, elf: &Path, map: &Path) -> Result<()> {
     let parent = elf.parent().ok_or("ELF has no parent")?;
     let raw = parent.join(format!("overlay-raw-{}", std::process::id()));
     let final_dir = parent.join(format!("overlay-final-{}", std::process::id()));
+    // The generation names carry the process id, so a second build in one
+    // process (an action that builds two images) finds its own earlier output.
+    for stale in [&raw, &final_dir] {
+        if stale.exists() {
+            fs::remove_dir_all(stale)?;
+        }
+    }
     let map_text = fs::read_to_string(map)?;
     tool(root, "overlay-compose", &recipe(elf, &raw, &map_text))?;
     guards(root, &raw, map, true)?;

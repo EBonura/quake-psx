@@ -243,6 +243,7 @@ enum Action {
     StartRouteRegress,
     E1m1ChainRegress,
     E1m1ChainBench,
+    E1m1SpawnRegress,
     E1m1MonsterRouteBench,
     E1m1SelectionCacheBench,
 
@@ -1099,6 +1100,30 @@ fn real_main() -> Result<()> {
             build_disc(&root, &build, Some("episode1-route-regression"), false)?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_episode1_regression(&root, &frontend, &build)?;
+        }
+        Action::E1m1SpawnRegress => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            // Two scenes, two images. QUAKE_PSX_SPAWN_FEATURES swaps the
+            // probe host for a one-off investigation (for example the played
+            // route with live monsters: `e1m1-chain-regression,route-monsters,
+            // spawn-probe,perf-fixed-ticks-30hz`); the scene name then only
+            // picks which checks run.
+            let scenes: [(&str, &str); 2] = [
+                ("idle", "e1m1-spawn-regression,perf-fixed-ticks-30hz"),
+                (
+                    "bridge",
+                    "e1m1-spawn-regression,spawn-script-bridge,spawn-skill-1,perf-fixed-ticks-30hz",
+                ),
+            ];
+            for (scene, features) in scenes {
+                let features =
+                    env::var("QUAKE_PSX_SPAWN_FEATURES").unwrap_or_else(|_| features.to_string());
+                let build = root.join(format!("build-psoxide-e1m1-spawn-{scene}"));
+                build_disc(&root, &build, Some(features.as_str()), false)?;
+                run_e1m1_spawn_regression(&root, &frontend, &build, scene)?;
+            }
         }
         Action::MonsterRegress => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2713,6 +2738,7 @@ fn parse_cli() -> Result<Cli> {
             | "visual-parity-regress"
             | "e1m1-chain-regress"
             | "e1m1-chain-bench"
+            | "e1m1-spawn-regress"
             | "e1m1-monster-route-bench"
             | "e1m1-selection-cache-bench"
             | "e1m1-gpu-lattice-clip-bench"
@@ -2770,6 +2796,7 @@ fn parse_cli() -> Result<Cli> {
                     "visual-parity-regress" => Action::VisualParityRegress,
                     "e1m1-chain-regress" => Action::E1m1ChainRegress,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
+                    "e1m1-spawn-regress" => Action::E1m1SpawnRegress,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
                     "e1m1-selection-cache-bench" => Action::E1m1SelectionCacheBench,
 
@@ -2868,6 +2895,7 @@ fn print_help() {
            visual-parity-regress  Capture the pinned E1M1 owner camera and audit GP0(E2) scope\n  \
            e1m1-chain-regress  Walk E1M1's authored three-button door chain headlessly\n  \
            e1m1-chain-bench  The same route at a fixed sim step, for ranking performance work\n  \
+           e1m1-spawn-regress  Pin E1M1 monster spawn positions and keep walkers off ledge edges\n  \
            e1m1-selection-cache-bench  A/B exact-key selected-face reuse\n  \
            e1m1-gpu-lattice-clip-bench  A/B PS1 draw-area clipping versus per-packet CPU rejects\n  \
            e1m1-gpu-polygon-clip-bench  A/B draw-area clipping for every admitted world GT3/GT4\n  \
@@ -6467,6 +6495,248 @@ fn run_combat_regression(root: &Path, frontend: &Path, regression: &Path) -> Res
         first.display_height,
         first.vram_hash,
         first.display_hash,
+    );
+    fs::write(capture.join("summary.txt"), &summary)?;
+    print!("{summary}");
+    Ok(())
+}
+
+/// Every walking E1M1 monster the loader drops: `(cooked source index, x, y,
+/// resting z)` in whole units. Matches `crates/quake-core/tests/
+/// e1m1_monster_spawn.rs`, which derives the same drop from the cooked hull;
+/// monster 80 rests on the closed `t1` lift door, so its resting z is the
+/// door top (the authored z) instead of the pit floor under it.
+const E1M1_SPAWN_TABLE: &[(u16, i32, i32, i32)] = &[
+    (5, 616, 72, 40),
+    (21, 248, 2392, 40),
+    (80, 0, 576, 24),
+    (81, 8, 1520, -200),
+    (82, 88, 1520, -200),
+    (83, 224, 1552, -200),
+    (84, -8, 936, -200),
+    (85, 648, 736, 104),
+    (89, 1312, 936, -256),
+    (90, 1336, 1784, -408),
+    (91, 1392, 928, -256),
+    (92, 1384, 1008, -256),
+    (93, 1240, 1008, -256),
+    (94, 1256, 1760, -408),
+    (95, 824, 1784, -408),
+    (96, 1128, 1760, -408),
+    (99, 1232, 2088, -216),
+    (100, 1232, 2448, -280),
+    (101, 832, 2464, -344),
+    (102, 832, 2072, -408),
+    (103, 840, 1960, -408),
+    (109, 416, 1912, -168),
+    (110, 432, 2120, -168),
+    (115, 80, 2024, -184),
+    (116, -16, 1888, -184),
+    (117, -248, 2144, -136),
+    (120, -432, 2352, 56),
+    (121, -544, 2584, 56),
+    (122, -344, 2656, -104),
+    (123, -72, 2896, -56),
+    (124, 432, 2920, -56),
+    (125, 424, 2832, -56),
+    (130, 424, 2672, -56),
+    (131, 424, 2880, -56),
+    (132, 424, 2760, -56),
+    (135, 848, 2584, -72),
+    (136, 824, 2008, -152),
+    (138, 248, 2352, 40),
+    (139, -72, 2464, 40),
+    (140, 904, 1024, -248),
+    (155, 288, 1536, -200),
+    (156, 968, 2432, -112),
+];
+
+/// Monsters that follow a `path_corner` chain from the first frame, and so
+/// are the only ones allowed to move while the player stands at the spawn.
+const E1M1_PATROLLERS: &[u16] = &[99, 115, 116, 120, 124, 130, 135];
+
+#[derive(Debug)]
+struct SpawnLine {
+    tick: u32,
+    source: u16,
+    authored: [i32; 3],
+    origin: [i32; 3],
+    state: String,
+    active: bool,
+    supported: bool,
+}
+
+fn parse_spawn_lines(log: &[u8]) -> Result<Vec<SpawnLine>> {
+    let text = String::from_utf8_lossy(log);
+    let triple = |field: &str| -> Result<[i32; 3]> {
+        let mut parts = field.split(',');
+        let mut next = || -> Result<i32> {
+            Ok(parts.next().ok_or("short coordinate triple")?.parse()?)
+        };
+        Ok([next()?, next()?, next()?])
+    };
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let Some(at) = line.find("SP t=") else {
+            continue;
+        };
+        let mut tick = None;
+        let mut source = None;
+        let mut authored = None;
+        let mut origin = None;
+        let mut state = None;
+        let mut active = None;
+        let mut supported = None;
+        for field in line[at..].split_whitespace() {
+            if let Some(value) = field.strip_prefix("t=") {
+                tick = Some(value.parse()?);
+            } else if let Some(value) = field.strip_prefix("s=") {
+                source = Some(value.parse()?);
+            } else if let Some(value) = field.strip_prefix("a=") {
+                authored = Some(triple(value)?);
+            } else if let Some(value) = field.strip_prefix("o=") {
+                origin = Some(triple(value)?);
+            } else if let Some(value) = field.strip_prefix("st=") {
+                state = Some(value.to_string());
+            } else if let Some(value) = field.strip_prefix("act=") {
+                active = Some(value == "1");
+            } else if let Some(value) = field.strip_prefix("bt=") {
+                supported = Some(value == "1");
+            }
+        }
+        lines.push(SpawnLine {
+            tick: tick.ok_or("SP line lacks t")?,
+            source: source.ok_or("SP line lacks s")?,
+            authored: authored.ok_or("SP line lacks a")?,
+            origin: origin.ok_or("SP line lacks o")?,
+            state: state.ok_or("SP line lacks st")?,
+            active: active.ok_or("SP line lacks act")?,
+            supported: supported.ok_or("SP line lacks bt")?,
+        });
+    }
+    Ok(lines)
+}
+
+/// What the idle scene must show: every monster present at tick 0 stands where
+/// `droptofloor` puts it, nothing but a patroller moves while the player is
+/// parked at the spawn, and no walking monster ever hangs off an edge.
+fn validate_spawn_idle(lines: &[SpawnLine]) -> Result<usize> {
+    let mut placed = 0usize;
+    for line in lines.iter().filter(|line| line.tick == 0) {
+        let &(_, x, y, z) = E1M1_SPAWN_TABLE
+            .iter()
+            .find(|row| row.0 == line.source)
+            .ok_or_else(|| format!("monster {} is not in the pinned E1M1 table", line.source))?;
+        if line.origin != [x, y, z] {
+            return Err(format!(
+                "monster {} spawned at {:?}, pinned at {:?}",
+                line.source,
+                line.origin,
+                [x, y, z]
+            )
+            .into());
+        }
+        if line.origin[0] != line.authored[0] || line.origin[1] != line.authored[1] {
+            return Err(format!("monster {} slid off its authored x/y", line.source).into());
+        }
+        placed += 1;
+    }
+    if placed < 10 {
+        return Err(format!("only {placed} monsters present at tick 0").into());
+    }
+    for line in lines.iter().filter(|line| line.tick > 0) {
+        if !E1M1_PATROLLERS.contains(&line.source) {
+            return Err(format!(
+                "monster {} moved or changed state at tick {} (now {:?}, active {}) \
+                 with the player at the spawn",
+                line.source, line.tick, line.state, line.active
+            )
+            .into());
+        }
+    }
+    if let Some(line) = lines.iter().find(|line| !line.supported) {
+        return Err(format!(
+            "monster {} hangs off an edge at tick {} ({:?})",
+            line.source, line.tick, line.origin
+        )
+        .into());
+    }
+    Ok(placed)
+}
+
+/// The bridge scene: the player stands on the t2 bridge's west platform and
+/// the three grunts on the east platform wake, rush the gap and crowd its far
+/// edge. None of them may ever stand with their box over the pit.
+fn validate_spawn_bridge(lines: &[SpawnLine]) -> Result<usize> {
+    let woke: Vec<u16> = lines
+        .iter()
+        .filter(|line| line.active)
+        .map(|line| line.source)
+        .collect();
+    for grunt in [124u16, 125, 130] {
+        if !woke.contains(&grunt) {
+            return Err(format!("grunt {grunt} never woke for the player at the bridge").into());
+        }
+    }
+    if let Some(line) = lines.iter().find(|line| !line.supported) {
+        return Err(format!(
+            "monster {} hangs off an edge at tick {} ({:?}): the bridge ledge",
+            line.source, line.tick, line.origin
+        )
+        .into());
+    }
+    Ok(woke.len())
+}
+
+/// One scene through the real map-load path, run twice for determinism: the
+/// idle spawn at the default skill (`idle`), or the player at the t2 bridge on
+/// Normal (`bridge`). The guest prints one `SP` line per monster per change
+/// (game/src/spawn_probe.rs).
+fn run_e1m1_spawn_regression(
+    root: &Path,
+    frontend: &Path,
+    regression: &Path,
+    scene: &str,
+) -> Result<()> {
+    let capture = root.join("captures").join(format!("e1m1-spawn-{scene}"));
+    let steps = env::var("QUAKE_PSX_SPAWN_REGRESSION_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(4_000_000_000u64);
+    let guest_frames = env::var("QUAKE_PSX_SPAWN_REGRESSION_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(600u64);
+    let cue = regression.join("quake-psx.cue");
+    fs::create_dir_all(&capture)?;
+    let mut logs = Vec::new();
+    for run in ["run-a", "run-b"] {
+        let dir = capture.join(run);
+        fs::create_dir_all(&dir)?;
+        let output = run_frontend(frontend, &cue, &dir, steps, true, Some(guest_frames))?;
+        let log = combined_output(&output);
+        fs::write(dir.join("console.log"), &log)?;
+        logs.push(parse_spawn_lines(&log)?);
+    }
+    if logs[0].len() != logs[1].len()
+        || logs[0].iter().zip(&logs[1]).any(|(a, b)| {
+            (a.tick, a.source, a.origin, a.active) != (b.tick, b.source, b.origin, b.active)
+        })
+    {
+        return Err("spawn regression is nondeterministic".into());
+    }
+    let lines = &logs[0];
+    let checked = if scene == "bridge" {
+        validate_spawn_bridge(lines)?
+    } else {
+        validate_spawn_idle(lines)?
+    };
+    let summary = format!(
+        "quake-psx E1M1 monster spawn regression ({scene}): PASS\n\
+         deterministic_runs=2\n\
+         probe_lines={}\n\
+         checked={checked}\n",
+        lines.len()
     );
     fs::write(capture.join("summary.txt"), &summary)?;
     print!("{summary}");

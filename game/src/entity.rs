@@ -8,7 +8,7 @@ use psx_math::{atan2_q12, cos_q12, sin_q12};
 use quake_core::body::{Body, BodyBlockers, BroadPhaseRegion, SweptUnitBox, PLAYER_BODY_SOURCE};
 use quake_core::collision::{
     trace_render_bsp_into, trace_translated_render_bsp_into, CollisionHull, RenderTraceScratch,
-    Trace, TraceScratch, CONTENTS_SKY, Q12_ONE,
+    Trace, TraceScratch, CONTENTS_SKY, CONTENTS_SOLID, Q12_ONE,
 };
 use quake_core::combat::{
     explosion_splash_points, grenade_tick, lightning_trace_geometry, monster_profile,
@@ -55,6 +55,9 @@ use quake_formats::{alias_model_is_sprite, AliasModelHeader, MapEntity, Vec3I16,
 use crate::asset::{EpisodeMap, ResidentMap};
 use crate::audio::Attenuation;
 use crate::pusher::{push_pass, PushBlocker, Rider};
+
+#[cfg(feature = "spawn-probe")]
+mod spawn_probe_support;
 
 #[cfg(feature = "monster-code-overlay")]
 use crate::monster_code::quake_monster_call as advance_monster;
@@ -180,6 +183,8 @@ struct MonsterSnapshot {
     hit_mins: Vec3I32,
     hit_maxs: Vec3I32,
     patrol: u16,
+    ideal_yaw: i16,
+    partial_ground: bool,
 }
 
 impl MonsterSnapshot {
@@ -192,6 +197,8 @@ impl MonsterSnapshot {
             hit_mins: entity.hit_mins,
             hit_maxs: entity.hit_maxs,
             patrol: entity.patrol,
+            ideal_yaw: entity.ideal_yaw,
+            partial_ground: entity.partial_ground,
         }
     }
 }
@@ -226,6 +233,14 @@ pub struct RenderEntity {
     /// none (worldspawn is never a corner). The corner itself is decoded only
     /// on the frames a think is due.
     patrol: u16,
+    /// `ideal_yaw`: the heading `SV_StepDirection` steps along and turns
+    /// toward, in Q12 turns. It is the aimed bearing only when a hunt starts
+    /// or a corner is reached; `SV_NewChaseDir` then snaps it to 45 degree
+    /// multiples. [`IDEAL_YAW_UNSET`] asks the next chase to aim at its goal.
+    ideal_yaw: i16,
+    /// `FL_PARTIALGROUND`: set by `SV_NewChaseDir` when a monster is boxed in
+    /// and has no valid footing, which lets it move off a failed bottom check.
+    partial_ground: bool,
     /// A gib-level death happened to this entity since the scene last threw
     /// its gibs (`army_die` and friends: `ThrowGib` x3 after the head).
     pending_gib: bool,
@@ -259,6 +274,9 @@ pub struct EntityScene {
     /// `GibPlayer`: the player's origin and health at a gib-level death,
     /// thrown as three chunks on the next missile pass.
     pending_player_gib: Option<(Vec3I32, i16)>,
+    /// The `rand()` of `SV_MoveToGoal` and `SV_NewChaseDir`. Reseeded on every
+    /// load so a level plays the same walk twice.
+    chase_random: u32,
     /// Ascending render indexes that can ever participate in player movement
     /// collision. Pickups, lights, decoration and reserved projectile slots
     /// make up most of `entities`; filtering them once at load avoids scanning
@@ -907,6 +925,7 @@ impl EntityScene {
             entities: Vec::with_capacity(MAX_RENDER_ENTITIES),
             pending_scene_work: false,
             pending_player_gib: None,
+            chase_random: CHASE_RANDOM_SEED,
             collision_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             movers: Vec::with_capacity(MAX_MOVERS),
             door_fields: Vec::with_capacity(MAX_DOOR_FIELDS),
@@ -946,7 +965,15 @@ impl EntityScene {
             light_styles_next: lightstyle::initial_values(),
             light_style_next_tick: u32::MAX,
             light_off: [0; LIGHT_STATE_WORDS],
-            skill: 0,
+            skill: if cfg!(feature = "spawn-skill-3") {
+                3
+            } else if cfg!(feature = "spawn-skill-2") {
+                2
+            } else if cfg!(feature = "spawn-skill-1") {
+                1
+            } else {
+                0
+            },
             runes: 0,
             sight_index: 0,
             sight_alert_ticks: 0,
@@ -1111,6 +1138,7 @@ impl EntityScene {
         self.lightning_pair = None;
         self.event_lightning_beam = None;
         self.sight_index = 0;
+        self.chase_random = CHASE_RANDOM_SEED;
         self.sight_alert_ticks = 0;
         self.player_invisible = false;
         // Every light's spawn function writes its own style before any
@@ -1340,6 +1368,8 @@ impl EntityScene {
                     pending_explosion: false,
                     monster: None,
                     patrol: 0,
+                    ideal_yaw: 0,
+                    partial_ground: false,
                 });
                 continue;
             }
@@ -1415,10 +1445,14 @@ impl EntityScene {
             // `walkmonster_start_go`: a monster with a `target` patrols the
             // `path_corner` chain it names.
             let mut patrol = 0;
+            // `walkmonster_start_go`: `ideal_yaw = self.angles_y`, then the
+            // bearing to the first corner when the monster patrols.
+            let mut ideal_yaw = source.angles.y & 0x0fff;
             if monster.is_some_and(|runtime| !runtime.crucified() && !runtime.kind().is_boss()) {
                 let mut corner = PathCorner::EMPTY;
                 if find_path_corner_into(&map.entities(), source.target, &mut corner) {
                     patrol = corner.source_index;
+                    ideal_yaw = yaw_toward(source.origin, corner.origin);
                 }
             }
             let Some((leaf_index, light)) =
@@ -1475,6 +1509,8 @@ impl EntityScene {
                 pending_explosion: false,
                 monster,
                 patrol,
+                ideal_yaw,
+                partial_ground: false,
             });
         }
         // Preserve the former full-slice traversal order exactly. These are
@@ -1901,6 +1937,8 @@ impl EntityScene {
                 pending_explosion: false,
                 monster: None,
                 patrol: 0,
+                ideal_yaw: 0,
+                partial_ground: false,
             });
         }
         Ok(render_start)
@@ -4929,37 +4967,37 @@ impl EntityScene {
             }
 
             let goal = patrol.map(|corner| corner.origin);
+            let kind = runtime.kind();
+            let hull = kind.collision_hull();
+            let yaw_speed = kind.yaw_speed();
             let mut yaw = snapshot.angles.y;
-            let facing = if action.face_target {
-                Some(enemy.origin)
-            } else if action.face_goal {
-                goal
-            } else {
-                None
-            };
-            if let Some(target) = facing {
-                let target_yaw = atan2_q12(
-                    (target.y.saturating_sub(snapshot.origin.y)) >> 12,
-                    (target.x.saturating_sub(snapshot.origin.x)) >> 12,
-                ) as i16;
-                yaw = turn_toward_yaw(yaw, target_yaw, runtime.kind().yaw_speed());
-            }
             let mut next_origin = snapshot.origin;
-            if action.move_units != 0 {
-                // Filled in place: returned by value, the 452-byte set was
-                // copied out on every step.
-                let mut bodies = BodyBlockers::new();
-                self.monster_step_bodies(
-                    index,
-                    i32::from(action.move_units.saturating_abs()),
-                    player_mins,
-                    player_maxs,
-                    alive,
-                    &mut bodies,
-                );
-                let hull = runtime.kind().collision_hull();
-                next_origin = if runtime.kind().flies() {
-                    self.monster_fly_step(
+            let mut ideal = snapshot.ideal_yaw;
+            let mut partial_ground = snapshot.partial_ground;
+            if kind.flies() {
+                // Flying monsters keep the straight aimed chase: `SV_movestep`
+                // gives them no step-up or edge check to port.
+                let facing = if action.face_target || action.chase {
+                    Some(enemy.origin)
+                } else if action.face_goal {
+                    goal
+                } else {
+                    None
+                };
+                if let Some(target) = facing {
+                    yaw = turn_toward_yaw(yaw, yaw_toward(snapshot.origin, target), yaw_speed);
+                }
+                if action.move_units != 0 {
+                    let mut bodies = BodyBlockers::new();
+                    self.monster_step_bodies(
+                        index,
+                        i32::from(action.move_units.saturating_abs()),
+                        player_mins,
+                        player_maxs,
+                        alive,
+                        &mut bodies,
+                    );
+                    next_origin = self.monster_fly_step(
                         map,
                         snapshot.origin,
                         if action.face_goal {
@@ -4971,14 +5009,93 @@ impl EntityScene {
                         action.move_units,
                         hull,
                         &bodies,
-                    )?
-                } else {
-                    self.monster_step(map, snapshot.origin, yaw, action.move_units, hull, &bodies)?
-                };
+                    )?;
+                }
+            } else {
+                let enemy_yaw = yaw_toward(snapshot.origin, enemy.origin);
+                // `HuntTarget` (and `walkmonster_start_go` before it) aim the
+                // first heading exactly; only `SV_NewChaseDir` quantises it.
+                if action.activated || ideal == IDEAL_YAW_UNSET {
+                    ideal = if action.face_goal {
+                        goal.map_or(yaw, |corner| yaw_toward(snapshot.origin, corner))
+                    } else {
+                        enemy_yaw
+                    };
+                }
+                // `ai_face`.
+                if action.face_target {
+                    ideal = enemy_yaw;
+                    yaw = turn_toward_yaw(yaw, ideal, yaw_speed);
+                }
+                if action.move_units != 0 {
+                    // Filled in place: returned by value, the 452-byte set was
+                    // copied out on every step.
+                    let mut bodies = BodyBlockers::new();
+                    self.monster_step_bodies(
+                        index,
+                        i32::from(action.move_units.saturating_abs()),
+                        player_mins,
+                        player_maxs,
+                        alive,
+                        &mut bodies,
+                    );
+                    let mut walker = Walker {
+                        origin: snapshot.origin,
+                        yaw,
+                        ideal,
+                        partial_ground,
+                    };
+                    let distance = i32::from(action.move_units);
+                    if action.chase || action.face_goal || (action.face_target && distance > 0) {
+                        // `ai_run`, `ai_walk` and `ai_charge` all end in
+                        // `movetogoal`: the enemy, or the next path corner.
+                        let (goal_origin, goal_box) = if action.face_goal {
+                            (goal, None)
+                        } else {
+                            (Some(enemy.origin), Some((enemy.mins, enemy.maxs)))
+                        };
+                        if let Some(goal_origin) = goal_origin {
+                            self.monster_move_to_goal(
+                                map,
+                                &mut walker,
+                                goal_origin,
+                                goal_box,
+                                (snapshot.hit_mins, snapshot.hit_maxs),
+                                distance,
+                                yaw_speed,
+                                hull,
+                                &bodies,
+                            )?;
+                        }
+                    } else {
+                        // `ai_forward`, `ai_pain`, `ai_painforward` and the
+                        // death recoil: one step along the facing, or straight
+                        // back, with no turning and no search for a way round.
+                        let heading = if distance < 0 {
+                            yaw.wrapping_add(2048)
+                        } else {
+                            yaw
+                        };
+                        self.monster_walk_move(
+                            map,
+                            &mut walker,
+                            heading,
+                            distance.abs(),
+                            hull,
+                            &bodies,
+                        )?;
+                    }
+                    next_origin = walker.origin;
+                    yaw = walker.yaw;
+                    ideal = walker.ideal;
+                    partial_ground = walker.partial_ground;
+                }
             }
             {
                 let entity = &mut self.entities[index];
                 entity.angles.y = yaw;
+                entity.ideal_yaw = ideal;
+                entity.partial_ground = partial_ground;
                 entity.frame = action.frame;
                 if next_origin != entity.origin {
                     if !update_moving_alias_origin(map, entity, next_origin, &styles) {
@@ -5169,8 +5286,11 @@ impl EntityScene {
         runtime.arrive_at_goal(path_corner_wait_ticks(corner.wait));
         self.entities[index].monster = Some(runtime);
         let mut next = PathCorner::EMPTY;
+        let origin = self.entities[index].origin;
         self.entities[index].patrol =
             if find_path_corner_into(&map.entities(), corner.target, &mut next) {
+                // `t_movetarget`: `ideal_yaw = vectoyaw(next.origin - origin)`.
+                self.entities[index].ideal_yaw = yaw_toward(origin, next.origin);
                 next.source_index
             } else {
                 0
@@ -5209,59 +5329,378 @@ impl EntityScene {
         }
     }
 
-    /// Advance one monster by `distance` units, trying the authored heading
-    /// first and then a bounded fan of alternates.
+    /// `SV_CheckBottom`: false when part of the box's underside hangs off an
+    /// edge that is not a staircase. The quick pass accepts a box whose four
+    /// bottom corners all sit over solid world; otherwise the centre point and
+    /// then each corner must find floor within two steps below the box, and no
+    /// corner may sit more than one step under the centre's floor.
     ///
-    /// Bodies are cleared with a horizontal sweep of the mover's own origin
-    /// before the world floor probe runs. The floor probe is a short vertical
-    /// segment at the destination column, so testing bodies there would report
-    /// a floor-facing normal and let monsters climb onto each other's heads;
-    /// the horizontal sweep is the compose site with Quake's semantics, and a
-    /// blocked direction is simply rejected in favour of the next alternate.
-    fn monster_step(
+    /// Every walking monster stands -24 below its origin and is 16 (hull 1) or
+    /// 32 (hull 2) wide each side, which is also the clip hull it is traced in.
+    #[inline(never)]
+    fn monster_check_bottom(
         &self,
         map: &ResidentMap,
         origin: Vec3I32,
-        yaw: i16,
-        distance: i16,
+        hull_index: usize,
+    ) -> Option<bool> {
+        let half = if hull_index == 2 { 32 << 12 } else { 16 << 12 };
+        let bottom = origin.z.saturating_sub(MONSTER_BOX_BELOW << 12);
+        let corners = [
+            (origin.x - half, origin.y - half),
+            (origin.x + half, origin.y - half),
+            (origin.x - half, origin.y + half),
+            (origin.x + half, origin.y + half),
+        ];
+        // "If all of the points under the corners are solid world, don't
+        // bother with the tougher checks." The render BSP answers this: the
+        // clip-node hull that `world_point_contents` walks has no valid
+        // hull 0 and reports free air under a ledge as solid.
+        let mut scratch = TraceScratch::default();
+        let mut trace = Trace::default();
+        let mut easy = true;
+        for &(x, y) in &corners {
+            let under = Vec3I32 {
+                x,
+                y,
+                z: bottom.saturating_sub(1 << 12),
+            };
+            if !self.trace_point(map, &under, &under, &mut scratch, &mut trace) {
+                return None;
+            }
+            if !trace.start_solid {
+                easy = false;
+                break;
+            }
+        }
+        if easy {
+            return Some(true);
+        }
+        let reach = STEP_HEIGHT * 2 << 12;
+        // The midpoint must be within two steps of the bottom.
+        let start = Vec3I32 {
+            x: origin.x,
+            y: origin.y,
+            z: bottom,
+        };
+        let stop = Vec3I32 {
+            z: bottom.saturating_sub(reach),
+            ..start
+        };
+        if !self.trace_point(map, &start, &stop, &mut scratch, &mut trace) {
+            return None;
+        }
+        if trace.fraction == Q12_ONE {
+            return Some(false);
+        }
+        let mid = trace.end.z;
+        // The corners must be within one step of the midpoint's floor.
+        for &(x, y) in &corners {
+            let start = Vec3I32 { x, y, z: bottom };
+            let stop = Vec3I32 {
+                z: bottom.saturating_sub(reach),
+                ..start
+            };
+            if !self.trace_point(map, &start, &stop, &mut scratch, &mut trace) {
+                return None;
+            }
+            if trace.fraction == Q12_ONE || mid.saturating_sub(trace.end.z) > STEP_HEIGHT << 12 {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
+    /// `SV_movestep` for a walking monster: push the box down from a step above
+    /// the wished spot, refuse a drop it cannot see a floor for, and refuse a
+    /// footing with its corners over air (`SV_CheckBottom`). `FL_PARTIALGROUND`
+    /// relaxes both, so a monster whose floor was pulled away can still move.
+    ///
+    /// Returns whether the monster moved; `None` is a failed trace and ends
+    /// the frame like any other. Live bodies are cleared by a horizontal sweep
+    /// first, because a vertical probe through a neighbour's box reports a
+    /// floor-facing normal and would let monsters stand on each other's heads.
+    #[allow(clippy::too_many_arguments)]
+    fn monster_move_step(
+        &self,
+        map: &ResidentMap,
+        walker: &mut Walker,
+        move_x: i32,
+        move_y: i32,
         hull_index: usize,
         bodies: &BodyBlockers,
-    ) -> Option<Vec3I32> {
-        const DIRECTIONS: [i16; 6] = [0, 512, -512, 1_024, -1_024, 2_048];
-        for offset in DIRECTIONS {
-            let heading = yaw.wrapping_add(offset) as u16 & 0x0fff;
-            let move_x = cos_q12(heading).saturating_mul(i32::from(distance));
-            let move_y = sin_q12(heading).saturating_mul(i32::from(distance));
-            let wished = Vec3I32 {
-                x: origin.x.saturating_add(move_x),
-                y: origin.y.saturating_add(move_y),
-                z: origin.z,
-            };
-            if bodies.resolve(origin, wished, hull_index).is_some() {
-                continue;
-            }
-            let start = Vec3I32 {
-                z: wished.z.saturating_add(18 << 12),
-                ..wished
-            };
-            let end = Vec3I32 {
-                z: wished.z.saturating_sub(18 << 12),
-                ..wished
-            };
-            let mut scratch = TraceScratch::default();
-            let mut trace = Trace::default();
+    ) -> Option<bool> {
+        let old = walker.origin;
+        let wished = Vec3I32 {
+            x: old.x.saturating_add(move_x),
+            y: old.y.saturating_add(move_y),
+            z: old.z,
+        };
+        if bodies.resolve(old, wished, hull_index).is_some() {
+            return Some(false);
+        }
+        let mut scratch = TraceScratch::default();
+        let mut trace = Trace::default();
+        let mut start = Vec3I32 {
+            z: wished.z.saturating_add(STEP_HEIGHT << 12),
+            ..wished
+        };
+        let end = Vec3I32 {
+            z: start.z.saturating_sub(STEP_HEIGHT * 2 << 12),
+            ..start
+        };
+        if !self.trace_hull(map, hull_index, &start, &end, &mut scratch, &mut trace) {
+            return None;
+        }
+        if trace.all_solid {
+            return Some(false);
+        }
+        if trace.start_solid {
+            start.z = start.z.saturating_sub(STEP_HEIGHT << 12);
             if !self.trace_hull(map, hull_index, &start, &end, &mut scratch, &mut trace) {
                 return None;
             }
-            if !trace.start_solid
-                && !trace.all_solid
-                && trace.fraction < 1 << 12
-                && trace.normal.z >= 2_896
-            {
-                return Some(trace.end);
+            if trace.all_solid || trace.start_solid {
+                return Some(false);
             }
         }
-        Some(origin)
+        if trace.fraction == Q12_ONE {
+            // "If monster had the ground pulled out, go ahead and fall",
+            // otherwise it walked off an edge.
+            if walker.partial_ground {
+                walker.origin = wished;
+                return Some(true);
+            }
+            return Some(false);
+        }
+        let landed = trace.end;
+        if !self.monster_check_bottom(map, landed, hull_index)? {
+            if walker.partial_ground {
+                // "Entity had floor mostly pulled out from underneath it and
+                // is trying to correct."
+                walker.origin = landed;
+                return Some(true);
+            }
+            return Some(false);
+        }
+        walker.partial_ground = false;
+        walker.origin = landed;
+        Some(true)
+    }
+
+    /// `ai_walkmove`: one step along an explicit heading, no turning.
+    fn monster_walk_move(
+        &self,
+        map: &ResidentMap,
+        walker: &mut Walker,
+        heading: i16,
+        distance: i32,
+        hull_index: usize,
+        bodies: &BodyBlockers,
+    ) -> Option<bool> {
+        let angle = heading as u16 & 0x0fff;
+        self.monster_move_step(
+            map,
+            walker,
+            cos_q12(angle).saturating_mul(distance),
+            sin_q12(angle).saturating_mul(distance),
+            hull_index,
+            bodies,
+        )
+    }
+
+    /// `SV_StepDirection`: turn toward `heading` (`PF_changeyaw`), then step
+    /// along it. A step taken while still more than 45 degrees off the
+    /// heading is undone, though it still counts as success.
+    #[allow(clippy::too_many_arguments)]
+    fn monster_step_direction(
+        &self,
+        map: &ResidentMap,
+        walker: &mut Walker,
+        heading: i16,
+        distance: i32,
+        yaw_speed: i16,
+        hull_index: usize,
+        bodies: &BodyBlockers,
+    ) -> Option<bool> {
+        walker.ideal = heading & 0x0fff;
+        walker.yaw = turn_toward_yaw(walker.yaw, walker.ideal, yaw_speed);
+        let before = walker.origin;
+        if !self.monster_walk_move(map, walker, heading, distance, hull_index, bodies)? {
+            return Some(false);
+        }
+        let delta = (i32::from(walker.yaw) - i32::from(walker.ideal)) & 0x0fff;
+        if delta > 512 && delta < 3584 {
+            walker.origin = before;
+        }
+        Some(true)
+    }
+
+    /// One `rand()` draw for the chase code.
+    fn next_chase_random(&mut self) -> u32 {
+        let mut state = self.chase_random;
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        self.chase_random = state;
+        state >> 8
+    }
+
+    /// `SV_NewChaseDir`: pick the next of eight compass headings toward
+    /// `goal`, preferring the direct diagonal, then each axis, then the old
+    /// heading, then any direction but straight back. A monster that finds no
+    /// way keeps its old heading and, with no valid footing, goes
+    /// `FL_PARTIALGROUND`.
+    #[allow(clippy::too_many_arguments)]
+    fn monster_new_chase_dir(
+        &mut self,
+        map: &ResidentMap,
+        walker: &mut Walker,
+        goal: Vec3I32,
+        distance: i32,
+        yaw_speed: i16,
+        hull_index: usize,
+        bodies: &BodyBlockers,
+    ) -> Option<()> {
+        const NO_DIR: i16 = -1;
+        let olddir = ((i32::from(walker.ideal) & 0x0fff) / 512 * 512) as i16;
+        let turnaround = ((i32::from(olddir) - 2048) & 0x0fff) as i16;
+        let delta_x = goal.x.saturating_sub(walker.origin.x) >> 12;
+        let delta_y = goal.y.saturating_sub(walker.origin.y) >> 12;
+        let mut d = [
+            NO_DIR,
+            if delta_x > 10 {
+                0
+            } else if delta_x < -10 {
+                2048
+            } else {
+                NO_DIR
+            },
+            if delta_y < -10 {
+                3072
+            } else if delta_y > 10 {
+                1024
+            } else {
+                NO_DIR
+            },
+        ];
+        macro_rules! try_step {
+            ($heading:expr) => {
+                self.monster_step_direction(
+                    map, walker, $heading, distance, yaw_speed, hull_index, bodies,
+                )?
+            };
+        }
+        // Try the direct route. Quake spells the south-west diagonal 215
+        // degrees rather than 225, so the port does too.
+        if d[1] != NO_DIR && d[2] != NO_DIR {
+            let tdir = if d[1] == 0 {
+                if d[2] == 1024 {
+                    512
+                } else {
+                    3584
+                }
+            } else if d[2] == 1024 {
+                1536
+            } else {
+                2446
+            };
+            if tdir != turnaround && try_step!(tdir) {
+                return Some(());
+            }
+        }
+        // Try the other directions.
+        if (self.next_chase_random() & 1 != 0) || delta_y.abs() > delta_x.abs() {
+            d.swap(1, 2);
+        }
+        if d[1] != NO_DIR && d[1] != turnaround && try_step!(d[1]) {
+            return Some(());
+        }
+        if d[2] != NO_DIR && d[2] != turnaround && try_step!(d[2]) {
+            return Some(());
+        }
+        // There is no direct path to the goal, so pick another direction.
+        if try_step!(olddir) {
+            return Some(());
+        }
+        // Randomly determine the direction of search.
+        if self.next_chase_random() & 1 != 0 {
+            let mut tdir = 0;
+            while tdir <= 3584 {
+                if tdir != turnaround && try_step!(tdir) {
+                    return Some(());
+                }
+                tdir += 512;
+            }
+        } else {
+            let mut tdir = 3584;
+            while tdir >= 0 {
+                if tdir != turnaround && try_step!(tdir) {
+                    return Some(());
+                }
+                tdir -= 512;
+            }
+        }
+        if try_step!(turnaround) {
+            return Some(());
+        }
+        // Can't move.
+        walker.ideal = olddir;
+        // If a bridge was pulled out from underneath a monster, it may not
+        // have a valid standing position at all.
+        if !self.monster_check_bottom(map, walker.origin, hull_index)? {
+            walker.partial_ground = true;
+        }
+        Some(())
+    }
+
+    /// `SV_MoveToGoal` (`movetogoal`): stand still once the enemy is within
+    /// one step, otherwise take the standing heading three times in four and
+    /// let `SV_NewChaseDir` choose when that is blocked or the dice say so.
+    /// `goal_box` is the enemy's absolute box; a path corner passes `None`.
+    #[allow(clippy::too_many_arguments)]
+    fn monster_move_to_goal(
+        &mut self,
+        map: &ResidentMap,
+        walker: &mut Walker,
+        goal: Vec3I32,
+        goal_box: Option<(Vec3I32, Vec3I32)>,
+        own_box: (Vec3I32, Vec3I32),
+        distance: i32,
+        yaw_speed: i16,
+        hull_index: usize,
+        bodies: &BodyBlockers,
+    ) -> Option<()> {
+        if let Some((goal_mins, goal_maxs)) = goal_box {
+            // `SV_CloseEnough`.
+            let reach = distance << 12;
+            let close = |own_min: i32, own_max: i32, goal_min: i32, goal_max: i32| {
+                goal_min <= own_max.saturating_add(reach)
+                    && goal_max >= own_min.saturating_sub(reach)
+            };
+            if close(own_box.0.x, own_box.1.x, goal_mins.x, goal_maxs.x)
+                && close(own_box.0.y, own_box.1.y, goal_mins.y, goal_maxs.y)
+                && close(own_box.0.z, own_box.1.z, goal_mins.z, goal_maxs.z)
+            {
+                return Some(());
+            }
+        }
+        if self.next_chase_random() & 3 == 1
+            || !self.monster_step_direction(
+                map,
+                walker,
+                walker.ideal,
+                distance,
+                yaw_speed,
+                hull_index,
+                bodies,
+            )?
+        {
+            self.monster_new_chase_dir(
+                map, walker, goal, distance, yaw_speed, hull_index, bodies,
+            )?;
+        }
+        Some(())
     }
 
     /// Collect the live bodies a moving monster can hit this think: the player
@@ -6633,6 +7072,7 @@ impl EntityScene {
         if runtime.active() || !runtime.set_enemy(MonsterEnemy::Player) {
             return None;
         }
+        entity.ideal_yaw = IDEAL_YAW_UNSET;
         entity.monster = Some(runtime);
         entity.frame = runtime.frame();
         Some(
@@ -8573,6 +9013,37 @@ fn aim_basis(from: Vec3I32, to: Vec3I32) -> (Vec3I32, Vec3I32, Vec3I32) {
     (forward, right, up)
 }
 
+/// Bottom of a walking monster's box below its origin, whole units.
+const MONSTER_BOX_BELOW: i32 = 24;
+/// `STEPSIZE`.
+const STEP_HEIGHT: i32 = 18;
+/// Seed for [`EntityScene::chase_random`].
+const CHASE_RANDOM_SEED: u32 = 0x2545_f491;
+/// Ask the next chase to aim `ideal_yaw` at its goal (`FoundTarget` ->
+/// `HuntTarget`), for wakes that happen inside damage code where the enemy's
+/// position is not at hand.
+const IDEAL_YAW_UNSET: i16 = -1;
+
+/// The three fields `SV_StepDirection` and `SV_NewChaseDir` read and write on
+/// the monster being moved, held by value so a failed step can be undone.
+#[derive(Copy, Clone)]
+struct Walker {
+    origin: Vec3I32,
+    /// Current heading, Q12 turns.
+    yaw: i16,
+    /// `ideal_yaw`.
+    ideal: i16,
+    partial_ground: bool,
+}
+
+/// `vectoyaw`: the heading from `from` to `to`, Q12 turns, 0..4095.
+fn yaw_toward(from: Vec3I32, to: Vec3I32) -> i16 {
+    (atan2_q12(
+        to.y.saturating_sub(from.y) >> 12,
+        to.x.saturating_sub(from.x) >> 12,
+    ) & 0x0fff) as i16
+}
+
 fn target_in_front(origin: Vec3I32, yaw: i16, target: Vec3I32) -> bool {
     let dx = (target.x.saturating_sub(origin.x)) >> 12;
     let dy = (target.y.saturating_sub(origin.y)) >> 12;
@@ -8712,6 +9183,7 @@ fn apply_entity_damage(
                 DamageAttacker::Player => {
                     if monster.enemy() != MonsterEnemy::Player {
                         monster.set_enemy(MonsterEnemy::Player);
+                        entity.ideal_yaw = IDEAL_YAW_UNSET;
                     }
                 }
                 DamageAttacker::Monster {
@@ -8722,6 +9194,7 @@ fn apply_entity_damage(
                         && (attacker_class != class_name || class_name == CLASS_ARMY)
                     {
                         monster.set_enemy(MonsterEnemy::Monster(index));
+                        entity.ideal_yaw = IDEAL_YAW_UNSET;
                     }
                 }
             }

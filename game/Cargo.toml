@@ -42,6 +42,17 @@ combat-regression = ["emulator-telemetry"]
 arsenal-regression = ["emulator-telemetry"]
 monster-regression = ["emulator-telemetry"]
 monsterjump-regression = ["emulator-telemetry"]
+# Logs every monster's origin and state to the guest debug log whenever it
+# moves or changes state (game/src/spawn_probe.rs). Combine with
+# `route-monsters` to watch the played route, or use the idle regression.
+spawn-probe = ["emulator-telemetry"]
+# E1M1 with the player parked at its own spawn, no input, live monsters.
+e1m1-spawn-regression = ["spawn-probe"]
+# Park the idle player on the button side of the t2 bridge, facing it.
+spawn-script-bridge = []
+spawn-skill-1 = []
+spawn-skill-2 = []
+spawn-skill-3 = []
 bestiary-regression = ["emulator-telemetry"]
 start-route-regression = ["emulator-telemetry"]
 e1m1-chain-regression = ["emulator-telemetry"]
