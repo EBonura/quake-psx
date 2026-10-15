@@ -3639,6 +3639,7 @@ impl EntityScene {
     /// Out of line for the same reason as `collect_pickups`: its mover loop
     /// reloaded 61 values per mover from `quake::run`'s frame.
     #[inline(never)]
+    #[optimize(size)]
     pub fn update_gameplay(
         &mut self,
         map: &ResidentMap,
@@ -5657,32 +5658,19 @@ impl EntityScene {
         if (self.next_chase_random() & 1 != 0) || delta_y.abs() > delta_x.abs() {
             d.swap(1, 2);
         }
-        if d[1] != NO_DIR && d[1] != turnaround && try_step!(d[1]) {
-            return Some(());
-        }
-        if d[2] != NO_DIR && d[2] != turnaround && try_step!(d[2]) {
-            return Some(());
-        }
-        // There is no direct path to the goal, so pick another direction.
-        if try_step!(olddir) {
-            return Some(());
-        }
-        // Randomly determine the direction of search.
-        if self.next_chase_random() & 1 != 0 {
-            let mut tdir = 0;
-            while tdir <= 3584 {
-                if tdir != turnaround && try_step!(tdir) {
-                    return Some(());
-                }
-                tdir += 512;
+        for tdir in [d[1], d[2], olddir] {
+            if tdir != NO_DIR && tdir != turnaround && try_step!(tdir) {
+                return Some(());
             }
-        } else {
-            let mut tdir = 3584;
-            while tdir >= 0 {
-                if tdir != turnaround && try_step!(tdir) {
-                    return Some(());
-                }
-                tdir -= 512;
+        }
+        // There is no direct path to the goal, so pick another direction:
+        // the old heading above, then the eight compass points in a randomly
+        // chosen sense of rotation, skipping straight back.
+        let upward = self.next_chase_random() & 1 != 0;
+        for step in 0..8i16 {
+            let tdir = (if upward { step } else { 7 - step }) * 512;
+            if tdir != turnaround && try_step!(tdir) {
+                return Some(());
             }
         }
         if try_step!(turnaround) {
