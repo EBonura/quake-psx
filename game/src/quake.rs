@@ -82,6 +82,11 @@ pub fn run() -> ! {
     // PSoXide target allocator is intentionally monotonic, so allowing each
     // transition to grow a fresh collection would eventually exhaust PS1 RAM.
     let mut world = crate::asset::ResidentMap::new();
+    // Look for the music files before anything else reads the disc: the drive
+    // is still next to the executable, so the lookup costs a sector read and no
+    // seek, where later it would cost two long seeks.
+    let mut music = crate::music::Music::new();
+    music.probe();
     #[cfg(feature = "monster-code-overlay")]
     let mut monster_code = crate::monster_code::MonsterCode::new();
     if world.load_graphics().is_err() {
@@ -90,8 +95,6 @@ pub fn run() -> ! {
     }
     let mut entities = crate::entity::EntityScene::new();
     let mut audio = crate::audio::AudioBank::new();
-    // Silent until the first level load looks for its files on the disc.
-    let mut music = crate::music::Music::new();
     let mut presentation = LevelPresentation::new();
     // `cl_dlights`. Held beside the presentation pools rather than inside
     // them because only the renderer ever reads it, and it follows the same

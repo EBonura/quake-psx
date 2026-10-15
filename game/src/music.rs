@@ -184,16 +184,23 @@ impl Music {
         self.schedule.restart(tick);
     }
 
-    /// Hand the drive back before a level load: stop the loop and the
-    /// schedule. The first call also looks for the music files, while the
-    /// loading picture is already up and the drive is about to be read anyway.
+    /// Look for the music files on the disc, once. Run it before the first
+    /// load, with the drive still near the executable.
     #[optimize(size)]
     #[inline(never)]
-    pub fn suspend_for_load(&mut self) {
+    pub fn probe(&mut self) {
         if !self.probed {
             self.probed = true;
             self.available = self.locate_files();
         }
+    }
+
+    /// Hand the drive back before a level load: stop the loop and the
+    /// schedule.
+    #[optimize(size)]
+    #[inline(never)]
+    pub fn suspend_for_load(&mut self) {
+        self.probe();
         if !self.available {
             return;
         }
@@ -303,32 +310,41 @@ impl Music {
     fn locate_files(&mut self) -> bool {
         let mut sector = [0u32; SECTOR_WORDS];
         let mut reader = SectorReader::new();
+        let mut found = [false; XA_FILE_COUNT];
+        // One read session from the volume descriptor forward: the root
+        // directory sits a few sectors after it, and passing over those
+        // costs less than a second session (a command pair and a seek).
         // SAFETY: the loader's own reader is idle here (this runs at a level
         // boundary) and nothing else holds the controller.
         unsafe {
-            if !reader.prepare() {
+            if !reader.prepare() || !reader.start_read(PVD_LBA) {
+                reader.stop();
                 return false;
             }
-            let Some(volume) = read_sector(&mut reader, PVD_LBA, &mut sector) else {
-                reader.stop();
-                return false;
-            };
-            let Some((root, size)) = root_directory(volume) else {
-                reader.stop();
-                return false;
-            };
-            let mut found = [false; XA_FILE_COUNT];
-            // A root directory this small is one sector; scan a few in case not.
-            for at in 0..size.div_ceil(2048).min(4) {
-                let Some(directory) = read_sector(&mut reader, root + at, &mut sector) else {
-                    break;
-                };
-                for (file, name) in XA_FILE_NAMES.iter().enumerate() {
-                    if let Some((lba, bytes)) = find_in_directory(directory, name) {
-                        self.files[file] = (lba, bytes / 2048);
-                        found[file] = true;
+            let mut lba = PVD_LBA;
+            let mut root = (0, 0);
+            while reader.read_sector(&mut sector) {
+                let bytes =
+                    core::slice::from_raw_parts(sector.as_ptr().cast::<u8>(), SECTOR_WORDS * 4);
+                if lba == PVD_LBA {
+                    match root_directory(bytes) {
+                        Some(at) if at.0 > PVD_LBA && at.0 - PVD_LBA <= MAX_ROOT_SKIP => root = at,
+                        _ => break,
+                    }
+                } else if lba >= root.0 {
+                    for (file, name) in XA_FILE_NAMES.iter().enumerate() {
+                        if let Some((lba, bytes)) = find_in_directory(bytes, name) {
+                            self.files[file] = (lba, bytes / 2048);
+                            found[file] = true;
+                        }
+                    }
+                    // A root directory this small is one sector; scan a few in
+                    // case not.
+                    if lba + 1 >= root.0 + root.1.div_ceil(2048).min(4) {
+                        break;
                     }
                 }
+                lba += 1;
             }
             reader.stop();
             if !found.iter().all(|f| *f) {
@@ -341,6 +357,10 @@ impl Music {
         true
     }
 }
+
+/// Most sectors between the volume descriptor and the root directory that the
+/// lookup reads through rather than seeking over (mkisopsx puts it four on).
+const MAX_ROOT_SKIP: u32 = 16;
 
 /// ISO 9660: the primary volume descriptor's sector.
 const PVD_LBA: u32 = 16;
@@ -379,22 +399,6 @@ fn find_in_directory(sector: &[u8], name: &str) -> Option<(u32, u32)> {
         at += length;
     }
     None
-}
-
-/// Read one data sector into `sector` and return its bytes.
-#[optimize(size)]
-#[inline(never)]
-unsafe fn read_sector<'a>(
-    reader: &mut SectorReader,
-    lba: u32,
-    sector: &'a mut [u32; SECTOR_WORDS],
-) -> Option<&'a [u8]> {
-    if !reader.start_read(lba) {
-        return None;
-    }
-    let read = reader.read_sector(sector);
-    reader.stop();
-    read.then(|| core::slice::from_raw_parts(sector.as_ptr().cast::<u8>(), SECTOR_WORDS * 4))
 }
 
 /// One state-change line for the headless gate: `quake-music <what> tick=<n>
