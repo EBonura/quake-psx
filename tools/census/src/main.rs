@@ -606,9 +606,9 @@ mod tests {
         git(&["add", "journey.toml"]);
         git(&[
             "-c",
-            "user.name=ebonura-fastly",
+            "user.name=Census Fixture",
             "-c",
-            "user.email=ebonura@fastly.com",
+            "user.email=census-fixture@example.invalid",
             "-c",
             "commit.gpgsign=false",
             "commit",
