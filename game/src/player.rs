@@ -120,12 +120,6 @@ impl Player {
         self.movement.die(i32::from(hop_units));
     }
 
-    /// The corpse keeps obeying gravity and the floor with no input at all, so
-    /// a player killed in the air or on a slope settles instead of hanging.
-    pub fn update_dead(&mut self, map: &ResidentMap, entities: &EntityScene, elapsed_ticks: u16) {
-        self.update(map, entities, InputFrame::default(), elapsed_ticks);
-    }
-
     /// The gameplay view: `cl.viewangles` and the eye height, before
     /// `V_CalcRefdef` layers punch, kick, roll and bob on it. Shots, aiming
     /// and the listener all use this one.
