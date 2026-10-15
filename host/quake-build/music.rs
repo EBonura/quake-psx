@@ -56,6 +56,14 @@ pub const LOOPS: [(&str, &str); 8] = [
     ),
 ];
 
+/// Times each loop is laid end to end in the XA file. The drive cannot jump
+/// from the end of a file back to its start without a seek, and the seek is an
+/// audible gap (about 0.4 s in the emulator, more on a console); a loop heard
+/// up to three times in a row therefore sits in the file three times, and the
+/// drive just keeps reading. The audio is the loop itself, repeated, with no
+/// crossfade or edit.
+pub const REPEATS: usize = 3;
+
 /// Stem of the file names `xa-pack` writes: `MUSIC1.XA`, `MUSIC2.XA`.
 const PACK_NAME: &str = "MUSIC";
 const XA_PACK_REPOSITORY: &str = "https://github.com/EBonura/PSoXide.git";
@@ -64,6 +72,35 @@ const XA_PACK_REPOSITORY: &str = "https://github.com/EBonura/PSoXide.git";
 /// pin in `components.lock.json` is separate and unchanged: this revision is
 /// used only as a host build tool, never linked into the game.
 const XA_PACK_REVISION: &str = "4113960f79ea4a64b53bcc9c34318ea1b562e86e";
+
+/// Write `source` to `target` with its PCM data repeated `times` times: the
+/// same header with the data length updated, the samples appended end to end.
+fn repeat_wav(source: &Path, target: &Path, times: usize) -> Result<()> {
+    let bytes = fs::read(source)?;
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(format!("{} is not a RIFF WAVE file", source.display()).into());
+    }
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into()?) as usize;
+        if &bytes[at..at + 4] == b"data" {
+            let start = at + 8;
+            let end = (start + size).min(bytes.len());
+            let mut out = bytes[..start].to_vec();
+            for _ in 0..times {
+                out.extend_from_slice(&bytes[start..end]);
+            }
+            let data_len = ((end - start) * times) as u32;
+            out[at + 4..at + 8].copy_from_slice(&data_len.to_le_bytes());
+            let riff = (out.len() - 8) as u32;
+            out[4..8].copy_from_slice(&riff.to_le_bytes());
+            fs::write(target, out)?;
+            return Ok(());
+        }
+        at += 8 + size + (size & 1);
+    }
+    Err(format!("{} has no data chunk", source.display()).into())
+}
 
 /// A finished pack.
 pub struct MusicPack {
@@ -160,7 +197,7 @@ pub fn prepare(
             .into());
         }
         sources.push(serde_json::json!({"loop": name, "sha256": digest}));
-        wavs.push(path);
+        wavs.push((name, path));
     }
     let checkout = tool_checkout(root, tool)?;
     let out = build.join("music");
@@ -168,6 +205,14 @@ pub fn prepare(
         fs::remove_dir_all(&out)?;
     }
     fs::create_dir_all(&out)?;
+    let repeated_dir = out.join("loops");
+    fs::create_dir_all(&repeated_dir)?;
+    let mut repeated = Vec::new();
+    for (name, path) in &wavs {
+        let target = repeated_dir.join(format!("{name}.wav"));
+        repeat_wav(path, &target, REPEATS)?;
+        repeated.push(target);
+    }
     let manifest = out.join("music.json");
     let map = out.join("music_map.rs");
     let mut command = Command::new(require_tool(&["cargo"])?);
@@ -179,7 +224,7 @@ pub fn prepare(
         .arg("xa-pack")
         .arg(&out)
         .arg(PACK_NAME)
-        .args(&wavs)
+        .args(&repeated)
         .arg("--manifest")
         .arg(&manifest)
         .arg("--rust")
@@ -216,6 +261,10 @@ pub fn prepare(
         "{}pub const XA_SONG_NAMES: [&str; {}] = [{names}];\n",
         fs::read_to_string(&map)?,
         LOOPS.len()
+    ) + &format!(
+        "/// Copies of each loop laid end to end in its XA channel: XA_SONGS holds the\n\
+         /// milliseconds of all of them, so one pass is that divided by this.\n\
+         pub const XA_REPEATS: u32 = {REPEATS};\n"
     );
     let guest_map = root.join("game/src/music_map.rs");
     if fs::read_to_string(&guest_map).ok().as_deref() != Some(generated.as_str()) {
@@ -228,6 +277,7 @@ pub fn prepare(
         "packer": {"repository": "EBonura/PSoXide", "revision": XA_PACK_REVISION},
         "sources": sources,
         "files": artifacts,
+        "repeats": REPEATS,
         "total_sectors": manifest_json["total_sectors"],
     });
     Ok(MusicPack { files, receipt })

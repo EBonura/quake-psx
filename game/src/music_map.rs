@@ -3,7 +3,10 @@
 pub const XA_FILE_COUNT: usize = 2;
 pub const XA_FILE_NAMES: [&str; 2] = ["MUSIC1.XA", "MUSIC2.XA"];
 pub const XA_FILE_NUMBERS: [u8; 2] = [1, 2];
-pub const XA_FILE_SECTORS: [u32; 2] = [4288, 3316];
+pub const XA_FILE_SECTORS: [u32; 2] = [12832, 9916];
 pub const XA_SPEED_DOUBLE: bool = false;
-pub const XA_SONGS: [(u8, u8, u32); 8] = [(0, 0, 44852), (1, 0, 40000), (0, 1, 45860), (1, 1, 40316), (1, 2, 40000), (1, 3, 44000), (0, 2, 56947), (0, 3, 52000)];
+pub const XA_SONGS: [(u8, u8, u32); 8] = [(0, 0, 134557), (1, 0, 120000), (0, 1, 137581), (1, 1, 120950), (1, 2, 120000), (1, 3, 132000), (0, 2, 170842), (0, 3, 156000)];
 pub const XA_SONG_NAMES: [&str; 8] = ["AKULAK", "JOIK", "LASKA", "MIOTO", "NOTUS", "OPAX", "SIRTROIN", "SKINOX"];
+/// Copies of each loop laid end to end in its XA channel: XA_SONGS holds the
+/// milliseconds of all of them, so one pass is that divided by this.
+pub const XA_REPEATS: u32 = 3;

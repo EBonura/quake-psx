@@ -210,6 +210,11 @@ taken from `--xa-pack PATH`. That revision is a host build tool only; the game
 links the SDK pinned in `components.lock.json`. `--no-music` builds a silent
 disc. `game/src/music_map.rs` is the generated song table and is committed.
 
+A CD drive cannot loop an XA file without a seek, and the seek is an audible
+gap. So each loop is laid three times end to end in the XA file (the most
+repeats the schedule can ask for) and a song is one uninterrupted read. The
+cost is disc space: the music is about 53 MB at 37.8 kHz stereo.
+
 ## Data and licensing
 
 The source is released under GPL-2.0-only. Quake maps, models, textures,

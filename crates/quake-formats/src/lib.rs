@@ -599,7 +599,12 @@ pub const TEXTURE_LAYERED_SKY: u8 = 64;
 /// test and the GPU-extent cut) frees the old PSB1 arena's unused heap without making routine recooks
 /// brittle. `assert_cooked_maps_fit` loads every
 /// map through this exact capacity and pins the measured high-water mark.
-pub const RESIDENT_MAP_ARENA_BYTES: usize = 874_000;
+///
+/// The ambient music (XA player, ISO lookup, schedule) took 3.4 KiB of the
+/// image and left the shipping heap 1.5 KiB free; 6,000 more bytes come out of
+/// the margin to pay for it, leaving about 1.9 KiB over the largest map. The
+/// builder rejects any cook that no longer fits, so growth fails loudly.
+pub const RESIDENT_MAP_ARENA_BYTES: usize = 868_000;
 
 /// One packed `pic_t` record in the Rust-cooked `gfx.dat` index.
 pub const GRAPHICS_PICTURE_RECORD_BYTES: usize = 6;

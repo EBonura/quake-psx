@@ -6,6 +6,12 @@
   played sporadically (a random loop after 30 to 90 s of silence, fading in and
   out, then 60 to 180 s of silence). The Options TRACK row is gone; MUSIC and
   MUSIC VOLUME stay.
+- Repeats of a loop are gapless: each loop is stored three times end to end in
+  the XA file, so a song is one uninterrupted drive read (about 53 MB of music).
+- The shipping heap has 8,952 bytes free again (the `ship-boot` floor is 8,192;
+  main had 4,952): the resident-map arena margin is trimmed by 6,000 bytes, the
+  hazard trampoline reserve drops from 256 to 192 words, and the music player
+  drives the CD directly instead of through the SDK's looping player.
 - Removed the code that borrowed the PSoXide demo disc launcher's CD-DA tracks
   by number. Standalone Quake now has music, and no longer depends on the
   launcher's track layout.
