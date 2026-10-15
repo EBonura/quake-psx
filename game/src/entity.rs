@@ -2614,7 +2614,7 @@ impl EntityScene {
                     }
                     if direct_entity.is_none()
                         && direct_trigger.is_none()
-                        && world_point_contents(map, end) == Some(CONTENTS_SKY)
+                        && world_point_contents(map, impact) == Some(CONTENTS_SKY)
                     {
                         result.sky_removals = result.sky_removals.saturating_add(1);
                         removed = true;
@@ -2757,7 +2757,8 @@ impl EntityScene {
                     } else if !hit_player {
                         // `spike_touch` on the world: gone silently into the
                         // sky, otherwise `TE_SPIKE` (the client's tink).
-                        if world_point_contents(map, end) != Some(CONTENTS_SKY) {
+                        let impact = interpolate_segment(nail.origin, end, best_fraction);
+                        if world_point_contents(map, impact) != Some(CONTENTS_SKY) {
                             result.world_impacts = result.world_impacts.saturating_add(1);
                             result.last_world_impact = Some(end);
                         }
@@ -5354,11 +5355,7 @@ impl EntityScene {
             (origin.x + half, origin.y + half),
         ];
         // "If all of the points under the corners are solid world, don't
-        // bother with the tougher checks." The render BSP answers this: the
-        // clip-node hull that `world_point_contents` walks has no valid
-        // hull 0 and reports free air under a ledge as solid.
-        let mut scratch = TraceScratch::default();
-        let mut trace = Trace::default();
+        // bother with the tougher checks."
         let mut easy = true;
         for &(x, y) in &corners {
             let under = Vec3I32 {
@@ -5366,10 +5363,7 @@ impl EntityScene {
                 y,
                 z: bottom.saturating_sub(1 << 12),
             };
-            if !self.trace_point(map, &under, &under, &mut scratch, &mut trace) {
-                return None;
-            }
-            if !trace.start_solid {
+            if world_point_contents(map, under) != Some(CONTENTS_SOLID) {
                 easy = false;
                 break;
             }
@@ -5377,6 +5371,8 @@ impl EntityScene {
         if easy {
             return Some(true);
         }
+        let mut scratch = TraceScratch::default();
+        let mut trace = Trace::default();
         let reach = STEP_HEIGHT * 2 << 12;
         // The midpoint must be within two steps of the bottom.
         let start = Vec3I32 {
@@ -6938,7 +6934,10 @@ impl EntityScene {
                 if world.fraction < 1 << 12 {
                     if !missile.kind.ballistic() {
                         if matches!(missile.kind, MonsterMissileKind::LavaBall)
-                            && world_point_contents(map, end) != Some(CONTENTS_SKY)
+                            && world_point_contents(
+                                map,
+                                interpolate_segment(missile.origin, end, world.fraction),
+                            ) != Some(CONTENTS_SKY)
                         {
                             // `T_MissileTouch` against the world: no direct
                             // target, so the splash reaches everyone. Into
@@ -9400,16 +9399,14 @@ fn player_origin_from_mins(player_mins: Vec3I32) -> Vec3I32 {
     }
 }
 
+/// `SV_PointContents` for the world model: the contents of the BSP leaf the
+/// point is in. This reads the render tree. The clip-node walk this replaced
+/// used a hull-0 head that is not a valid clip hull, so about one point in
+/// fifteen of open space read as solid and the sky leaves of E1M5 never read
+/// as sky.
 fn world_point_contents(map: &ResidentMap, point: Vec3I32) -> Option<i16> {
-    let world = map.brush_models().get(0)?;
-    Some(unsafe {
-        CollisionHull::from_native_clip_nodes(
-            map.collision_planes(),
-            map.collision_clip_nodes(),
-            world.head_nodes[0],
-        )
-    })?
-    .point_contents(point)
+    let leaf = map.point_leaf_index(point)?;
+    Some(map.leaves().get(leaf)?.contents)
 }
 
 #[inline(never)]
