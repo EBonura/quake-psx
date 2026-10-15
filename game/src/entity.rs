@@ -6941,19 +6941,17 @@ impl EntityScene {
                     break;
                 }
                 if world.fraction < 1 << 12 {
+                    let stopped = interpolate_segment(missile.origin, end, world.fraction);
                     if !missile.kind.ballistic() {
                         if matches!(missile.kind, MonsterMissileKind::LavaBall)
-                            && world_point_contents(
-                                map,
-                                interpolate_segment(missile.origin, end, world.fraction),
-                            ) != Some(CONTENTS_SKY)
+                            && world_point_contents(map, stopped) != Some(CONTENTS_SKY)
                         {
                             // `T_MissileTouch` against the world: no direct
                             // target, so the splash reaches everyone. Into
                             // the sky it is simply removed.
                             self.explode_monster_missile(
                                 map,
-                                interpolate_segment(missile.origin, end, world.fraction),
+                                stopped,
                                 LAVA_BALL_SPLASH_DAMAGE,
                                 player_mins,
                                 None,
@@ -6965,7 +6963,7 @@ impl EntityScene {
                         removed = true;
                         break;
                     }
-                    missile.origin = interpolate_segment(missile.origin, end, world.fraction);
+                    missile.origin = stopped;
                     if matches!(missile.kind, MonsterMissileKind::Gib) {
                         // `ZombieGrenadeTouch` against the world: z_miss, then
                         // the flesh stops dead and waits out its lifetime.
