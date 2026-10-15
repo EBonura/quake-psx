@@ -98,3 +98,121 @@ pub fn controls(
         ..InputFrame::default()
     })
 }
+
+/// Items a player under pressure goes for, and how far off the route to go.
+const PICKUP_RANGE: i32 = 450;
+/// Frames spent chasing one item before the controller gives up on it.
+const PICKUP_PATIENCE: u32 = 240;
+
+fn wanted(pickup: quake_core::combat::Pickup, health: i16, armor: u16, shells: u16) -> bool {
+    use quake_core::combat::{AmmoKind, Pickup};
+    match pickup {
+        Pickup::Health { .. } => health <= 75,
+        Pickup::Armor { amount, .. } => armor < amount.min(100),
+        Pickup::Ammo { kind: AmmoKind::Shells, .. } => shells < 40,
+        Pickup::Weapon { .. } => true,
+        _ => false,
+    }
+}
+
+/// Look and walk toward `target`, swimming up when `swim` asks for it.
+fn head_for(player: &Player, target: quake_formats::Vec3I32, swim: bool) -> InputFrame {
+    let from = player.camera().origin;
+    let dx = (target.x - from.x) >> 12;
+    let dy = (target.y - from.y) >> 12;
+    let dz = (target.z - from.z) >> 12;
+    let horizontal = psx_math::int32::isqrt_i32(dx * dx + dy * dy);
+    let yaw = psx_math::atan2_q12(dy, dx) as i16;
+    let pitch = if swim { psx_math::atan2_q12(-dz, horizontal) as i16 } else { 0 };
+    let delta = |a: i16, b: i16| -> i16 {
+        let d = (i32::from(a as u16) - i32::from(b as u16)) & 4095;
+        (if d > 2048 { d - 4096 } else { d }) as i16
+    };
+    let dyaw = delta(yaw, player.view_angles[1]);
+    let dpitch = delta(pitch, player.view_angles[0]);
+    InputFrame {
+        movement: [if dyaw.abs() > 96 { 0 } else { 127 }, 0],
+        look: [
+            (i32::from(dyaw) * 4).clamp(-127, 127) as i16,
+            (i32::from(dpitch) * 4).clamp(-127, 127) as i16,
+        ],
+        held: if swim { button::CROSS } else { 0 },
+        ..InputFrame::default()
+    }
+}
+
+/// Recovery between fights: get out of water onto the last dry ground the
+/// route stood on, and detour to a visible health, armour, shell or weapon
+/// item when hurt or short. Returns `None` when the route should carry on.
+pub fn recovery(
+    map: &ResidentMap,
+    entities: &EntityScene,
+    player: &Player,
+    health: i16,
+    armor: u16,
+    shells: u16,
+) -> Option<InputFrame> {
+    static mut LAST_DRY: Option<quake_formats::Vec3I32> = None;
+    static mut CHASING: u16 = u16::MAX;
+    static mut CHASE_FRAMES: u32 = 0;
+    static mut GAVE_UP: [u16; 8] = [u16::MAX; 8];
+    static mut GAVE_UP_NEXT: usize = 0;
+    // SAFETY: single-threaded guest loop; these statics are private to it.
+    unsafe {
+        let here = player.origin();
+        if player.water_level() == 0 {
+            LAST_DRY = Some(here);
+        } else if player.water_level() >= 2 {
+            if let Some(shore) = *core::ptr::addr_of!(LAST_DRY) {
+                let mut lift = shore;
+                lift.z += 24 << 12;
+                return Some(head_for(player, lift, true));
+            }
+        }
+        let from = player.camera().origin;
+        let mut best: Option<(i32, &crate::entity::RenderEntity)> = None;
+        for e in entities.entities().iter() {
+            if !e.visible || e.is_monster() {
+                continue;
+            }
+            let Some(pickup) = e.pickup_kind() else { continue };
+            if !wanted(pickup, health, armor, shells) {
+                continue;
+            }
+            if (*core::ptr::addr_of!(GAVE_UP)).contains(&e.source_index) {
+                continue;
+            }
+            let dx = (e.origin.x - from.x) >> 12;
+            let dy = (e.origin.y - from.y) >> 12;
+            let dz = (e.origin.z - from.z) >> 12;
+            let d = dx.abs().max(dy.abs());
+            if d > PICKUP_RANGE || dz.abs() > 48 {
+                continue;
+            }
+            if !entities.regression_point_visible(map, from, e.origin) {
+                continue;
+            }
+            if best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, e));
+            }
+        }
+        let Some((_, item)) = best else {
+            CHASING = u16::MAX;
+            CHASE_FRAMES = 0;
+            return None;
+        };
+        if CHASING != item.source_index {
+            CHASING = item.source_index;
+            CHASE_FRAMES = 0;
+        }
+        CHASE_FRAMES += 1;
+        if CHASE_FRAMES > PICKUP_PATIENCE {
+            let slot = GAVE_UP_NEXT & 7;
+            GAVE_UP[slot] = item.source_index;
+            GAVE_UP_NEXT += 1;
+            CHASING = u16::MAX;
+            return None;
+        }
+        Some(head_for(player, item.origin, false))
+    }
+}

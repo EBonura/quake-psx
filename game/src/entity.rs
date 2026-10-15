@@ -249,6 +249,13 @@ impl RenderEntity {
     pub const fn is_monster(&self) -> bool {
         self.monster.is_some()
     }
+
+    /// What touching this entity would give, for the journey controllers'
+    /// detours to health, armour and ammunition.
+    #[cfg(feature = "e1m2-normal-journey")]
+    pub const fn pickup_kind(&self) -> Option<quake_core::combat::Pickup> {
+        self.pickup
+    }
 }
 
 pub struct EntityScene {

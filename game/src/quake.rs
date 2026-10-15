@@ -486,7 +486,17 @@ pub fn run() -> ! {
             apply_look_settings(raw_controls, &menu)
         } else {
             #[cfg(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))]
-            let combat = crate::e1m2_e1m3_route_regression::combat_controls(&world, &entities, &player, weapon.shells());
+            let combat = crate::e1m2_e1m3_route_regression::combat_controls(&world, &entities, &player, weapon.shells())
+                .or_else(|| {
+                    crate::journey_combat::recovery(
+                        &world,
+                        &entities,
+                        &player,
+                        weapon.inventory().health(),
+                        weapon.inventory().armor(),
+                        weapon.shells(),
+                    )
+                });
             #[cfg(not(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey")))]
             let combat: Option<crate::input::InputFrame> = None;
             combat.unwrap_or_else(|| crate::e1m2_e1m3_route_regression::controls(world.map(), &entities, &player, &weapon))
