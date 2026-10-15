@@ -7,6 +7,7 @@
 //! PSoXide supplies shared fixed-point arithmetic and hardware-independent
 //! primitives. This crate owns only Quake's BSP and gameplay semantics.
 
+pub mod ambient;
 pub mod body;
 pub mod bsp_axis_adapter;
 pub mod collision;

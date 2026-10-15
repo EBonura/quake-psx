@@ -127,7 +127,7 @@ in `.cargo/config.toml`) is short for
 cargo quake-build check       # check tools, source data and SDK revision
 cargo quake-build assets      # recook Episode 1 assets
 cargo quake-build compile     # rebuild the PS1 executable
-cargo quake-build disc        # rebuild the standalone disc
+cargo quake-build disc --music-dir PATH   # rebuild the standalone disc
 cargo quake-build --help      # list regression commands
 ```
 
@@ -189,12 +189,26 @@ real console.
 Rendering design and image checks are described in
 [RENDERING.md](RENDERING.md) and [VISUAL_PARITY.md](VISUAL_PARITY.md).
 
-## Optional CD audio
+## Music
 
-The shareware archive does not include the original soundtrack. Lawfully
-obtained, sector-aligned 44.1 kHz stereo PCM tracks can be placed at
-`id1psx/music/track02.cdda` through `track11.cdda` and enabled with
-`--with-cdda`. Audio files are intentionally excluded from Git.
+The disc carries eight dark-ambient loops as two XA-ADPCM files
+(`MUSIC1.XA`, `MUSIC2.XA`). They are not constant: after a map starts there is
+30 to 90 seconds of silence, then a random loop (never the one just heard)
+fades in over three seconds, plays one to three times, fades out over six, and
+the game falls silent again for 60 to 180 seconds. The drive is stopped before
+every map load and the schedule starts over after it. Options has a MUSIC
+on/off row and a MUSIC VOLUME slider.
+
+Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/
+
+The loops are not stored in Git. The builder takes the eight 37.8 kHz WAVs
+(`Akulak`, `Joik`, `Laska`, `Mioto`, `Notus`, `Opax`, `Sirtroin`, `Skinox`)
+from `--music-dir` (or `QUAKE_PSX_MUSIC_DIR`), checks each against the digest
+in `host/quake-build/music.rs`, and packs them with `psx-audio-cook xa-pack`
+from the PSoXide revision named there, fetched into `.quakepsx/xa-pack` or
+taken from `--xa-pack PATH`. That revision is a host build tool only; the game
+links the SDK pinned in `components.lock.json`. `--no-music` builds a silent
+disc. `game/src/music_map.rs` is the generated song table and is committed.
 
 ## Data and licensing
 

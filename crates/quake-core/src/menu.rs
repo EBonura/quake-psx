@@ -166,18 +166,6 @@ impl MenuRow {
     }
 }
 
-/// What the PSoXide demo disc calls its four shared menu songs, in disc order.
-/// The `TRACK` row names them, and the game's `music` module counts them; both
-/// live off this one table so the Options page cannot label a song the drive is
-/// not playing. A disc whose menu tracklist changes mislabels as well as
-/// misplays, which is the price of borrowing the launcher's audio.
-pub const MUSIC_TRACKS: [&str; 4] = [
-    "KNUCKLE DUST",
-    "RUSTED HAMMER",
-    "CHAINSAW HEART",
-    "NIGHT CRAWLER",
-];
-
 /// Informational lines shown by the Controls page above its Back row.
 pub const CONTROL_LINES: [&str; 7] = [
     "LEFT STICK / D-PAD   MOVE",
@@ -221,13 +209,11 @@ pub struct MenuView {
     pub skill: u8,
     /// Original `volume`, represented as the menu's ten slider steps.
     pub sound_volume: u8,
-    /// The disc carries the shared menu tracks, so the music rows are real.
+    /// The disc carries the ambient music files, so the music rows are real.
     pub music_available: bool,
     pub music_on: bool,
     /// Original `bgmvolume`, represented as the menu's ten slider steps.
     pub music_volume: u8,
-    /// Index into [`MUSIC_TRACKS`].
-    pub track: u8,
     /// Original `god` and `noclip` developer toggles. The page exposing them
     /// only exists in the pause menu, so a boot-time new game cannot erase a
     /// choice the player just made.
@@ -279,7 +265,6 @@ const POSES_ROWS: u8 = cfg!(feature = "smooth-poses") as u8;
 pub const OPTIONS_SOUND_VOLUME_ROW: u8 = 10 + POSES_ROWS;
 pub const OPTIONS_MUSIC_ROW: u8 = OPTIONS_SOUND_VOLUME_ROW + 1;
 pub const OPTIONS_MUSIC_VOLUME_ROW: u8 = OPTIONS_SOUND_VOLUME_ROW + 2;
-pub const OPTIONS_TRACK_ROW: u8 = OPTIONS_SOUND_VOLUME_ROW + 3;
 
 impl MenuView {
     #[optimize(size)]
@@ -306,10 +291,10 @@ impl MenuView {
 
     /// Which Options row is `BACK`. The music rows sit above it and only when
     /// the disc actually has the songs. Sound volume is always present;
-    /// music, music volume, and track are conditional.
+    /// music and music volume are conditional.
     #[optimize(size)]
     pub const fn options_back_row(self) -> u8 {
-        OPTIONS_SOUND_VOLUME_ROW + 1 + 3 * self.music_available as u8
+        OPTIONS_SOUND_VOLUME_ROW + 1 + 2 * self.music_available as u8
     }
 
     #[optimize(size)]
@@ -401,14 +386,6 @@ impl MenuView {
                 OPTIONS_MUSIC_VOLUME_ROW if self.music_available => {
                     Some(MenuRow::plain("MUSIC VOLUME"))
                 }
-                OPTIONS_TRACK_ROW if self.music_available => Some(MenuRow::valued(
-                    "TRACK",
-                    MUSIC_TRACKS[if (self.track as usize) < MUSIC_TRACKS.len() {
-                        self.track as usize
-                    } else {
-                        0
-                    }],
-                )),
                 _ if index == self.options_back_row() => Some(MenuRow::plain("BACK")),
                 _ => None,
             },
@@ -458,7 +435,6 @@ pub struct Menu {
     music_available: bool,
     music_on: bool,
     music_volume: u8,
-    track: u8,
     god_mode: bool,
     noclip: bool,
     pending_sound: Option<MenuSound>,
@@ -495,7 +471,6 @@ impl Menu {
             music_available: false,
             music_on: true,
             music_volume: DEFAULT_MUSIC_VOLUME,
-            track: 0,
             god_mode: false,
             noclip: false,
             // `m_entersound` is raised when the original first enters a menu
@@ -532,22 +507,19 @@ impl Menu {
             music_available: self.music_available,
             music_on: self.music_on,
             music_volume: self.music_volume,
-            track: self.track,
             god_mode: self.god_mode,
             noclip: self.noclip,
         }
     }
 
-    /// Refresh the music rows from the drive. The player edits them, but the
-    /// song advances on its own at the end of a track and at every level load,
-    /// so the module that owns the drive re-states the truth each frame and the
-    /// menu is only the surface. Losing the rows mid-page cannot strand the
+    /// Refresh the music rows from the music module. The player edits them,
+    /// but the module owns whether music exists on this disc, so it re-states
+    /// the truth each frame and the menu is only the surface. Losing the rows mid-page cannot strand the
     /// cursor past the last one.
     #[optimize(size)]
-    pub fn sync_music(&mut self, available: bool, on: bool, track: u8) {
+    pub fn sync_music(&mut self, available: bool, on: bool) {
         self.music_available = available;
         self.music_on = on;
-        self.track = track;
         let rows = self.view().row_count();
         if self.selected >= rows {
             self.selected = rows - 1;
@@ -769,17 +741,6 @@ impl Menu {
                     } else {
                         self.music_volume = self.music_volume.saturating_sub(1);
                     }
-                } else if self.music_available
-                    && self.selected == OPTIONS_TRACK_ROW
-                    && (input.left || input.right)
-                {
-                    self.pending_sound = Some(MenuSound::Adjust);
-                    let step = if input.right {
-                        1
-                    } else {
-                        MUSIC_TRACKS.len() - 1
-                    };
-                    self.track = ((self.track as usize + step) % MUSIC_TRACKS.len()) as u8;
                 } else if (self.selected == self.view().options_back_row() && input.accept)
                     || input.back
                 {
@@ -1116,8 +1077,8 @@ mod tests {
             Some(MenuRow::plain("BACK"))
         );
 
-        menu.sync_music(true, true, 0);
-        assert_eq!(menu.view().row_count(), OPTIONS_TRACK_ROW + 2);
+        menu.sync_music(true, true);
+        assert_eq!(menu.view().row_count(), OPTIONS_MUSIC_VOLUME_ROW + 2);
         assert_eq!(
             menu.view().row(OPTIONS_MUSIC_ROW),
             Some(MenuRow::valued("MUSIC", "ON"))
@@ -1127,11 +1088,7 @@ mod tests {
             Some(MenuRow::plain("MUSIC VOLUME"))
         );
         assert_eq!(
-            menu.view().row(OPTIONS_TRACK_ROW),
-            Some(MenuRow::valued("TRACK", MUSIC_TRACKS[0]))
-        );
-        assert_eq!(
-            menu.view().row(OPTIONS_TRACK_ROW + 1),
+            menu.view().row(OPTIONS_MUSIC_VOLUME_ROW + 1),
             Some(MenuRow::plain("BACK"))
         );
 
@@ -1139,7 +1096,7 @@ mod tests {
             left: true,
             ..MenuInput::default()
         };
-        // MUSIC toggles off, TRACK wraps backwards to the last song.
+        // MUSIC toggles off, then the volume steps down.
         for _ in 0..OPTIONS_MUSIC_ROW {
             menu.update(down());
         }
@@ -1147,9 +1104,8 @@ mod tests {
         assert!(!menu.view().music_on);
         menu.update(down());
         assert_eq!(menu.view().selected, OPTIONS_MUSIC_VOLUME_ROW);
-        menu.update(down());
         assert_eq!(menu.update(left), None);
-        assert_eq!(menu.view().track, MUSIC_TRACKS.len() as u8 - 1);
+        assert_eq!(menu.view().music_volume, DEFAULT_MUSIC_VOLUME - 1);
         // BACK has moved down with the rows.
         menu.update(down());
         assert_eq!(menu.update(accept()), None);
@@ -1163,12 +1119,12 @@ mod tests {
         menu.update(down());
         menu.update(down());
         menu.update(accept());
-        menu.sync_music(true, true, 0);
-        for _ in 0..OPTIONS_TRACK_ROW + 1 {
+        menu.sync_music(true, true);
+        for _ in 0..OPTIONS_MUSIC_VOLUME_ROW + 1 {
             menu.update(down());
         }
-        assert_eq!(menu.view().selected, OPTIONS_TRACK_ROW + 1);
-        menu.sync_music(false, true, 0);
+        assert_eq!(menu.view().selected, OPTIONS_MUSIC_VOLUME_ROW + 1);
+        menu.sync_music(false, true);
         assert_eq!(menu.view().selected, OPTIONS_SOUND_VOLUME_ROW + 1);
         assert_eq!(
             menu.view().row(OPTIONS_SOUND_VOLUME_ROW + 1),
@@ -1205,7 +1161,7 @@ mod tests {
         }
         assert_eq!(menu.view().sound_volume, VOLUME_STEPS);
 
-        menu.sync_music(true, true, 0);
+        menu.sync_music(true, true);
         menu.update(down());
         menu.update(down());
         assert_eq!(menu.view().selected, OPTIONS_MUSIC_VOLUME_ROW);

@@ -40,6 +40,7 @@ const SHIPPING_CARGO_HOME: &str = "/tmp/quake-psx-cargo-home-v1";
 const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
 const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
 mod monster_code;
+mod music;
 
 const GUEST_RECIPE_PATHS: &[&str] = &[
     // The guest's workspace root: its manifest carries the release profile
@@ -239,6 +240,7 @@ enum Action {
     Disc,
     Check,
     ShipBoot,
+    MusicDisc,
     MapRegress,
     StartRouteRegress,
     E1m1ChainRegress,
@@ -299,6 +301,12 @@ struct Cli {
     quake_dir: Option<PathBuf>,
     psoxide: Option<PathBuf>,
     allow_psoxide_drift: bool,
+    /// Directory holding the eight ambient WAV loops (`music::LOOPS`).
+    music_dir: Option<PathBuf>,
+    /// Build a silent disc: no music files, no music rows in Options.
+    no_music: bool,
+    /// A PSoXide checkout at the xa-pack revision, instead of fetching one.
+    xa_pack: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -403,6 +411,7 @@ fn real_main() -> Result<()> {
     audit_sources(&root)?;
     let sdk = hydrate_psoxide(&root, cli.psoxide.as_deref(), cli.allow_psoxide_drift)?;
     println!("PSoXide SDK: {}", sdk.describe());
+    prepare_music(&root, &cli)?;
 
     match cli.action {
         Action::Check => {
@@ -456,6 +465,16 @@ fn real_main() -> Result<()> {
             build_disc(&root, &build, None, true)?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_ship_boot(&root, &frontend, &build, &map)?;
+        }
+        Action::MusicDisc => {
+            // The shipping stack plus the schedule trace and telemetry, so a
+            // headless run can log each step. Not a shipping image.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-music-trace");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(&root, &build, Some("music-trace"), false)?;
         }
         Action::MapRegress => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2699,6 +2718,9 @@ fn parse_cli() -> Result<Cli> {
     let mut quake_dir = None;
     let mut psoxide = None;
     let mut allow_psoxide_drift = false;
+    let mut music_dir = env::var_os("QUAKE_PSX_MUSIC_DIR").map(PathBuf::from);
+    let mut no_music = false;
+    let mut xa_pack = env::var_os("QUAKE_PSX_XA_PACK").map(PathBuf::from);
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy();
         match text.as_ref() {
@@ -2708,6 +2730,7 @@ fn parse_cli() -> Result<Cli> {
             | "disc"
             | "check"
             | "ship-boot"
+            | "music-disc"
             | "map-regress"
             | "start-route-regress"
             | "visual-parity-regress"
@@ -2765,6 +2788,7 @@ fn parse_cli() -> Result<Cli> {
                     "disc" => Action::Disc,
                     "check" => Action::Check,
                     "ship-boot" => Action::ShipBoot,
+                    "music-disc" => Action::MusicDisc,
                     "map-regress" => Action::MapRegress,
                     "start-route-regress" => Action::StartRouteRegress,
                     "visual-parity-regress" => Action::VisualParityRegress,
@@ -2829,6 +2853,9 @@ fn parse_cli() -> Result<Cli> {
             "--quake-dir" => quake_dir = Some(next_path(&mut args, "--quake-dir")?),
             "--psoxide" => psoxide = Some(next_path(&mut args, "--psoxide")?),
             "--allow-psoxide-drift" => allow_psoxide_drift = true,
+            "--music-dir" => music_dir = Some(next_path(&mut args, "--music-dir")?),
+            "--xa-pack" => xa_pack = Some(next_path(&mut args, "--xa-pack")?),
+            "--no-music" => no_music = true,
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -2841,6 +2868,9 @@ fn parse_cli() -> Result<Cli> {
         quake_dir,
         psoxide,
         allow_psoxide_drift,
+        music_dir,
+        no_music,
+        xa_pack,
     })
 }
 
@@ -2858,6 +2888,7 @@ fn print_help() {
            cargo run --release --manifest-path host/quake-build/Cargo.toml --\n\n\
          Actions:\n  \
            build     Download/cook shareware, build the PSoXide disc, package dist (default)\n  \
+           music-disc  Build a disc whose music module logs each schedule step (gate image)\n  \
            assets    Force a complete Episode 1 recook\n  \
            compile   Rebuild only the PSoXide PS1 executable\n  \
            disc      Build and package the disc from current assets\n  \
@@ -2907,7 +2938,12 @@ fn print_help() {
            --quake-dir PATH  Use a local Quake/id1 directory\n  \
            --psoxide PATH    Override the pinned SDK with a PSoXide checkout\n  \
            --allow-psoxide-drift  Accept a --psoxide checkout whose revision or\n                    \
-           dirty state does not match the pinned expectation"
+           dirty state does not match the pinned expectation\n  \
+           --music-dir PATH  Directory with the eight ambient loops (Akulak.wav ...);\n                    \
+           the disc, ship-boot and music-disc builds pack them. Or QUAKE_PSX_MUSIC_DIR\n  \
+           --xa-pack PATH    PSoXide checkout at the pinned xa-pack revision (default:\n                    \
+           fetched into .quakepsx/xa-pack). Or QUAKE_PSX_XA_PACK\n  \
+           --no-music        Build a silent disc"
     );
 }
 
@@ -4413,6 +4449,9 @@ fn reject_ambient_cargo_configs(current_dir: &Path, cargo_home: &Path) -> Result
     Ok(())
 }
 
+/// The packed ambient music, when this invocation builds a disc that carries it.
+static MUSIC_PACK: OnceLock<music::MusicPack> = OnceLock::new();
+
 /// Optional guest link map requested by `ship-boot`.
 static GUEST_LINK_MAP: OnceLock<PathBuf> = OnceLock::new();
 
@@ -4595,6 +4634,37 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
     Ok(stage)
 }
 
+/// Pack the ambient music for the actions that build a disc carrying it.
+/// Shipping builds (`build`, `disc`, `ship-boot`) need `--music-dir` or an
+/// explicit `--no-music`; the regression and benchmark discs stay silent.
+fn prepare_music(root: &Path, cli: &Cli) -> Result<()> {
+    let shipping = matches!(
+        cli.action,
+        Action::Build | Action::Disc | Action::ShipBoot | Action::MusicDisc
+    );
+    // Regression and benchmark discs stay silent unless a music directory is
+    // named, which is how the gate runs put the music under a scripted route.
+    let builds_disc = !matches!(cli.action, Action::Assets | Action::Check | Action::Compile);
+    if cli.no_music || !builds_disc || (!shipping && cli.music_dir.is_none()) {
+        return Ok(());
+    }
+    let Some(dir) = cli.music_dir.as_deref() else {
+        return Err(
+            "this disc carries the ambient music: pass --music-dir PATH (or QUAKE_PSX_MUSIC_DIR) \
+             with the eight loops, or --no-music for a silent disc"
+                .into(),
+        );
+    };
+    let build = root.join("build-psoxide");
+    fs::create_dir_all(&build)?;
+    let pack = music::prepare(root, &build, dir, cli.xa_pack.as_deref())?;
+    println!("ambient music: {} XA files packed", pack.files.len());
+    MUSIC_PACK
+        .set(pack)
+        .map_err(|_| "the music pack was prepared twice")?;
+    Ok(())
+}
+
 fn build_disc(
     root: &Path,
     build: &Path,
@@ -4636,6 +4706,11 @@ fn build_disc(
         .arg(&image)
         .args(["--volume", "QUAKE_PSX", "--world-pack-extra-dir"])
         .arg(&chunks);
+    if let Some(pack) = MUSIC_PACK.get() {
+        for file in &pack.files {
+            command.arg("--xa-file").arg(file);
+        }
+    }
     run(&mut command)?;
     for path in [&exe, &image, &cue] {
         if !path.is_file() {
@@ -5010,6 +5085,9 @@ fn write_shipping_provenance(
     );
     let mut document: serde_json::Value = serde_json::from_str(&json)?;
     document["psoxide"]["repository"] = "EBonura/PSoXide-editor".into();
+    if let Some(pack) = MUSIC_PACK.get() {
+        document["music"] = pack.receipt.clone();
+    }
     document["psoxide"]["components"] =
         serde_json::from_str::<serde_json::Value>(include_str!("../../components.lock.json"))?
             ["components"]

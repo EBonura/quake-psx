@@ -41,3 +41,10 @@ Earlier private development revisions inherited libpsxav, stb, and dr_wav
 through QuakePSX. Those native converter sources are not present in this
 public repository or compiled by the Rust-only tree. Current audio conversion
 uses PSoXide's Rust WAV and SPU ADPCM facilities.
+
+## Music
+
+Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/. The disc carries eight loops from the
+pack, cut and loudness-matched, encoded as XA-ADPCM. The music is licensed
+under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/);
+it is not covered by this repository's GPL licence and is not stored in it.

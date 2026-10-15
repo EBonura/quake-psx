@@ -57,17 +57,16 @@ pub fn run() -> ! {
     }
     crate::platform::start_vblank_counter();
     psx_spu::init();
-    // Route the CD's own audio into the mix, for the disc music `music.rs`
-    // borrows; `psx_spu::init` leaves the CD input muted. Half scale rather
-    // than the SDK's maximum: Quake keeps the main volume at `Volume::MAX` and
-    // plays its one-shots at `Volume::linear(1, 2)`, so CD at full scale would
-    // put the music above every gunshot and under all twelve dynamic voices
-    // plus eleven ambient loops at once. This is the one constant to turn if
-    // the balance reads wrong on a console.
-    psx_spu::set_cd_volume(
-        psx_spu::CdVolume::linear(1, 2),
-        psx_spu::CdVolume::linear(1, 2),
-    );
+    // Route the CD's own audio into the mix, for the XA ambient music in
+    // `music.rs`; `psx_spu::init` leaves the CD input muted. The input stays at
+    // zero until a loop starts: `music.rs` owns the CD volume from here on and
+    // raises it with its fades, to at most half of hardware gain (Quake keeps
+    // the main volume at `Volume::MAX` and plays its one-shots at
+    // `Volume::linear(1, 2)`, so CD at full scale would put the music above
+    // every gunshot and under all twelve dynamic voices plus eleven ambient
+    // loops at once). The ceiling is the constant to turn if the balance reads
+    // wrong on a console.
+    psx_spu::set_cd_volume(psx_spu::CdVolume::SILENCE, psx_spu::CdVolume::SILENCE);
     psx_spu::enable_cd_audio(true);
     // The shared PSoXide boot intro. Route regressions and the fixed-step
     // bench drive the pad from boot on a tick schedule, so they skip it.
@@ -91,8 +90,7 @@ pub fn run() -> ! {
     }
     let mut entities = crate::entity::EntityScene::new();
     let mut audio = crate::audio::AudioBank::new();
-    // Silent until it has probed the drive, which it does once the game loop is
-    // running: the boot loads below own the drive until then.
+    // Silent until the first level load looks for its files on the disc.
     let mut music = crate::music::Music::new();
     let mut presentation = LevelPresentation::new();
     // `cl_dlights`. Held beside the presentation pools rather than inside
@@ -265,11 +263,11 @@ pub fn run() -> ! {
         dynamic_lights.enter_map(presentation.generation());
         dynamic_lights.tick(elapsed_ticks);
         audio.tick(audio_tick);
-        // The drive is the authority on what is playing: it advances at the end
-        // of a song and at every level load, so the Options rows are restated
-        // from it here and only read back after the player has had a turn.
+        // The music module is the authority on whether there is music: the
+        // Options rows are restated from it here and only read back after the
+        // player has had a turn.
         music.update(audio_tick);
-        menu.sync_music(music.available(), music.enabled(), music.track());
+        menu.sync_music(music.available(), music.enabled());
         // Motors: aged by this frame's ticks, silenced in menus and when dead,
         // and sent with the poll below. Empty calls without the `rumble` feature.
         if menu.active() || weapon.inventory().health() <= 0 {
@@ -423,12 +421,7 @@ pub fn run() -> ! {
             let _ = audio.play_one_shot(id, audio_tick);
         }
         let menu_view = menu.view();
-        music.apply_menu(
-            menu_view.music_on,
-            menu_view.track,
-            menu_view.music_volume,
-            audio_tick,
-        );
+        music.apply_menu(menu_view.music_on, menu_view.music_volume, audio_tick);
         #[cfg(not(any(
             feature = "start-route-regression",
             feature = "e1m1-chain-regression",
