@@ -2112,9 +2112,8 @@ impl MonsterRuntime {
                 _ => {}
             }
         }
-        if self.kind.is_boss() && offset == 0 {
-            return (move_units, Some(BOSS_PAIN_SOUND), 0);
-        }
+        // Chthon's `boss1/pain` is played once by `lightning_use`, which is
+        // `apply_shock`'s sound; the shock frames themselves are silent.
         (move_units, None, 0)
     }
 
@@ -4280,6 +4279,27 @@ mod tests {
         let mut soldier = MonsterRuntime::new(MonsterKind::Soldier, 2);
         soldier.take_damage(100, -10, false);
         assert!(!soldier.leaping());
+    }
+
+    /// `lightning_use` plays `boss1/pain` once; the `boss_shock*` frames are
+    /// silent.
+    #[test]
+    fn a_boss_shock_is_voiced_once() {
+        let mut boss = MonsterRuntime::new(MonsterKind::Boss, 1);
+        boss.awaken(1);
+        run_until(&mut boss, visible(400), 64, |runtime, _| {
+            runtime.state() == MonsterState::Missile
+        });
+        let mut voices = u32::from(
+            boss.apply_shock()
+                .and_then(|transition| transition.sound_id)
+                .is_some(),
+        );
+        for _ in 0..16 {
+            let action = next_think(&mut boss, visible(400));
+            voices += u32::from(action.sound_id == Some(BOSS_PAIN_SOUND));
+        }
+        assert_eq!(voices, 1);
     }
 
     #[test]

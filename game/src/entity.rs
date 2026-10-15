@@ -349,6 +349,9 @@ pub struct EntityScene {
     /// with it.
     sight_index: u16,
     sight_alert_ticks: u16,
+    /// `T_Damage` pushes away from the middle of the inflictor's box. A
+    /// barrel's origin is its box corner, so its blast supplies the centre.
+    knockback_centre: Option<Vec3I32>,
     /// `activator.items & IT_INVISIBILITY`, sampled each monster tick so
     /// `monster_use` can refuse a ringed player without threading the weapon
     /// state through every trigger path.
@@ -990,6 +993,7 @@ impl EntityScene {
             runes: 0,
             sight_index: 0,
             sight_alert_ticks: 0,
+            knockback_centre: None,
             player_invisible: false,
         }
     }
@@ -3414,7 +3418,7 @@ impl EntityScene {
                         z: player_origin.z.saturating_sub(4 << 12),
                         ..player_origin
                     },
-                    impact,
+                    self.knockback_centre.unwrap_or(impact),
                     player_points,
                 ),
             );
@@ -6727,7 +6731,13 @@ impl EntityScene {
             self.entities[index].pending_explosion = false;
             self.entities[index].visible = false;
             let origin = self.entities[index].origin;
-            self.explode_at(
+            // `misc_explobox` is 32 x 32 x 64 with its origin at a corner.
+            self.knockback_centre = Some(Vec3I32 {
+                x: origin.x.saturating_add(16 << 12),
+                y: origin.y.saturating_add(16 << 12),
+                z: origin.z.saturating_add(32 << 12),
+            });
+            let exploded = self.explode_at(
                 map,
                 origin,
                 EXPLOBOX_SPLASH_DAMAGE,
@@ -6736,7 +6746,9 @@ impl EntityScene {
                 DamageAttacker::World,
                 weapon,
                 &mut result,
-            )?;
+            );
+            self.knockback_centre = None;
+            exploded?;
             result.last_explosion = Some(Vec3I32 {
                 x: origin.x,
                 y: origin.y,
