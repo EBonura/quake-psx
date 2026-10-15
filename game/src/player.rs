@@ -290,6 +290,7 @@ impl Player {
     }
 
     /// Advance view and locomotion using actual elapsed 60 Hz video ticks.
+    #[inline(always)]
     pub fn update(
         &mut self,
         map: &ResidentMap,
