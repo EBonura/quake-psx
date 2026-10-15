@@ -1,58 +1,83 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! Optional demo-disc menu music.
+//! Sporadic dark-ambient music, played from the game's own XA-ADPCM files.
 //!
-//! Standalone Quake has no audio tracks. On the demo disc, launcher music is
-//! stored in tracks 2 through 5 and may be reused without copying audio into
-//! the game. `cdda_track_base` is subtracted because the CD driver adds it
-//! back when addressing the physical track.
+//! The disc carries `MUSIC1.XA` and `MUSIC2.XA` (eight loops, four to a file,
+//! packed by `psx-audio-cook xa-pack`; `music_map.rs` is the table the
+//! builder generates with them). The drive decodes the loop and feeds the
+//! SPU's CD input, so the CPU only starts and stops it.
 //!
-//! Map loads temporarily take ownership of the drive through
-//! [`Music::suspend_for_load`] and [`Music::resume_after_load`].
+//! The drive cannot loop an XA file without a seek, and the seek is an audible
+//! gap, so each loop sits in its channel `XA_REPEATS` times end to end (as many
+//! times as the schedule can ask for it) and a song is one uninterrupted read:
+//! there is nothing to poll and nothing to restart. The schedule decides when
+//! the read is cut off.
+//!
+//! What plays and when is [`quake_core::ambient::Schedule`]: a stretch of
+//! silence after a map starts, then one loop fades in, plays one to three
+//! times and fades out. This module turns its steps into drive commands and
+//! SPU volume writes.
+//!
+//! A song is a read, so any data read preempts it. [`Music::suspend_for_load`]
+//! stops the drive before every map load, and [`Music::resume_after_load`]
+//! restarts the schedule from the top afterwards: nothing resumes in the
+//! middle of a song, so no state has to survive a read.
 
-use psx_io::cd::audio::{EndDetector, PlaybackStarter};
-use quake_core::menu::{DEFAULT_MUSIC_VOLUME, MUSIC_TRACKS, VOLUME_STEPS};
+use psx_io::cd::xa::{DriveSpeed, File, Player};
+use psx_io::periph::Cd;
+use psx_pack::cd::{SectorReader, SECTOR_WORDS};
+use quake_core::ambient::{Schedule, Step, FADE_MAX, TICKS_PER_SECOND};
+use quake_core::menu::{DEFAULT_MUSIC_VOLUME, VOLUME_STEPS};
 
-/// First CD-DA track on a mixed-mode disc: track 1 is the data track.
-const FIRST_TRACK: u8 = 2;
-/// How many menu songs the demo disc carries.
-const TRACK_COUNT: u8 = MUSIC_TRACKS.len() as u8;
-/// The disc must show at least this many tracks for the menu music to be there.
-const TRACKS_NEEDED: u8 = FIRST_TRACK + TRACK_COUNT - 1;
+include!("music_map.rs");
 
-/// How long the now-playing banner stays up once a song starts. Four seconds:
-/// long enough to read twice, gone before it reads as HUD. Public so the
-/// renderer can time its slide against the same clock.
-pub const BANNER_TICKS: u32 = 240;
+/// The drive's own mixer level (`0x80` is unity). The SPU's CD volume carries
+/// the fades and the Options slider.
+const DRIVE_VOLUME: u8 = 0x80;
 
-/// GetTN. Answers with the first and last track numbers, in BCD.
-const GET_TN: u8 = 0x13;
-/// Per-command spin budget. Emulators answer instantly; silicon does not.
-const SPINS: u32 = 0x10_0000;
-/// Ticks between drive status polls. A GetStat is a round trip, and this runs
-/// inside a frame that is already at its deadline, so it is paced.
-const POLL_TICKS: u32 = 30;
-/// Consecutive quiet polls that mean the song is over rather than dipping.
-const IDLE_POLLS_TO_ADVANCE: u8 = 8;
-/// Ticks to wait before asking the drive anything. Quake's boot has just
-/// finished loading a map through it and the head is still settling.
-const PROBE_TICK: u32 = 90;
+const SONG_COUNT: usize = XA_SONGS.len();
+
+/// Length of each loop in ticks, from the encoder's song table, so the
+/// schedule times a loop by the audio it actually carries.
+const SONG_TICKS: [u32; SONG_COUNT] = {
+    let mut ticks = [0; SONG_COUNT];
+    let mut song = 0;
+    while song < SONG_COUNT {
+        ticks[song] = XA_SONGS[song].2 / XA_REPEATS * TICKS_PER_SECOND / 1000;
+        song += 1;
+    }
+    ticks
+};
+
+/// Seed the private stream mixes the boot tick into.
+const SEED_SALT: u32 = 0x2f6e_2b1d;
+
+/// The shipping silences; the gate image shortens them (see the
+/// `music-trace-fast` feature) so a loop is up within seconds of a map start.
+const fn schedule() -> Schedule {
+    let schedule = Schedule::new(SEED_SALT, &SONG_TICKS);
+    #[cfg(feature = "music-trace-fast")]
+    let schedule = schedule.with_waits((4, 6), (8, 12));
+    schedule
+}
 
 pub struct Music {
-    /// The disc really does carry the menu tracks.
+    /// The disc really does carry the music files.
     available: bool,
     /// The player has not turned it off.
     enabled: bool,
-    /// Which of the four is playing, 0-based.
-    index: u8,
     /// Original `bgmvolume`, in the Options menu's `0..=10` slider steps.
     volume: u8,
-    /// Have we asked the drive what is on it yet?
+    /// Fade level (`0..=FADE_MAX`) the schedule last asked for.
+    fade: u16,
+    /// Have we looked for the files yet?
     probed: bool,
-    /// Tick the current song was started on, for the now-playing banner.
-    announced_at: Option<u32>,
-    starter: PlaybackStarter,
-    end: EndDetector,
-    next_poll: u32,
+    /// The schedule's stream has been seeded from the clock.
+    seeded: bool,
+    /// First sector and sector count of each file.
+    files: [(u32, u32); XA_FILE_COUNT],
+    /// The SDK's XA player; it owns the CD token once the files are found.
+    player: Option<Player>,
+    schedule: Schedule,
 }
 
 impl Music {
@@ -61,13 +86,13 @@ impl Music {
         Self {
             available: false,
             enabled: true,
-            index: 0,
             volume: DEFAULT_MUSIC_VOLUME,
+            fade: 0,
             probed: false,
-            announced_at: None,
-            starter: PlaybackStarter::new().with_spins(SPINS),
-            end: EndDetector::new(IDLE_POLLS_TO_ADVANCE),
-            next_poll: 0,
+            seeded: false,
+            files: [(0, 0); XA_FILE_COUNT],
+            player: None,
+            schedule: schedule(),
         }
     }
 
@@ -83,45 +108,15 @@ impl Music {
         self.enabled
     }
 
-    /// Which song is current, as the menu's `TRACK` row numbers them.
-    #[optimize(size)]
-    pub const fn track(&self) -> u8 {
-        self.index
-    }
-
-    /// The song to announce and how long it has been up, while a start is
-    /// recent enough to announce. The popup follows the drive rather than the
-    /// menu: switched off, there is nothing playing to name.
-    #[optimize(size)]
-    #[inline(never)]
-    pub fn now_playing(&self, tick: u32) -> Option<(&'static str, u32)> {
-        let at = self.announced_at?;
-        if !self.available || !self.enabled {
-            return None;
-        }
-        let elapsed = tick.wrapping_sub(at);
-        if elapsed > BANNER_TICKS {
-            return None;
-        }
-        Some((MUSIC_TRACKS[self.index as usize], elapsed))
-    }
-
     /// Adopt the Options page's music rows. The menu is refreshed from this
-    /// module every frame, so a difference here is a fresh player edit rather
-    /// than a stale copy of a song this module advanced on its own.
+    /// module every frame, so a difference here is a fresh player edit.
     #[optimize(size)]
     #[inline(never)]
-    pub fn apply_menu(&mut self, on: bool, track: u8, volume: u8, tick: u32) {
-        self.set_volume(volume);
+    pub fn apply_menu(&mut self, on: bool, volume: u8, tick: u32) {
+        self.set_volume(volume.min(VOLUME_STEPS));
         if !self.available {
             self.enabled = on;
             return;
-        }
-        if track != self.index && track < TRACK_COUNT {
-            self.index = track;
-            if self.enabled {
-                self.begin_track(tick);
-            }
         }
         if on != self.enabled {
             self.set_enabled(on, tick);
@@ -129,129 +124,313 @@ impl Music {
     }
 
     /// The port's calibrated CD ceiling remains one half of hardware gain;
-    /// the original ten-step `bgmvolume` slider scales within that range.
+    /// the original ten-step `bgmvolume` slider scales within that range and
+    /// the schedule's fade scales within the slider.
     #[optimize(size)]
     fn set_volume(&mut self, level: u8) {
-        let level = level.min(VOLUME_STEPS);
         if level == self.volume {
             return;
         }
         self.volume = level;
-        let gain = psx_spu::CdVolume::linear(u16::from(level), u16::from(VOLUME_STEPS) * 2);
+        self.write_gain();
+    }
+
+    #[optimize(size)]
+    fn write_gain(&self) {
+        let numerator = u16::from(self.volume) * self.fade;
+        let denominator = u16::from(VOLUME_STEPS) * 2 * FADE_MAX;
+        let gain = psx_spu::CdVolume::linear(numerator, denominator);
         psx_spu::set_cd_volume(gain, gain);
     }
 
-    /// Turn the music on or off. Off pauses the drive rather than only
-    /// declining to start it again, or the current song would play on under a
-    /// menu that claims it is off.
+    #[optimize(size)]
+    fn set_fade(&mut self, level: u16) {
+        self.fade = level;
+        self.write_gain();
+    }
+
+    /// Turn the music on or off. Off stops the drive rather than only
+    /// declining to start another loop, or the current one would play on under
+    /// a menu that claims it is off. On starts the silence over.
     #[optimize(size)]
     #[inline(never)]
     fn set_enabled(&mut self, on: bool, tick: u32) {
         self.enabled = on;
         if on {
-            self.begin_track(tick);
+            self.restart(tick);
         } else {
-            psx_io::cd::try_pause(SPINS);
-            self.starter = PlaybackStarter::new().with_spins(SPINS);
+            self.silence();
         }
     }
 
-    /// Arm the start handshake for the current track and raise the banner.
+    /// Stop the drive and put the schedule and the volume at rest.
     #[optimize(size)]
     #[inline(never)]
-    fn begin_track(&mut self, tick: u32) {
-        self.starter = PlaybackStarter::new().with_spins(SPINS);
-        self.starter.begin(tick);
-        self.end.rearm();
-        self.next_poll = tick.wrapping_add(POLL_TICKS);
-        self.announced_at = Some(tick);
+    fn silence(&mut self) {
+        self.stop_drive();
+        self.schedule.halt();
+        self.set_fade(0);
     }
 
-    /// Hand the drive back before a level load. Pause rather than Stop: the
-    /// SDK's own note is that Stop winds the motor down for one to two seconds
-    /// during which data reads fail, while Pause leaves it spun up and is
-    /// "the right handoff before gameplay code starts issuing data-read
-    /// commands". The loader's `SectorReader::prepare` re-issues SetMode
-    /// without MODE_CDDA, so the mode does not have to be unwound here, and a
-    /// drive that will not acknowledge the pause is about to be driven by
-    /// `SectorReader` anyway, so there is no fallback to pay for.
+    #[optimize(size)]
+    fn restart(&mut self, tick: u32) {
+        if !self.seeded {
+            // The boot's own timing (intro, loads, how long the player sat in
+            // the menu) differs run to run; nothing the simulation reads does.
+            self.schedule
+                .reseed(tick.wrapping_mul(0x9e37_79b9) ^ SEED_SALT);
+            self.seeded = true;
+        }
+        self.schedule.restart(tick);
+    }
+
+    /// Look for the music files on the disc, once. Run it before the first
+    /// load, with the drive still near the executable.
+    #[optimize(size)]
+    #[inline(never)]
+    pub fn probe(&mut self) {
+        if !self.probed {
+            self.probed = true;
+            self.available = self.locate_files();
+        }
+    }
+
+    /// Hand the drive back before a level load: stop the loop and the
+    /// schedule.
     #[optimize(size)]
     #[inline(never)]
     pub fn suspend_for_load(&mut self) {
-        if !self.available || !self.enabled {
+        self.probe();
+        if !self.available {
             return;
         }
-        psx_io::cd::try_pause_until_complete(SPINS);
-        self.starter = PlaybackStarter::new().with_spins(SPINS);
-        self.announced_at = None;
+        #[cfg(feature = "music-trace")]
+        trace(
+            "suspend",
+            psx_rt::interrupts::vblank_count(),
+            self.schedule.playing().map_or(u32::MAX, u32::from),
+            u32::from(self.fade),
+        );
+        self.silence();
     }
 
-    /// Take the drive back after a level load, one song further on: a new level
-    /// is the natural place for a track change, and the handshake has to be
-    /// re-run regardless because the reader dropped MODE_CDDA.
+    /// Start the schedule over after a level load. A new map is where the
+    /// silence begins again; nothing is resumed.
     #[optimize(size)]
     #[inline(never)]
     pub fn resume_after_load(&mut self, tick: u32) {
         if !self.available || !self.enabled {
             return;
         }
-        self.index = (self.index + 1) % TRACK_COUNT;
-        self.begin_track(tick);
+        self.restart(tick);
+        #[cfg(feature = "music-trace")]
+        trace("restart", tick, u32::MAX, 0);
     }
 
-    /// One tick. Drives the start handshake, and once playing, watches for the
-    /// song ending so the next one can follow.
+    /// One tick: run the schedule.
     #[optimize(size)]
     #[inline(never)]
     pub fn update(&mut self, tick: u32) {
-        if !self.probed {
-            if tick < PROBE_TICK {
-                return;
-            }
-            self.probed = true;
-            self.available = disc_has_menu_tracks();
-            if self.available && self.enabled {
-                self.begin_track(tick);
-            }
-            return;
-        }
         if !self.available || !self.enabled {
             return;
         }
-
-        // The handshake first: the drive tolerates command-then-status-drain,
-        // and the launcher's console runs showed the reverse order wedging it.
-        // The track is absolute, so the loader's base is pre-subtracted here to
-        // cancel the shift `try_play_track` applies (see the module note).
-        let absolute = FIRST_TRACK + self.index;
-        self.starter.tick(
-            tick,
-            absolute.wrapping_sub(psx_io::disc_base::cdda_track_base()),
-        );
-
-        if self.starter.has_started() && tick.wrapping_sub(self.next_poll) < u32::MAX / 2 {
-            self.next_poll = tick.wrapping_add(POLL_TICKS);
-            let status = psx_io::cd::try_status(SPINS).and_then(|r| r.bytes().first().copied());
-            if self.end.poll(status) {
-                self.index = (self.index + 1) % TRACK_COUNT;
-                self.begin_track(tick);
+        match self.schedule.update(tick) {
+            Step::Idle => {}
+            Step::Start(song) => self.begin(song, tick),
+            Step::Fade(level) => {
+                self.set_fade(level);
+                #[cfg(feature = "music-trace")]
+                trace("fade", tick, u32::MAX, u32::from(level));
+            }
+            Step::Stop => {
+                self.stop_drive();
+                self.set_fade(0);
+                #[cfg(feature = "music-trace")]
+                trace("stop", tick, u32::MAX, 0);
             }
         }
     }
+
+    /// Start loop `song` from the top, silent; the schedule's fade raises it.
+    #[optimize(size)]
+    #[inline(never)]
+    fn begin(&mut self, song: u8, tick: u32) {
+        self.set_fade(0);
+        let (file, channel, _) = XA_SONGS[song as usize];
+        let (lba, sectors) = self.files[file as usize];
+        // The song is one uninterrupted read (see the module note), so the
+        // player never polls and the sector count only describes the file.
+        let file = File::new(
+            lba,
+            sectors,
+            XA_FILE_NUMBERS[file as usize],
+            if XA_SPEED_DOUBLE {
+                DriveSpeed::Double
+            } else {
+                DriveSpeed::Single
+            },
+        );
+        let started = match self.player.as_mut() {
+            Some(player) => {
+                player.set_volume(DRIVE_VOLUME, DRIVE_VOLUME);
+                player.play(file.song(channel), false).is_ok()
+            }
+            None => false,
+        };
+        #[cfg(feature = "music-trace")]
+        trace(
+            if started { "start" } else { "start-refused" },
+            tick,
+            u32::from(song),
+            0,
+        );
+        if started {
+        } else {
+            // The drive refused a command. Give the loop up and try again
+            // after the next silence rather than hammering a busy drive.
+            self.schedule.halt();
+            self.schedule.restart(tick);
+        }
+    }
+
+    /// Pause the drive if a song is being read.
+    #[optimize(size)]
+    #[inline(never)]
+    fn stop_drive(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.stop();
+        }
+    }
+
+    /// Find the music files by name in the disc's root directory, so no sector
+    /// number is baked into the executable, and take the CD token the player
+    /// drives. False if any file is missing (a disc built without music).
+    #[optimize(size)]
+    #[inline(never)]
+    fn locate_files(&mut self) -> bool {
+        let mut sector = [0u32; SECTOR_WORDS];
+        let mut reader = SectorReader::new();
+        let mut found = [false; XA_FILE_COUNT];
+        // One read session from the volume descriptor forward: the root
+        // directory sits a few sectors after it, and passing over those
+        // costs less than a second session (a command pair and a seek).
+        // SAFETY: the loader's own reader is idle here (this runs at a level
+        // boundary) and nothing else holds the controller.
+        unsafe {
+            if !reader.prepare() || !reader.start_read(PVD_LBA) {
+                reader.stop();
+                return false;
+            }
+            let mut lba = PVD_LBA;
+            let mut root = (0, 0);
+            while reader.read_sector(&mut sector) {
+                let bytes =
+                    core::slice::from_raw_parts(sector.as_ptr().cast::<u8>(), SECTOR_WORDS * 4);
+                if lba == PVD_LBA {
+                    match root_directory(bytes) {
+                        Some(at) if at.0 > PVD_LBA && at.0 - PVD_LBA <= MAX_ROOT_SKIP => root = at,
+                        _ => break,
+                    }
+                } else if lba >= root.0 {
+                    for (file, name) in XA_FILE_NAMES.iter().enumerate() {
+                        if let Some((lba, bytes)) = find_in_directory(bytes, name) {
+                            self.files[file] = (lba, bytes / 2048);
+                            found[file] = true;
+                        }
+                    }
+                    // A root directory this small is one sector; scan a few in
+                    // case not.
+                    if lba + 1 >= root.0 + root.1.div_ceil(2048).min(4) {
+                        break;
+                    }
+                }
+                lba += 1;
+            }
+            reader.stop();
+            if !found.iter().all(|f| *f) {
+                return false;
+            }
+            self.player = Some(Player::new(Cd::steal()));
+        }
+        // The SPU's CD input is routed once at boot (`quake.rs`); the volume
+        // is this module's from here on.
+        true
+    }
 }
 
-/// Ask the drive how many tracks the disc has, and decide whether the menu
-/// songs can be among them.
-#[optimize(size)]
-#[inline(never)]
-fn disc_has_menu_tracks() -> bool {
-    // Response is [status, first BCD, last BCD].
-    let Some(response) = psx_io::cd::try_command(GET_TN, &[], SPINS) else {
-        return false;
-    };
-    let bytes = response.bytes();
-    if bytes.len() < 3 {
-        return false;
+/// Most sectors between the volume descriptor and the root directory that the
+/// lookup reads through rather than seeking over (mkisopsx puts it four on).
+const MAX_ROOT_SKIP: u32 = 16;
+
+/// ISO 9660: the primary volume descriptor's sector.
+const PVD_LBA: u32 = 16;
+
+fn le32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Root directory `(lba, size_bytes)` from the primary volume descriptor.
+fn root_directory(pvd: &[u8]) -> Option<(u32, u32)> {
+    if pvd.len() < 190 || pvd[0] != 1 || &pvd[1..6] != b"CD001" {
+        return None;
     }
-    psx_io::cd::bcd_to_bin(bytes[2]) >= TRACKS_NEEDED
+    let record = &pvd[156..190];
+    Some((le32(&record[2..6]), le32(&record[10..14])))
+}
+
+/// Find `name` in one sector of directory records, ignoring case and the
+/// `;1` version suffix. Returns `(lba, size_bytes)`.
+fn find_in_directory(sector: &[u8], name: &str) -> Option<(u32, u32)> {
+    let mut at = 0;
+    while at + 33 <= sector.len() {
+        let length = sector[at] as usize;
+        if length == 0 || at + length > sector.len() {
+            break;
+        }
+        let record = &sector[at..at + length];
+        let name_length = record[32] as usize;
+        if 33 + name_length <= length {
+            let found = &record[33..33 + name_length];
+            let found = found.split(|b| *b == b';').next().unwrap_or(found);
+            if found.eq_ignore_ascii_case(name.as_bytes()) {
+                return Some((le32(&record[2..6]), le32(&record[10..14])));
+            }
+        }
+        at += length;
+    }
+    None
+}
+
+/// One state-change line for the headless gate: `quake-music <what> tick=<n>
+/// song=<n> level=<n>`; `song` is 4294967295 where none applies. Formatted into
+/// a stack buffer: the target allocator never frees, so a line built on the
+/// heap would drain it over a long run.
+#[cfg(feature = "music-trace")]
+#[inline(never)]
+fn trace(what: &str, tick: u32, song: u32, level: u32) {
+    use core::fmt::Write;
+    struct Line {
+        bytes: [u8; 96],
+        length: usize,
+    }
+    impl Write for Line {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            let room = self.bytes.len() - self.length;
+            let take = text.len().min(room);
+            self.bytes[self.length..self.length + take].copy_from_slice(&text.as_bytes()[..take]);
+            self.length += take;
+            Ok(())
+        }
+    }
+    let mut line = Line {
+        bytes: [0; 96],
+        length: 0,
+    };
+    let _ = write!(
+        line,
+        "quake-music {what} tick={tick} song={song} level={level}"
+    );
+    if let Ok(text) = core::str::from_utf8(&line.bytes[..line.length]) {
+        psx_telemetry::emit::debug_log(text);
+    }
 }

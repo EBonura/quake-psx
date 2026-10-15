@@ -1652,7 +1652,6 @@ impl Renderer {
         centerprint: Option<&str>,
         menu: Option<MenuView>,
         intermission: Option<IntermissionView>,
-        now_playing: Option<(&'static str, u32)>,
         screen_blend: &quake_core::screenblend::ScreenBlend,
     ) -> RenderStats {
         // Draw, cull and classify from one eye. `load_quake_camera` builds the
@@ -2376,18 +2375,6 @@ impl Renderer {
             self.draw_intermission(intermission);
         }
 
-        // Not over the intermission panel or Options. That menu already names
-        // the selected track, and its eleven shadowed rows plus the longest
-        // banner exceed the 232-quad menu allocation. Keeping the transient
-        // banner off that page leaves the reachable Levels peak unchanged.
-        if let Some((track, elapsed)) = now_playing {
-            if intermission.is_none()
-                && !matches!(menu, Some(view) if view.page == MenuPage::Options)
-            {
-                self.draw_now_playing(track, elapsed, menu.is_some());
-            }
-        }
-
         // Last, so the transition takes the panel and the HUD down with the
         // world rather than leaving text floating over black.
         self.draw_screen_fade(screen_blend);
@@ -2950,77 +2937,6 @@ impl Renderer {
                 packets.len(),
                 QuadTexturedMaterial::WORDS,
             );
-        }
-    }
-
-    /// The now-playing banner: two right-aligned lines in the upper right that
-    /// slide in when a song starts and back out as the banner expires.
-    ///
-    /// It borrows the menu arena, which is idle for every frame of play, so the
-    /// banner costs no allocation on an image with under two kilobytes of bump
-    /// allocator left. When the menu drew first its packets are kept and this
-    /// only appends, registering the tail so the menu's own registration still
-    /// points at what it built; alone, the banner takes the arena over.
-    /// `push_text` refuses to grow the vector past its capacity, so neither
-    /// registration can be left dangling by a reallocation.
-    ///
-    /// Outlined: `draw_frame` inlines into the game loop, and a banner that is
-    /// up for four seconds out of a level does not belong in that body.
-    #[optimize(size)]
-    #[inline(never)]
-    fn draw_now_playing(&mut self, track: &str, elapsed: u32, appended: bool) {
-        /// Right margin the two lines are flushed against.
-        const RIGHT: i16 = 312;
-        const TOP: i16 = 16;
-        /// Ticks the banner takes to slide in, and again to leave.
-        const SLIDE: u32 = 12;
-        const TITLE: &str = "NOW PLAYING";
-
-        let packets = &mut self.menu_packets[self.arena];
-        if !appended {
-            packets.clear();
-        }
-        let start = packets.len();
-
-        // How far the lines still are from their seat: all the way off the
-        // right edge on the banner's first tick, home by SLIDE, and out again
-        // over the last SLIDE ticks.
-        let width = (TITLE.len().max(track.len()) as i16) * 8;
-        let travel = (320 - (RIGHT - width)).max(0) as u32;
-        let remaining = crate::music::BANNER_TICKS.saturating_sub(elapsed);
-        let slide = if elapsed < SLIDE {
-            travel * (SLIDE - elapsed) / SLIDE
-        } else if remaining < SLIDE {
-            travel * (SLIDE - remaining) / SLIDE
-        } else {
-            0
-        };
-        let offset = slide as i16;
-
-        push_shadowed_text(
-            packets,
-            RIGHT - TITLE.len() as i16 * 8 + offset,
-            TOP,
-            TITLE,
-            (0x80, 0x64, 0x38),
-        );
-        push_shadowed_text(
-            packets,
-            RIGHT - track.len() as i16 * 8 + offset,
-            TOP + 12,
-            track,
-            (0x80, 0x80, 0x80),
-        );
-
-        let appended_packets = packets.len() - start;
-        if appended_packets != 0 {
-            unsafe {
-                crate::platform::register_screen_packets(
-                    packets.as_mut_ptr().add(start).cast::<u32>(),
-                    appended_packets,
-                    QuadTexturedMaterial::WORDS,
-                );
-            }
         }
     }
 

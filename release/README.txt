@@ -9,7 +9,10 @@ hardware, burn the BIN/CUE pair together using software that understands CUE
 sheets; do not burn the BIN as an ordinary data file.
 
 The release contains Start and E1M1-E1M8 from the canonical Quake shareware
-archive. It does not contain the registered episodes or original soundtrack.
+archive. It does not contain the registered episodes or original soundtrack. The music
+is separate: eight dark-ambient loops that fade in and out now and then.
+
+Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/
 
 This is not the first homebrew Quake project for PlayStation. id Software's
 GPL source and the earlier C-based QuakePSX port were used as references and

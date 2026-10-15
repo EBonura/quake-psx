@@ -84,6 +84,12 @@ smooth-poses = ["quake-core/smooth-poses"]
 # the pinned SDK does not have yet, so this does not build until the pin moves.
 rumble = []
 emulator-telemetry = ["psx-telemetry/emit"]
+# Log every music schedule transition (tick, loop, fade level) to the emulator
+# debug log, for the headless music gate. Not part of the shipping image.
+music-trace = ["emulator-telemetry"]
+# music-trace with the silences cut to seconds, so a loop is playing when a
+# regression route reaches a map load.
+music-trace-fast = ["music-trace"]
 # Measurement builds only: tag projections with a primitive class (world,
 # model, view model, sprite, sky) through PSoXide's emulator-only class port
 # so `frontend launch --sort-log` splits depth-sort errors by class pair.
@@ -179,7 +185,7 @@ quake-formats = { path = "../crates/quake-formats" }
 quake-core = { path = "../crates/quake-core" }
 quake-affine = { path = "../crates/quake-affine" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
-psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-256", "present-queue"] }
+psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-192", "present-queue"] }
 psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
