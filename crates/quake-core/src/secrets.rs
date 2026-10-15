@@ -128,3 +128,19 @@ mod tests {
         assert_eq!((counter.found(), counter.total()), (0, 1));
     }
 }
+
+impl SecretCounter {
+    /// The count found so far; the total is authored.
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u16(self.found);
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        let found = r.u16();
+        if found > self.total {
+            r.reject();
+            return;
+        }
+        self.found = found;
+    }
+}

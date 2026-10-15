@@ -1,7 +1,10 @@
 /* The shared SDK excludes this same-link code/table image from the resident
    executable. Runtime storage borrows the existing map transfer allocation. */
 MEMORY { QUAKE_MONSTER_COLD (rx) : ORIGIN = 0x80408000, LENGTH = 64K
-    QUAKE_DOOR_COLD (rx) : ORIGIN = 0x80418000, LENGTH = 64K }
+    QUAKE_DOOR_COLD (rx) : ORIGIN = 0x80418000, LENGTH = 64K
+    QUAKE_SAVE_COLD (rx) : ORIGIN = 0x80428000, LENGTH = 64K
+    QUAKE_LOAD_COLD (rx) : ORIGIN = 0x80438000, LENGTH = 64K
+    QUAKE_CARD_COLD (rx) : ORIGIN = 0x80448000, LENGTH = 64K }
 SECTIONS {
     .overlay.quake_monsters.text : ALIGN(4) {
         *(.overlay.quake_monsters.text .overlay.quake_monsters.text.*)
@@ -28,4 +31,59 @@ SECTIONS {
         *(.rodata.*10QuakeMover11from_entity*)
         *(.rodata.quake_mover_from_entity*)
     } > QUAKE_DOOR_COLD
+    /* The pause menu's SAVE GAME and LOAD GAME: encoder, decoder and the
+       memory-card driver, three images so that none exceeds a transfer half.
+       A function belongs to one image and may call only itself and resident
+       code, so the shared checksum stays resident. */
+    .overlay.quake_save.text : ALIGN(4) {
+        *(.overlay.quake_save.text .overlay.quake_save.text.*)
+        *(.text.*save_dynamic*)
+        *(.text.*Snapshot4save*)
+        *(.text.*4save6Writer*)
+        *(.text.*4save5frame*)
+        *(.text.*write_words*)
+        *(.text.*save_activator*)
+        *(.text.*save_state*)
+        *(.text.*save_bits*)
+    } > QUAKE_SAVE_COLD
+    .overlay.quake_save.rodata : ALIGN(4) {
+        *(.overlay.quake_save.rodata .overlay.quake_save.rodata.*)
+        *(.rodata.*save_dynamic*)
+        *(.rodata.*Snapshot4save*)
+        *(.rodata.*write_words*)
+        *(.rodata.*save_activator*)
+        *(.rodata.*save_state*)
+        *(.rodata.*save_bits*)
+        *(.rodata.*9savegame6encode*)
+    } > QUAKE_SAVE_COLD
+    .overlay.quake_load.text : ALIGN(4) {
+        *(.overlay.quake_load.text .overlay.quake_load.text.*)
+        *(.text.*load_dynamic*)
+        *(.text.*Snapshot4load*)
+        *(.text.*4save6Reader*)
+        *(.text.*read_words*)
+        *(.text.*load_activator*)
+        *(.text.*load_state*)
+        *(.text.*load_bits*)
+    } > QUAKE_LOAD_COLD
+    .overlay.quake_load.rodata : ALIGN(4) {
+        *(.overlay.quake_load.rodata .overlay.quake_load.rodata.*)
+        *(.rodata.*load_dynamic*)
+        *(.rodata.*Snapshot4load*)
+        *(.rodata.*read_words*)
+        *(.rodata.*load_activator*)
+        *(.rodata.*load_state*)
+        *(.rodata.*load_bits*)
+        *(.rodata.*9savegame7restore*)
+    } > QUAKE_LOAD_COLD
+    .overlay.quake_card.text : ALIGN(4) {
+        *(.overlay.quake_card.text .overlay.quake_card.text.*)
+        *(.text.*9savegame4card*)
+        *(.text.*6psx_mc*)
+    } > QUAKE_CARD_COLD
+    .overlay.quake_card.rodata : ALIGN(4) {
+        *(.overlay.quake_card.rodata .overlay.quake_card.rodata.*)
+        *(.rodata.*9savegame4card*)
+        *(.rodata.*6psx_mc*)
+    } > QUAKE_CARD_COLD
 } INSERT BEFORE .text;

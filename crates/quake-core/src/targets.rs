@@ -609,8 +609,170 @@ fn fixed_seconds_to_ticks(value: i32) -> u16 {
         .clamp(1, i32::from(u16::MAX)) as u16
 }
 
+/// Write an activator: none, the player, or a scene entity.
+pub fn save_activator(w: &mut crate::save::Writer, activator: TargetActivator) {
+    match activator {
+        TargetActivator::None => w.u8(0),
+        TargetActivator::Player => w.u8(1),
+        TargetActivator::Entity(index) => {
+            w.u8(2);
+            w.u16(index);
+        }
+    }
+}
+
+/// The inverse of [`save_activator`].
+pub fn load_activator(r: &mut crate::save::Reader) -> TargetActivator {
+    match r.below(3) {
+        0 => TargetActivator::None,
+        1 => TargetActivator::Player,
+        _ => TargetActivator::Entity(r.u16()),
+    }
+}
+
+impl TargetGraph {
+    /// Write the target graph's moving parts sparsely: the disabled entities,
+    /// the counters and cooldowns that are not at rest, and every pending
+    /// delayed use. The graph's shape comes back from the map.
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u16(self.entity_count as u16);
+        let count = |keep: &dyn Fn(usize) -> bool| -> u16 {
+            (0..self.entity_count).filter(|&index| keep(index)).count() as u16
+        };
+        w.u16(count(&|index| self.disabled[index]));
+        for index in (0..self.entity_count).filter(|&index| self.disabled[index]) {
+            w.u16(index as u16);
+        }
+        // Every counter and cooldown is written, zero runs coded as a zero
+        // and a length: a `trigger_counter` that has counted down to zero must
+        // come back at zero, not at the authored count a fresh load gives it.
+        crate::save::write_words(w, &self.counters[..self.entity_count], |v| v as u16);
+        crate::save::write_words(w, &self.cooldowns[..self.entity_count], |v| v);
+        w.u8(self.delayed.iter().flatten().count() as u8);
+        for (slot, delayed) in self.delayed.iter().enumerate() {
+            let Some(delayed) = delayed else {
+                continue;
+            };
+            w.u8(slot as u8);
+            w.u16(delayed.remaining_ticks);
+            w.u16(delayed.command.target);
+            w.u16(delayed.command.kill_target);
+            save_activator(w, delayed.command.activator);
+        }
+    }
+
+    /// Put a graph freshly loaded from the same map back where
+    /// [`Self::save_dynamic`] found it.
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        if usize::from(r.u16()) != self.entity_count {
+            // A save from another map or another cook.
+            r.reject();
+            return;
+        }
+        let limit = self.entity_count;
+        let index = |r: &mut crate::save::Reader| -> usize {
+            let index = usize::from(r.u16());
+            if index >= limit {
+                r.reject();
+                return 0;
+            }
+            index
+        };
+        for _ in 0..r.u16() {
+            let at = index(r);
+            self.disabled[at] = true;
+        }
+        crate::save::read_words(r, &mut self.counters[..limit], |v| v as i16);
+        crate::save::read_words(r, &mut self.cooldowns[..limit], |v| v);
+        self.delayed = [None; MAX_DELAYED_USES];
+        for _ in 0..r.u8() {
+            let slot = usize::from(r.u8());
+            let remaining_ticks = r.u16();
+            let target = r.u16();
+            let kill_target = r.u16();
+            let activator = load_activator(r);
+            match self.delayed.get_mut(slot) {
+                Some(entry) => {
+                    *entry = Some(DelayedUse {
+                        remaining_ticks,
+                        command: UseCommand {
+                            target,
+                            kill_target,
+                            activator,
+                        },
+                    });
+                }
+                None => r.reject(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A graph's counters, cooldowns, disabled entities and pending delayed
+    /// uses come back exactly, and a save from a graph of another size is
+    /// refused.
+    #[test]
+    fn a_saved_target_graph_restores_every_moving_part() {
+        use crate::save::{Reader, Writer};
+        let mut graph = TargetGraph::new();
+        graph.entity_count = 100;
+        graph.disabled[3] = true;
+        graph.disabled[99] = true;
+        graph.counters[7] = -2;
+        graph.counters[8] = 3;
+        graph.cooldowns[50] = 9;
+        graph.delayed[2] = Some(DelayedUse {
+            remaining_ticks: 77,
+            command: UseCommand {
+                target: 5,
+                kill_target: 6,
+                activator: TargetActivator::Entity(40),
+            },
+        });
+        graph.delayed[31] = Some(DelayedUse {
+            remaining_ticks: 1,
+            command: UseCommand {
+                target: 1,
+                kill_target: 0,
+                activator: TargetActivator::Player,
+            },
+        });
+        let mut fresh = TargetGraph::new();
+        fresh.entity_count = 100;
+        // A fresh load gives a counter its authored count; the save says it ran out.
+        fresh.counters[9] = 2;
+        graph.counters[9] = 0;
+        let mut buf = [0u8; 128];
+        let mut w = Writer::new(&mut buf);
+        graph.save_dynamic(&mut w);
+        let len = w.len();
+        let mut r = Reader::raw(&buf[..len]);
+        fresh.load_dynamic(&mut r);
+        assert!(r.finish());
+        assert_eq!(fresh.disabled[..100], graph.disabled[..100]);
+        assert_eq!(fresh.counters[..100], graph.counters[..100]);
+        assert_eq!(fresh.cooldowns[..100], graph.cooldowns[..100]);
+        assert_eq!(fresh.delayed, graph.delayed);
+
+        let mut other = TargetGraph::new();
+        other.entity_count = 99;
+        let mut r = Reader::raw(&buf[..len]);
+        other.load_dynamic(&mut r);
+        assert!(r.is_bad());
+        // An index outside the graph is refused too.
+        let mut bad = TargetGraph::new();
+        bad.entity_count = 100;
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(&100u16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&1u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&100u16.to_le_bytes());
+        let mut r = Reader::raw(&bytes);
+        bad.load_dynamic(&mut r);
+        assert!(r.is_bad());
+    }
+
     extern crate std;
 
     use super::*;

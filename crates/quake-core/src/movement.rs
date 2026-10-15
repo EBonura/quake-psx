@@ -2199,3 +2199,32 @@ mod tests {
         assert!(!walks_up(24), "a 24 unit ledge is not a step");
     }
 }
+
+impl crate::save::Snapshot for MovementState {
+    fn save(&self, w: &mut crate::save::Writer) {
+        w.vec3(self.origin);
+        w.vec3(self.old_origin);
+        w.vec3(self.velocity);
+        w.bool(self.grounded);
+        w.u8(self.water_level);
+        w.i16(self.water_type);
+        w.bool(self.jump_latched);
+        w.bool(self.steep_seam_recovered);
+        w.u8(self.water_jump_ticks);
+        w.vec3(self.water_jump_push);
+    }
+
+    fn load(r: &mut crate::save::Reader) -> Self {
+        let mut state = Self::new(r.vec3());
+        state.old_origin = r.vec3();
+        state.velocity = r.vec3();
+        state.grounded = r.bool();
+        state.water_level = r.below(4);
+        state.water_type = r.i16();
+        state.jump_latched = r.bool();
+        state.steep_seam_recovered = r.bool();
+        state.water_jump_ticks = r.u8();
+        state.water_jump_push = r.vec3();
+        state
+    }
+}

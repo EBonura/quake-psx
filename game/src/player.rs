@@ -253,6 +253,29 @@ impl Player {
         self.view_angles = angles;
     }
 
+    /// Write where the player is and which way it faces; the view feel,
+    /// movement scratch and everything else is rebuilt.
+    pub fn save_state(&self, w: &mut quake_core::save::Writer) {
+        use quake_core::save::Snapshot as _;
+        self.movement.save(w);
+        w.bool(self.dead);
+        for angle in self.view_angles {
+            w.i16(angle);
+        }
+    }
+
+    /// Put a freshly spawned player back where [`Self::save_state`] found it.
+    pub fn load_state(&mut self, r: &mut quake_core::save::Reader) {
+        use quake_core::save::Snapshot as _;
+        self.movement = MovementState::load(r);
+        self.dead = r.bool();
+        for angle in self.view_angles.iter_mut() {
+            *angle = r.i16();
+        }
+        self.movement_scratch = MovementScratch::default();
+        self.view = ViewFeel::new();
+    }
+
     /// Advance view and locomotion using actual elapsed 60 Hz video ticks.
     pub fn update(
         &mut self,

@@ -53,6 +53,9 @@ fn units(value: i32) -> i32 {
 
 /// Call once per simulated frame after the monsters have thought.
 pub fn observe(entities: &EntityScene, world: &ResidentMap, player: Vec3I32, elapsed_ticks: u16) {
+    if cfg!(feature = "e1m1-save-regression") {
+        return;
+    }
     // SAFETY: the guest is single threaded; the same pattern the regression
     // probes use.
     let probe = unsafe { &mut *core::ptr::addr_of_mut!(PROBE) };

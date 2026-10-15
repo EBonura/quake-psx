@@ -394,3 +394,22 @@ mod tests {
         );
     }
 }
+
+impl MultiTrigger {
+    /// A shootable trigger's health and whether it has been shot open; its
+    /// maximum is authored.
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.i16(self.health);
+        w.bool(self.killed);
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        let health = r.i16();
+        if health > self.max_health {
+            r.reject();
+            return;
+        }
+        self.health = health;
+        self.killed = r.bool();
+    }
+}

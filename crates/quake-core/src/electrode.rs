@@ -95,3 +95,13 @@ mod tests {
             [v(360,280,113),v(360,-52,113)]);
     }
 }
+
+impl LightningEvent {
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u16(self.remaining);
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        self.remaining = r.u16();
+    }
+}

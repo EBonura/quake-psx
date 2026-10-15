@@ -38,6 +38,166 @@ struct Intermission {
     elapsed: u16,
 }
 
+/// Give the transfer buffer back to the monster code once a save or load is done.
+#[cfg(feature = "monster-code-overlay")]
+#[optimize(size)]
+#[inline(never)]
+pub(crate) fn reinstall_monster_code(
+    world: &mut crate::asset::ResidentMap,
+    monster_code: &mut crate::monster_code::MonsterCode,
+) {
+    if monster_code.install(world, crate::monster_code::Image::Monsters).is_err() {
+        psx_rt::tty::println("quake-psx: Rust monster code reinstall failed");
+        psx_rt::halt();
+    }
+}
+
+/// `Host_Savegame_f`: write the game to the memory card. The encoder and the
+/// card driver are overlay packages that borrow the loader's transfer buffer,
+/// so the monster code is returned first and read back from the disc after.
+#[optimize(size)]
+#[inline(never)]
+fn save_game(
+    world: &mut crate::asset::ResidentMap,
+    music: &mut crate::music::Music,
+    #[cfg(feature = "monster-code-overlay")] monster_code: &mut crate::monster_code::MonsterCode,
+    entities: &crate::entity::EntityScene,
+    player: &crate::player::Player,
+    weapon: &quake_core::combat::WeaponState,
+    presentation: &quake_core::level_session::LevelPresentation,
+) -> &'static str {
+    music.suspend_for_load();
+    #[cfg(feature = "monster-code-overlay")]
+    let outcome = {
+        let outcome = monster_code.save_game(world, entities, player, weapon, presentation);
+        reinstall_monster_code(world, monster_code);
+        outcome
+    };
+    #[cfg(not(feature = "monster-code-overlay"))]
+    let outcome = {
+        let mut staging = world.take_stream_scratch();
+        staging.resize(crate::savegame::STAGING_BYTES, 0);
+        let outcome = match crate::savegame::encode(
+            &mut staging,
+            world,
+            entities,
+            player,
+            weapon,
+            presentation,
+        ) {
+            Some(len) => crate::savegame::quake_card_write(&staging[..len]),
+            None => crate::savegame::Outcome::Failed,
+        };
+        world.restore_stream_scratch(staging);
+        outcome
+    };
+    music.resume_after_load(psx_rt::interrupts::vblank_count());
+    outcome.notice()
+}
+
+/// `Host_Loadgame_f`: read the memory card, load the level it names and put
+/// the game back where it was saved. The card is read twice because the level
+/// load reuses the staging buffer.
+#[optimize(size)]
+#[inline(never)]
+fn load_game(
+    world: &mut crate::asset::ResidentMap,
+    entities: &mut crate::entity::EntityScene,
+    audio: &mut crate::audio::AudioBank,
+    music: &mut crate::music::Music,
+    renderer: &mut crate::renderer::Renderer,
+    presentation: &mut LevelPresentation,
+    #[cfg(feature = "monster-code-overlay")] monster_code: &mut crate::monster_code::MonsterCode,
+    weapon: &mut quake_core::combat::WeaponState,
+) -> Result<crate::player::Player, crate::savegame::Outcome> {
+    use crate::savegame::Outcome;
+    music.suspend_for_load();
+    #[cfg(feature = "monster-code-overlay")]
+    let first = monster_code.card_header(world);
+    #[cfg(not(feature = "monster-code-overlay"))]
+    let first = {
+        let mut staging = world.take_stream_scratch();
+        staging.resize(crate::savegame::STAGING_BYTES, 0);
+        let first = crate::savegame::quake_card_read(&mut staging)
+            .and_then(|len| crate::savegame::header(&staging[..len]).ok_or(Outcome::Refused));
+        world.restore_stream_scratch(staging);
+        first
+    };
+    let header = match first {
+        Ok(header) => header,
+        Err(outcome) => {
+            #[cfg(feature = "monster-code-overlay")]
+            reinstall_monster_code(world, monster_code);
+            music.resume_after_load(psx_rt::interrupts::vblank_count());
+            return Err(outcome);
+        }
+    };
+    entities.restore_game(header.skill, header.runes);
+    let Some(mut player) = load_level(
+        world,
+        header.map,
+        entities,
+        audio,
+        music,
+        renderer,
+        presentation,
+        #[cfg(feature = "monster-code-overlay")]
+        monster_code,
+    ) else {
+        psx_rt::tty::println("quake-psx: Rust saved game load failed");
+        psx_rt::halt();
+    };
+    music.suspend_for_load();
+    #[cfg(feature = "monster-code-overlay")]
+    let restored = {
+        let restored =
+            monster_code.restore_game(world, entities, &mut player, weapon, presentation);
+        reinstall_monster_code(world, monster_code);
+        restored
+    };
+    #[cfg(not(feature = "monster-code-overlay"))]
+    let restored = {
+        let mut staging = world.take_stream_scratch();
+        staging.resize(crate::savegame::STAGING_BYTES, 0);
+        let restored = match crate::savegame::quake_card_read(&mut staging) {
+            Ok(len) => crate::savegame::restore(
+                &staging[..len],
+                world,
+                entities,
+                &mut player,
+                weapon,
+                presentation,
+            ),
+            Err(_) => false,
+        };
+        world.restore_stream_scratch(staging);
+        restored
+    };
+    music.resume_after_load(psx_rt::interrupts::vblank_count());
+    if restored {
+        return Ok(player);
+    }
+    // The save named a level and then did not fit it: start that level clean
+    // rather than leave a half-restored world.
+    *weapon = quake_core::combat::WeaponState::new();
+    entities.restore_game(header.skill, 0);
+    let Some(player) = load_level(
+        world,
+        header.map,
+        entities,
+        audio,
+        music,
+        renderer,
+        presentation,
+        #[cfg(feature = "monster-code-overlay")]
+        monster_code,
+    ) else {
+        psx_rt::tty::println("quake-psx: Rust saved game recovery load failed");
+        psx_rt::halt();
+    };
+    Ok(player)
+}
+
 /// Boot the PSoXide devices and own the game loop forever.
 ///
 /// Size-optimising this orchestration function reclaims six 2 KiB PS-X EXE
@@ -373,6 +533,18 @@ pub fn run() -> ! {
         } else {
             None
         };
+        #[cfg(feature = "e1m1-save-regression")]
+        let menu_action = crate::save_probe::scripted(elapsed_ticks).or(menu_action);
+        #[cfg(feature = "e1m1-save-regression")]
+        match menu_action {
+            Some(quake_core::menu::MenuAction::SaveGame) => crate::save_probe::fingerprint(
+                "before-save", &mut world, &mut music, &mut monster_code, &entities, &player, &weapon, &presentation, "-",
+            ),
+            Some(quake_core::menu::MenuAction::LoadGame) => crate::save_probe::fingerprint(
+                "before-load", &mut world, &mut music, &mut monster_code, &entities, &player, &weapon, &presentation, "-",
+            ),
+            _ => {}
+        }
         let menu_view = menu.view();
         // Apply a changed SFX level before menu3.wav so the adjustment cue
         // itself demonstrates the new setting, as in the original.
@@ -409,9 +581,53 @@ pub fn run() -> ! {
                 game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             }
             Some(quake_core::menu::MenuAction::Impulse9) => weapon.impulse_nine(),
+            Some(quake_core::menu::MenuAction::SaveGame) => {
+                menu.set_notice(save_game(
+                    &mut world,
+                    &mut music,
+                    #[cfg(feature = "monster-code-overlay")]
+                    &mut monster_code,
+                    &entities,
+                    &player,
+                    &weapon,
+                    &presentation,
+                ));
+            }
+            Some(quake_core::menu::MenuAction::LoadGame) => {
+                match load_game(
+                    &mut world,
+                    &mut entities,
+                    &mut audio,
+                    &mut music,
+                    &mut renderer,
+                    &mut presentation,
+                    #[cfg(feature = "monster-code-overlay")]
+                    &mut monster_code,
+                    &mut weapon,
+                ) {
+                    Ok(next_player) => {
+                        player = next_player;
+                        menu.close_for_game();
+                        game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
+                    }
+                    Err(outcome) => menu.set_notice(outcome.notice()),
+                }
+            }
             Some(quake_core::menu::MenuAction::Resume) | None => {}
         }
         weapon.set_god_mode(menu_view.god_mode);
+        #[cfg(feature = "e1m1-save-regression")]
+        match menu_action {
+            Some(quake_core::menu::MenuAction::SaveGame) => crate::save_probe::fingerprint(
+                "after-save", &mut world, &mut music, &mut monster_code, &entities, &player, &weapon, &presentation,
+                menu.view().notice.unwrap_or("-"),
+            ),
+            Some(quake_core::menu::MenuAction::LoadGame) => crate::save_probe::fingerprint(
+                "after-load", &mut world, &mut music, &mut monster_code, &entities, &player, &weapon, &presentation,
+                menu.view().notice.unwrap_or("loaded"),
+            ),
+            _ => {}
+        }
         // A level action reloads and resets the SPU voices above, so consume
         // its deferred enter cue only after that reset. Page moves and slider
         // changes reach here in the same frame as their input.

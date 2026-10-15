@@ -2192,6 +2192,90 @@ pub fn quake_monster_advance(runtime: &mut MonsterRuntime, elapsed: u16, input: 
     runtime.advance_ticks(elapsed, input)
 }
 
+impl MonsterKind {
+    const ALL: [MonsterKind; 9] = [
+        Self::Soldier,
+        Self::Dog,
+        Self::Ogre,
+        Self::Zombie,
+        Self::Knight,
+        Self::Wizard,
+        Self::Shambler,
+        Self::Demon,
+        Self::Boss,
+    ];
+}
+
+impl MonsterState {
+    const ALL: [MonsterState; 17] = [
+        Self::Stand,
+        Self::Walk,
+        Self::Run,
+        Self::Missile,
+        Self::Melee,
+        Self::MeleeB,
+        Self::MeleeC,
+        Self::PainA,
+        Self::PainB,
+        Self::PainC,
+        Self::PainD,
+        Self::PainE,
+        Self::DeathA,
+        Self::DeathB,
+        Self::Gib,
+        Self::Rise,
+        Self::Crucified,
+    ];
+}
+
+impl crate::save::Snapshot for MonsterRuntime {
+    fn save(&self, w: &mut crate::save::Writer) {
+        let kind = MonsterKind::ALL.iter().position(|k| *k == self.kind).unwrap_or(0);
+        let state = MonsterState::ALL.iter().position(|s| *s == self.state).unwrap_or(0);
+        w.u8(kind as u8);
+        w.u8(state as u8);
+        w.u16(self.frame);
+        w.u8(self.think_ticks);
+        w.u16(self.attack_cooldown);
+        w.u16(self.pain_cooldown);
+        w.u16(self.hold_ticks);
+        w.u32(self.random_state);
+        w.u8(self.boss_shocks as u8);
+        w.u8(self.leap_ticks);
+        w.u16(self.pause_ticks);
+        w.u16(self.enemy_index);
+        w.bool(self.active);
+        w.bool(self.corpse_finished);
+        w.bool(self.ambush);
+    }
+
+    fn load(r: &mut crate::save::Reader) -> Self {
+        let kind = MonsterKind::ALL[usize::from(r.below(9))];
+        let mut monster = Self::new(kind, 0);
+        monster.state = MonsterState::ALL[usize::from(r.below(17))];
+        monster.frame = r.u16();
+        if monster.frame > highest_frame(kind) {
+            r.reject();
+        }
+        monster.think_ticks = r.u8();
+        if u16::from(monster.think_ticks) >= MONSTER_THINK_TICKS + 4 {
+            r.reject();
+        }
+        monster.attack_cooldown = r.u16();
+        monster.pain_cooldown = r.u16();
+        monster.hold_ticks = r.u16();
+        monster.random_state = r.u32();
+        monster.boss_shocks = r.u8() as i8;
+        monster.leap_ticks = r.u8();
+        monster.pause_ticks = r.u16();
+        monster.enemy_index = r.u16();
+        monster.active = r.bool();
+        monster.corpse_finished = r.bool();
+        monster.ambush = r.bool();
+        monster
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,6 +19,12 @@ pub enum MenuAction {
     /// [`crate::level::LEVEL_NAMES`].
     StartLevel(u8),
     Resume,
+    /// `M_Menu_Save`: write the game to the memory card. The menu stays open
+    /// to show the result.
+    SaveGame,
+    /// `M_Menu_Load`: read the game back from the memory card. The game closes
+    /// the menu itself once the load has succeeded.
+    LoadGame,
     /// Original Quake's developer `impulse 9`: fill every weapon and ammo
     /// bit without choosing a different active weapon.
     Impulse9,
@@ -219,6 +225,9 @@ pub struct MenuView {
     /// choice the player just made.
     pub god_mode: bool,
     pub noclip: bool,
+    /// The memory card's answer to the last SAVE GAME or LOAD GAME press, drawn
+    /// under the rows until the next press.
+    pub notice: Option<&'static str>,
 }
 
 /// Brightness steps the Options page offers (the cooker's palette rows).
@@ -281,7 +290,7 @@ impl MenuView {
     #[optimize(size)]
     pub const fn row_count(self) -> u8 {
         match self.page {
-            MenuPage::Main => 4 + 2 * self.can_resume as u8,
+            MenuPage::Main => 5 + 3 * self.can_resume as u8,
             MenuPage::Levels => LEVEL_ROWS.len() as u8 + 1,
             MenuPage::Options => self.options_back_row() + 1,
             MenuPage::Controls => 1,
@@ -304,16 +313,19 @@ impl MenuView {
                 0 => Some(MenuRow::plain("RESUME")),
                 1 => Some(MenuRow::plain("NEW GAME")),
                 2 => Some(MenuRow::plain("LEVELS")),
-                3 => Some(MenuRow::plain("OPTIONS")),
-                4 => Some(MenuRow::plain("CONTROLS")),
-                5 => Some(MenuRow::plain("CHEATS")),
+                3 => Some(MenuRow::plain("SAVE GAME")),
+                4 => Some(MenuRow::plain("LOAD GAME")),
+                5 => Some(MenuRow::plain("OPTIONS")),
+                6 => Some(MenuRow::plain("CONTROLS")),
+                7 => Some(MenuRow::plain("CHEATS")),
                 _ => None,
             },
             MenuPage::Main => match index {
                 0 => Some(MenuRow::plain("NEW GAME")),
                 1 => Some(MenuRow::plain("LEVELS")),
-                2 => Some(MenuRow::plain("OPTIONS")),
-                3 => Some(MenuRow::plain("CONTROLS")),
+                2 => Some(MenuRow::plain("LOAD GAME")),
+                3 => Some(MenuRow::plain("OPTIONS")),
+                4 => Some(MenuRow::plain("CONTROLS")),
                 _ => None,
             },
             MenuPage::Levels => {
@@ -438,6 +450,7 @@ pub struct Menu {
     god_mode: bool,
     noclip: bool,
     pending_sound: Option<MenuSound>,
+    notice: Option<&'static str>,
 }
 
 impl Default for Menu {
@@ -477,6 +490,7 @@ impl Menu {
             // and emitted after its first draw. The game consumes this once
             // the global bank is resident.
             pending_sound: Some(MenuSound::Enter),
+            notice: None,
         }
     }
 
@@ -509,7 +523,14 @@ impl Menu {
             music_volume: self.music_volume,
             god_mode: self.god_mode,
             noclip: self.noclip,
+            notice: self.notice,
         }
+    }
+
+    /// Show `text` under the menu rows until the next press.
+    #[optimize(size)]
+    pub fn set_notice(&mut self, text: &'static str) {
+        self.notice = Some(text);
     }
 
     /// Refresh the music rows from the music module. The player edits them,
@@ -578,6 +599,9 @@ impl Menu {
             return None;
         }
 
+        if input.up || input.down || input.left || input.right || input.accept || input.back {
+            self.notice = None;
+        }
         let rows = self.view().row_count();
         if input.up {
             self.selected = if self.selected == 0 {
@@ -603,7 +627,13 @@ impl Menu {
                     return None;
                 }
                 self.pending_sound = Some(MenuSound::Enter);
-                let row = self.selected + u8::from(!self.can_resume);
+                // Rows are numbered as in the in-game menu; the title menu
+                // has no RESUME or SAVE GAME.
+                let row = if self.can_resume {
+                    self.selected
+                } else {
+                    [1u8, 2, 4, 5, 6][usize::from(self.selected).min(4)]
+                };
                 match row {
                     0 => {
                         self.close_for_game();
@@ -618,12 +648,14 @@ impl Menu {
                         self.selected = 0;
                         None
                     }
-                    3 => {
+                    3 => Some(MenuAction::SaveGame),
+                    4 => Some(MenuAction::LoadGame),
+                    5 => {
                         self.page = MenuPage::Options;
                         self.selected = 0;
                         None
                     }
-                    4 => {
+                    6 => {
                         self.page = MenuPage::Controls;
                         self.selected = 0;
                         None
@@ -840,6 +872,7 @@ mod tests {
         assert_eq!(BRIGHTNESS_LABELS[DEFAULT_BRIGHTNESS as usize], "DEFAULT");
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         assert_eq!(menu.view().page, MenuPage::Options);
         menu.update(down());
@@ -883,6 +916,7 @@ mod tests {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         menu.update(down());
         menu.update(down());
@@ -913,6 +947,7 @@ mod tests {
     #[test]
     fn the_crosshair_and_skill_rows_hold_their_own_values() {
         let mut menu = Menu::new();
+        menu.update(down());
         menu.update(down());
         menu.update(down());
         menu.update(accept());
@@ -966,6 +1001,7 @@ mod tests {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         for _ in 0..5 {
             menu.update(down());
@@ -981,6 +1017,7 @@ mod tests {
     #[test]
     fn presentation_rows_toggle_light_and_pose_modes() {
         let mut menu = Menu::new();
+        menu.update(down());
         menu.update(down());
         menu.update(down());
         menu.update(accept());
@@ -1024,6 +1061,7 @@ mod tests {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         for _ in 0..6 {
             menu.update(down());
@@ -1047,6 +1085,7 @@ mod tests {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         for _ in 0..7 {
             menu.update(down());
@@ -1062,6 +1101,7 @@ mod tests {
     #[test]
     fn music_rows_appear_only_when_the_disc_carries_the_tracks() {
         let mut menu = Menu::new();
+        menu.update(down());
         menu.update(down());
         menu.update(down());
         menu.update(accept());
@@ -1118,6 +1158,7 @@ mod tests {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         menu.sync_music(true, true);
         for _ in 0..OPTIONS_MUSIC_VOLUME_ROW + 1 {
@@ -1138,6 +1179,7 @@ mod tests {
         let mut menu = Menu::new();
         assert_eq!(menu.view().sound_volume, DEFAULT_SOUND_VOLUME);
         assert_eq!(menu.view().music_volume, DEFAULT_MUSIC_VOLUME);
+        menu.update(down());
         menu.update(down());
         menu.update(down());
         menu.update(accept());
@@ -1178,6 +1220,7 @@ mod tests {
         assert_eq!(menu.take_sound(), Some(MenuSound::Enter));
         menu.update(down());
         assert_eq!(menu.take_sound(), Some(MenuSound::Move));
+        menu.update(down());
         menu.update(down());
         menu.update(accept());
         assert_eq!(menu.take_sound(), Some(MenuSound::Enter));
@@ -1225,6 +1268,7 @@ mod tests {
         let mut menu = Menu::new();
         menu.update(down());
         menu.update(down());
+        menu.update(down());
         menu.update(accept());
         assert_eq!(menu.view().page, MenuPage::Options);
         menu.update(MenuInput {
@@ -1257,12 +1301,37 @@ mod tests {
     #[test]
     fn presentation_rows_follow_boot_and_pause_policy() {
         let mut menu = Menu::new();
-        assert_eq!(menu.view().row_count(), 4);
+        assert_eq!(menu.view().row_count(), 5);
         assert_eq!(menu.view().row(0), Some(MenuRow::plain("NEW GAME")));
+        assert_eq!(menu.view().row(2), Some(MenuRow::plain("LOAD GAME")));
+        assert_eq!(menu.view().row(5), None, "no SAVE GAME before a game exists");
         menu.open_pause();
-        assert_eq!(menu.view().row_count(), 6);
+        assert_eq!(menu.view().row_count(), 8);
         assert_eq!(menu.view().row(0), Some(MenuRow::plain("RESUME")));
-        assert_eq!(menu.view().row(5), Some(MenuRow::plain("CHEATS")));
+        assert_eq!(menu.view().row(3), Some(MenuRow::plain("SAVE GAME")));
+        assert_eq!(menu.view().row(4), Some(MenuRow::plain("LOAD GAME")));
+        assert_eq!(menu.view().row(7), Some(MenuRow::plain("CHEATS")));
+    }
+
+    #[test]
+    fn save_and_load_rows_raise_their_actions_and_keep_the_menu_open() {
+        let mut menu = Menu::new();
+        // Title menu: NEW GAME, LEVELS, LOAD GAME.
+        menu.update(down());
+        menu.update(down());
+        assert_eq!(menu.update(accept()), Some(MenuAction::LoadGame));
+        assert!(menu.active(), "the game closes the menu once the load worked");
+        // Pause menu: SAVE GAME and LOAD GAME are rows 3 and 4.
+        let mut menu = Menu::new();
+        menu.open_pause();
+        for _ in 0..3 {
+            menu.update(down());
+        }
+        assert_eq!(menu.update(accept()), Some(MenuAction::SaveGame));
+        assert!(menu.active());
+        menu.update(down());
+        assert_eq!(menu.update(accept()), Some(MenuAction::LoadGame));
+        assert!(menu.active());
     }
 
     #[optimize(size)]
@@ -1270,7 +1339,7 @@ mod tests {
     fn pause_cheats_toggle_and_emit_impulse_nine() {
         let mut menu = Menu::new();
         menu.open_pause();
-        for _ in 0..5 {
+        for _ in 0..7 {
             menu.update(down());
         }
         assert_eq!(menu.update(accept()), None);

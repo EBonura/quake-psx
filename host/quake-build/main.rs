@@ -71,6 +71,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     ".psoxide/sdk/crates/psx-gte-core",
     ".psoxide/sdk/crates/psx-io",
     ".psoxide/sdk/crates/psx-math",
+    ".psoxide/sdk/crates/psx-mc",
     ".psoxide/sdk/crates/psx-pack",
     ".psoxide/sdk/crates/psx-pad",
     ".psoxide/sdk/crates/psx-rt",
@@ -119,6 +120,7 @@ members = [
     "crates/psx-vram",
     "crates/psx-font",
     "crates/psx-math",
+    "crates/psx-mc",
     "crates/psx-settings",
     "crates/psx-spu",
     "crates/psx-sfx",
@@ -161,7 +163,7 @@ psx-display = { path = "crates/psx-display" }
 psx-vram = { path = "crates/psx-vram" }
 psx-font = { path = "crates/psx-font" }
 psx-math = { path = "crates/psx-math" }
-psx-mc = "0.1.0"
+psx-mc = { path = "crates/psx-mc" }
 psx-settings = { path = "crates/psx-settings" }
 psx-spu = { path = "crates/psx-spu" }
 psx-asset = { path = "crates/psx-asset" }
@@ -246,6 +248,7 @@ enum Action {
     E1m1ChainRegress,
     E1m1ChainBench,
     E1m1SpawnRegress,
+    E1m1SaveRegress,
     E1m1MonsterRouteBench,
     E1m1SelectionCacheBench,
 
@@ -1143,6 +1146,19 @@ fn real_main() -> Result<()> {
                 build_disc(&root, &build, Some(features.as_str()), false)?;
                 run_e1m1_spawn_regression(&root, &frontend, &build, scene)?;
             }
+        }
+        Action::E1m1SaveRegress => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
+            let build = root.join("build-psoxide-e1m1-save");
+            build_disc(
+                &root,
+                &build,
+                Some("e1m1-save-regression,perf-fixed-ticks-30hz"),
+                false,
+            )?;
+            run_e1m1_save_regression(&root, &frontend, &build)?;
         }
         Action::MonsterRegress => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2762,6 +2778,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-chain-regress"
             | "e1m1-chain-bench"
             | "e1m1-spawn-regress"
+            | "e1m1-save-regress"
             | "e1m1-monster-route-bench"
             | "e1m1-selection-cache-bench"
             | "e1m1-gpu-lattice-clip-bench"
@@ -2821,6 +2838,7 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-chain-regress" => Action::E1m1ChainRegress,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
                     "e1m1-spawn-regress" => Action::E1m1SpawnRegress,
+                    "e1m1-save-regress" => Action::E1m1SaveRegress,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
                     "e1m1-selection-cache-bench" => Action::E1m1SelectionCacheBench,
 
@@ -2927,6 +2945,7 @@ fn print_help() {
            e1m1-chain-regress  Walk E1M1's authored three-button door chain headlessly\n  \
            e1m1-chain-bench  The same route at a fixed sim step, for ranking performance work\n  \
            e1m1-spawn-regress  Pin E1M1 monster spawn positions and keep walkers off ledge edges\n  \
+           e1m1-save-regress  Save the game to an emulated memory card, run on, load it and compare\n  \
            e1m1-selection-cache-bench  A/B exact-key selected-face reuse\n  \
            e1m1-gpu-lattice-clip-bench  A/B PS1 draw-area clipping versus per-packet CPU rejects\n  \
            e1m1-gpu-polygon-clip-bench  A/B draw-area clipping for every admitted world GT3/GT4\n  \
@@ -4636,7 +4655,7 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
     }
     fs::create_dir_all(&stage)?;
     fs::copy(root.join("id1psx/gfx.dat"), stage.join("chunk_1.dat"))?;
-    for (name, id) in [("monsters", 4), ("doors", 5)] {
+    for (name, id) in [("monsters", 4), ("doors", 5), ("save", 6), ("load", 7), ("card", 8)] {
         fs::copy(root.join(format!("game/target/overlay-{name}.pak")),
             stage.join(format!("chunk_{id}.dat")))?;
     }
@@ -6815,6 +6834,141 @@ fn run_e1m1_spawn_regression(
          probe_lines={}\n\
          checked={checked}\n",
         lines.len()
+    );
+    fs::write(capture.join("summary.txt"), &summary)?;
+    print!("{summary}");
+    Ok(())
+}
+
+/// One fingerprint line from `game/src/save_probe.rs`.
+#[derive(Debug)]
+struct SaveLine {
+    phase: String,
+    fingerprint: String,
+    outcome: String,
+    len: usize,
+}
+
+fn parse_save_lines(log: &[u8]) -> Vec<SaveLine> {
+    let text = String::from_utf8_lossy(log);
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let Some(at) = line.find("SV ") else {
+            continue;
+        };
+        let mut fields = line[at + 3..].split_whitespace();
+        let Some(phase) = fields.next() else {
+            continue;
+        };
+        let mut fingerprint = String::new();
+        let mut outcome = String::new();
+        let mut len = 0usize;
+        let mut rest: Vec<&str> = Vec::new();
+        for field in fields {
+            if let Some(value) = field.strip_prefix("fp=") {
+                fingerprint = value.to_string();
+            } else if let Some(value) = field.strip_prefix("len=") {
+                len = value.parse().unwrap_or(0);
+            } else if let Some(value) = field.strip_prefix("outcome=") {
+                rest.push(value);
+            } else if !rest.is_empty() {
+                rest.push(field);
+            }
+        }
+        outcome.push_str(&rest.join(" "));
+        lines.push(SaveLine {
+            phase: phase.to_string(),
+            fingerprint,
+            outcome,
+            len,
+        });
+    }
+    lines
+}
+
+/// The scripted pause-menu save and load on E1M1, through the real card code
+/// on the emulator's memory card: the state fingerprinted before the save must
+/// come back exactly after the load, and the world must have moved between
+/// the two so the comparison means something.
+fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> Result<()> {
+    let capture = root.join("captures/e1m1-save-regression");
+    let steps = env::var("QUAKE_PSX_SAVE_REGRESSION_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(6_000_000_000u64);
+    let guest_frames = env::var("QUAKE_PSX_SAVE_REGRESSION_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(700u64);
+    let cue = regression.join("quake-psx.cue");
+    let mut runs = Vec::new();
+    for run in ["run-a", "run-b"] {
+        let dir = capture.join(run);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        let card = dir.join("card.mcd");
+        let mut command = Command::new(frontend);
+        command
+            .arg("launch")
+            .arg("--path")
+            .arg(&cue)
+            .arg("--digital-pad")
+            .arg("--steps")
+            .arg(steps.to_string())
+            .arg("--memcard")
+            .arg(&card)
+            .arg("--guest-debug-log")
+            .arg("--guest-frames")
+            .arg(guest_frames.to_string());
+        let output = output(&mut command)?;
+        let log = combined_output(&output);
+        fs::write(dir.join("console.log"), &log)?;
+        let lines = parse_save_lines(&log);
+        let phase = |name: &str| -> Result<&SaveLine> {
+            lines
+                .iter()
+                .find(|line| line.phase == name)
+                .ok_or_else(|| format!("{run}: no `SV {name}` line in the guest log").into())
+        };
+        let before_save = phase("before-save")?;
+        let after_save = phase("after-save")?;
+        let before_load = phase("before-load")?;
+        let after_load = phase("after-load")?;
+        if after_save.outcome != "GAME SAVED" {
+            return Err(format!("{run}: the save said {:?}", after_save.outcome).into());
+        }
+        if before_save.len == 0 || before_save.len > 24 * 1024 {
+            return Err(format!("{run}: save of {} bytes", before_save.len).into());
+        }
+        if before_save.fingerprint == before_load.fingerprint {
+            return Err(format!(
+                "{run}: the world did not move between the save and the load ({})",
+                before_save.fingerprint
+            )
+            .into());
+        }
+        if before_save.fingerprint != after_load.fingerprint {
+            return Err(format!(
+                "{run}: the load did not restore the saved state: saved {} loaded {}",
+                before_save.fingerprint, after_load.fingerprint
+            )
+            .into());
+        }
+        let card_bytes = fs::metadata(&card).map(|meta| meta.len()).unwrap_or(0);
+        if card_bytes != 128 * 1024 {
+            return Err(format!("{run}: memory card image is {card_bytes} bytes").into());
+        }
+        runs.push((before_save.fingerprint.clone(), before_save.len));
+    }
+    if runs[0] != runs[1] {
+        return Err("save regression is nondeterministic".into());
+    }
+    let summary = format!(
+        "quake-psx E1M1 save and load regression: PASS\n\
+         deterministic_runs=2\n\
+         save_bytes={}\n\
+         saved_state_fingerprint={}\n",
+        runs[0].1, runs[0].0
     );
     fs::write(capture.join("summary.txt"), &summary)?;
     print!("{summary}");
