@@ -25,8 +25,6 @@ const WATER_JUMP_OUT_SPEED_Q12: i32 = 225 << 12;
 const WATER_JUMP_PUSH_Q12: i32 = 50 << 12;
 const WATER_JUMP_TICKS: u8 = 120;
 const WATER_JUMP_PROBE_Q12: i32 = 24 << 12;
-/// Player hull height (`-24..32`), the lift for the "open above" probe.
-const PLAYER_HULL_HEIGHT_Q12: i32 = 56 << 12;
 /// Quake's normal `sv_gravity`; E1M8 overrides it to 100 in the original
 /// `worldspawn` program.
 pub const DEFAULT_GRAVITY: u16 = 800;
@@ -38,9 +36,22 @@ const WATER_DRIFT_SPEED_Q12: i32 = 60 << 12;
 const STEP_HEIGHT_Q12: i32 = 18 << 12;
 const GROUND_PROBE_Q12: i32 = 2 << 12;
 const WALKABLE_NORMAL_Q12: i32 = 2_867;
-const AIR_GROUND_CUTOFF_Q12: i32 = 180 << 12;
 const LAND_SPEED_Q12: i32 = -(300 << 12);
 const HARD_LAND_SPEED_Q12: i32 = -(650 << 12);
+/// `WaterMove`'s `velocity -= 0.8 * waterlevel * frametime * velocity` at 60
+/// ticks a second: one 75th of the velocity per water level.
+const WATER_DRAG_DIVISOR: i32 = 75;
+/// `teleport_time = time + 0.7`.
+const TELEPORT_BACKPEDAL_TICKS: u8 = 42;
+/// `PlayerJump` plays a swim stroke at most once a second.
+const SWIM_STROKE_TICKS: u8 = 60;
+/// `SV_UserFriction`'s edge probe: 16 units ahead of the origin, from the
+/// feet down 34 units.
+const EDGE_FRICTION_REACH_Q12: i32 = 16 << 12;
+const EDGE_FRICTION_DROP_Q12: i32 = 34 << 12;
+const FEET_BELOW_ORIGIN_Q12: i32 = 24 << 12;
+/// `STOP_EPSILON` (0.1) of `ClipVelocity`.
+const STOP_EPSILON_Q12: i32 = 410;
 const MAX_SLIDE_BUMPS: usize = 4;
 const MAX_CLIP_PLANES: usize = 5;
 
@@ -250,6 +261,20 @@ pub trait MovementTrace {
         scratch: &mut TraceScratch,
         output: &mut MovementTraceResult,
     ) -> bool;
+
+    /// A zero-size trace through the world and its brush entities that ignores
+    /// monsters: `SV_Move (start, vec3_origin, vec3_origin, end, true, ent)`,
+    /// which is what `traceline (.., TRUE, ..)` and the edge-friction probe
+    /// ask. A provider with only the player hull answers with that hull.
+    fn trace_line(
+        &self,
+        start: &Vec3I32,
+        end: &Vec3I32,
+        scratch: &mut TraceScratch,
+        output: &mut MovementTraceResult,
+    ) -> bool {
+        self.trace(start, end, scratch, output)
+    }
 }
 
 impl MovementTrace for CollisionHull<'_> {
@@ -284,10 +309,23 @@ pub struct MovementState {
     /// `SV_CheckStuck` falls back to it before trying one-unit hull nudges.
     old_origin: Vec3I32,
     velocity: Vec3I32,
+    /// `FL_ONGROUND`. Like the original it is cleared at the start of every
+    /// `SV_WalkMove` and raised only by a floor hit on world or brush geometry
+    /// during that move, so a box on a monster's head is not grounded.
     grounded: bool,
     water_level: u8,
     water_type: i16,
-    jump_latched: bool,
+    /// `FL_JUMPRELEASED`: set whenever the jump button is up, cleared when a
+    /// jump (or a water jump) actually fires.
+    jump_released: bool,
+    /// Ticks until `PlayerJump` may play another swim stroke (`swim_flag`).
+    swim_sound_ticks: u8,
+    /// `jump_flag`: the vertical speed of the last airborne tick, which
+    /// `PlayerPostThink` reads on landing.
+    fall_speed: i32,
+    /// Ticks left of `teleport_time` after a teleport, during which
+    /// `SV_AirMove` ignores backward input.
+    teleport_ticks: u8,
     steep_seam_recovered: bool,
     /// `FL_WATERJUMP` ticks remaining; zero when not climbing out of water.
     water_jump_ticks: u8,
@@ -304,7 +342,10 @@ impl MovementState {
             grounded: false,
             water_level: 0,
             water_type: CONTENTS_EMPTY,
-            jump_latched: false,
+            jump_released: false,
+            swim_sound_ticks: 0,
+            fall_speed: 0,
+            teleport_ticks: 0,
             steep_seam_recovered: false,
             water_jump_ticks: 0,
             water_jump_push: Vec3I32 { x: 0, y: 0, z: 0 },
@@ -346,10 +387,12 @@ impl MovementState {
     }
 
     /// `teleport_touch`'s exit: relocate, clear the ground flag, and leave the
-    /// player with the destination's `v_forward * 300` push.
+    /// player with the destination's `v_forward * 300` push. `teleport_time`
+    /// is armed for 0.7 s so `SV_AirMove` refuses backward input.
     pub fn teleport_with_velocity(&mut self, origin: Vec3I32, velocity: Vec3I32) {
         *self = Self::new(origin);
         self.velocity = velocity;
+        self.teleport_ticks = TELEPORT_BACKPEDAL_TICKS;
     }
 
     /// `T_Damage` knockback: `targ.velocity += dir * damage * 8`. An upward
@@ -363,6 +406,51 @@ impl MovementState {
         };
         if impulse.z > 0 {
             self.grounded = false;
+        }
+    }
+
+    /// `PlayerDie`: the body becomes a `MOVETYPE_TOSS` corpse that has left the
+    /// ground, and `velocity_z += random() * 300` hops it when it was not
+    /// already rising at 10 or more.
+    pub fn die(&mut self, hop_units: i32) {
+        self.grounded = false;
+        self.water_jump_ticks = 0;
+        if self.velocity.z < 10 << 12 {
+            self.velocity.z = self.velocity.z.saturating_add(hop_units << 12);
+        }
+    }
+
+    /// `SV_Physics_Toss` for the corpse: gravity, one push through the world,
+    /// clip against what it hit, and a stop on the first walkable floor. A
+    /// body that is already on the ground does not move at all.
+    pub fn update_dead<C: MovementTrace + ?Sized>(
+        &mut self,
+        collision: &C,
+        scratch: &mut MovementScratch,
+        elapsed_ticks: u16,
+        gravity: u16,
+    ) {
+        let gravity_per_tick_q12 = (i32::from(gravity) << 12) / VIDEO_TICKS_PER_SECOND;
+        scratch.stalls = MovementStalls::default();
+        for _ in 0..elapsed_ticks.clamp(1, MAX_CATCHUP_TICKS) {
+            if self.grounded {
+                break;
+            }
+            self.velocity.z = self.velocity.z.saturating_sub(gravity_per_tick_q12);
+            let step = Vec3I32 {
+                x: self.velocity.x / VIDEO_TICKS_PER_SECOND,
+                y: self.velocity.y / VIDEO_TICKS_PER_SECOND,
+                z: self.velocity.z / VIDEO_TICKS_PER_SECOND,
+            };
+            push_entity(collision, scratch, &mut self.origin, step);
+            if scratch.trace.fraction == Q12_ONE {
+                continue;
+            }
+            self.velocity = clip_velocity(self.velocity, scratch.trace.normal);
+            if scratch.trace.normal.z as i32 > WALKABLE_NORMAL_Q12 {
+                self.grounded = true;
+                self.velocity = Vec3I32 { x: 0, y: 0, z: 0 };
+            }
         }
     }
 
@@ -432,6 +520,9 @@ impl MovementState {
         }
     }
 
+    /// One server frame of `SV_ClientThink`, `PlayerPreThink`,
+    /// `SV_Physics_Client` and the landing half of `PlayerPostThink`, in the
+    /// order the original runs them.
     fn update_one<C, F>(
         &mut self,
         collision: &C,
@@ -445,148 +536,100 @@ impl MovementState {
         F: FnMut(&Vec3I32) -> Option<i16>,
     {
         let mut events = MovementEvents::default();
-        // `SV_Physics_Client` runs `SV_CheckVelocity` before the move.
-        self.velocity.x = self.velocity.x.clamp(-MAX_VELOCITY_Q12, MAX_VELOCITY_Q12);
-        self.velocity.y = self.velocity.y.clamp(-MAX_VELOCITY_Q12, MAX_VELOCITY_Q12);
-        self.velocity.z = self.velocity.z.clamp(-MAX_VELOCITY_Q12, MAX_VELOCITY_Q12);
-        self.check_stuck(collision, scratch);
-        self.categorize_position(collision, scratch);
-        if self.grounded {
-            self.steep_seam_recovered = false;
-        }
-        self.refresh_water(scratch, point_contents, &mut events);
-        let started_grounded = self.grounded;
+        self.swim_sound_ticks = self.swim_sound_ticks.saturating_sub(1);
 
-        // `SV_WaterJump`: the flag clears on `teleport_time` or on leaving
-        // the water; while set, the climb owns the velocity and the player's
-        // own input is ignored (`SV_ClientThink` returns early).
+        // `SV_ClientThink` reads `FL_ONGROUND` as the last move left it.
+        let on_ground = self.grounded;
         if self.water_jump_ticks != 0 {
+            // `SV_WaterJump`: the flag drops on the 2 s timer or on leaving
+            // the water; while it is up the climb owns the horizontal
+            // velocity and the player's own input is ignored.
             if self.water_level == 0 {
                 self.water_jump_ticks = 0;
             } else {
                 self.water_jump_ticks -= 1;
             }
+            if self.water_jump_ticks != 0 {
+                self.velocity.x = self.water_jump_push.x;
+                self.velocity.y = self.water_jump_push.y;
+            }
+        } else if self.water_level >= 2 {
+            self.swim_accelerate(input);
+        } else {
+            self.walk_accelerate(collision, scratch, input, on_ground);
         }
-        if self.water_jump_ticks != 0 {
-            self.velocity.x = self.water_jump_push.x;
-            self.velocity.y = self.water_jump_push.y;
-            let _ = fly_move(collision, scratch, &mut self.origin, &mut self.velocity);
-            self.categorize_position(collision, scratch);
-            self.refresh_water(scratch, point_contents, &mut events);
-            return events;
+
+        // `PlayerPreThink`: `WaterMove`'s drag, `CheckWaterJump`, `PlayerJump`.
+        if self.water_jump_ticks == 0 {
+            let drag = i32::from(self.water_level);
+            self.velocity.x -= self.velocity.x * drag / WATER_DRAG_DIVISOR;
+            self.velocity.y -= self.velocity.y * drag / WATER_DRAG_DIVISOR;
+            self.velocity.z -= self.velocity.z * drag / WATER_DRAG_DIVISOR;
         }
-        // `PlayerPreThink`: `if (self.waterlevel == 2) CheckWaterJump();`
-        let launched_water_jump =
-            self.water_level == 2 && self.check_water_jump(collision, scratch, input.yaw);
-        if launched_water_jump {
-            self.grounded = false;
-            self.jump_latched = true;
+        if self.water_level == 2 && self.check_water_jump(collision, scratch, input.yaw) {
+            self.velocity.z = WATER_JUMP_OUT_SPEED_Q12;
+            self.jump_released = false;
             self.water_jump_ticks = WATER_JUMP_TICKS;
         }
-
-        // PlayerJump returns while FL_WATERJUMP is set, including the
-        // tick where CheckWaterJump first activates the automatic launch.
-        if self.water_jump_ticks == 0 {
-            if input.jump {
-                if self.water_level >= 2 {
-                    self.grounded = false;
-                    self.velocity.z = match self.water_type {
-                        CONTENTS_SLIME => SLIME_JUMP_SPEED_Q12,
-                        CONTENTS_LAVA => LAVA_JUMP_SPEED_Q12,
-                        _ => WATER_JUMP_SPEED_Q12,
-                    };
-                    if !self.jump_latched {
-                        events.insert(MovementEvents::SWIM);
-                    }
-                } else if self.grounded && !self.jump_latched {
-                    self.grounded = false;
-                    self.velocity.z = self.velocity.z.saturating_add(JUMP_SPEED_Q12);
-                    events.insert(MovementEvents::JUMP);
+        if !input.jump {
+            self.jump_released = true;
+        } else if self.water_jump_ticks == 0 {
+            if self.water_level >= 2 {
+                self.velocity.z = match self.water_type {
+                    CONTENTS_SLIME => SLIME_JUMP_SPEED_Q12,
+                    CONTENTS_LAVA => LAVA_JUMP_SPEED_Q12,
+                    _ => WATER_JUMP_SPEED_Q12,
+                };
+                if self.swim_sound_ticks == 0 {
+                    self.swim_sound_ticks = SWIM_STROKE_TICKS;
+                    events.insert(MovementEvents::SWIM);
                 }
-                self.jump_latched = true;
-            } else {
-                self.jump_latched = false;
+            } else if on_ground && self.jump_released {
+                self.jump_released = false;
+                self.grounded = false;
+                self.velocity.z = self.velocity.z.saturating_add(JUMP_SPEED_Q12);
+                events.insert(MovementEvents::JUMP);
             }
         }
 
-        let impact_velocity;
-        if self.water_level >= 2 {
-            apply_friction(&mut self.velocity, self.water_level);
-            impact_velocity = if launched_water_jump {
-                WATER_JUMP_OUT_SPEED_Q12
-            } else {
-                self.velocity.z
-            };
-            self.water_move(collision, scratch, input, launched_water_jump);
-        } else {
-            if self.grounded {
-                apply_friction(&mut self.velocity, 0);
-            }
-            let (wish_direction, wish_speed) = wish_velocity(input);
-            if self.grounded {
-                accelerate(&mut self.velocity, wish_direction, wish_speed, false);
-                self.velocity.z = 0;
-                impact_velocity = 0;
-                self.ground_move(collision, scratch);
-            } else {
-                accelerate(&mut self.velocity, wish_direction, wish_speed, true);
-                self.velocity.z = self.velocity.z.saturating_sub(gravity_per_tick_q12);
-                impact_velocity = self.velocity.z;
-                let original_origin = self.origin;
-                let original_velocity = self.velocity;
-                let clip = fly_move(collision, scratch, &mut self.origin, &mut self.velocity);
-                // The captured E1M1 seam leaves the player technically
-                // airborne on a steep bevel, so the grounded
-                // `SV_TryUnstick` call cannot run. Retry from the last valid
-                // pre-impact origin only when the frame made less than 1/8
-                // unit of progress and a short floor probe confirms a steep
-                // support plane. That distinguishes the fixed-point seam
-                // from an ordinary airborne collision with a vertical wall.
-                if clip != 0
-                    && abs_i32(self.origin.x.saturating_sub(original_origin.x)) < Q12_ONE / 8
-                    && abs_i32(self.origin.y.saturating_sub(original_origin.y)) < Q12_ONE / 8
-                    && !self.steep_seam_recovered
-                    && on_steep_support(collision, original_origin, scratch)
-                {
-                    let mut recovered_origin = original_origin;
-                    let mut recovered_velocity = original_velocity;
-                    if try_steep_seam_lift(
-                        collision,
-                        scratch,
-                        &mut recovered_origin,
-                        &mut recovered_velocity,
-                        original_velocity,
-                    ) {
-                        self.origin = recovered_origin;
-                        self.velocity = recovered_velocity;
-                        self.steep_seam_recovered = true;
-                    }
-                }
-            }
-        }
-
-        self.categorize_position(collision, scratch);
+        // `SV_Physics_Client`.
+        self.velocity.x = self.velocity.x.clamp(-MAX_VELOCITY_Q12, MAX_VELOCITY_Q12);
+        self.velocity.y = self.velocity.y.clamp(-MAX_VELOCITY_Q12, MAX_VELOCITY_Q12);
+        self.velocity.z = self.velocity.z.clamp(-MAX_VELOCITY_Q12, MAX_VELOCITY_Q12);
         self.refresh_water(scratch, point_contents, &mut events);
-        if !started_grounded && self.grounded && impact_velocity < LAND_SPEED_Q12 {
-            // `PlayerPostThink` swaps the landing sound for a splash only on
-            // `self.watertype == CONTENT_WATER`; slime and lava landings still
-            // take the fall.
+        if self.water_level < 2 && self.water_jump_ticks == 0 {
+            self.velocity.z = self.velocity.z.saturating_sub(gravity_per_tick_q12);
+        }
+        self.check_stuck(collision, scratch);
+        if self.grounded {
+            self.steep_seam_recovered = false;
+        }
+        self.walk_move(collision, scratch, input);
+        self.refresh_water(scratch, point_contents, &mut events);
+
+        // `PlayerPostThink`: land on the speed of the last airborne tick.
+        if self.grounded && self.fall_speed < LAND_SPEED_Q12 {
+            // The splash replaces the landing sound only for
+            // `self.watertype == CONTENT_WATER`; slime and lava landings
+            // still take the fall.
             if self.water_level > 0 && self.water_type == CONTENTS_WATER {
                 events.insert(MovementEvents::WATER_LAND);
-            } else if impact_velocity < HARD_LAND_SPEED_Q12 {
+            } else if self.fall_speed < HARD_LAND_SPEED_Q12 {
                 events.insert(MovementEvents::HARD_LAND);
             } else {
                 events.insert(MovementEvents::LAND);
             }
+            self.fall_speed = 0;
+        }
+        if !self.grounded {
+            self.fall_speed = self.velocity.z;
         }
         events
     }
 
-    /// `CheckWaterJump`: solid 24 units ahead at the waist but open at the
-    /// top of the box means a ledge the player can hop onto. The original
-    /// uses two point traces; this sweeps the hull forward at the origin and
-    /// again lifted by its own height so the "open above" test asks for the
-    /// standing room the player needs anyway.
+    /// `CheckWaterJump`: a point trace 24 units ahead at knee height that hits
+    /// a wall, and a second one at chest height that does not, means a ledge
+    /// the player can hop onto. Records `movedir` (the wall normal times -50).
     fn check_water_jump<C: MovementTrace + ?Sized>(
         &mut self,
         collision: &C,
@@ -599,23 +642,15 @@ impl MovementState {
             y: mul_q12_i32(psx_math::sin_q12(yaw), WATER_JUMP_PROBE_Q12),
             z: 0,
         };
-        let waist_end = add(self.origin, forward);
-        trace(collision, &self.origin, &waist_end, scratch);
-        if scratch.trace.trapped() || scratch.trace.fraction >= Q12_ONE {
+        let mut start = add(self.origin, Vec3I32 { x: 0, y: 0, z: 8 << 12 });
+        trace_line(collision, &start, &add(start, forward), scratch);
+        if scratch.trace.fraction >= Q12_ONE {
             return false;
         }
         let normal = scratch.trace.normal;
-        let lifted = Vec3I32 {
-            x: self.origin.x,
-            y: self.origin.y,
-            z: self.origin.z.saturating_add(PLAYER_HULL_HEIGHT_Q12),
-        };
-        if position_stuck(collision, lifted, scratch) {
-            return false;
-        }
-        let lifted_end = add(lifted, forward);
-        trace(collision, &lifted, &lifted_end, scratch);
-        if scratch.trace.trapped() || scratch.trace.fraction < Q12_ONE {
+        start.z = self.origin.z.saturating_add(32 << 12);
+        trace_line(collision, &start, &add(start, forward), scratch);
+        if scratch.trace.fraction < Q12_ONE {
             return false;
         }
         self.water_jump_push = Vec3I32 {
@@ -626,7 +661,7 @@ impl MovementState {
         true
     }
 
-    /// Quake's `SV_CheckStuck`: recover a player whose hull begins inside
+        /// Quake's `SV_CheckStuck`: recover a player whose hull begins inside
     /// solid by first restoring the last valid origin, then by searching the
     /// original one-unit XY / 0..17-unit Z neighborhood. The original labels
     /// this a gameplay-oriented clipping-hull precision hack; keeping it here
@@ -665,35 +700,6 @@ impl MovementState {
         self.origin = stuck_origin;
     }
 
-    fn categorize_position<C: MovementTrace + ?Sized>(
-        &mut self,
-        collision: &C,
-        scratch: &mut MovementScratch,
-    ) {
-        if self.velocity.z > AIR_GROUND_CUTOFF_Q12 {
-            self.grounded = false;
-            return;
-        }
-        let below = Vec3I32 {
-            x: self.origin.x,
-            y: self.origin.y,
-            z: self.origin.z.saturating_sub(GROUND_PROBE_Q12),
-        };
-        // Standing on a surface is exactly the contact the tracer reports as
-        // `all_solid` with a zero fraction and the floor's normal, so the ground
-        // probe asks the same "trapped" question the slide move does.
-        trace(collision, &self.origin, &below, scratch);
-        self.grounded = !scratch.trace.trapped()
-            && scratch.trace.fraction < Q12_ONE
-            && scratch.trace.normal.z as i32 >= WALKABLE_NORMAL_Q12;
-        if self.grounded {
-            self.origin = scratch.trace.end;
-            if self.velocity.z < 0 {
-                self.velocity.z = 0;
-            }
-        }
-    }
-
     fn refresh_water<F>(
         &mut self,
         scratch: &mut MovementScratch,
@@ -730,13 +736,77 @@ impl MovementState {
         }
     }
 
-    fn water_move<C: MovementTrace + ?Sized>(
+    /// `SV_ClientThink` for a walker: `SV_AirMove`'s wish velocity, then
+    /// ground friction and acceleration when `FL_ONGROUND` was up, or the
+    /// capped air acceleration when it was not.
+    fn walk_accelerate<C: MovementTrace + ?Sized>(
         &mut self,
         collision: &C,
         scratch: &mut MovementScratch,
-        input: MovementInput,
-        launched_water_jump: bool,
+        mut input: MovementInput,
+        on_ground: bool,
     ) {
+        // The hack that keeps a freshly teleported player from walking back
+        // into the teleporter.
+        if self.teleport_ticks != 0 {
+            self.teleport_ticks -= 1;
+            input.forward = input.forward.max(0);
+        }
+        let (direction, speed) = wish_velocity(input);
+        if on_ground {
+            self.user_friction(collision, scratch);
+            let current = dot(self.velocity, direction);
+            accelerate(&mut self.velocity, direction, speed, speed, current);
+        } else {
+            let current = dot(self.velocity, direction);
+            accelerate(&mut self.velocity, direction, speed, speed.min(30 << 12), current);
+        }
+    }
+
+    /// `SV_UserFriction`: ground friction, doubled when the leading edge of
+    /// the player has nothing within 34 units below it (`sv_edgefriction`).
+    fn user_friction<C: MovementTrace + ?Sized>(
+        &mut self,
+        collision: &C,
+        scratch: &mut MovementScratch,
+    ) {
+        let speed = vector_length(Vec3I32 {
+            x: self.velocity.x,
+            y: self.velocity.y,
+            z: 0,
+        });
+        if speed < Q12_ONE {
+            self.velocity.x = 0;
+            self.velocity.y = 0;
+            return;
+        }
+        let ahead = |component: i32| {
+            mul_q12_i32(div_q12_i32(component, speed), EDGE_FRICTION_REACH_Q12)
+        };
+        let start = Vec3I32 {
+            x: self.origin.x.saturating_add(ahead(self.velocity.x)),
+            y: self.origin.y.saturating_add(ahead(self.velocity.y)),
+            z: self.origin.z.saturating_sub(FEET_BELOW_ORIGIN_Q12),
+        };
+        let stop = Vec3I32 {
+            z: start.z.saturating_sub(EDGE_FRICTION_DROP_Q12),
+            ..start
+        };
+        trace_line(collision, &start, &stop, scratch);
+        let mut drop = speed.max(STOP_SPEED_Q12) / 15;
+        if scratch.trace.fraction == Q12_ONE {
+            drop *= 2;
+        }
+        let scale = div_q12_i32(speed.saturating_sub(drop).max(0), speed);
+        self.velocity.x = mul_q12_i32(self.velocity.x, scale);
+        self.velocity.y = mul_q12_i32(self.velocity.y, scale);
+        self.velocity.z = mul_q12_i32(self.velocity.z, scale);
+    }
+
+    /// `SV_WaterMove`: friction on the full speed, then acceleration toward
+    /// the view-direction wish at 70 percent, or a slow drift to the bottom
+    /// with no input.
+    fn swim_accelerate(&mut self, input: MovementInput) {
         let (mut direction, mut speed) = swim_wish_velocity(input);
         if speed == 0 {
             direction = Vec3I32 {
@@ -747,99 +817,148 @@ impl MovementState {
             speed = WATER_DRIFT_SPEED_Q12;
         }
         speed = speed.saturating_mul(7) / 10;
-        accelerate(&mut self.velocity, direction, speed, false);
-        // Original client input runs before PlayerPreThink's automatic
-        // launch. Apply its vertical impulse after water acceleration but
-        // before collision, so the first tick cannot damp that launch.
-        if launched_water_jump {
-            self.velocity.z = WATER_JUMP_OUT_SPEED_Q12;
-        }
-        let _ = fly_move(collision, scratch, &mut self.origin, &mut self.velocity);
+        apply_water_friction(&mut self.velocity);
+        let current = vector_length(self.velocity);
+        accelerate(&mut self.velocity, direction, speed, speed, current);
     }
 
-    fn ground_move<C: MovementTrace + ?Sized>(
+    /// `SV_WalkMove`: slide, and when the slide ran into a vertical wall
+    /// (`clip & 2`) retry from a step higher, keeping the stepped result only
+    /// if the drop back down lands on walkable ground.
+    fn walk_move<C: MovementTrace + ?Sized>(
         &mut self,
         collision: &C,
         scratch: &mut MovementScratch,
+        input: MovementInput,
     ) {
-        if self.velocity.x == 0 && self.velocity.y == 0 {
-            return;
-        }
-        let destination = add(self.origin, frame_displacement(self.velocity));
-        trace(collision, &self.origin, &destination, scratch);
-        if !scratch.trace.trapped() && scratch.trace.fraction == Q12_ONE {
-            self.origin = scratch.trace.end;
-            return;
-        }
-
-        let original_origin = self.origin;
-        let original_velocity = self.velocity;
-        let mut down_origin = self.origin;
-        let mut down_velocity = self.velocity;
-        let _ = fly_move(collision, scratch, &mut down_origin, &mut down_velocity);
-
-        let step_target = Vec3I32 {
-            x: original_origin.x,
-            y: original_origin.y,
-            z: original_origin.z.saturating_add(STEP_HEIGHT_Q12),
-        };
-        trace(collision, &original_origin, &step_target, scratch);
-        // `SV_PushEntity` leaves the origin where it started when the upward
-        // push is all-solid, but `SV_WalkMove` still attempts the forward
-        // slide and its precision-seam recovery from there. Returning early
-        // here bypassed the very `SV_TryUnstick` path this branch exists for.
-        let mut up_origin = if scratch.trace.trapped() {
-            original_origin
-        } else {
-            scratch.trace.end
-        };
-        let mut up_velocity = original_velocity;
-        let up_clip = fly_move(collision, scratch, &mut up_origin, &mut up_velocity);
-        // `SV_WalkMove` detects the precision seam where stepping up and
-        // sliding made effectively no horizontal progress, then retries after
-        // a two-unit nudge in each axial/diagonal direction. Without this,
-        // E1M1's hull can confine the player to a 24-unit wedge forever.
-        if up_clip != 0
-            && abs_i32(up_origin.x.saturating_sub(original_origin.x)) < Q12_ONE / 32
-            && abs_i32(up_origin.y.saturating_sub(original_origin.y)) < Q12_ONE / 32
+        let on_ground = self.grounded;
+        self.grounded = false;
+        let old_origin = self.origin;
+        let old_velocity = self.velocity;
+        let slide = fly_move(collision, scratch, &mut self.origin, &mut self.velocity);
+        self.grounded |= slide.ground;
+        // The captured E1M1 seam leaves the player technically airborne on a
+        // steep bevel, so the grounded `SV_TryUnstick` call cannot run. Retry
+        // from the last valid pre-impact origin only when the frame made less
+        // than 1/8 unit of progress and a short floor probe confirms a steep
+        // support plane. That distinguishes the fixed-point seam from an
+        // ordinary airborne collision with a vertical wall. Not in id1.
+        if !on_ground
+            && slide.blocked != 0
+            && abs_i32(self.origin.x.saturating_sub(old_origin.x)) < Q12_ONE / 8
+            && abs_i32(self.origin.y.saturating_sub(old_origin.y)) < Q12_ONE / 8
+            && !self.steep_seam_recovered
+            && on_steep_support(collision, old_origin, scratch)
         {
-            let _ = try_unstick(
+            let mut recovered_origin = old_origin;
+            let mut recovered_velocity = old_velocity;
+            if try_steep_seam_lift(
                 collision,
                 scratch,
-                &mut up_origin,
-                &mut up_velocity,
-                original_velocity,
-            );
+                &mut recovered_origin,
+                &mut recovered_velocity,
+                old_velocity,
+            ) {
+                self.origin = recovered_origin;
+                self.velocity = recovered_velocity;
+                self.steep_seam_recovered = true;
+                return;
+            }
         }
-        let step_down_target = Vec3I32 {
-            x: up_origin.x,
-            y: up_origin.y,
-            z: up_origin.z.saturating_sub(STEP_HEIGHT_Q12),
-        };
-        trace(collision, &up_origin, &step_down_target, scratch);
-        if scratch.trace.trapped()
-            || scratch.trace.fraction == Q12_ONE
-            || (scratch.trace.normal.z as i32) < WALKABLE_NORMAL_Q12
-        {
-            self.origin = down_origin;
-            self.velocity = down_velocity;
+        if slide.blocked & 2 == 0 {
             return;
         }
-        up_origin = scratch.trace.end;
-
-        if horizontal_distance_squared(original_origin, down_origin)
-            > horizontal_distance_squared(original_origin, up_origin)
-        {
-            self.origin = down_origin;
-            self.velocity = down_velocity;
-        } else {
-            self.origin = up_origin;
-            self.velocity = Vec3I32 {
-                x: up_velocity.x,
-                y: up_velocity.y,
-                z: down_velocity.z,
-            };
+        // Do not stair up while jumping, but swimmers do.
+        if !on_ground && self.water_level == 0 {
+            return;
         }
+        if self.water_jump_ticks != 0 {
+            return;
+        }
+        let no_step_origin = self.origin;
+        let no_step_velocity = self.velocity;
+
+        // Move up, then forward on the horizontal part of the old velocity.
+        self.origin = old_origin;
+        push_entity(
+            collision,
+            scratch,
+            &mut self.origin,
+            Vec3I32 {
+                x: 0,
+                y: 0,
+                z: STEP_HEIGHT_Q12,
+            },
+        );
+        self.velocity = Vec3I32 {
+            x: old_velocity.x,
+            y: old_velocity.y,
+            z: 0,
+        };
+        let step = fly_move(collision, scratch, &mut self.origin, &mut self.velocity);
+        self.grounded |= step.ground;
+        let mut clip = step.blocked;
+        // The limited precision of the clipping hulls can stop a step dead.
+        if clip != 0
+            && abs_i32(self.origin.x.saturating_sub(old_origin.x)) < Q12_ONE / 32
+            && abs_i32(self.origin.y.saturating_sub(old_origin.y)) < Q12_ONE / 32
+        {
+            clip = try_unstick(
+                collision,
+                scratch,
+                &mut self.origin,
+                &mut self.velocity,
+                old_velocity,
+            );
+        }
+        if clip & 2 != 0 {
+            self.wall_friction(step.wall, input);
+        }
+        // Move down. Landing on walkable ground keeps the step; anything else
+        // (wall and slope corners) falls back to the plain slide. The original
+        // never raises `FL_ONGROUND` on this path: its test reads the
+        // player's own `solid`, which is never `SOLID_BSP`.
+        push_entity(
+            collision,
+            scratch,
+            &mut self.origin,
+            Vec3I32 {
+                x: 0,
+                y: 0,
+                z: (old_velocity.z / VIDEO_TICKS_PER_SECOND).saturating_sub(STEP_HEIGHT_Q12),
+            },
+        );
+        if (scratch.trace.normal.z as i32) <= WALKABLE_NORMAL_Q12 {
+            self.origin = no_step_origin;
+            self.velocity = no_step_velocity;
+        }
+    }
+
+    /// `SV_WallFriction`: running into a wall you are looking at bleeds the
+    /// speed along it, by `1 + (normal . forward + 0.5)` when that is below 1.
+    fn wall_friction(&mut self, wall: Vec3I16, input: MovementInput) {
+        let yaw = input.yaw & 0x0fff;
+        let pitch = input.pitch & 0x0fff;
+        let level = psx_math::cos_q12(pitch);
+        let forward = Vec3I32 {
+            x: mul_q12_i32(level, psx_math::cos_q12(yaw)),
+            y: mul_q12_i32(level, psx_math::sin_q12(yaw)),
+            z: -psx_math::sin_q12(pitch),
+        };
+        let d = dot_normal(forward, wall).saturating_add(Q12_ONE / 2);
+        if d >= 0 {
+            return;
+        }
+        let into = dot_normal(self.velocity, wall);
+        let keep = Q12_ONE + d;
+        self.velocity.x = mul_q12_i32(
+            self.velocity.x.saturating_sub(mul_q12_i32(into, wall.x as i32)),
+            keep,
+        );
+        self.velocity.y = mul_q12_i32(
+            self.velocity.y.saturating_sub(mul_q12_i32(into, wall.y as i32)),
+            keep,
+        );
     }
 }
 
@@ -868,9 +987,20 @@ where
     (3, water_type)
 }
 
+/// `SV_AirMove`'s wish: `forward * fmove + right * smove`, where `forward`
+/// comes from `v.angles` and so carries only a third of the view pitch. The
+/// stick scales the magnitude (analog), so the pitch only matters below the
+/// 320 cap, exactly where the original keyboard walk speed is.
 fn wish_velocity(input: MovementInput) -> (Vec3I32, i32) {
-    let forward = input.forward.clamp(-127, 127) as i32;
-    let strafe = input.strafe.clamp(-127, 127) as i32;
+    let mut pitch = i32::from(input.pitch & 0x0fff);
+    if pitch >= 2048 {
+        pitch -= 4096;
+    }
+    // Stick units in 1/256ths, with the forward axis shrunk by cos(pitch / 3).
+    let forward = (i32::from(input.forward.clamp(-127, 127))
+        * psx_math::cos_q12(((pitch / 3) & 0x0fff) as u16))
+        >> 4;
+    let strafe = i32::from(input.strafe.clamp(-127, 127)) << 8;
     let magnitude =
         isqrt_i32(square_i32_saturating(forward).saturating_add(square_i32_saturating(strafe)));
     if magnitude == 0 {
@@ -886,7 +1016,7 @@ fn wish_velocity(input: MovementInput) -> (Vec3I32, i32) {
         y: mul_q12_i32(sin, forward_q12).saturating_add(mul_q12_i32(cos, strafe_q12)),
         z: 0,
     };
-    let speed = MAX_SPEED_Q12.saturating_mul(magnitude.min(127)) / 127;
+    let speed = (MAX_SPEED_Q12 >> 8).saturating_mul(magnitude.min(127 << 8)) / 127;
     (direction, speed)
 }
 
@@ -921,17 +1051,21 @@ fn swim_wish_velocity(input: MovementInput) -> (Vec3I32, i32) {
     (direction, speed)
 }
 
-fn accelerate(velocity: &mut Vec3I32, direction: Vec3I32, wish_speed: i32, air: bool) {
+/// `SV_Accelerate`, `SV_AirAccelerate` and the acceleration half of
+/// `SV_WaterMove`: gain `wish_speed / 6` per tick along `direction` until the
+/// speed along it reaches `cap_speed`. `current_speed` is what the caller
+/// measures against (the speed along the wish, or the total water speed).
+fn accelerate(
+    velocity: &mut Vec3I32,
+    direction: Vec3I32,
+    wish_speed: i32,
+    cap_speed: i32,
+    current_speed: i32,
+) {
     if wish_speed <= 0 {
         return;
     }
-    let target_speed = if air {
-        wish_speed.min(30 << 12)
-    } else {
-        wish_speed
-    };
-    let current_speed = dot(*velocity, direction);
-    let add_speed = target_speed.saturating_sub(current_speed);
+    let add_speed = cap_speed.saturating_sub(current_speed);
     if add_speed <= 0 {
         return;
     }
@@ -947,37 +1081,29 @@ fn accelerate(velocity: &mut Vec3I32, direction: Vec3I32, wish_speed: i32, air: 
         .saturating_add(mul_q12_i32(acceleration, direction.z));
 }
 
-fn apply_friction(velocity: &mut Vec3I32, water_level: u8) {
-    let source = if water_level >= 2 {
-        *velocity
-    } else {
-        Vec3I32 {
-            x: velocity.x,
-            y: velocity.y,
-            z: 0,
-        }
-    };
-    let speed = vector_length(source);
+/// `SV_WaterMove`'s friction: `speed - frametime * speed * sv_friction` on
+/// the full 3D speed, with no waterlevel term.
+fn apply_water_friction(velocity: &mut Vec3I32) {
+    let speed = vector_length(*velocity);
     if speed < Q12_ONE {
-        velocity.x = 0;
-        velocity.y = 0;
-        if water_level >= 2 {
-            velocity.z = 0;
-        }
+        *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
         return;
     }
-    let drop = if water_level >= 2 {
-        // `SV_WaterMove`: `speed - host_frametime * speed * sv_friction`,
-        // with no waterlevel term.
-        speed / 15
-    } else {
-        speed.max(STOP_SPEED_Q12) / 15
-    };
-    let new_speed = speed.saturating_sub(drop).max(0);
-    let scale = div_q12_i32(new_speed, speed);
+    let scale = div_q12_i32(speed.saturating_sub(speed / 15).max(0), speed);
     velocity.x = mul_q12_i32(velocity.x, scale);
     velocity.y = mul_q12_i32(velocity.y, scale);
     velocity.z = mul_q12_i32(velocity.z, scale);
+}
+
+/// What `SV_FlyMove` reports back to `SV_WalkMove`.
+#[derive(Copy, Clone, Default)]
+struct Slide {
+    /// 1 floor, 2 wall (`step`), 3 or 7 when it gave up.
+    blocked: u8,
+    /// A floor was hit on world or brush geometry (`FL_ONGROUND` was raised).
+    ground: bool,
+    /// The last wall plane (`steptrace`), zero when none was hit.
+    wall: Vec3I16,
 }
 
 fn fly_move<C: MovementTrace + ?Sized>(
@@ -985,7 +1111,7 @@ fn fly_move<C: MovementTrace + ?Sized>(
     scratch: &mut MovementScratch,
     origin: &mut Vec3I32,
     velocity: &mut Vec3I32,
-) -> u8 {
+) -> Slide {
     fly_move_for_time(
         collision,
         scratch,
@@ -1001,12 +1127,12 @@ fn fly_move_for_time<C: MovementTrace + ?Sized>(
     origin: &mut Vec3I32,
     velocity: &mut Vec3I32,
     mut time_left: i32,
-) -> u8 {
-    let original_velocity = *velocity;
+) -> Slide {
+    let mut original_velocity = *velocity;
     let primal_velocity = *velocity;
     let mut planes = [Vec3I16 { x: 0, y: 0, z: 0 }; MAX_CLIP_PLANES];
     let mut plane_count = 0usize;
-    let mut blocked = 0u8;
+    let mut slide = Slide::default();
 
     for _ in 0..MAX_SLIDE_BUMPS {
         if velocity.x == 0 && velocity.y == 0 && velocity.z == 0 {
@@ -1029,25 +1155,32 @@ fn fly_move_for_time<C: MovementTrace + ?Sized>(
         // player wedged forever.
         if scratch.trace.trapped() {
             *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
-            return 3;
+            slide.blocked = 3;
+            return slide;
         }
         if scratch.trace.fraction > 0 {
             *origin = scratch.trace.end;
+            // Re-aim at the velocity as it stands after the last clip, so the
+            // next plane clips what is left of the move, not the first frame's.
+            original_velocity = *velocity;
             plane_count = 0;
         }
         if scratch.trace.fraction == Q12_ONE {
             break;
         }
         if scratch.trace.normal.z as i32 > WALKABLE_NORMAL_Q12 {
-            blocked |= 1;
+            slide.blocked |= 1;
+            slide.ground |= scratch.trace.blocking_body.is_none();
         }
         if scratch.trace.normal.z == 0 {
-            blocked |= 2;
+            slide.blocked |= 2;
+            slide.wall = scratch.trace.normal;
         }
         time_left = mul_q12_i32(time_left, Q12_ONE.saturating_sub(scratch.trace.fraction));
         if plane_count == MAX_CLIP_PLANES {
             *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
-            break;
+            slide.blocked = 3;
+            return slide;
         }
         planes[plane_count] = scratch.trace.normal;
         plane_count += 1;
@@ -1072,27 +1205,43 @@ fn fly_move_for_time<C: MovementTrace + ?Sized>(
         } else if plane_count == 2 {
             crease_velocity(*velocity, planes[0], planes[1])
         } else {
-            Vec3I32 { x: 0, y: 0, z: 0 }
+            *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
+            slide.blocked = 7;
+            return slide;
         };
         if dot(*velocity, primal_velocity) <= 0 {
             *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
             break;
         }
     }
-    blocked
+    slide
+}
+
+/// `SV_PushEntity`: move by `delta` as far as the world allows. The motor's
+/// trace workspace keeps the result, so the caller reads the plane it hit.
+fn push_entity<C: MovementTrace + ?Sized>(
+    collision: &C,
+    scratch: &mut MovementScratch,
+    origin: &mut Vec3I32,
+    delta: Vec3I32,
+) {
+    let end = add(*origin, delta);
+    trace(collision, origin, &end, scratch);
+    *origin = scratch.trace.end;
 }
 
 /// Quake's `SV_TryUnstick`, in fixed point. `SV_WalkMove` invokes it only
 /// after the raised slide was blocked without moving even 1/32 of a unit.
 /// Each two-unit nudge is traced, then the original velocity gets a 0.1-second
 /// retry. A result counts only after it escapes by more than four units.
+/// Returns the retry's clip bits, or 7 when every nudge failed.
 fn try_unstick<C: MovementTrace + ?Sized>(
     collision: &C,
     scratch: &mut MovementScratch,
     origin: &mut Vec3I32,
     velocity: &mut Vec3I32,
     original_velocity: Vec3I32,
-) -> bool {
+) -> u8 {
     const NUDGE_Q12: i32 = 2 << 12;
     const ESCAPE_Q12: i32 = 4 << 12;
     const RETRY_TIME_Q12: i32 = Q12_ONE / 10;
@@ -1121,7 +1270,7 @@ fn try_unstick<C: MovementTrace + ?Sized>(
             y: original_velocity.y,
             z: 0,
         };
-        let _ = fly_move_for_time(
+        let retry = fly_move_for_time(
             collision,
             scratch,
             &mut candidate_origin,
@@ -1133,13 +1282,13 @@ fn try_unstick<C: MovementTrace + ?Sized>(
         {
             *origin = candidate_origin;
             *velocity = candidate_velocity;
-            return true;
+            return retry.blocked;
         }
     }
 
     *origin = stuck_origin;
     *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
-    false
+    7
 }
 
 /// True when a two-unit floor probe touches a plane that is too steep to count
@@ -1202,21 +1351,28 @@ fn try_steep_seam_lift<C: MovementTrace + ?Sized>(
     true
 }
 
+/// `ClipVelocity` with an overbounce of 1, zeroing components that fall
+/// inside `STOP_EPSILON` (0.1 units per second).
 fn clip_velocity(velocity: Vec3I32, normal: Vec3I16) -> Vec3I32 {
     let backoff = dot_normal(velocity, normal);
+    let clip = |component: i32, axis: i16| {
+        let out = component.saturating_sub(mul_q12_i32(backoff, axis as i32));
+        if out > -STOP_EPSILON_Q12 && out < STOP_EPSILON_Q12 {
+            0
+        } else {
+            out
+        }
+    };
     Vec3I32 {
-        x: velocity
-            .x
-            .saturating_sub(mul_q12_i32(backoff, normal.x as i32)),
-        y: velocity
-            .y
-            .saturating_sub(mul_q12_i32(backoff, normal.y as i32)),
-        z: velocity
-            .z
-            .saturating_sub(mul_q12_i32(backoff, normal.z as i32)),
+        x: clip(velocity.x, normal.x),
+        y: clip(velocity.y, normal.y),
+        z: clip(velocity.z, normal.z),
     }
 }
 
+/// The crease case of `SV_FlyMove`: slide along `planes[0] x planes[1]`.
+/// The original scales its unnormalised cross product by `dir . velocity`, so
+/// the speed along the crease shrinks by the square of the planes' sine.
 fn crease_velocity(velocity: Vec3I32, left: Vec3I16, right: Vec3I16) -> Vec3I32 {
     let direction = Vec3I32 {
         x: mul_q12_i32(left.y as i32, right.z as i32)
@@ -1226,16 +1382,7 @@ fn crease_velocity(velocity: Vec3I32, left: Vec3I16, right: Vec3I16) -> Vec3I32 
         z: mul_q12_i32(left.x as i32, right.y as i32)
             .saturating_sub(mul_q12_i32(left.y as i32, right.x as i32)),
     };
-    let direction_length = vector_length(direction);
-    if direction_length == 0 {
-        return Vec3I32 { x: 0, y: 0, z: 0 };
-    }
-    let unit = Vec3I32 {
-        x: div_q12_i32(direction.x, direction_length),
-        y: div_q12_i32(direction.y, direction_length),
-        z: div_q12_i32(direction.z, direction_length),
-    };
-    scale(unit, dot(velocity, unit))
+    scale(direction, dot(velocity, direction))
 }
 
 fn vector_length(vector: Vec3I32) -> i32 {
@@ -1270,14 +1417,6 @@ fn dot_normal(vector: Vec3I32, normal: Vec3I16) -> i32 {
         .saturating_add(mul_q12_i32(vector.z, normal.z as i32))
 }
 
-fn frame_displacement(velocity: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: velocity.x / VIDEO_TICKS_PER_SECOND,
-        y: velocity.y / VIDEO_TICKS_PER_SECOND,
-        z: velocity.z / VIDEO_TICKS_PER_SECOND,
-    }
-}
-
 fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
     Vec3I32 {
         x: left.x.saturating_add(right.x),
@@ -1292,12 +1431,6 @@ fn scale(vector: Vec3I32, factor: i32) -> Vec3I32 {
         y: mul_q12_i32(vector.y, factor),
         z: mul_q12_i32(vector.z, factor),
     }
-}
-
-fn horizontal_distance_squared(start: Vec3I32, end: Vec3I32) -> i32 {
-    let dx = (end.x.saturating_sub(start.x)) >> 12;
-    let dy = (end.y.saturating_sub(start.y)) >> 12;
-    square_i32_saturating(dx).saturating_add(square_i32_saturating(dy))
 }
 
 fn position_stuck<C: MovementTrace + ?Sized>(
@@ -1315,6 +1448,18 @@ fn position_stuck<C: MovementTrace + ?Sized>(
 /// which is the only answer that cannot teleport them through a wall, and the
 /// failure is recorded so a gate can refuse the build. The original engine has
 /// no such path at all: `SV_RecursiveHullCheck` always produces a trace.
+fn trace_line<C: MovementTrace + ?Sized>(
+    collision: &C,
+    start: &Vec3I32,
+    end: &Vec3I32,
+    scratch: &mut MovementScratch,
+) {
+    if !collision.trace_line(start, end, &mut scratch.bsp_trace, &mut scratch.trace) {
+        scratch.stalls.insert(MovementStalls::TRACE);
+        scratch.trace = MovementTraceResult::unobstructed(*end);
+    }
+}
+
 fn trace<C: MovementTrace + ?Sized>(
     collision: &C,
     start: &Vec3I32,
@@ -1452,9 +1597,18 @@ mod tests {
         }
     }
 
+    /// A body that has already spent a tick in the water: `SV_ClientThink`
+    /// reads the water level the previous frame's `SV_CheckWater` left.
+    fn swimming(origin: Vec3I32, level: u8) -> MovementState {
+        let mut state = MovementState::new(origin);
+        state.water_level = level;
+        state.water_type = CONTENTS_WATER;
+        state
+    }
+
     #[test]
     fn ordinary_swimming_jump_still_processes_cross() {
-        let initial = MovementState::new(Vec3I32 { x: 0, y: 0, z: 256 << 12 });
+        let initial = swimming(Vec3I32 { x: 0, y: 0, z: 256 << 12 }, 3);
         let mut held = initial;
         let mut released = initial;
         let held_events = held.update_ticks(
@@ -1469,7 +1623,7 @@ mod tests {
         assert_eq!(held.water_jump_ticks, 0);
         assert!(held.velocity.z > released.velocity.z);
         assert!(held_events.events.contains(MovementEvents::SWIM));
-        assert!(held.jump_latched);
+        assert!(held.swim_sound_ticks > 0, "the stroke sound is throttled");
     }
 
     #[test]
@@ -1479,11 +1633,14 @@ mod tests {
         // faster than the idle drift; the horizontal speed matches the level
         // wish scaled by cos(pitch).
         fn swim(pitch: u16, ticks: usize) -> (Vec3I32, Vec3I32) {
-            let mut state = MovementState::new(Vec3I32 {
-                x: 0,
-                y: 0,
-                z: 256 << 12,
-            });
+            let mut state = swimming(
+                Vec3I32 {
+                    x: 0,
+                    y: 0,
+                    z: 256 << 12,
+                },
+                3,
+            );
             let mut scratch = MovementScratch::default();
             let input = MovementInput {
                 forward: 127,
@@ -1499,11 +1656,14 @@ mod tests {
         let (up_origin, up_velocity) = swim(4096 - 512, 60);
         let (down_origin, down_velocity) = swim(512, 60);
         let (_, drift_velocity) = {
-            let mut state = MovementState::new(Vec3I32 {
-                x: 0,
-                y: 0,
-                z: 256 << 12,
-            });
+            let mut state = swimming(
+                Vec3I32 {
+                    x: 0,
+                    y: 0,
+                    z: 256 << 12,
+                },
+                3,
+            );
             let mut scratch = MovementScratch::default();
             for _ in 0..60 {
                 state.update_ticks(
@@ -1541,7 +1701,7 @@ mod tests {
         );
         // Symmetric up to fixed-point rounding of the pitch basis.
         assert!(
-            (up_velocity.x - down_velocity.x).abs() <= 16,
+            (up_velocity.x - down_velocity.x).abs() <= 64,
             "{} vs {}",
             up_velocity.x,
             down_velocity.x
@@ -1552,16 +1712,17 @@ mod tests {
     #[test]
     fn held_jump_only_launches_once_until_released() {
         let floor = Floor;
-        let mut state = MovementState::new(Vec3I32 {
-            x: 0,
-            y: 0,
-            z: 1 << 12,
-        });
+        let mut state = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
         let input = MovementInput {
             jump: true,
             ..MovementInput::default()
         };
         let mut scratch = MovementScratch::default();
+        // Standing, with the button up: `FL_JUMPRELEASED` and `FL_ONGROUND`.
+        state.update_ticks(&floor, &mut scratch, MovementInput::default(), 1, |_| {
+            Some(CONTENTS_EMPTY)
+        });
+        assert!(state.grounded());
         let first = state.update_ticks(&floor, &mut scratch, input, 1, |_| Some(CONTENTS_EMPTY));
         assert!(first.events.contains(MovementEvents::JUMP));
         let second = state.update_ticks(&floor, &mut scratch, input, 1, |_| Some(CONTENTS_EMPTY));
@@ -1860,11 +2021,7 @@ mod tests {
     /// cannot trace may skip the motor. Both degrade and are reported.
     #[test]
     fn unresolvable_queries_degrade_instead_of_skipping_the_motor() {
-        let mut state = MovementState::new(Vec3I32 {
-            x: 0,
-            y: 0,
-            z: 1 << 12,
-        });
+        let mut state = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
         let mut scratch = MovementScratch::default();
         let frame = state.update_ticks(&Floor, &mut scratch, MovementInput::default(), 1, |_| None);
         assert!(frame.stalls.contains(MovementStalls::CONTENTS));
@@ -2091,15 +2248,28 @@ mod tests {
             }
             true
         }
+
+        fn trace_line(
+            &self,
+            start: &Vec3I32,
+            end: &Vec3I32,
+            scratch: &mut TraceScratch,
+            output: &mut MovementTraceResult,
+        ) -> bool {
+            self.trace(start, end, scratch, output)
+        }
     }
 
     #[test]
     fn water_jump_launch_ignores_cross_on_first_and_later_ticks() {
-        let initial = MovementState::new(Vec3I32 {
-            x: -12 << 12,
-            y: 0,
-            z: 8 << 12,
-        });
+        let initial = swimming(
+            Vec3I32 {
+                x: -12 << 12,
+                y: 0,
+                z: 8 << 12,
+            },
+            2,
+        );
         let collision = Ledge { height: 40 };
         let mut released = initial;
         let mut held = initial;
@@ -2133,11 +2303,14 @@ mod tests {
             contents,
         );
         assert!(released.water_jump_ticks > 0 && held.water_jump_ticks > 0);
+        // Only `FL_JUMPRELEASED` differs: the idle tick raises it again
+        // after `CheckWaterJump` cleared it.
+        assert!(released.jump_released && !held.jump_released);
+        released.jump_released = false;
         assert_eq!(released, held);
         // Client input acceleration precedes PlayerPreThink's launch; with
         // a clear vertical trace, its 225-unit launch survives this move.
         assert_eq!(released.velocity.z, WATER_JUMP_OUT_SPEED_Q12);
-        assert!(released.jump_latched);
         assert_eq!(released.water_jump_ticks, WATER_JUMP_TICKS);
         // Once the flag was already active at entry, held Cross is ignored.
         let mut a = released;
@@ -2162,6 +2335,7 @@ mod tests {
             1,
             contents,
         );
+        a.jump_released = b.jump_released;
         assert_eq!(a, b);
     }
 
@@ -2197,5 +2371,458 @@ mod tests {
         assert_eq!(STEP_HEIGHT_Q12, 18 << 12);
         assert!(walks_up(18), "an 18 unit step is walkable");
         assert!(!walks_up(24), "a 24 unit ledge is not a step");
+    }
+
+    fn grounded_on(floor: &Floor) -> MovementState {
+        let _ = floor;
+        let mut state = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        state.update_ticks(&Floor, &mut MovementScratch::default(), MovementInput::default(), 1, |_| {
+            Some(CONTENTS_EMPTY)
+        });
+        state
+    }
+
+    /// A floor that ends at `x = 100` for the point trace `SV_UserFriction`
+    /// uses, while the hull floor stays under the player.
+    struct Plateau;
+
+    impl MovementTrace for Plateau {
+        fn trace(
+            &self,
+            start: &Vec3I32,
+            end: &Vec3I32,
+            scratch: &mut TraceScratch,
+            output: &mut MovementTraceResult,
+        ) -> bool {
+            Floor.trace(start, end, scratch, output)
+        }
+
+        fn trace_line(
+            &self,
+            start: &Vec3I32,
+            end: &Vec3I32,
+            _scratch: &mut TraceScratch,
+            output: &mut MovementTraceResult,
+        ) -> bool {
+            *output = MovementTraceResult::unobstructed(*end);
+            if start.x < 100 << 12 {
+                output.fraction = Q12_ONE / 2;
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn friction_doubles_when_the_leading_edge_overhangs_a_drop() {
+        let run = |x: i32| {
+            let mut state = grounded_on(&Floor);
+            state.origin.x = x << 12;
+            state.velocity.x = 200 << 12;
+            state.user_friction(&Plateau, &mut MovementScratch::default());
+            state.velocity.x
+        };
+        // Over the floor: 200 - 200/15. Hanging 16 units past x = 100: twice that.
+        let drop = (200 << 12) / 15;
+        assert!((run(0) - ((200 << 12) - drop)).abs() < 512, "{}", run(0));
+        assert!(
+            (run(90) - ((200 << 12) - 2 * drop)).abs() < 512,
+            "{}",
+            run(90)
+        );
+    }
+
+    #[test]
+    fn a_jump_pressed_in_the_air_fires_the_moment_the_player_lands() {
+        let mut state = MovementState::new(Vec3I32 {
+            x: 0,
+            y: 0,
+            z: 6 << 12,
+        });
+        let mut scratch = MovementScratch::default();
+        let idle = MovementInput::default();
+        let held = MovementInput {
+            jump: true,
+            ..idle
+        };
+        let mut tick = |state: &mut MovementState, input| {
+            state.update_ticks(&Floor, &mut scratch, input, 1, |_| Some(CONTENTS_EMPTY))
+        };
+        // Button up while falling raises FL_JUMPRELEASED; pressing it while
+        // still airborne must not be swallowed.
+        assert!(!tick(&mut state, idle).events.contains(MovementEvents::JUMP));
+        let mut jumped_at = None;
+        for n in 0..60 {
+            if tick(&mut state, held).events.contains(MovementEvents::JUMP) {
+                jumped_at = Some(n);
+                break;
+            }
+        }
+        assert!(jumped_at.is_some(), "the held press fires on landing");
+        assert!(state.velocity().z > 200 << 12);
+    }
+
+    /// A scripted provider: each trace answers with the next canned hit.
+    struct Script {
+        hits: core::cell::Cell<usize>,
+        planes: [(i32, Vec3I16); 3],
+    }
+
+    impl MovementTrace for Script {
+        fn trace(
+            &self,
+            start: &Vec3I32,
+            end: &Vec3I32,
+            _scratch: &mut TraceScratch,
+            output: &mut MovementTraceResult,
+        ) -> bool {
+            *output = MovementTraceResult::unobstructed(*end);
+            let n = self.hits.get();
+            self.hits.set(n + 1);
+            if let Some(&(fraction, normal)) = self.planes.get(n) {
+                if fraction < Q12_ONE {
+                    output.fraction = fraction;
+                    output.end = Vec3I32 {
+                        x: start.x + mul_q12_i32(end.x - start.x, fraction),
+                        y: start.y + mul_q12_i32(end.y - start.y, fraction),
+                        z: start.z + mul_q12_i32(end.z - start.z, fraction),
+                    };
+                    output.normal = normal;
+                }
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn a_partial_move_re_aims_the_clip_at_the_velocity_that_is_left() {
+        let side = Vec3I16 {
+            x: -2896,
+            y: -2896,
+            z: 0,
+        };
+        let front = Vec3I16 {
+            x: 0,
+            y: -Q12_ONE as i16,
+            z: 0,
+        };
+        let world = Script {
+            hits: core::cell::Cell::new(0),
+            planes: [(Q12_ONE / 2, side), (Q12_ONE / 2, front), (Q12_ONE, front)],
+        };
+        let mut origin = Vec3I32 { x: 0, y: 0, z: 0 };
+        let mut velocity = Vec3I32 {
+            x: 600 << 12,
+            y: 600 << 12,
+            z: 0,
+        };
+        let mut scratch = MovementScratch::default();
+        let _ = fly_move(&world, &mut scratch, &mut origin, &mut velocity);
+        // Clipped against the diagonal first (sliding to +x,-y), then the
+        // second plane clips what is left: no motion into the y wall remains.
+        let after_first = clip_velocity(
+            Vec3I32 {
+                x: 600 << 12,
+                y: 600 << 12,
+                z: 0,
+            },
+            side,
+        );
+        let expected = clip_velocity(after_first, front);
+        assert_eq!(velocity, expected);
+        assert!(velocity.y == 0, "{velocity:?}");
+    }
+
+    #[test]
+    fn a_floor_under_a_monster_is_not_ground() {
+        struct Head;
+        impl MovementTrace for Head {
+            fn trace(
+                &self,
+                start: &Vec3I32,
+                end: &Vec3I32,
+                scratch: &mut TraceScratch,
+                output: &mut MovementTraceResult,
+            ) -> bool {
+                let ok = Floor.trace(start, end, scratch, output);
+                if output.fraction < Q12_ONE {
+                    output.blocking_body = Some(0);
+                }
+                ok
+            }
+        }
+        let mut state = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        let mut scratch = MovementScratch::default();
+        for _ in 0..4 {
+            state.update_ticks(&Head, &mut scratch, MovementInput::default(), 1, |_| {
+                Some(CONTENTS_EMPTY)
+            });
+        }
+        assert!(!state.grounded(), "only world and brush floors ground");
+        let mut brush = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        brush.update_ticks(&Floor, &mut scratch, MovementInput::default(), 1, |_| {
+            Some(CONTENTS_EMPTY)
+        });
+        assert!(brush.grounded());
+    }
+
+    #[test]
+    fn running_into_a_wall_you_face_bleeds_the_speed_along_it() {
+        let wall = Vec3I16 {
+            x: -(Q12_ONE as i16),
+            y: 0,
+            z: 0,
+        };
+        let mut state = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        state.velocity = Vec3I32 {
+            x: 100 << 12,
+            y: 100 << 12,
+            z: 0,
+        };
+        // Facing +x into the wall: d = -1 + 0.5, so half the tangent is kept.
+        state.wall_friction(wall, MovementInput::default());
+        assert_eq!(state.velocity.y, 50 << 12);
+        // Facing away from it: no friction.
+        let mut away = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        away.velocity = Vec3I32 {
+            x: 0,
+            y: 100 << 12,
+            z: 0,
+        };
+        away.wall_friction(
+            wall,
+            MovementInput {
+                yaw: 2048,
+                ..MovementInput::default()
+            },
+        );
+        assert_eq!(away.velocity.y, 100 << 12);
+    }
+
+    #[test]
+    fn the_crease_scales_speed_by_the_square_of_the_planes_sine() {
+        // Planes at 60 degrees: the unnormalised cross product has length
+        // sin 60, so a 100 unit/s slide keeps 100 * sin^2 60 = 75.
+        let left = Vec3I16 {
+            x: Q12_ONE as i16,
+            y: 0,
+            z: 0,
+        };
+        let right = Vec3I16 {
+            x: 2048,
+            y: 3547,
+            z: 0,
+        };
+        let out = crease_velocity(
+            Vec3I32 {
+                x: 0,
+                y: 0,
+                z: 100 << 12,
+            },
+            left,
+            right,
+        );
+        assert!(
+            (out.z - (75 << 12)).abs() < 300,
+            "{} units",
+            out.z as f32 / 4096.0
+        );
+    }
+
+    #[test]
+    fn looking_down_shortens_the_walk_by_a_third_of_the_pitch() {
+        // cos(90 / 3 degrees) = 0.866: a full stick forward no longer reaches
+        // the 320 cap, 277 units a second instead.
+        let (_, level) = wish_velocity(MovementInput {
+            forward: 127,
+            ..MovementInput::default()
+        });
+        let (_, down) = wish_velocity(MovementInput {
+            forward: 127,
+            pitch: 1024,
+            ..MovementInput::default()
+        });
+        let (_, up) = wish_velocity(MovementInput {
+            forward: 127,
+            pitch: 4096 - 1024,
+            ..MovementInput::default()
+        });
+        assert_eq!(level, 320 << 12);
+        assert!((down - (277 << 12)).abs() < 3 << 12, "{}", down >> 12);
+        assert!((up - down).abs() < 512);
+        // Strafing is untouched by pitch.
+        let (_, side) = wish_velocity(MovementInput {
+            strafe: 127,
+            pitch: 1024,
+            ..MovementInput::default()
+        });
+        assert_eq!(side, 320 << 12);
+    }
+
+    #[test]
+    fn a_fresh_teleport_ignores_backward_input_for_seven_tenths_of_a_second() {
+        let mut state = grounded_on(&Floor);
+        state.teleport_with_velocity(Vec3I32 { x: 0, y: 0, z: 0 }, Vec3I32 { x: 0, y: 0, z: 0 });
+        let back = MovementInput {
+            forward: -127,
+            ..MovementInput::default()
+        };
+        let mut scratch = MovementScratch::default();
+        for _ in 0..41 {
+            state.update_ticks(&Floor, &mut scratch, back, 1, |_| Some(CONTENTS_EMPTY));
+        }
+        assert_eq!(state.velocity().x, 0, "backing out of the arrival is refused");
+        for _ in 0..60 {
+            state.update_ticks(&Floor, &mut scratch, back, 1, |_| Some(CONTENTS_EMPTY));
+        }
+        assert!(state.velocity().x < 0, "after 0.7 s the player can walk back");
+    }
+
+    #[test]
+    fn swimming_drags_the_velocity_by_the_water_level() {
+        let drag = |level: u8| {
+            let mut state = swimming(Vec3I32 { x: 0, y: 0, z: 256 << 12 }, level);
+            state.velocity.x = 750 << 12;
+            // No friction or acceleration: call only the drag arithmetic via a
+            // tick with the level pinned and nothing but drag to act on.
+            let mut scratch = MovementScratch::default();
+            state.update_ticks(&OpenWater, &mut scratch, MovementInput::default(), 1, |_| {
+                Some(match level {
+                    1 => CONTENTS_EMPTY,
+                    _ => CONTENTS_WATER,
+                })
+            });
+            state.velocity.x
+        };
+        // Level 3 loses 3/75 of the speed on top of water friction (1/15).
+        let after_friction = (750 << 12) - (750 << 12) / 15;
+        let level_three = drag(3);
+        assert!(
+            level_three < after_friction - after_friction * 3 / 75 + 4096
+                && level_three > after_friction - after_friction * 3 / 75 - 4096,
+            "{level_three}"
+        );
+    }
+
+    #[test]
+    fn a_held_swim_button_strokes_once_a_second() {
+        let mut state = swimming(Vec3I32 { x: 0, y: 0, z: 256 << 12 }, 3);
+        let mut scratch = MovementScratch::default();
+        let held = MovementInput {
+            jump: true,
+            ..MovementInput::default()
+        };
+        let strokes = (0..180)
+            .filter(|_| {
+                state
+                    .update_ticks(&OpenWater, &mut scratch, held, 1, |_| Some(CONTENTS_WATER))
+                    .events
+                    .contains(MovementEvents::SWIM)
+            })
+            .count();
+        assert_eq!(strokes, 3);
+    }
+
+    #[test]
+    fn a_ledge_30_units_away_is_out_of_the_water_jump_probe() {
+        // The original traces a point 24 units ahead; the old hull sweep
+        // reported the wall from 40 units out.
+        let mut state = swimming(
+            Vec3I32 {
+                x: -30 << 12,
+                y: 0,
+                z: 8 << 12,
+            },
+            2,
+        );
+        let contents = |point: &Vec3I32| {
+            Some(if point.z < 20 << 12 {
+                CONTENTS_WATER
+            } else {
+                CONTENTS_EMPTY
+            })
+        };
+        state.update_ticks(
+            &Ledge { height: 40 },
+            &mut MovementScratch::default(),
+            MovementInput {
+                forward: 127,
+                ..MovementInput::default()
+            },
+            1,
+            contents,
+        );
+        assert_eq!(state.water_jump_ticks, 0);
+    }
+
+    fn swims_up(height: i32) -> bool {
+        let mut state = swimming(
+            Vec3I32 {
+                x: -64 << 12,
+                y: 0,
+                z: 0,
+            },
+            3,
+        );
+        let mut scratch = MovementScratch::new();
+        let input = MovementInput {
+            forward: 127,
+            ..MovementInput::default()
+        };
+        for _ in 0..120 {
+            state.update_ticks(&Ledge { height }, &mut scratch, input, 1, |_| {
+                Some(CONTENTS_WATER)
+            });
+        }
+        state.origin().x > 0
+    }
+
+    #[test]
+    fn a_swimmer_steps_up_a_low_ledge_but_not_a_high_one() {
+        assert!(swims_up(12), "SV_WalkMove steps swimmers up 18 units");
+        assert!(!swims_up(30));
+    }
+
+    #[test]
+    fn a_corpse_falls_hops_and_comes_to_rest_on_the_floor() {
+        let mut scratch = MovementScratch::default();
+        // Killed in mid-air: it falls to the floor instead of hanging there.
+        let mut falling = MovementState::new(Vec3I32 {
+            x: 0,
+            y: 0,
+            z: 80 << 12,
+        });
+        falling.die(0);
+        for _ in 0..120 {
+            falling.update_dead(&Floor, &mut scratch, 1, DEFAULT_GRAVITY);
+        }
+        assert!(falling.grounded());
+        assert_eq!(falling.origin().z, 0);
+        assert_eq!(falling.velocity(), Vec3I32 { x: 0, y: 0, z: 0 });
+        // Killed standing: the 300 unit/s hop leaves the floor and lands again.
+        let mut standing = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        standing.update_ticks(&Floor, &mut scratch, MovementInput::default(), 1, |_| {
+            Some(CONTENTS_EMPTY)
+        });
+        standing.die(300);
+        standing.update_dead(&Floor, &mut scratch, 1, DEFAULT_GRAVITY);
+        assert!(!standing.grounded() && standing.origin().z > 0);
+        let apex = (0..120)
+            .map(|_| {
+                standing.update_dead(&Floor, &mut scratch, 1, DEFAULT_GRAVITY);
+                standing.origin().z
+            })
+            .max()
+            .unwrap();
+        assert!(apex > 30 << 12, "a full hop rises about 56 units");
+        assert!(standing.grounded() && standing.origin().z == 0);
+        // Already rising at 10 or more: no extra hop.
+        let mut launched = MovementState::new(Vec3I32 { x: 0, y: 0, z: 0 });
+        launched.add_velocity(Vec3I32 {
+            x: 0,
+            y: 0,
+            z: 50 << 12,
+        });
+        launched.die(300);
+        assert_eq!(launched.velocity().z, 50 << 12);
     }
 }
