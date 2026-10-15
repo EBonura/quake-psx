@@ -3678,8 +3678,8 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
 fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     const MAPS: [(&str, usize, usize); 9] = [
         ("start", 1_769_840, 1_464_923),
-        ("e1m1", 1_862_013, 1_549_465),
-        ("e1m2", 2_076_988, 1_756_727),
+        ("e1m1", 1_862_013, 1_559_949),
+        ("e1m2", 2_076_988, 1_767_211),
         ("e1m3", 2_147_866, 1_844_702),
         ("e1m4", 2_096_303, 1_782_113),
         ("e1m5", 2_036_505, 1_713_266),
@@ -3721,9 +3721,9 @@ fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     let global_bytes = fs::metadata(root.join("id1psx/sounds/global.qsb"))?.len() as usize;
     let persistent_total = compact_total + global_bytes;
     if legacy_total != 17_227_644
-        || compact_total != 14_607_778
+        || compact_total != 14_628_746
         || global_bytes != 159_418
-        || persistent_total != 14_767_196
+        || persistent_total != 14_788_164
     {
         return Err(format!(
             "PSB5/QSB1 episode census drifted: {legacy_total} -> {compact_total} + {global_bytes}"

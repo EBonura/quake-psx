@@ -25,8 +25,6 @@ pub const LIGHTNING_MODEL_ID: i16 = 0x4f;
 pub const GRENADE_MODEL_ID: i16 = 0x2a;
 pub const ROCKET_MODEL_ID: i16 = 0x40;
 pub const NAIL_MODEL_ID: i16 = 0x4a;
-/// `progs/s_spike.mdl`, what `W_FireSuperSpikes` and superspike shooters launch.
-pub const SUPER_NAIL_MODEL_ID: i16 = 0x46;
 pub const LIGHTNING_BOLT_MODEL_ID: i16 = 0x13;
 pub const SHOTGUN_PELLETS: usize = 6;
 pub const SUPER_SHOTGUN_PELLETS: usize = 14;
@@ -1037,8 +1035,6 @@ pub struct NailSpawn {
     pub lifetime_ticks: u16,
     pub damage: i16,
     pub sound_id: i16,
-    /// Flies as `s_spike.mdl` rather than `spike.mdl`.
-    pub super_model: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1754,7 +1750,6 @@ impl WeaponState {
                     // super nailgun fires on its last round is the plain
                     // `W_FireSpikes` shot, rocket1i and all.
                     sound_id: if super_nail { 0xcf } else { 0xcc },
-                    super_model: super_nail,
                 })
             }
             Weapon::GrenadeLauncher => {
@@ -3011,7 +3006,6 @@ mod tests {
         };
         assert_eq!(super_nail.damage, SUPER_NAIL_DAMAGE);
         assert_eq!(super_nail.sound_id, 0xcf);
-        assert!(super_nail.super_model);
         assert_eq!(state.inventory().ammo(AmmoKind::Nails), 57);
 
         for _ in 0..NAIL_REFIRE_TICKS {
@@ -3117,9 +3111,8 @@ mod tests {
             panic!("single super nail fallback");
         };
         assert_eq!(nail.damage, NAIL_DAMAGE);
-        // The last round is a plain nail in sound and model too.
+        // The last round is a plain nail in sound too.
         assert_eq!(nail.sound_id, 0xcc);
-        assert!(!nail.super_model);
         assert_eq!(state.inventory().ammo(AmmoKind::Nails), 0);
     }
 

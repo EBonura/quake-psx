@@ -276,6 +276,11 @@ const FLAG_LEFTY: u8 = 2;
 const FLAG_OLD_PLAYER: u8 = 4;
 /// Alternates on each `Wiz_idlesound` call so the roll happens every other cycle.
 const FLAG_IDLE_GATE: u8 = 8;
+/// `attack_state` is `AS_MELEE` or `AS_MISSILE` and the monster is still
+/// turning towards its enemy.
+const FLAG_PENDING_ATTACK: u8 = 16;
+/// The pending attack is the missile (`AS_MISSILE`), not the melee.
+const FLAG_PENDING_MISSILE: u8 = 32;
 /// [`MonsterRuntime::enemy_index`] value meaning the player.
 const NO_ENEMY_MONSTER: u16 = u16::MAX;
 const INITIAL_ATTACK_COOLDOWN: u16 = 60;
@@ -575,6 +580,13 @@ pub struct MonsterThinkInput {
     /// The distance with the height difference ignored, which is what
     /// `CheckDogJump` and `CheckDemonJump` measure.
     pub flat_distance: i32,
+    /// Another monster stands in the line to the enemy: `CheckAttack`'s
+    /// `trace_ent != targ` (a `traceline` that, unlike `visible`, stops at
+    /// monsters) refuses the shot. The dog and the fiend never trace.
+    pub shot_blocked: bool,
+    /// The enemy lies more than 45 degrees off the monster's heading, so
+    /// `FacingIdeal` fails and a committed attack keeps turning first.
+    pub off_axis: bool,
     pub visible: bool,
     pub in_front: bool,
     pub player_hostile: bool,
@@ -773,6 +785,7 @@ impl MonsterRuntime {
             MonsterEnemy::Player => NO_ENEMY_MONSTER,
             MonsterEnemy::Monster(index) => index,
         };
+        self.flags &= !(FLAG_PENDING_ATTACK | FLAG_PENDING_MISSILE);
         self.active = true;
         self.attack_cooldown = INITIAL_ATTACK_COOLDOWN;
         if matches!(self.state, MonsterState::Stand | MonsterState::Walk) {
@@ -887,6 +900,11 @@ impl MonsterRuntime {
         self.leap_ticks != 0
     }
 
+    /// Heading of a dead scrag's toss, in Q12 turns.
+    pub const fn death_toss_heading(self) -> i16 {
+        (self.boss_shocks as i16) * 32
+    }
+
     /// The airborne counter belongs to `trigger_monsterjump`, not a dog or
     /// fiend attack. Non-boss monsters otherwise never read `boss_shocks`.
     pub const fn forced_jump(self) -> bool {
@@ -967,6 +985,8 @@ impl MonsterRuntime {
     fn leap_velocity(self) -> MonsterLeap {
         let (forward, up) = if self.forced_jump() {
             (200, 200)
+        } else if self.dead() {
+            (200, 150)
         } else {
             leap_launch(self.kind)
         };
@@ -1149,6 +1169,14 @@ impl MonsterRuntime {
                 reset_health: false,
                 frame: self.frame,
             };
+        }
+        // `wiz_death1` hurls the corpse with a random velocity and drops
+        // `FL_FLY`, so a dead scrag tumbles to the floor instead of hanging
+        // at its hover height. The heading rides in `boss_shocks`, which no
+        // other monster reads.
+        if matches!(self.kind, MonsterKind::Wizard) {
+            self.boss_shocks = (self.random_fraction_q12() >> 5) as i8;
+            self.leap_ticks = 1;
         }
         let use_b = frame_range(self.kind, MonsterState::DeathB).is_some()
             && self.random_fraction_q12() >= (Q12_ONE >> 1);
@@ -1390,10 +1418,27 @@ impl MonsterRuntime {
                 action.frame = self.frame;
             }
             MonsterState::Run | MonsterState::Side => {
+                if self.flags & FLAG_PENDING_ATTACK != 0 {
+                    // `ai_run_melee` / `ai_run_missile`: `ChangeYaw`, and the
+                    // attack proper only once `FacingIdeal`.
+                    if input.off_axis && input.player_alive {
+                        action.face_target = true;
+                        self.advance_looping();
+                        action.frame = self.frame;
+                        return action;
+                    }
+                    let melee = self.flags & FLAG_PENDING_MISSILE == 0;
+                    self.start_committed_attack(melee, input);
+                    action.frame = self.frame;
+                    return action;
+                }
                 if input.visible && self.try_begin_attack(input) {
                     action.frame = self.frame;
                     if let Some(sound) = self.enter_attack_sound() {
                         action.sound_id = Some(sound);
+                    }
+                    if self.flags & FLAG_PENDING_ATTACK != 0 {
+                        action.face_target = true;
                     }
                     return action;
                 }
@@ -1519,17 +1564,14 @@ impl MonsterRuntime {
         }
         match self.kind {
             MonsterKind::Dog if input.distance < MONSTER_MELEE_RANGE => {
-                self.enter_state(MonsterState::Melee);
-                true
+                self.commit_attack(true, input)
             }
             MonsterKind::Dog if (80..=150).contains(&input.flat_distance) && input.leap_height_ok => {
-                self.enter_state(MonsterState::Missile);
-                true
+                self.commit_attack(false, input)
             }
             MonsterKind::Dog => false,
             MonsterKind::Demon if input.distance < MONSTER_MELEE_RANGE => {
-                self.enter_state(MonsterState::Melee);
-                true
+                self.commit_attack(true, input)
             }
             MonsterKind::Demon => {
                 // demon_check_jump: never below 100 units, and beyond 200 only
@@ -1540,8 +1582,12 @@ impl MonsterRuntime {
                 if input.flat_distance > 200 && self.random_fraction_q12() < Q12_ONE * 9 / 10 {
                     return false;
                 }
-                self.enter_state(MonsterState::Missile);
-                true
+                self.commit_attack(false, input)
+            }
+            MonsterKind::Soldier | MonsterKind::Knight | MonsterKind::Zombie
+                if input.shot_blocked =>
+            {
+                false
             }
             MonsterKind::Knight if input.distance < MONSTER_MELEE_RANGE => {
                 // fight.qc knight_attack: the standing swing inside 80 units,
@@ -1555,52 +1601,31 @@ impl MonsterRuntime {
                 true
             }
             MonsterKind::Knight => false,
-            MonsterKind::Shambler if input.distance < MONSTER_MELEE_RANGE => {
-                // sham_melee: smash above 0.6, right swing above 0.3, else
-                // left swing. Original bytecode also forces a smash at exactly
-                // 600 health, after drawing chance even when that override wins.
-                let chance = self.random_fraction_q12();
-                let state = if chance > Q12_ONE * 3 / 5 || input.self_health == 600 {
-                    MonsterState::Melee
-                } else if chance > Q12_ONE * 3 / 10 {
-                    MonsterState::MeleeC
-                } else {
-                    MonsterState::MeleeB
-                };
-                self.enter_state(state);
-                true
-            }
-            MonsterKind::Ogre if input.distance < MONSTER_MELEE_RANGE => {
-                // ogre_melee: smash on a coin flip, otherwise swing.
-                let state = if self.random_fraction_q12() > (Q12_ONE >> 1) {
-                    MonsterState::MeleeB
-                } else {
-                    MonsterState::Melee
-                };
-                self.enter_state(state);
-                true
+            MonsterKind::Shambler | MonsterKind::Ogre if input.distance < MONSTER_MELEE_RANGE => {
+                self.commit_attack(true, input)
             }
             MonsterKind::Shambler => {
                 // `ShamCheckAttack`: the bolt reaches 600 units and reloads
                 // for `2 + 2 * random()` seconds.
-                if self.attack_cooldown != 0 || input.distance > 600 {
+                if self.attack_cooldown != 0 || input.distance > 600 || input.shot_blocked {
                     return false;
                 }
                 self.attack_cooldown = 2 * ONE_SECOND + self.random_ticks(2 * ONE_SECOND);
-                self.enter_state(MonsterState::Missile);
-                true
+                self.commit_attack(false, input)
             }
             MonsterKind::Ogre => {
                 // `OgreCheckAttack` works out a `chance` from the range and
                 // then never rolls it, so the grenade flies at anything the
                 // ogre can see short of `RANGE_FAR`, and reloads for
                 // `1 + 2 * random()` seconds.
-                if self.attack_cooldown != 0 || input.distance >= MONSTER_FAR_RANGE {
+                if self.attack_cooldown != 0
+                    || input.distance >= MONSTER_FAR_RANGE
+                    || input.shot_blocked
+                {
                     return false;
                 }
                 self.attack_cooldown = ONE_SECOND + self.random_ticks(2 * ONE_SECOND);
-                self.enter_state(MonsterState::Missile);
-                true
+                self.commit_attack(false, input)
             }
             MonsterKind::Wizard => {
                 // `WizardCheckAttack`: nothing before the reload is up; out
@@ -1610,7 +1635,7 @@ impl MonsterRuntime {
                 if self.attack_cooldown != 0 {
                     return false;
                 }
-                if input.distance >= MONSTER_FAR_RANGE {
+                if input.distance >= MONSTER_FAR_RANGE || input.shot_blocked {
                     self.wizard_run_straight();
                     return false;
                 }
@@ -1679,11 +1704,68 @@ impl MonsterRuntime {
                 }
                 self.attack_cooldown =
                     60 + ((u32::from(self.random_fraction_q12()) * 60) >> 12) as u16;
+                // `SoldierCheckAttack`: `if (random() < 0.3) self.lefty =
+                // !self.lefty`, the flag `SUB_CheckRefire` reads.
+                if self.random_fraction_q12() < Q12_ONE * 3 / 10 {
+                    self.flags ^= FLAG_LEFTY;
+                }
                 self.enter_state(MonsterState::Missile);
                 true
             }
             MonsterKind::Soldier | MonsterKind::Boss => false,
         }
+    }
+
+    /// `CheckAnyAttack` for the dog, fiend, ogre and shambler: the decision sets
+    /// `attack_state` to `AS_MELEE` or `AS_MISSILE`, and `ai_run_melee` /
+    /// `ai_run_missile` turn the monster in place until it is within 45 degrees
+    /// of the enemy before `th_melee` / `th_missile` actually start.
+    fn commit_attack(&mut self, melee: bool, input: MonsterThinkInput) -> bool {
+        if input.off_axis {
+            self.flags |= FLAG_PENDING_ATTACK;
+            if melee {
+                self.flags &= !FLAG_PENDING_MISSILE;
+            } else {
+                self.flags |= FLAG_PENDING_MISSILE;
+            }
+        } else {
+            self.start_committed_attack(melee, input);
+        }
+        true
+    }
+
+    /// `th_melee` / `th_missile`, called once the monster faces its enemy.
+    fn start_committed_attack(&mut self, melee: bool, input: MonsterThinkInput) {
+        self.flags &= !(FLAG_PENDING_ATTACK | FLAG_PENDING_MISSILE);
+        let state = if !melee {
+            MonsterState::Missile
+        } else {
+            match self.kind {
+                // sham_melee: smash above 0.6, right swing above 0.3, else
+                // left swing. The id1 bytecode also forces a smash at exactly
+                // 600 health, after drawing chance even when that override wins.
+                MonsterKind::Shambler => {
+                    let chance = self.random_fraction_q12();
+                    if chance > Q12_ONE * 3 / 5 || input.self_health == 600 {
+                        MonsterState::Melee
+                    } else if chance > Q12_ONE * 3 / 10 {
+                        MonsterState::MeleeC
+                    } else {
+                        MonsterState::MeleeB
+                    }
+                }
+                // ogre_melee: smash on a coin flip, otherwise swing.
+                MonsterKind::Ogre => {
+                    if self.random_fraction_q12() > (Q12_ONE >> 1) {
+                        MonsterState::MeleeB
+                    } else {
+                        MonsterState::Melee
+                    }
+                }
+                _ => MonsterState::Melee,
+            }
+        };
+        self.enter_state(state);
     }
 
     /// `attack_state = AS_STRAIGHT; wiz_run1()`.
@@ -1779,6 +1861,14 @@ impl MonsterRuntime {
     fn enter_attack_sound(&mut self) -> Option<i16> {
         match (self.kind, self.state) {
             (MonsterKind::Demon, MonsterState::Missile) => Some(DEMON_JUMP_SOUND),
+            // `DemonCheckAttack` voices the jump when it decides on it,
+            // before the demon has finished turning.
+            (MonsterKind::Demon, _)
+                if self.flags & (FLAG_PENDING_ATTACK | FLAG_PENDING_MISSILE)
+                    == (FLAG_PENDING_ATTACK | FLAG_PENDING_MISSILE) =>
+            {
+                Some(DEMON_JUMP_SOUND)
+            }
             _ => None,
         }
     }
@@ -1945,6 +2035,18 @@ impl MonsterRuntime {
                 Some(WIZARD_ATTACK_SOUND),
                 0,
             ),
+            (MonsterKind::Soldier, MonsterState::Missile)
+                if offset == 6
+                    && input.nightmare
+                    && input.visible
+                    && self.flags & FLAG_LEFTY == 0 =>
+            {
+                // `army_atk7`: `SUB_CheckRefire (army_atk1)` on nightmare
+                // restarts the volley once while the enemy is still in sight.
+                self.flags |= FLAG_LEFTY;
+                self.frame = first - 1;
+                (None, None, 0)
+            }
             (MonsterKind::Wizard, MonsterState::Missile) if offset == 9 => {
                 // `wiz_fast10`: `SUB_AttackFinished(2)` on the last frame.
                 if !input.nightmare {
@@ -4020,6 +4122,164 @@ mod tests {
         assert_eq!(calls, 4000);
         assert!((150..=250).contains(&idle1), "{idle1}");
         assert!((500..=700).contains(&idle2), "{idle2}");
+    }
+
+    /// `CheckAttack`'s `traceline` stops at monsters: an ally in the line
+    /// spoils every ranged decision except the dog's and the fiend's.
+    #[test]
+    fn an_ally_in_the_line_cancels_the_shot() {
+        let blocked = |distance| MonsterThinkInput {
+            shot_blocked: true,
+            ..visible(distance)
+        };
+        for (kind, distance) in [
+            (MonsterKind::Soldier, 60),
+            (MonsterKind::Soldier, 300),
+            (MonsterKind::Knight, 60),
+            (MonsterKind::Zombie, 300),
+            (MonsterKind::Ogre, 400),
+            (MonsterKind::Shambler, 400),
+            (MonsterKind::Wizard, 300),
+        ] {
+            for seed in 0..64u16 {
+                let mut runtime = MonsterRuntime::new(kind, seed);
+                runtime.active = true;
+                runtime.enter_state(MonsterState::Run);
+                runtime.attack_cooldown = 0;
+                assert!(!runtime.try_begin_attack(blocked(distance)), "{kind:?} fired");
+                assert_eq!(runtime.state(), MonsterState::Run, "{kind:?}");
+            }
+        }
+        // A scrag whose shot is blocked runs straight rather than strafing.
+        let mut scrag = MonsterRuntime::new(MonsterKind::Wizard, 2);
+        scrag.active = true;
+        scrag.enter_state(MonsterState::Side);
+        assert!(!scrag.try_begin_attack(blocked(300)));
+        assert_eq!(scrag.state(), MonsterState::Run);
+        // The ogre and shambler still swing at an adjacent target (`CanDamage`).
+        for kind in [MonsterKind::Ogre, MonsterKind::Shambler] {
+            let mut runtime = MonsterRuntime::new(kind, 1);
+            runtime.active = true;
+            runtime.enter_state(MonsterState::Run);
+            assert!(runtime.try_begin_attack(blocked(60)), "{kind:?}");
+            assert!(runtime.state().is_melee());
+        }
+        // And the dog bites regardless.
+        let mut dog = MonsterRuntime::new(MonsterKind::Dog, 1);
+        dog.active = true;
+        dog.enter_state(MonsterState::Run);
+        assert!(dog.try_begin_attack(blocked(60)));
+    }
+
+    /// The dog, fiend, ogre and shambler commit to an attack and turn in
+    /// place until within 45 degrees of the enemy before it starts.
+    #[test]
+    fn committed_attacks_wait_until_the_monster_faces_its_enemy() {
+        for (kind, distance) in [
+            (MonsterKind::Dog, 60),
+            (MonsterKind::Demon, 60),
+            (MonsterKind::Ogre, 60),
+            (MonsterKind::Ogre, 400),
+            (MonsterKind::Shambler, 60),
+            (MonsterKind::Shambler, 400),
+        ] {
+            let mut runtime = MonsterRuntime::new(kind, 5);
+            runtime.active = true;
+            runtime.enter_state(MonsterState::Run);
+            runtime.attack_cooldown = 0;
+            let turned_away = MonsterThinkInput {
+                off_axis: true,
+                ..visible(distance)
+            };
+            assert!(runtime.try_begin_attack(turned_away), "{kind:?} decided nothing");
+            // Decided, but still running its walk cycle.
+            assert_eq!(runtime.state(), MonsterState::Run, "{kind:?}");
+            // While off axis a think only turns the monster.
+            let turn = next_think(&mut runtime, turned_away);
+            assert!(turn.face_target && turn.attack.is_none() && turn.move_units == 0);
+            assert_eq!(runtime.state(), MonsterState::Run);
+            // Once it faces the enemy the attack starts.
+            next_think(&mut runtime, visible(distance));
+            assert_ne!(runtime.state(), MonsterState::Run, "{kind:?} never started");
+        }
+        // The fiend's `djump` is voiced when it decides, not when it starts.
+        let mut demon = MonsterRuntime::new(MonsterKind::Demon, 4);
+        demon.active = true;
+        demon.enter_state(MonsterState::Run);
+        let away = MonsterThinkInput {
+            off_axis: true,
+            leap_height_ok: true,
+            ..visible(150)
+        };
+        let mut decided = None;
+        for _ in 0..200 {
+            let action = next_think(&mut demon, away);
+            if demon.flags & FLAG_PENDING_ATTACK != 0 {
+                decided = Some(action.sound_id);
+                break;
+            }
+        }
+        assert_eq!(decided, Some(Some(DEMON_JUMP_SOUND)));
+    }
+
+    /// On nightmare `army_atk7` runs `SUB_CheckRefire`, which replays the
+    /// volley once and then stays quiet until `lefty` is toggled back.
+    #[test]
+    fn nightmare_soldiers_fire_a_second_volley_once() {
+        let mut soldier = MonsterRuntime::new(MonsterKind::Soldier, 8);
+        soldier.active = true;
+        soldier.state = MonsterState::Missile;
+        soldier.frame = first_frame(MonsterKind::Soldier, MonsterState::Missile);
+        let input = MonsterThinkInput {
+            nightmare: true,
+            ..visible(200)
+        };
+        let mut shots = 0;
+        for _ in 0..16 {
+            let action = next_think(&mut soldier, input);
+            shots += u32::from(action.attack.is_some());
+        }
+        assert_eq!(shots, 2, "two volleys on nightmare");
+        assert_eq!(soldier.state(), MonsterState::Run);
+        // On other skills the volley is single.
+        let mut normal = MonsterRuntime::new(MonsterKind::Soldier, 8);
+        normal.active = true;
+        normal.state = MonsterState::Missile;
+        normal.frame = first_frame(MonsterKind::Soldier, MonsterState::Missile);
+        let mut shots = 0;
+        for _ in 0..12 {
+            let action = next_think(&mut normal, visible(200));
+            shots += u32::from(action.attack.is_some());
+        }
+        assert_eq!(shots, 1);
+    }
+
+    /// `wiz_death1` throws the corpse with `FL_FLY` cleared: a killed scrag
+    /// is airborne for a few ticks, then lies where it landed.
+    #[test]
+    fn a_killed_scrag_is_tossed_and_a_killed_soldier_is_not() {
+        let mut wizard = MonsterRuntime::new(MonsterKind::Wizard, 2);
+        let transition = wizard.take_damage(200, -10, false);
+        assert!(transition.killed && !transition.gibbed);
+        assert!(wizard.leaping(), "the corpse should be flying");
+        assert!((0..4096).contains(&wizard.death_toss_heading()));
+        let velocity = wizard.advance_leap(1).expect("toss velocity");
+        assert_eq!(velocity.forward, 200);
+        assert!(velocity.up > 0 && velocity.up <= 150);
+        // Gravity eventually pulls it down; landing ends the toss without
+        // reviving the AI.
+        let mut previous = velocity.up;
+        for _ in 0..8 {
+            let next = wizard.advance_leap(4).expect("still flying").up;
+            assert!(next < previous);
+            previous = next;
+        }
+        wizard.land_leap(true);
+        assert!(!wizard.leaping());
+        assert!(wizard.dead());
+        let mut soldier = MonsterRuntime::new(MonsterKind::Soldier, 2);
+        soldier.take_damage(100, -10, false);
+        assert!(!soldier.leaping());
     }
 
     #[test]

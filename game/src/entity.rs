@@ -2493,9 +2493,6 @@ impl EntityScene {
         let Some(render) = self.entities.get_mut(render_index) else {
             return false;
         };
-        if !set_nail_model(map, render, spawn.super_model) {
-            return false;
-        }
         if !update_projectile_render(map, render, spawn.origin, spawn.step, &styles) {
             return false;
         }
@@ -2529,9 +2526,6 @@ impl EntityScene {
         let render_index = self.nail_render_start as usize + slot_index;
         let render = self.entities.get_mut(render_index)?;
         let damage = traps::spikeshooter_damage(source.spawn_flags);
-        if !set_nail_model(map, render, damage == traps::SUPERSPIKE_DAMAGE) {
-            return None;
-        }
         if !update_projectile_render(map, render, source.origin, step, &styles) {
             return None;
         }
@@ -5016,6 +5010,13 @@ impl EntityScene {
                     && trace.fraction == 1 << 12
                     && !(trace.in_open && trace.in_water);
             }
+            // `CheckAttack`'s own `traceline` stops at any monster, so an ally
+            // standing in the line spoils the shot (`visible` ignores them).
+            let shot_blocked = visible
+                && runtime.active()
+                && !runtime.dead()
+                && runtime.think_due(elapsed_ticks)
+                && self.monster_in_line(index, enemy.index, monster_eye, enemy_eye);
             // `sight_entity`: a monster that just found the player wakes the
             // resting monsters that can see it, inside RANGE_NEAR outright and
             // inside RANGE_MID when they face it. Only checked on the frame a
@@ -5039,9 +5040,17 @@ impl EntityScene {
                 } else {
                     None
                 };
+            // `FacingIdeal`: within 45 degrees of the bearing to the enemy.
+            let off_axis = {
+                let bearing = yaw_toward(snapshot.origin, enemy.origin);
+                let diff = (snapshot.angles.y.wrapping_sub(bearing) as u16) & 0x0fff;
+                diff > 512 && diff < 4096 - 512
+            };
             let input = MonsterThinkInput {
                 distance,
                 flat_distance,
+                shot_blocked,
+                off_axis,
                 visible,
                 in_front: target_in_front(snapshot.origin, snapshot.angles.y, enemy.origin),
                 player_hostile,
@@ -5414,6 +5423,30 @@ impl EntityScene {
             index += 1;
         }
         Some(result)
+    }
+
+    /// Whether a live monster other than the shooter and its target crosses
+    /// the segment between their eyes.
+    #[cold]
+    #[inline(never)]
+    #[optimize(size)]
+    fn monster_in_line(
+        &self,
+        shooter: usize,
+        target: Option<usize>,
+        from: Vec3I32,
+        to: Vec3I32,
+    ) -> bool {
+        self.entities.iter().enumerate().any(|(index, entity)| {
+            index != shooter
+                && Some(index) != target
+                && entity.visible
+                && entity.damageable
+                && entity.health > 0
+                && entity.monster.is_some()
+                && segment_aabb_fraction(from, to, entity.hit_mins, entity.hit_maxs)
+                    .is_some_and(|fraction| fraction < 1 << 12)
+        })
     }
 
     /// The enemy monster an infighting monster is hunting, if it is still a
@@ -6154,6 +6187,8 @@ impl EntityScene {
         let origin = self.entities[index].origin;
         let yaw = if forced {
             0
+        } else if runtime.dead() {
+            runtime.death_toss_heading()
         } else {
             self.entities[index].angles.y
         };
@@ -8475,7 +8510,6 @@ impl EntityScene {
             lifetime_ticks: quake_core::combat::NAIL_LIFETIME_TICKS,
             damage: quake_core::combat::NAIL_DAMAGE,
             sound_id: 0xcc,
-            super_model: false,
         };
         let mut count = 0usize;
         while count < NAIL_POOL_CAPACITY {
@@ -9235,20 +9269,6 @@ fn update_moving_alias_origin(
     render.leaf_index = leaf_index.min(u16::MAX as usize) as u16;
     render.light = leaf_light(leaf.lightmap, leaf.light_styles, styles);
     true
-}
-
-/// `launch_spike`'s model: `s_spike.mdl` for a super spike, `spike.mdl`
-/// otherwise. A map that did not cook the super spike flies the plain one.
-fn set_nail_model(map: &ResidentMap, render: &mut RenderEntity, super_model: bool) -> bool {
-    let wanted = if super_model {
-        quake_core::combat::SUPER_NAIL_MODEL_ID
-    } else {
-        NAIL_MODEL_ID
-    };
-    if render.model_id == wanted || set_alias_model(map, render, wanted) {
-        return true;
-    }
-    render.model_id == NAIL_MODEL_ID || set_alias_model(map, render, NAIL_MODEL_ID)
 }
 
 fn set_alias_model(map: &ResidentMap, render: &mut RenderEntity, model_id: i16) -> bool {
