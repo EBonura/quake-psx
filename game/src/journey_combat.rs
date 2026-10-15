@@ -18,8 +18,8 @@ const ENGAGE_RANGE: i32 = 400;
 /// Shotgun pellets spread; past this the shells are mostly wasted.
 const SHOTGUN_RANGE: i32 = 280;
 const AXE_RANGE: i32 = 72;
-/// Closer than this the controller stops advancing and circle-strafes.
-const HOLD_RANGE: i32 = 120;
+/// Closer than this the controller backs away from a shotgun target.
+const KEEP_AWAY: i32 = 150;
 
 pub fn controls(
     map: &ResidentMap,
@@ -67,18 +67,26 @@ pub fn controls(
     };
     let dyaw = delta(yaw, player.view_angles[1]);
     let dpitch = delta(pitch, player.view_angles[0]);
-    let aligned = dyaw.abs() <= 24 && dpitch.abs() <= 24;
+    // A body 40 units across subtends a wide angle up close, so the allowed
+    // aim error grows as the target nears (650 is 4096 / 2 pi, Q12 per radian).
+    let tolerance = (40 * 650 / d.max(1)).clamp(24, 320) as i16;
+    let aligned = dyaw.abs() <= tolerance && dpitch.abs() <= tolerance;
     let useful = if shells > 0 { d <= SHOTGUN_RANGE } else { d <= AXE_RANGE };
-    // Move only once roughly facing the target, so movement never uses an
-    // old yaw: close in while far, strafe in a slow alternation when near.
+    // Kite: back off from anything in reach, close on anything far, and
+    // circle in between so grenades and bites mostly miss. Move only once
+    // roughly facing the target, so movement never uses an old yaw.
+    let side = if (tick / 24) & 1 == 0 { 127 } else { -127 };
+    let melee_only = shells == 0;
     let movement = if dyaw.abs() > 96 {
         [0, 0]
-    } else if d > HOLD_RANGE.max(if shells > 0 { 0 } else { AXE_RANGE }) {
+    } else if melee_only {
+        if d > AXE_RANGE { [127, 0] } else { [0, side] }
+    } else if d < KEEP_AWAY {
+        [-127, side]
+    } else if d > SHOTGUN_RANGE - 20 {
         [127, 0]
-    } else if (tick / 24) & 1 == 0 {
-        [0, 127]
     } else {
-        [0, -127]
+        [0, side]
     };
     Some(InputFrame {
         movement,

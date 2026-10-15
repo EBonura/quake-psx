@@ -48,3 +48,20 @@ the heap. Shipping never sets it.
 Mechanism word 0x7FBF is every E1M1 bit except the doorway crossing, which only
 the authoring controller witnesses. Health on arrival is read from the probe
 (1..200 asserted), and the card is unchanged.
+
+## Not yet proven: E1M2 onward
+
+`e1-chain-build` links the START, E1M1 and E1M2 controllers so one run carries
+the inventory across the E1M1 exit (it needs `QUAKE_PSX_JOURNEY_STACK_RESERVE=0xA000`).
+E1M1 replays exactly, then E1M2 fails in the authoring run:
+
+* The E1M2 route was authored for a monsterless run. The first ogre sits 500
+  units from the spawn and chainsaws the controller to near death when it
+  stands in melee range; a version that kites (back off, circle, fire when
+  aligned) survives it and takes the double shotgun, but the run then leaves
+  the authored route and drowns in the water room (stage 0 times out at 2000
+  frames, the controller does not swim up).
+* Whatever the controller does in E1M2 changes the monster timeline, so each
+  fix moves where the next failure is. The controllers need a recovery layer
+  (swim to the surface, re-plan from the current position, pick up health and
+  armour) before a tape for E1M2 can be recorded.
