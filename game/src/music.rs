@@ -445,11 +445,35 @@ unsafe fn read_sector<'a>(
 }
 
 /// One state-change line for the headless gate: `quake-music <what> tick=<n>
-/// song=<n> level=<n>`; `song` is 4294967295 where none applies.
+/// song=<n> level=<n>`; `song` is 4294967295 where none applies. Formatted into
+/// a stack buffer: the target allocator never frees, so a line built on the
+/// heap would drain it over a long run.
 #[cfg(feature = "music-trace")]
 #[inline(never)]
 fn trace(what: &str, tick: u32, song: u32, level: u32) {
-    psx_telemetry::emit::debug_log(&alloc::format!(
+    use core::fmt::Write;
+    struct Line {
+        bytes: [u8; 96],
+        length: usize,
+    }
+    impl Write for Line {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            let room = self.bytes.len() - self.length;
+            let take = text.len().min(room);
+            self.bytes[self.length..self.length + take].copy_from_slice(&text.as_bytes()[..take]);
+            self.length += take;
+            Ok(())
+        }
+    }
+    let mut line = Line {
+        bytes: [0; 96],
+        length: 0,
+    };
+    let _ = write!(
+        line,
         "quake-music {what} tick={tick} song={song} level={level}"
-    ));
+    );
+    if let Ok(text) = core::str::from_utf8(&line.bytes[..line.length]) {
+        psx_telemetry::emit::debug_log(text);
+    }
 }
