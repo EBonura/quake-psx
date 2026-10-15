@@ -26,10 +26,19 @@ const TAG: &str = "Built with PSoXide";
 
 #[optimize(size)]
 pub fn show(fb: &mut FrameBuffer) {
-    psx_vram::upload_16bpp(
-        psx_vram::VramRect::new(LOGO_TPAGE.x(), LOGO_TPAGE.y(), 32, 128),
-        &crate::bonnie::COVER_BONNIE,
-    );
+    // The mark is stored run-length coded (`quake_core::cover`) and expands one
+    // 32-word row at a time, so no plain copy of it stays in RAM.
+    let mut words = quake_core::cover::decode_words(&crate::bonnie::COVER_BONNIE_RLE);
+    for row in 0..128u16 {
+        let mut line = [0u16; 32];
+        for slot in line.iter_mut() {
+            *slot = words.next().unwrap_or(0);
+        }
+        psx_vram::upload_16bpp(
+            psx_vram::VramRect::new(LOGO_TPAGE.x(), LOGO_TPAGE.y() + row, 32, 1),
+            &line,
+        );
+    }
     let mut clut = crate::bonnie::BONNIE_CLUT;
     // Entry 0 opaque near-black: the backdrop is black and 0x0000 is
     // transparent on the PS1.
