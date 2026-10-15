@@ -179,15 +179,18 @@ impl ScreenBlend {
         }
     }
 
-    /// `V_ParseDamage`. `count` is the original's `blood + armor` view damage.
+    /// `V_ParseDamage`: `count = 0.5 * blood + 0.5 * armor`, never below 10,
+    /// and the shift gains `3 * count` percent. The percent is stored times
+    /// the tick rate, so half a point of `count` stays exact.
     #[optimize(size)]
     pub fn take_damage(&mut self, health_damage: u16, armor_damage: u16) {
-        let count = i32::from(health_damage) + i32::from(armor_damage);
-        if count <= 0 {
+        let total = i32::from(health_damage) + i32::from(armor_damage);
+        if total <= 0 {
             return;
         }
-        self.damage_percent = (self.damage_percent + 3 * count * TICKS_PER_SECOND)
-            .min(DAMAGE_MAX_PERCENT * TICKS_PER_SECOND);
+        let gain = (3 * TICKS_PER_SECOND * total / 2).max(3 * 10 * TICKS_PER_SECOND);
+        self.damage_percent =
+            (self.damage_percent + gain).min(DAMAGE_MAX_PERCENT * TICKS_PER_SECOND);
         self.damage_color = if armor_damage > health_damage {
             DAMAGE_MOSTLY_ARMOR_COLOR
         } else if armor_damage > 0 {
@@ -225,18 +228,18 @@ impl ScreenBlend {
     }
 
     /// `V_CalcPowerupCshift`. The original is a single else-if chain, so only
-    /// the first live artifact in this order tints, and a player holding the
-    /// pentagram and the quad at once sees gold, never blue.
+    /// the first live artifact in this order (quad, biosuit, ring, pentagram)
+    /// tints, so a player holding the pentagram and the quad at once sees blue.
     #[optimize(size)]
     pub fn set_powerups(&mut self, powerups: Powerups) {
-        self.powerup = if powerups.active(PowerupKind::Pentagram) {
-            Some(PowerupKind::Pentagram)
+        self.powerup = if powerups.active(PowerupKind::Quad) {
+            Some(PowerupKind::Quad)
         } else if powerups.active(PowerupKind::Biosuit) {
             Some(PowerupKind::Biosuit)
         } else if powerups.active(PowerupKind::Ring) {
             Some(PowerupKind::Ring)
-        } else if powerups.active(PowerupKind::Quad) {
-            Some(PowerupKind::Quad)
+        } else if powerups.active(PowerupKind::Pentagram) {
+            Some(PowerupKind::Pentagram)
         } else {
             None
         };
@@ -356,6 +359,23 @@ mod tests {
 
     #[optimize(size)]
     #[test]
+    fn damage_counts_half_of_blood_plus_armor_with_a_floor_of_ten() {
+        // V_ParseDamage: count = 0.5 * (blood + armor), at least 10.
+        let flash = |blood, armor| {
+            let mut blend = ScreenBlend::new();
+            blend.take_damage(blood, armor);
+            blend.damage_percent / TICKS_PER_SECOND
+        };
+        assert_eq!(flash(2, 0), 30, "a scratch still flashes as 10");
+        assert_eq!(flash(20, 0), 30);
+        assert_eq!(flash(40, 0), 60);
+        assert_eq!(flash(30, 10), 60);
+        assert_eq!(flash(100, 0), 150, "100 points reach the cap");
+        assert_eq!(flash(50, 0), 75);
+    }
+
+    #[optimize(size)]
+    #[test]
     fn damage_color_follows_the_armor_split() {
         let mut blend = ScreenBlend::new();
         blend.take_damage(10, 0);
@@ -387,7 +407,7 @@ mod tests {
         // The original's damage fade is 150 points per second, so a full
         // 150-point hit is gone in exactly one second and not before.
         let mut slow = ScreenBlend::new();
-        slow.take_damage(50, 0);
+        slow.take_damage(100, 0);
         assert_eq!(slow.damage_percent, DAMAGE_MAX_PERCENT * TICKS_PER_SECOND);
         for _ in 0..59 {
             slow.tick(1);
@@ -549,15 +569,17 @@ mod tests {
         let biosuit = worn(&[PowerupKind::Biosuit]).contents_tint();
         let quad = worn(&[PowerupKind::Quad]).contents_tint();
 
-        assert_eq!(worn(&PowerupKind::ALL).contents_tint(), pentagram);
+        assert_eq!(worn(&PowerupKind::ALL).contents_tint(), quad);
         assert_eq!(
-            worn(&[PowerupKind::Quad, PowerupKind::Ring, PowerupKind::Biosuit]).contents_tint(),
+            worn(&[PowerupKind::Pentagram, PowerupKind::Ring, PowerupKind::Biosuit])
+                .contents_tint(),
             biosuit
         );
         assert_eq!(
-            worn(&[PowerupKind::Quad, PowerupKind::Ring]).contents_tint(),
+            worn(&[PowerupKind::Pentagram, PowerupKind::Ring]).contents_tint(),
             ring
         );
+        assert_eq!(worn(&[PowerupKind::Pentagram]).contents_tint(), pentagram);
         assert_eq!(worn(&[PowerupKind::Quad]).contents_tint(), quad);
         // Nothing worn is still nothing drawn.
         assert_eq!(worn(&[]).contents_tint(), None);

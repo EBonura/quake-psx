@@ -557,6 +557,16 @@ impl Inventory {
             self.ammo[AmmoKind::Shells.index()].max(SHOTGUN_STARTING_SHELLS);
     }
 
+    /// `PlayerDie`: the four artifact timers drop to zero.
+    pub(crate) fn clear_powerups(&mut self) {
+        self.powerups.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn select_axe_for_test(&mut self) {
+        self.active_weapon = Weapon::Axe;
+    }
+
     pub(crate) fn tick_powerups(&mut self, ticks: u16) -> (u8, u8) {
         self.powerups.tick(ticks)
     }
@@ -1198,6 +1208,7 @@ impl WeaponState {
     /// Advance Quake's environmental survival rules against the persistent
     /// inventory. This is the single entry point the guest frame loop needs.
     pub fn tick_survival(&mut self, input: SurvivalInput) -> SurvivalFrame {
+        self.survival.set_pain_muted(self.view_frame != 0);
         self.survival.tick(&mut self.inventory, input)
     }
 

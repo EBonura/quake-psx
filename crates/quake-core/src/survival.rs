@@ -72,6 +72,10 @@ pub const SOUND_UDEATH: i16 = 0xaa;
 /// `PlayerDie`: below this health the death is `GibPlayer` instead.
 pub const GIB_HEALTH: i16 = -40;
 
+/// Frames of `player_diea1`, `dieb1`, `diec1`, `died1` and `diee1`; each runs
+/// at 0.1 s a frame and ends in `PlayerDead`.
+const DEATH_FRAMES: [u16; 5] = [11, 9, 15, 9, 9];
+
 /// `PainSound`: `self.pain_finished = time + 0.5` throttles the ordinary
 /// pain roll. The water, slime, and lava branches return before it.
 const PAIN_INTERVAL_TICKS: u16 = TICKS_PER_SECOND / 2;
@@ -293,6 +297,13 @@ pub struct SurvivalFrame {
     /// beside the h2odeath voice. Presentation only: the caller turns it into
     /// an approximation of the bubbles, never the sprite.
     pub death_bubbles: bool,
+    /// Ticks of the death animation before `PlayerDead` sets `DEAD_DEAD`;
+    /// zero for a gibbing, which is dead at once.
+    pub death_ticks: u16,
+    /// `PlayerDie`'s `velocity_z += random() * 300` hop, in whole units; zero
+    /// unless the player was moving up slower than 10 when killed (the caller
+    /// checks that, since the motor owns the velocity).
+    pub death_hop: i16,
     sounds: [i16; MAX_SURVIVAL_SOUNDS],
     sound_count: u8,
 }
@@ -319,6 +330,9 @@ impl SurvivalFrame {
 pub struct Survival {
     hazard_ticks: u16,
     pain_ticks: u16,
+    /// `player_pain` returns before `PainSound` while `weaponframe` is
+    /// non-zero: no pain voice during a weapon animation.
+    pain_muted: bool,
     air_ticks: u16,
     drown_damage: i16,
     last_water_level: u8,
@@ -335,6 +349,7 @@ impl Survival {
         Self {
             hazard_ticks: 0,
             pain_ticks: 0,
+            pain_muted: false,
             air_ticks: AIR_TICKS,
             drown_damage: DROWN_DAMAGE_BASE,
             last_water_level: 0,
@@ -342,6 +357,12 @@ impl Survival {
             alive: true,
             random_state: INITIAL_RANDOM_STATE,
         }
+    }
+
+    /// Set by the weapon each frame: its view model is mid-animation.
+    #[optimize(size)]
+    pub fn set_pain_muted(&mut self, muted: bool) {
+        self.pain_muted = muted;
     }
 
     /// Remaining lungful in 60 Hz ticks.
@@ -391,8 +412,21 @@ impl Survival {
         if self.alive && inventory.health() <= 0 {
             self.alive = false;
             frame.died = true;
+            // `PlayerDie`: invincible, quad, suit and ring timers all drop.
+            inventory.clear_powerups();
+            frame.death_hop = ((self.next_random() >> 16) % 300) as i16;
             let health = inventory.health();
             frame.gibbed = health < GIB_HEALTH;
+            if !frame.gibbed {
+                // The axe has its own nine frame fall; the others roll one of
+                // the five a to e falls (11, 9, 15, 9 and 9 frames at 0.1 s).
+                let frames = if inventory.active_weapon() == crate::combat::Weapon::Axe {
+                    9
+                } else {
+                    DEATH_FRAMES[(self.next_random() >> 16) as usize % DEATH_FRAMES.len()]
+                };
+                frame.death_ticks = frames * TICKS_PER_SECOND / 10;
+            }
             // `DeathSound`'s submerged branch opens with `DeathBubbles(20)`,
             // and `PlayerDie` returns out of `GibPlayer` before it ever gets
             // there, so the bubbles ride exactly the same condition as the
@@ -538,6 +572,11 @@ impl Survival {
             // the death latch in `tick` raises DeathSound.
             return;
         }
+        if self.pain_muted || inventory.powerups().active(PowerupKind::Ring) {
+            // `player_pain`: `if (self.weaponframe) return;` and
+            // `if (self.invisible_finished > time) return;`.
+            return;
+        }
         match liquid_pain_sound(input.water_level, input.water_type) {
             // The submerged, slime, and lava branches of `PainSound` speak on
             // every hit; only the ordinary roll below them is throttled.
@@ -555,12 +594,17 @@ impl Survival {
     /// this port actually cooks.
     #[optimize(size)]
     fn pain_voice(&mut self) -> i16 {
+        let roll = (self.next_random() >> 16) as usize % PAIN_VOICES.len();
+        PAIN_VOICES[roll]
+    }
+
+    #[optimize(size)]
+    fn next_random(&mut self) -> u32 {
         self.random_state = self
             .random_state
             .wrapping_mul(1_664_525)
             .wrapping_add(1_013_904_223);
-        let roll = (self.random_state >> 16) as usize % PAIN_VOICES.len();
-        PAIN_VOICES[roll]
+        self.random_state
     }
 }
 
@@ -1287,5 +1331,62 @@ mod tests {
             TICKS_PER_SECOND,
         );
         assert_eq!(inventory.health(), -100);
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn dying_drops_every_artifact_and_times_the_fall_animation() {
+        let mut state = Survival::new();
+        let mut inventory = Inventory::new();
+        inventory.take_damage(100);
+        for kind in PowerupKind::ALL {
+            inventory.apply_pickup(Pickup::Powerup { kind });
+        }
+        let frame = state.tick(
+            &mut inventory,
+            SurvivalInput {
+                elapsed_ticks: 1,
+                ..SurvivalInput::default()
+            },
+        );
+        assert!(frame.died);
+        for kind in PowerupKind::ALL {
+            assert!(!inventory.powerups().active(kind), "{kind:?} outlived the player");
+        }
+        // The shotgun is in hand: one of the five falls, 9 to 15 frames of 6 ticks.
+        assert!([66, 54, 90].contains(&frame.death_ticks), "{}", frame.death_ticks);
+        assert!((0..300).contains(&frame.death_hop));
+        // The axe has its own nine frame fall.
+        let mut axe = Inventory::new();
+        axe.select_axe_for_test();
+        axe.take_damage(100);
+        let frame = Survival::new().tick(&mut axe, SurvivalInput::default());
+        assert_eq!(frame.death_ticks, 54);
+        // A gibbing is dead at once.
+        let mut gib = Inventory::new();
+        gib.take_damage(150);
+        let frame = Survival::new().tick(&mut gib, SurvivalInput::default());
+        assert!(frame.gibbed && frame.death_ticks == 0);
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn a_weapon_animation_or_the_ring_silences_the_pain_voice() {
+        let hit = |muted: bool, ring: bool| {
+            let mut state = Survival::new();
+            let mut inventory = Inventory::new();
+            if ring {
+                inventory.apply_pickup(Pickup::Powerup {
+                    kind: PowerupKind::Ring,
+                });
+            }
+            state.set_pain_muted(muted);
+            let mut frame = SurvivalFrame::default();
+            state.damage(&mut inventory, 10, SurvivalInput::default(), &mut frame);
+            frame.sounds().len()
+        };
+        assert_eq!(hit(false, false), 1);
+        assert_eq!(hit(true, false), 0, "weaponframe != 0");
+        assert_eq!(hit(false, true), 0, "invisible_finished > time");
     }
 }

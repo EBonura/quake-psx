@@ -169,6 +169,9 @@ pub struct TargetActions {
     fired_edges: u16,
     completed_counters: u16,
     counter_message: Option<&'static str>,
+    /// `SUB_UseTargets`: the last entity fired by the player that carried a
+    /// `message` (a relay, a trigger fired by another, a finished counter).
+    message_source: Option<u16>,
 }
 
 impl TargetActions {
@@ -179,6 +182,7 @@ impl TargetActions {
             fired_edges: 0,
             completed_counters: 0,
             counter_message: None,
+            message_source: None,
         }
     }
 
@@ -188,6 +192,12 @@ impl TargetActions {
         self.fired_edges = 0;
         self.completed_counters = 0;
         self.counter_message = None;
+        self.message_source = None;
+    }
+
+    /// Source index of the fired entity whose `message` the player should see.
+    pub const fn message_source(&self) -> Option<u16> {
+        self.message_source
     }
 
     pub fn iter(&self) -> impl Iterator<Item = TargetAction> + '_ {
@@ -447,6 +457,7 @@ impl TargetGraph {
                     CLASS_TRIGGER_RELAY => {
                         actions.fired_edges = actions.fired_edges.saturating_add(1);
                         self.queue_entity_command(
+                            index,
                             entity,
                             command.activator,
                             &mut queue,
@@ -459,6 +470,7 @@ impl TargetGraph {
                         if self.begin_trigger_use(index, entity) {
                             actions.fired_edges = actions.fired_edges.saturating_add(1);
                             self.queue_entity_command(
+                                index,
                                 entity,
                                 command.activator,
                                 &mut queue,
@@ -484,6 +496,7 @@ impl TargetGraph {
                                 actions.completed_counters =
                                     actions.completed_counters.saturating_add(1);
                                 self.queue_entity_command(
+                                    index,
                                     entity,
                                     command.activator,
                                     &mut queue,
@@ -569,6 +582,7 @@ impl TargetGraph {
 
     fn queue_entity_command<S: TargetEntitySource + ?Sized>(
         &mut self,
+        index: usize,
         entity: MapEntity,
         activator: TargetActivator,
         queue: &mut [Option<UseCommand>; MAX_PENDING_USES],
@@ -581,6 +595,11 @@ impl TargetGraph {
             kill_target: entity.kill_target,
             activator,
         };
+        // `SUB_UseTargets`: `if (activator.classname == "player" && self.message
+        // != "") centerprint (activator, self.message)`, at fire time.
+        if entity.string != 0 && entity.delay == 0 && matches!(activator, TargetActivator::Player) {
+            actions.message_source = Some(index as u16);
+        }
         if entity.delay > 0 {
             self.enqueue_or_delay(command, entity.delay, source, actions)
         } else {
