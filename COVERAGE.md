@@ -75,9 +75,9 @@ attacks, pain, death, collision and authored sounds. Class-specific behavior
 includes Zombie resurrection, Ogre grenades, Demon leaps, Wizard missiles,
 Shambler lightning and Chthon's map-controlled death (E1M7).
 
-Some details from desktop Quake remain incomplete, including full infighting,
-all patrol behavior and several cosmetic gib variations. Monsters that appear
-only in the registered game are outside this disc.
+Some details from desktop Quake remain incomplete, including several cosmetic
+gib variations (see `LIMITS.md`). Monsters that appear only in the registered
+game are outside this disc.
 
 ## World entities
 
