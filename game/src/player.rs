@@ -120,22 +120,10 @@ impl Player {
         self.movement.die(i32::from(hop_units));
     }
 
-    /// `SV_Physics_Toss` for the corpse, so a player killed in the air or on
-    /// a slope settles on the floor.
+    /// The corpse keeps obeying gravity and the floor with no input at all, so
+    /// a player killed in the air or on a slope settles instead of hanging.
     pub fn update_dead(&mut self, map: &ResidentMap, entities: &EntityScene, elapsed_ticks: u16) {
-        if let Some(collision) = entities.collision(map, self.origin()) {
-            let gravity = if map.map() == EpisodeMap::E1M8 {
-                100
-            } else {
-                quake_core::movement::DEFAULT_GRAVITY
-            };
-            self.movement.update_dead(
-                &collision,
-                &mut self.movement_scratch,
-                elapsed_ticks,
-                gravity,
-            );
-        }
+        self.update(map, entities, InputFrame::default(), elapsed_ticks);
     }
 
     /// The gameplay view: `cl.viewangles` and the eye height, before

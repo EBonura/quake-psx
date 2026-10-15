@@ -390,42 +390,6 @@ impl MovementState {
         }
     }
 
-    /// `SV_Physics_Toss` for the corpse: gravity, one push through the world,
-    /// clip against what it hit, and a stop on the first walkable floor. A
-    /// body that is already on the ground does not move at all.
-    pub fn update_dead<C: MovementTrace + ?Sized>(
-        &mut self,
-        collision: &C,
-        scratch: &mut MovementScratch,
-        elapsed_ticks: u16,
-        gravity: u16,
-    ) {
-        let gravity_per_tick_q12 = (i32::from(gravity) << 12) / VIDEO_TICKS_PER_SECOND;
-        scratch.stalls = MovementStalls::default();
-        for _ in 0..elapsed_ticks.clamp(1, MAX_CATCHUP_TICKS) {
-            if self.grounded {
-                break;
-            }
-            self.velocity.z = self.velocity.z.saturating_sub(gravity_per_tick_q12);
-            let step = Vec3I32 {
-                x: self.velocity.x / VIDEO_TICKS_PER_SECOND,
-                y: self.velocity.y / VIDEO_TICKS_PER_SECOND,
-                z: self.velocity.z / VIDEO_TICKS_PER_SECOND,
-            };
-            let end = add(self.origin, step);
-            trace(collision, &self.origin, &end, scratch);
-            self.origin = scratch.trace.end;
-            if scratch.trace.fraction == Q12_ONE {
-                continue;
-            }
-            self.velocity = clip_velocity(self.velocity, scratch.trace.normal);
-            if scratch.trace.normal.z as i32 > WALKABLE_NORMAL_Q12 {
-                self.grounded = true;
-                self.velocity = Vec3I32 { x: 0, y: 0, z: 0 };
-            }
-        }
-    }
-
     /// Advance by elapsed 60 Hz video ticks. The small catch-up cap prevents
     /// a long load or debugger stop from turning into one enormous move.
     pub fn update_ticks<C, F>(
