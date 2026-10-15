@@ -41,6 +41,9 @@ pub const AXE_RANGE_UNITS: i32 = 64;
 pub const AXE_REFIRE_TICKS: u16 = 30;
 pub const ROCKET_DIRECT_DAMAGE: i16 = 100;
 pub const ROCKET_SPLASH_DAMAGE: i16 = 120;
+/// `findradius (origin, damage + 40)`: the reach of `T_RadiusDamage` beyond
+/// its nominal damage, in units.
+pub const SPLASH_FINDRADIUS_MARGIN: i32 = 40;
 pub const ROCKET_REFIRE_TICKS: u16 = 48;
 pub const ROCKET_LIFETIME_TICKS: u16 = 300;
 pub const ROCKET_STEP_Q12: i32 = 68_267; // 1000 units/second at 60 Hz.
@@ -148,6 +151,12 @@ pub fn explosion_splash_points(
     target_is_shambler: bool,
 ) -> i16 {
     if !visible {
+        return 0;
+    }
+    // `T_RadiusDamage` only walks `findradius (inflictor.origin, damage + 40)`:
+    // a target whose centre lies farther away is never considered, even though
+    // the falloff below would still leave it up to 40 points.
+    if distance_units > i32::from(damage).saturating_add(SPLASH_FINDRADIUS_MARGIN) {
         return 0;
     }
     // `T_RadiusDamage`: `points = damage - 0.5 * vlen(inflictor - center)`.
@@ -2189,6 +2198,22 @@ mod tests {
         }
     }
 
+    /// `T_RadiusDamage` finds targets within `damage + 40` of the blast and
+    /// never looks farther, so a 120 point explosion stops at 160 units where
+    /// the falloff alone would still deal 40 points.
+    #[test]
+    fn splash_stops_at_the_findradius_reach() {
+        for damage in [120i16, 160] {
+            let reach = i32::from(damage) + SPLASH_FINDRADIUS_MARGIN;
+            assert!(explosion_splash_points(damage, reach, false, true, false) > 0);
+            assert_eq!(explosion_splash_points(damage, reach + 1, false, true, false), 0);
+        }
+        // The falloff inside the reach is unchanged: 120 at the centre, 60 at 120.
+        assert_eq!(explosion_splash_points(120, 0, false, true, false), 120);
+        assert_eq!(explosion_splash_points(120, 120, false, true, false), 60);
+        assert_eq!(explosion_splash_points(120, 160, false, true, false), 40);
+    }
+
     #[test]
     fn the_quad_quadruples_every_carried_attack_damage() {
         let cases: &[(Option<u8>, i16, i16)] = &[
@@ -3147,16 +3172,16 @@ mod tests {
 
     #[test]
     fn rocket_splash_requires_visibility_and_halves_self_damage() {
-        // Falloff is half the distance: 120 damage reaches 240 units.
+        // Falloff is half the distance, but `findradius (damage + 40)` ends the
+        // search at 160 units, where 40 points are left.
         assert_eq!(rocket_splash_points(0, false, true), 120);
         assert_eq!(rocket_splash_points(120, false, true), 60);
-        assert_eq!(rocket_splash_points(238, false, true), 1);
-        assert_eq!(rocket_splash_points(240, false, true), 0);
+        assert_eq!(rocket_splash_points(160, false, true), 40);
+        assert_eq!(rocket_splash_points(161, false, true), 0);
         assert_eq!(rocket_splash_points(0, true, true), 60);
         assert_eq!(rocket_splash_points(4, true, true), 59);
-        assert_eq!(rocket_splash_points(236, true, true), 1);
-        assert_eq!(rocket_splash_points(238, true, true), 0);
-        assert_eq!(rocket_splash_points(240, true, true), 0);
+        assert_eq!(rocket_splash_points(160, true, true), 20);
+        assert_eq!(rocket_splash_points(161, true, true), 0);
         assert_eq!(rocket_splash_points(0, false, false), 0);
     }
 
@@ -3165,9 +3190,9 @@ mod tests {
         assert_eq!(rocket_direct_points(100, false), 100);
         assert_eq!(rocket_direct_points(100, true), 50);
         assert_eq!(explosion_splash_points(120, 0, false, true, true), 60);
-        assert_eq!(explosion_splash_points(120, 236, false, true, true), 1);
-        assert_eq!(explosion_splash_points(120, 238, false, true, true), 0);
-        assert_eq!(explosion_splash_points(120, 240, false, true, true), 0);
+        assert_eq!(explosion_splash_points(120, 156, false, true, true), 21);
+        assert_eq!(explosion_splash_points(120, 160, false, true, true), 20);
+        assert_eq!(explosion_splash_points(120, 161, false, true, true), 0);
     }
 
     #[test]

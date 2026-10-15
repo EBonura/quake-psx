@@ -2634,6 +2634,10 @@ impl EntityScene {
                         ExplosionKind::Rocket.radius_ignores_direct_target(),
                         Some(player_origin),
                         DamageAttacker::Player,
+                        quad_scale(
+                            rocket.direct_damage,
+                            quake_core::combat::ROCKET_DIRECT_DAMAGE,
+                        ),
                         weapon,
                         &mut result,
                     )?;
@@ -2924,11 +2928,12 @@ impl EntityScene {
                             map,
                             grenade.origin,
                             0,
-                            grenade.damage,
+                            quake_core::combat::GRENADE_DAMAGE,
                             None,
                             ExplosionKind::Grenade.radius_ignores_direct_target(),
                             Some(player_origin),
                             DamageAttacker::Player,
+                            quad_scale(grenade.damage, quake_core::combat::GRENADE_DAMAGE),
                             weapon,
                             &mut result.damage,
                         )?;
@@ -2986,11 +2991,12 @@ impl EntityScene {
                         map,
                         impact,
                         0,
-                        grenade.damage,
+                        quake_core::combat::GRENADE_DAMAGE,
                         Some(index),
                         ExplosionKind::Grenade.radius_ignores_direct_target(),
                         Some(player_origin),
                         DamageAttacker::Player,
+                        quad_scale(grenade.damage, quake_core::combat::GRENADE_DAMAGE),
                         weapon,
                         &mut result.damage,
                     )?;
@@ -3227,6 +3233,7 @@ impl EntityScene {
         radius_ignores_direct: bool,
         player_origin: Option<Vec3I32>,
         attacker: DamageAttacker,
+        splash_scale: i16,
         weapon: &mut WeaponState,
         result: &mut RocketResult,
     ) -> Option<()> {
@@ -3285,6 +3292,9 @@ impl EntityScene {
                 index += 1;
                 continue;
             }
+            // `T_Damage` multiplies by four for an attacker holding the quad
+            // after the falloff, so the quad never widens the radius.
+            let points = points.saturating_mul(splash_scale);
             let mut scratch = TraceScratch::default();
             let mut trace = Trace::default();
             if !self.trace_point(map, &impact, &target, &mut scratch, &mut trace) {
@@ -3331,7 +3341,11 @@ impl EntityScene {
                 }
                 if points > 0 && trace.fraction == Q12_ONE {
                     let mut damage = DamageResult::default();
-                    self.damage_trigger(trigger_index, points, &mut damage);
+                    self.damage_trigger(
+                        trigger_index,
+                        points.saturating_mul(splash_scale),
+                        &mut damage,
+                    );
                     result.splash_hits = result.splash_hits.saturating_add(damage.damaged_targets);
                     merge_rocket_damage(result, damage);
                 }
@@ -3365,6 +3379,7 @@ impl EntityScene {
             player_trace.fraction == 1 << 12,
             false,
         );
+        let player_points = player_points.saturating_mul(splash_scale);
         if player_points > 0 {
             let taken = weapon.take_damage(player_points);
             result.self_damage = result.self_damage.saturating_add(taken as u16);
@@ -6372,6 +6387,7 @@ impl EntityScene {
             spare_entity.is_some(),
             player_origin,
             attacker,
+            1,
             weapon,
             &mut splash,
         )?;
@@ -8035,6 +8051,7 @@ impl EntityScene {
                 false,
                 None,
                 DamageAttacker::Player,
+                1,
                 &mut weapon,
                 &mut result,
             )
@@ -9028,6 +9045,16 @@ fn aim_basis(from: Vec3I32, to: Vec3I32) -> (Vec3I32, Vec3I32, Vec3I32) {
         z: cp,
     };
     (forward, right, up)
+}
+
+/// 1, or the quad's multiplier when a projectile carries quadrupled damage:
+/// `damage` is the base value times the multiplier for a quad shot.
+fn quad_scale(carried: i16, base: i16) -> i16 {
+    if carried >= base.saturating_mul(quake_core::survival::QUAD_DAMAGE_MULTIPLIER) {
+        quake_core::survival::QUAD_DAMAGE_MULTIPLIER
+    } else {
+        1
+    }
 }
 
 /// Bottom of a walking monster's box below its origin, whole units.
