@@ -9410,6 +9410,8 @@ fn player_origin_from_mins(player_mins: Vec3I32) -> Vec3I32 {
 /// used a hull-0 head that is not a valid clip hull, so about one point in
 /// fifteen of open space read as solid and the sky leaves of E1M5 never read
 /// as sky.
+#[inline(never)]
+#[optimize(size)]
 fn world_point_contents(map: &ResidentMap, point: Vec3I32) -> Option<i16> {
     let leaf = map.point_leaf_index(point)?;
     Some(map.leaves().get(leaf)?.contents)
