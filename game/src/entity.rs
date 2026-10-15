@@ -618,6 +618,9 @@ impl GameplayResult {
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShotgunResult {
+    /// Where the last pellet that met a wall, a door or the floor stopped:
+    /// `TE_GUNSHOT` puffs there.
+    pub wall_impact: Option<Vec3I32>,
     pub pellet_hits: u8,
     pub damaged_targets: u8,
     pub total_damage: u16,
@@ -644,6 +647,8 @@ pub struct PickupResult {
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct DamageResult {
+    /// The axe's stop point against something that takes no damage.
+    pub wall_impact: Option<Vec3I32>,
     pub damaged_targets: u8,
     pub total_damage: u16,
     pub killed_targets: u8,
@@ -2327,6 +2332,11 @@ impl EntityScene {
                 SoundEvent::listener(AXE_WALL_SOUND)
                     .on(crate::audio::OWNER_PLAYER, crate::audio::CHAN_WEAPON),
             );
+            result.wall_impact = Some(interpolate_impact(
+                attack.start,
+                attack.end,
+                world.fraction,
+            ));
         }
         Some(result)
     }
@@ -3481,6 +3491,7 @@ impl EntityScene {
             impact: Vec3I32,
         }
 
+        let mut wall_impact = None;
         let mut slots = [DamageSlot::default(); MAX_SHOTGUN_PELLETS];
         let mut slot_count = 0usize;
         let mut trigger_slots = [DamageSlot::default(); MAX_SHOTGUN_PELLETS];
@@ -3532,6 +3543,9 @@ impl EntityScene {
                 continue;
             }
             let Some(entity_index) = best_entity else {
+                if world.fraction < Q12_ONE {
+                    wall_impact = Some(interpolate_segment(attack.start, end, world.fraction));
+                }
                 continue;
             };
             let impact = interpolate_segment(attack.start, end, best_fraction);
@@ -3553,7 +3567,10 @@ impl EntityScene {
             }
         }
 
-        let mut result = ShotgunResult::default();
+        let mut result = ShotgunResult {
+            wall_impact,
+            ..ShotgunResult::default()
+        };
         for slot in trigger_slots[..trigger_slot_count]
             .iter()
             .copied()

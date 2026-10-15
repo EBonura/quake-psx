@@ -947,6 +947,9 @@ pub fn run() -> ! {
                         if let Some(impact) = result.last_impact {
                             presentation.impact_particles_mut().spawn_blood(impact);
                         }
+                        if let Some(impact) = result.wall_impact {
+                            presentation.impact_particles_mut().spawn_puff(impact);
+                        }
                     }
                 }
                 quake_core::combat::WeaponAttack::Shotgun(attack) => {
@@ -954,6 +957,9 @@ pub fn run() -> ! {
                         play_response_sound(&mut audio, result.response_sound, audio_tick);
                         if let Some(impact) = result.last_impact {
                             presentation.impact_particles_mut().spawn_blood(impact);
+                        }
+                        if let Some(impact) = result.wall_impact {
+                            presentation.impact_particles_mut().spawn_puff(impact);
                         }
                     }
                 }
@@ -1017,6 +1023,9 @@ pub fn run() -> ! {
                     crate::entity::SPIKE_TINK_SOUND
                 };
                 play_world_sound(&mut audio, sound, result.last_world_impact, audio_tick);
+                if let Some(impact) = result.last_world_impact {
+                    presentation.impact_particles_mut().spawn_puff(impact);
+                }
             }
         }
         #[cfg(feature = "systems-regression")]

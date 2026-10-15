@@ -75,6 +75,9 @@ pub enum ParticleKind {
     Spark,
     /// Camera-facing `progs/s_bubble.spr` released by a submerged death.
     Bubble,
+    /// `TE_GUNSHOT` and `TE_SPIKE`: `R_RunParticleEffect` colour 0, the dark
+    /// grey puff a shot throws up where it meets a wall.
+    Puff,
 }
 
 impl ParticleKind {
@@ -88,6 +91,7 @@ impl ParticleKind {
             Self::Smoke => 15,
             Self::Spark => 12,
             Self::Bubble => 120,
+            Self::Puff => 12,
         }
     }
 
@@ -141,12 +145,13 @@ impl ImpactParticle {
     /// per drawn particle inside the frame loop, which is I-cache bound.
     pub const fn color(self) -> (u8, u8, u8) {
         /// Newest colour of each kind's ramp, faded to black by its age.
-        const RAMP: [(u8, u8, u8); 5] = [
+        const RAMP: [(u8, u8, u8); 6] = [
             (0x90, 0x12, 0x09),
             (0xf0, 0x96, 0x1e),
             (0x80, 0x80, 0x70),
             (0xb4, 0xb4, 0xf0),
             (0x80, 0x80, 0x80),
+            (0x68, 0x68, 0x68),
         ];
         let life = self.kind.life_ticks();
         let remaining = life.saturating_sub(self.age_ticks) as u16;
@@ -326,6 +331,34 @@ impl ImpactParticles {
                     z: z << 8,
                 },
                 ParticleKind::Blood,
+            );
+        }
+    }
+
+    /// `TE_GUNSHOT` / `TE_SPIKE` where a shot meets a wall:
+    /// `R_RunParticleEffect (org, vec3_origin, 0, count)`, twenty particles for
+    /// a bullet and ten for a spike, scattered about eight units around the
+    /// point and living up to 0.4 s. The port keeps six, still, for 0.2 s.
+    #[cold]
+    #[inline(never)]
+    pub fn spawn_puff(&mut self, origin: Vec3I32) {
+        const OFFSETS: [(i8, i8, i8); 6] = [
+            (-6, 2, 3),
+            (4, -5, -2),
+            (1, 6, 5),
+            (-3, -4, -6),
+            (6, 3, 0),
+            (-1, -1, 7),
+        ];
+        for (x, y, z) in OFFSETS {
+            self.push(
+                Vec3I32 {
+                    x: origin.x + (i32::from(x) << 12),
+                    y: origin.y + (i32::from(y) << 12),
+                    z: origin.z + (i32::from(z) << 12),
+                },
+                Vec3I16 { x: 0, y: 0, z: 0 },
+                ParticleKind::Puff,
             );
         }
     }
@@ -973,6 +1006,34 @@ mod tests {
         assert_eq!(particles.active().count(), 0);
         particles.spawn_blood(point(3));
         particles.enter_map(2);
+        assert_eq!(particles.active().count(), 0);
+    }
+
+    /// `TE_GUNSHOT`: a wall hit throws a still, grey puff scattered a few
+    /// units around the point, gone in a fifth of a second.
+    #[test]
+    fn a_wall_puff_is_six_dark_dots_around_the_hit_that_fade_out() {
+        let mut particles = ImpactParticles::new();
+        particles.enter_map(1);
+        let centre = point(100);
+        particles.spawn_puff(centre);
+        assert_eq!(particles.active().count(), 6);
+        for dot in particles.active() {
+            assert_eq!(dot.kind, ParticleKind::Puff);
+            for axis in [
+                dot.origin.x - centre.x,
+                dot.origin.y - centre.y,
+                dot.origin.z - centre.z,
+            ] {
+                assert!((axis >> 12).abs() <= 8, "dot {axis} units from the hit");
+            }
+            let (red, green, blue) = dot.color();
+            assert!(red == green && green == blue && red > 0x40, "grey, not coloured");
+        }
+        particles.tick(6);
+        let (halfway, _, _) = particles.active().next().expect("still alive").color();
+        assert!(halfway < 0x68);
+        particles.tick(6);
         assert_eq!(particles.active().count(), 0);
     }
 
