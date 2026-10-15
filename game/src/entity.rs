@@ -5172,7 +5172,7 @@ impl EntityScene {
                     | MonsterAttack::ZombieGib { .. }
                     | MonsterAttack::Spit { .. }
                     | MonsterAttack::LavaBall { .. } => {
-                        self.launch_monster_missile(map, index, enemy.origin, attack);
+                        self.launch_monster_missile(map, index, enemy.origin, enemy.velocity, attack);
                         0
                     }
                 };
@@ -6136,6 +6136,7 @@ impl EntityScene {
         map: &ResidentMap,
         shooter_index: usize,
         player_origin: Vec3I32,
+        player_velocity: Vec3I32,
         attack: MonsterAttack,
     ) -> bool {
         // `R_LightPoint` reads the live style table; copy it so the per-entity
@@ -6189,21 +6190,23 @@ impl EntityScene {
                 per_tick(600),
                 180,
             ),
-            MonsterAttack::LavaBall { damage, side } => (
-                MonsterMissileKind::LavaBall,
-                LAVA_BALL_MODEL_ID,
-                damage,
-                add_vec(
-                    add_vec(shooter.origin, scale(forward, 100)),
-                    Vec3I32 {
-                        x: right.x.saturating_mul(i32::from(side)),
-                        y: right.y.saturating_mul(i32::from(side)),
-                        z: 200 << 12,
-                    },
-                ),
-                per_tick(300),
-                300,
-            ),
+            MonsterAttack::LavaBall { damage, side } => {
+                let (origin, velocity) = quake_core::monster::lava_ball_launch(
+                    shooter.origin,
+                    player_origin,
+                    player_velocity,
+                    self.skill,
+                    side,
+                );
+                (
+                    MonsterMissileKind::LavaBall,
+                    LAVA_BALL_MODEL_ID,
+                    damage,
+                    origin,
+                    velocity,
+                    300,
+                )
+            }
             _ => return false,
         };
         let Some(slot_index) = self.claim_missile_slot() else {
