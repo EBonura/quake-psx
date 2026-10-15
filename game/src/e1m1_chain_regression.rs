@@ -394,17 +394,13 @@ pub fn combat_controls(map: &crate::asset::ResidentMap, entities: &EntityScene, 
         let dx = (e.origin.x - from.x) >> 12;
         let dy = (e.origin.y - from.y) >> 12;
         let d = dx.abs().max(dy.abs());
-        let center = psx_bsp::Vec3I32 {
-            x: e.origin.x, y: e.origin.y,
-            z: e.origin.z + ((i32::from(e.clip_mins[2]) + i32::from(e.clip_maxs[2])) << 11),
-        };
-        (d < 384 && entities.regression_point_visible(map, from, center)).then_some((d, e))
+        // clip_mins/maxs are world-space render bounds, not local offsets, so
+        // the monster's origin is the aim point.
+        (d < 384 && entities.regression_point_visible(map, from, e.origin)).then_some((d, e))
     }).min_by_key(|(d, _)| *d)?.1;
     let dx = (target.origin.x - from.x) >> 12;
     let dy = (target.origin.y - from.y) >> 12;
-    let target_z = target.origin.z
-        + ((i32::from(target.clip_mins[2]) + i32::from(target.clip_maxs[2])) << 11);
-    let dz = (target_z - from.z) >> 12;
+    let dz = (target.origin.z - from.z) >> 12;
     let horizontal = psx_math::int32::isqrt_i32(dx * dx + dy * dy);
     let yaw = psx_math::atan2_q12(dy, dx) as i16;
     let pitch = psx_math::atan2_q12(-dz, horizontal) as i16;
