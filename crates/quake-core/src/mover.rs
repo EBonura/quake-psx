@@ -39,6 +39,24 @@ pub const PLAT_LOW_TRIGGER: u16 = 1;
 
 /// `func_door_secret` forces `speed = 50` regardless of the authored value.
 const SECRET_SPEED: i16 = 50;
+/// `if (!self.speed) self.speed = 100`, `40` and `150`: the spawn functions
+/// only fill in a speed the map left out.
+const DOOR_DEFAULT_SPEED: i16 = 100;
+const BUTTON_DEFAULT_SPEED: i16 = 40;
+const PLAT_DEFAULT_SPEED: i16 = 150;
+
+/// The speed a `func_door`, `func_button` or `func_plat` moves at: the
+/// authored `speed` key, or the class default when it is absent (zero). A
+/// slow authored speed stays slow: this was a floor, so the 18 Episode 1 doors
+/// authored at 20 to 75 units a second and the E1M2 button at 20 all moved
+/// 1.3 to 5 times too fast.
+const fn authored_speed(authored: i16, default: i16) -> i16 {
+    if authored == 0 {
+        default
+    } else {
+        authored
+    }
+}
 /// `fd_secret_move1` and `fd_secret_move5`: `nextthink = ltime + 1.0`, the
 /// pause the door takes between its sideways and its forward leg.
 const SECRET_PAUSE_TICKS: u16 = 60;
@@ -288,7 +306,7 @@ impl QuakeMover {
                     .saturating_sub(lip);
                 top = add(bottom, scale_q12(direction, distance));
                 (
-                    source.speed.max(40),
+                    authored_speed(source.speed, BUTTON_DEFAULT_SPEED),
                     fixed_seconds_to_ticks(source.wait, 60),
                     false,
                     false,
@@ -308,7 +326,12 @@ impl QuakeMover {
                     core::mem::swap(&mut bottom, &mut top);
                 }
                 // `plat_hit_top`: `nextthink = ltime + 3`, three seconds.
-                (source.speed.max(150), 180, source.target_name == 0, false)
+                (
+                    authored_speed(source.speed, PLAT_DEFAULT_SPEED),
+                    180,
+                    source.target_name == 0,
+                    false,
+                )
             }
             CLASS_FUNC_DOOR_SECRET => {
                 let (sideways, forward) = secret_legs(source.spawn_flags, direction, size);
@@ -338,7 +361,7 @@ impl QuakeMover {
                     core::mem::swap(&mut bottom, &mut top);
                 }
                 (
-                    source.speed.max(100),
+                    authored_speed(source.speed, DOOR_DEFAULT_SPEED),
                     fixed_seconds_to_ticks(source.wait, 180),
                     source.target_name == 0
                         && source.health == 0
@@ -1003,6 +1026,47 @@ mod tests {
             model: -1,
             ..MapEntity::default()
         }
+    }
+
+    /// Ticks a mover takes to reach the top of its travel after an activation.
+    fn ticks_to_top(class: u8, speed: i16) -> u16 {
+        let mut source = source(class);
+        source.speed = speed;
+        let mut mover = QuakeMover::from_entity(source, model(Vec3I16 { x: 200, y: 8, z: 8 }))
+            .unwrap()
+            .unwrap();
+        mover.activate();
+        let mut ticks = 0u16;
+        while mover.state() != QuakeMoverState::Top {
+            mover.tick();
+            ticks += 1;
+            assert!(ticks < 20_000, "class {class:#x} speed {speed} never arrived");
+        }
+        ticks
+    }
+
+    /// The authored speed rules, and the class default only when it is absent.
+    #[test]
+    fn a_slow_authored_speed_is_not_raised_to_the_default() {
+        for class in [CLASS_FUNC_DOOR, CLASS_FUNC_BUTTON, CLASS_FUNC_PLAT] {
+            let slow = ticks_to_top(class, 20);
+            let default = ticks_to_top(class, 0);
+            let explicit_default = ticks_to_top(
+                class,
+                match class {
+                    CLASS_FUNC_DOOR => DOOR_DEFAULT_SPEED,
+                    CLASS_FUNC_BUTTON => BUTTON_DEFAULT_SPEED,
+                    _ => PLAT_DEFAULT_SPEED,
+                },
+            );
+            assert_eq!(default, explicit_default, "class {class:#x}");
+            assert!(
+                slow >= default * 2,
+                "class {class:#x}: speed 20 took {slow} ticks, the default {default}"
+            );
+        }
+        // Fast authored speeds were never floored; they stay as they were.
+        assert!(ticks_to_top(CLASS_FUNC_DOOR, 400) < ticks_to_top(CLASS_FUNC_DOOR, 100));
     }
 
     #[test]
