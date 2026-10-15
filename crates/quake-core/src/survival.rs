@@ -551,6 +551,17 @@ impl Survival {
         }
     }
 
+    /// `player_pain` -> `PainSound` for damage that did not come through
+    /// [`Survival::tick`]: the player's own rocket, a trap spike, a lava
+    /// ball. The ordinary roll is throttled by `pain_finished` like the rest.
+    pub fn external_pain_voice(&mut self) -> Option<i16> {
+        if self.pain_ticks != 0 {
+            return None;
+        }
+        self.pain_ticks = PAIN_INTERVAL_TICKS;
+        Some(self.pain_voice())
+    }
+
     /// `PainSound`'s `rint((random() * 5) + 1)`, drawn over the pain voices
     /// this port actually cooks.
     #[optimize(size)]

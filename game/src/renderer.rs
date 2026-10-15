@@ -2419,14 +2419,23 @@ impl Renderer {
     #[optimize(size)]
     #[inline(never)]
     fn stage_weapon_icons(&mut self, map: &ResidentMap, view: HudView) {
-        let desired = view
-            .active_weapon_slot()
-            .map(|index| 1u8 << index)
-            .unwrap_or(0);
-        let changed = self.weapon_selected_mask ^ desired;
-        if changed == 0 {
+        // The held weapon plus any icon in the lit half of its pickup flash.
+        let wanted = view.lit_weapon_slots();
+        let pending = self.weapon_selected_mask ^ wanted;
+        if pending == 0 {
             return;
         }
+        // Two slots a frame is all the upload array holds; a third change
+        // (several pickups at once) waits for the next frame.
+        let mut changed = 0u8;
+        let mut taken = 0u8;
+        for index in 0..7 {
+            if pending & (1 << index) != 0 && taken < 2 {
+                changed |= 1 << index;
+                taken += 1;
+            }
+        }
+        let desired = (self.weapon_selected_mask & !changed) | (wanted & changed);
         const EMPTY: crate::platform::VramUploadRange = crate::platform::VramUploadRange {
             rect: psx_vram::VramRect::new(0, 0, 1, 1),
             start: 0,

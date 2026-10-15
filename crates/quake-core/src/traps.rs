@@ -23,8 +23,10 @@ pub const SPIKE_LIFETIME_TICKS: u16 = 360;
 /// `spikeshooter_use` plays weapons/spike2.
 pub const SPIKE_SOUND_ID: i16 = 0xcf;
 
-/// `misc_fireball`'s `if (!self.speed) self.speed = 1000`.
-pub const FIREBALL_DEFAULT_SPEED: i16 = 1_000;
+/// `misc_fireball` writes `self.speed == 1000;`, a comparison, so a spout
+/// with no `speed` key really rises at zero plus `random() * 200`. Every
+/// Episode 1 spout authors its own speed.
+pub const FIREBALL_DEFAULT_SPEED: i16 = 0;
 /// `fire_touch`'s `T_Damage (other, self, self, 20)`.
 pub const FIREBALL_DAMAGE: i16 = 20;
 /// The lava ball removes itself at `time + 5`.
@@ -114,11 +116,7 @@ pub fn fireball_velocity(random: &mut TrapRandom, speed: i16) -> Vec3I32 {
         random.below(FIREBALL_LATERAL_SPREAD_UNITS) as i32
             - (FIREBALL_LATERAL_SPREAD_UNITS as i32 / 2)
     };
-    let speed = if speed == 0 {
-        FIREBALL_DEFAULT_SPEED
-    } else {
-        speed
-    };
+    let speed = if speed == 0 { FIREBALL_DEFAULT_SPEED } else { speed };
     Vec3I32 {
         x: per_tick(lateral(random)),
         y: per_tick(lateral(random)),
@@ -176,9 +174,9 @@ mod tests {
         let mut random = TrapRandom::new(3);
         for _ in 0..256 {
             let velocity = fireball_velocity(&mut random, 0);
-            // 1000 to 1200 units per second up.
-            assert!(velocity.z >= 1_000 * Q12_ONE / 60);
-            assert!(velocity.z <= 1_200 * Q12_ONE / 60);
+            // No `speed` key: zero to 200 units per second up.
+            assert!(velocity.z >= 0);
+            assert!(velocity.z <= 200 * Q12_ONE / 60);
             // 50 units per second of lateral drift either way.
             assert!(velocity.x.abs() <= 50 * Q12_ONE / 60);
             assert!(velocity.y.abs() <= 50 * Q12_ONE / 60);

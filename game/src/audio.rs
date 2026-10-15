@@ -624,6 +624,20 @@ impl AudioBank {
         )
     }
 
+    /// `sound (self, channel, wav, 0.5, ...)`: the same listener-relative
+    /// one-shot at half the volume.
+    #[inline(never)]
+    pub fn play_one_shot_half_on(&mut self, id: i16, key: u16, video_tick: u32) -> Option<u32> {
+        let volume = (self.scaled_sfx_volume(ONE_SHOT_MAX_VOLUME) as u16) / 2;
+        self.play_one_shot_volumes(
+            id,
+            Volume::linear(volume, 256),
+            Volume::linear(volume, 256),
+            key,
+            video_tick,
+        )
+    }
+
     /// `S_Spatialize` for a world-owned one-shot: distance ramp from the last
     /// `spatialize` listener and a stereo pan by its yaw. A shot that would be
     /// silent on both sides takes no voice at all.

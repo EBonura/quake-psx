@@ -183,8 +183,11 @@ pub const SOLDIER_SIGHT_SOUND: i16 = 0xbf;
 pub const SOLDIER_IDLE_SOUND: i16 = 0xbb;
 /// soldier/pain2: the only cooked soldier pain voice.
 pub const SOLDIER_PAIN_SOUND: i16 = 0xbd;
+/// `soldier/pain1.wav`, the shortest of the three flinches.
+pub const SOLDIER_PAIN1_SOUND: i16 = 0xbc;
 pub const SOLDIER_DEATH_SOUND: i16 = 0xba;
-pub const SOLDIER_ATTACK_SOUND: i16 = 0xc3;
+/// `soldier/sattck1.wav`, what `army_fire` plays.
+pub const SOLDIER_ATTACK_SOUND: i16 = 0xbe;
 pub const DOG_SIGHT_SOUND: i16 = 0x2a;
 pub const DOG_IDLE_SOUND: i16 = 0x2b;
 pub const DOG_PAIN_SOUND: i16 = 0x29;
@@ -238,6 +241,8 @@ pub const BOSS_PAIN_SOUND: i16 = 0x15;
 pub const BOSS_THROW_SOUND: i16 = 0x17;
 pub const BOSS_DEATH_SOUND: i16 = 0x13;
 pub const GRENADE_LAUNCH_SOUND: i16 = 0xc2;
+/// `ogre/ogdrag.wav`, played at every `path_corner` an ogre reaches.
+pub const OGRE_DRAG_SOUND: i16 = 0x7f;
 /// Gib voices: player/udeath for every monster, zombie/z_gib for the zombie.
 pub const MONSTER_GIB_SOUND: i16 = 0xaa;
 pub const ZOMBIE_GIB_SOUND: i16 = 0xda;
@@ -248,7 +253,12 @@ pub const MONSTER_THINK_TICKS: u16 = 6;
 pub const MONSTER_GIB_HEALTH: i16 = -35;
 pub const MONSTER_FAR_RANGE: i32 = 1_000;
 pub const MONSTER_NEAR_RANGE: i32 = 500;
-pub const MONSTER_MELEE_RANGE: i32 = 100;
+/// `range()` returns `RANGE_MELEE` below 120 units, eye to eye.
+pub const MONSTER_MELEE_RANGE: i32 = 120;
+/// How far a claw, bite or saw reaches once the swing's hit frame arrives
+/// (`vlen(delta) > 100` in `dog_bite`, `ShamClaw`, `Demon_Melee` and
+/// `chainsaw`). Longer than `ai_melee`'s 60 for the knight.
+pub const MONSTER_CLAW_REACH: i32 = 100;
 /// Quake clips a voice at `sound_nominal_clip_dist / attenuation`.
 pub const MONSTER_VOICE_RANGE: i32 = 1_000;
 pub const MONSTER_IDLE_VOICE_RANGE: i32 = 666;
@@ -259,6 +269,13 @@ pub const BOSS_EASY_SHOCKS: i16 = 1;
 pub const BOSS_HARD_SHOCKS: i16 = 3;
 
 const Q12_ONE: u16 = 1 << 12;
+const FLAG_AMBUSH: u8 = 1;
+const FLAG_LEFTY: u8 = 2;
+/// `oldenemy` is the player: set when a monster already hunting the player
+/// is turned on another monster.
+const FLAG_OLD_PLAYER: u8 = 4;
+/// Alternates on each `Wiz_idlesound` call so the roll happens every other cycle.
+const FLAG_IDLE_GATE: u8 = 8;
 /// [`MonsterRuntime::enemy_index`] value meaning the player.
 const NO_ENEMY_MONSTER: u16 = u16::MAX;
 const INITIAL_ATTACK_COOLDOWN: u16 = 60;
@@ -378,6 +395,8 @@ impl MonsterKind {
     pub const fn view_height(self) -> i32 {
         match self {
             Self::Boss => 128,
+            // `flymonster_start_go` gives the scrag `'0 0 24'`.
+            Self::Wizard => 24,
             _ => 25,
         }
     }
@@ -468,6 +487,8 @@ pub enum MonsterState {
     Stand,
     Walk,
     Run,
+    /// `AS_SLIDING`: `wiz_side1..8`, the wizard strafing across the line of fire.
+    Side,
     Missile,
     Melee,
     MeleeB,
@@ -551,6 +572,9 @@ pub enum MonsterEnemy {
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct MonsterThinkInput {
     pub distance: i32,
+    /// The distance with the height difference ignored, which is what
+    /// `CheckDogJump` and `CheckDemonJump` measure.
+    pub flat_distance: i32,
     pub visible: bool,
     pub in_front: bool,
     pub player_hostile: bool,
@@ -589,6 +613,16 @@ pub struct MonsterAction {
     /// aimed here; `SV_StepDirection` and `SV_NewChaseDir` pick it, so the
     /// host owns the turn and the step together.
     pub chase: bool,
+    /// `ai_run_slide`: step `move_units` at right angles to the bearing of the
+    /// enemy, towards [`MonsterRuntime::lefty`]'s side first.
+    pub slide: bool,
+    /// `ai_charge_side`: step `move_units` towards the point thirty units to
+    /// the enemy's side, the knight's running attack.
+    pub charge_side: bool,
+    /// `zombie_paine12`: the knocked-down zombie turns solid and tests
+    /// `walkmove(0, 0)`. If something is in the way the host calls
+    /// [`MonsterRuntime::retry_knockdown`].
+    pub stand_check: bool,
     pub attack: Option<MonsterAttack>,
     pub sound_id: Option<i16>,
     /// The voice is `ATTN_IDLE` rather than `ATTN_NORM`. Quake clips an idle
@@ -647,7 +681,8 @@ pub struct MonsterRuntime {
     active: bool,
     corpse_finished: bool,
     /// `SPAWNFLAG_AMBUSH`: never woken by another monster's sighting.
-    ambush: bool,
+    /// Bit 0: `SPAWNFLAG_AMBUSH`. Bit 1: the wizard's `lefty` strafe side.
+    flags: u8,
 }
 
 impl MonsterRuntime {
@@ -668,12 +703,27 @@ impl MonsterRuntime {
             enemy_index: NO_ENEMY_MONSTER,
             active: false,
             corpse_finished: false,
-            ambush: false,
+            flags: 0,
         }
     }
 
     pub fn set_ambush(&mut self, ambush: bool) {
-        self.ambush = ambush;
+        self.flags = (self.flags & !FLAG_AMBUSH) | if ambush { FLAG_AMBUSH } else { 0 };
+    }
+
+    const fn ambush(self) -> bool {
+        self.flags & FLAG_AMBUSH != 0
+    }
+
+    /// `self.lefty`: which way a strafing wizard slides.
+    pub const fn lefty(self) -> bool {
+        self.flags & FLAG_LEFTY != 0
+    }
+
+    /// `ai_run_slide` found its first heading blocked: it flips `lefty` and
+    /// tries the other side.
+    pub fn flip_lefty(&mut self) {
+        self.flags ^= FLAG_LEFTY;
     }
 
     pub const fn enemy(self) -> MonsterEnemy {
@@ -685,25 +735,69 @@ impl MonsterRuntime {
     }
 
     /// `T_Damage`'s infight branch and `monster_use`: hunt `enemy` from now
-    /// on. Waking from rest is `FoundTarget`; a monster already hunting just
-    /// swaps targets. Returns whether the monster was woken by this call.
+    /// on. Waking from rest is `FoundTarget`; so is taking a new enemy while
+    /// already hunting one (`HuntTarget` charges `SUB_AttackFinished(1)`
+    /// again). Returns whether a `FoundTarget` happened, which the host
+    /// answers with the sight voice and the pack alert.
     pub fn set_enemy(&mut self, enemy: MonsterEnemy) -> bool {
         if self.dead() || self.crucified() || self.kind.is_boss() {
             return false;
+        }
+        let index = match enemy {
+            MonsterEnemy::Player => NO_ENEMY_MONSTER,
+            MonsterEnemy::Monster(index) => index,
+        };
+        if self.active && self.enemy_index == index {
+            return false;
+        }
+        self.found_target(enemy);
+        true
+    }
+
+    /// `FoundTarget` + `HuntTarget` for `enemy`, whatever the monster was
+    /// doing: it hunts from now on and waits a second before its first shot.
+    pub fn found_target(&mut self, enemy: MonsterEnemy) {
+        if self.dead() || self.crucified() || self.kind.is_boss() {
+            return;
+        }
+        // `T_Damage`: `if (self.enemy.classname == "player") self.oldenemy =
+        // self.enemy`. A sleeper's enemy is nothing, which leaves no old one.
+        if matches!(enemy, MonsterEnemy::Monster(_)) {
+            if self.active && self.enemy_index == NO_ENEMY_MONSTER {
+                self.flags |= FLAG_OLD_PLAYER;
+            } else if !self.active {
+                self.flags &= !FLAG_OLD_PLAYER;
+            }
         }
         self.enemy_index = match enemy {
             MonsterEnemy::Player => NO_ENEMY_MONSTER,
             MonsterEnemy::Monster(index) => index,
         };
-        if self.active {
-            return false;
-        }
         self.active = true;
         self.attack_cooldown = INITIAL_ATTACK_COOLDOWN;
         if matches!(self.state, MonsterState::Stand | MonsterState::Walk) {
             self.enter_state(MonsterState::Run);
         }
-        true
+    }
+
+    /// `ai_run` found its enemy dead. A monster that had been turned on a
+    /// rival while hunting the player goes back to the player
+    /// (`self.enemy = self.oldenemy; HuntTarget()`); any other goes back to
+    /// standing until it sees someone.
+    pub fn enemy_lost(&mut self) {
+        if self.dead() || self.crucified() || self.kind.is_boss() {
+            return;
+        }
+        if self.flags & FLAG_OLD_PLAYER != 0 {
+            self.enemy_index = NO_ENEMY_MONSTER;
+            self.attack_cooldown = INITIAL_ATTACK_COOLDOWN;
+        } else {
+            self.enemy_index = NO_ENEMY_MONSTER;
+            self.active = false;
+            if !self.state.is_pain() {
+                self.enter_state(MonsterState::Stand);
+            }
+        }
     }
 
     /// `t_movetarget`: the monster touched its corner. A corner with `wait`
@@ -765,13 +859,23 @@ impl MonsterRuntime {
     /// `SOLID_SLIDEBOX` partway through every death sequence, and the knocked
     /// down zombie is explicitly non-solid until it stands back up.
     pub const fn body_solid(self) -> bool {
+        if matches!(self.state, MonsterState::DeathA | MonsterState::DeathB)
+            && !matches!(self.kind, MonsterKind::Dog | MonsterKind::Boss)
+        {
+            // Each `*_die` chain clears `solid` on its third frame (the
+            // demon's on the sixth); until then the dying body still blocks.
+            let offset = self.frame - first_frame(self.kind, self.state);
+            let cleared = if matches!(self.kind, MonsterKind::Demon) { 5 } else { 2 };
+            return offset < cleared;
+        }
         if self.dead() || self.crucified() {
             return false;
         }
         if matches!(self.kind, MonsterKind::Zombie) && matches!(self.state, MonsterState::PainE) {
-            // PAINE10 clears SOLID and PAINE12 restores it.
+            // `zombie_paine10` clears SOLID and `zombie_paine12` restores it,
+            // so only the frames in between (10 and 11) are non-solid.
             let down = first_frame(MonsterKind::Zombie, MonsterState::PainE) + 9;
-            return self.frame < down || self.frame > down + 2;
+            return self.frame < down || self.frame > down + 1;
         }
         true
     }
@@ -910,6 +1014,16 @@ impl MonsterRuntime {
         })
     }
 
+    /// The stand-up `walkmove(0, 0)` failed: `zombie_paine12` falls back to
+    /// `zombie_paine11`, so the zombie lies non-solid for another five
+    /// seconds before it tries again.
+    pub fn retry_knockdown(&mut self) {
+        if matches!(self.kind, MonsterKind::Zombie) && matches!(self.state, MonsterState::PainE) {
+            self.frame = first_frame(self.kind, MonsterState::PainE) + 10;
+            self.hold_ticks = 0;
+        }
+    }
+
     /// Whether [`Self::advance_ticks`] with `elapsed_ticks` reaches a think,
     /// so the host can skip building expensive input on the frames between.
     pub const fn think_due(self, elapsed_ticks: u16) -> bool {
@@ -967,14 +1081,29 @@ impl MonsterRuntime {
         if matches!(self.kind, MonsterKind::Zombie) {
             return self.zombie_pain(damage);
         }
+        // `demon1_pain` returns at once while the demon is in mid-leap.
+        if self.leaping() && matches!(self.kind, MonsterKind::Demon) {
+            return unchanged;
+        }
         if self.pain_cooldown != 0 {
             if nightmare {
                 self.pain_cooldown = NIGHTMARE_PAIN_TICKS;
             }
-            return unchanged;
+            // `sham_pain` voices the hit before it looks at `pain_finished`.
+            return match self.kind {
+                MonsterKind::Shambler => MonsterDamageTransition {
+                    sound_id: Some(self.kind.pain_sound()),
+                    frame: self.frame,
+                    ..MonsterDamageTransition::default()
+                },
+                _ => unchanged,
+            };
         }
-        let pain_sound = Some(self.kind.pain_sound());
+        let mut pain_sound = Some(self.kind.pain_sound());
         let pain = self.choose_pain(damage);
+        if matches!(self.kind, MonsterKind::Soldier) && pain == Some(MonsterState::PainA) {
+            pain_sound = Some(SOLDIER_PAIN1_SOUND);
+        }
         // `T_Damage`, after `th_pain` has run: "nightmare mode monsters don't
         // go into pain frames often", `self.pain_finished = time + 5`. It is
         // charged whatever the monster's own pain function decided, so the
@@ -986,7 +1115,7 @@ impl MonsterRuntime {
             // Quake still voices the wizard and shambler when the hit fails to
             // interrupt their animation.
             return match self.kind {
-                MonsterKind::Wizard | MonsterKind::Shambler => MonsterDamageTransition {
+                MonsterKind::Wizard | MonsterKind::Shambler | MonsterKind::Demon => MonsterDamageTransition {
                     sound_id: pain_sound,
                     frame: self.frame,
                     ..MonsterDamageTransition::default()
@@ -1144,8 +1273,8 @@ impl MonsterRuntime {
                 (scale_random(random, 200) <= i32::from(damage)).then_some(MonsterState::PainA)
             }
             MonsterKind::Wizard => {
-                // `if ((rand() & 63) > damage) return`.
-                (scale_random(random, 64) <= i32::from(damage)).then_some(MonsterState::PainA)
+                // `Wiz_Pain`: `if (random() * 70 > damage) return`.
+                (scale_random(random, 70) <= i32::from(damage)).then_some(MonsterState::PainA)
             }
             MonsterKind::Shambler => {
                 // `if (400 * rand > damage) return`.
@@ -1162,6 +1291,8 @@ impl MonsterRuntime {
     #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"),
         link_section = ".overlay.quake_monsters.text")]
     #[cfg_attr(feature = "monster-code-overlay", inline(never))]
+    // The overlay image must fit its 15 KiB half of the transfer buffer.
+    #[optimize(size)]
     fn think(&mut self, input: MonsterThinkInput) -> MonsterAction {
         let mut action = self.think_frame(input);
         if self.leaping() {
@@ -1172,6 +1303,8 @@ impl MonsterRuntime {
             action.face_target = false;
             action.face_goal = false;
             action.chase = false;
+            action.slide = false;
+            action.charge_side = false;
         }
         action
     }
@@ -1218,6 +1351,10 @@ impl MonsterRuntime {
             }
             state if state.is_pain() => {
                 let (move_units, sound, hold) = self.pain_frame_event();
+                action.stand_check = matches!(
+                    (self.kind, state),
+                    (MonsterKind::Zombie, MonsterState::PainE)
+                ) && self.frame == first_frame(self.kind, state) + 11;
                 action.move_units = move_units;
                 action.sound_id = sound;
                 self.hold_ticks = hold;
@@ -1239,57 +1376,7 @@ impl MonsterRuntime {
             self.enter_state(MonsterState::Stand);
         }
         if !self.active {
-            // Quake's ai_findtarget: never past RANGE_FAR, and inside
-            // RANGE_MID the monster must be facing the player. Only inside
-            // RANGE_NEAR does a recently fired weapon (`show_hostile`) wake a
-            // monster that is looking the other way. It also returns FALSE for
-            // a client holding `IT_INVISIBILITY`. A `sight_entity` that just
-            // found the player wakes its neighbours too, unless they are
-            // authored as an ambush.
-            let sees_player = input.visible
-                && input.distance < MONSTER_FAR_RANGE
-                && (input.distance < MONSTER_MELEE_RANGE
-                    || input.in_front
-                    || (input.distance < MONSTER_NEAR_RANGE && input.player_hostile));
-            let can_acquire = !self.kind.is_boss()
-                && input.player_alive
-                && !input.player_invisible
-                && (sees_player || (input.pack_alert && !self.ambush));
-            if can_acquire {
-                self.active = true;
-                self.enemy_index = NO_ENEMY_MONSTER;
-                self.attack_cooldown = INITIAL_ATTACK_COOLDOWN;
-                self.enter_state(MonsterState::Run);
-                action.frame = self.frame;
-                action.sound_id = Some(self.kind.sight_sound());
-                action.activated = true;
-                return action;
-            }
-            // `ai_stand` leaves for `th_walk` once `pause_time` has passed and
-            // a `path_corner` goal exists; `ai_walk` follows it and drops back
-            // to stand when the chain ends.
-            if matches!(self.state, MonsterState::Stand)
-                && !self.kind.is_boss()
-                && input.goal.is_some()
-                && self.pause_ticks == 0
-            {
-                self.enter_state(MonsterState::Walk);
-            }
-            if matches!(self.state, MonsterState::Walk) {
-                if input.goal.is_none() {
-                    self.enter_state(MonsterState::Stand);
-                } else {
-                    action.face_goal = true;
-                    action.move_units = move_distance(self.kind, MonsterState::Walk, self.frame);
-                }
-            }
-            if self.rest_idle_voice_due() {
-                action.sound_id = Some(OGRE_IDLE_SOUND);
-                action.sound_idle = true;
-            }
-            self.advance_looping();
-            action.frame = self.frame;
-            return action;
+            return self.rest_think(input, action);
         }
 
         match self.state {
@@ -1302,8 +1389,7 @@ impl MonsterRuntime {
                 self.enter_state(next);
                 action.frame = self.frame;
             }
-            MonsterState::Run => {
-                action.chase = true;
+            MonsterState::Run | MonsterState::Side => {
                 if input.visible && self.try_begin_attack(input) {
                     action.frame = self.frame;
                     if let Some(sound) = self.enter_attack_sound() {
@@ -1311,18 +1397,17 @@ impl MonsterRuntime {
                     }
                     return action;
                 }
+                if matches!(self.state, MonsterState::Side) {
+                    // `AS_SLIDING`: `ai_run_slide(8)` after a failed check.
+                    action.slide = true;
+                    action.move_units = move_distance(self.kind, MonsterState::Side, self.frame);
+                    self.advance_looping();
+                    action.frame = self.frame;
+                    return action;
+                }
+                action.chase = true;
                 action.move_units = move_distance(self.kind, MonsterState::Run, self.frame);
-                if self.frame >= last_frame(self.kind, MonsterState::Run)
-                    && self.random_fraction_q12() < idle_chance_q12(self.kind)
-                {
-                    // `wiz_idlesound` voices widle2 three times as often as widle1.
-                    let idle = if self.kind == MonsterKind::Wizard
-                        && self.random_fraction_q12() < Q12_ONE * 3 / 4
-                    {
-                        WIZARD_IDLE2_SOUND
-                    } else {
-                        self.kind.idle_sound()
-                    };
+                if let Some(idle) = self.idle_voice() {
                     action.sound_id = Some(idle);
                     action.sound_idle = true;
                 }
@@ -1338,11 +1423,17 @@ impl MonsterRuntime {
                 action.attack = attack;
                 action.sound_id = sound;
                 action.move_units = move_distance(self.kind, state, self.frame);
+                // `knight_runatk2..10` are `ai_charge_side` / `ai_melee_side`:
+                // twenty units towards a point beside the enemy per frame.
+                action.charge_side = matches!(
+                    (self.kind, state),
+                    (MonsterKind::Knight, MonsterState::MeleeB)
+                ) && (1..=9).contains(&(self.frame - first_frame(self.kind, state)));
                 self.hold_ticks = hold;
                 if self.kind.is_boss() {
                     self.advance_looping();
                 } else {
-                    let next = self.attack_exit(state);
+                    let next = self.attack_exit(state, input);
                     self.advance_finite(Some(next));
                 }
                 action.frame = self.frame;
@@ -1352,8 +1443,66 @@ impl MonsterRuntime {
         action
     }
 
+    /// The resting half of a think: `ai_findtarget`, `ai_stand` and
+    /// `ai_walk`.
+    #[inline(always)]
+    fn rest_think(&mut self, input: MonsterThinkInput, mut action: MonsterAction) -> MonsterAction {
+        // Quake's ai_findtarget: never past RANGE_FAR, and inside
+        // RANGE_MID the monster must be facing the player. Only inside
+        // RANGE_NEAR does a recently fired weapon (`show_hostile`) wake a
+        // monster that is looking the other way. It also returns FALSE for
+        // a client holding `IT_INVISIBILITY`. A `sight_entity` that just
+        // found the player wakes its neighbours too, unless they are
+        // authored as an ambush.
+        let sees_player = input.visible
+            && input.distance < MONSTER_FAR_RANGE
+            && (input.distance < MONSTER_MELEE_RANGE
+                || input.in_front
+                || (input.distance < MONSTER_NEAR_RANGE && input.player_hostile));
+        let can_acquire = !self.kind.is_boss()
+            && input.player_alive
+            && !input.player_invisible
+            && (sees_player || (input.pack_alert && !self.ambush()));
+        if can_acquire {
+            self.active = true;
+            self.enemy_index = NO_ENEMY_MONSTER;
+            self.attack_cooldown = INITIAL_ATTACK_COOLDOWN;
+            self.enter_state(MonsterState::Run);
+            action.frame = self.frame;
+            action.sound_id = Some(self.kind.sight_sound());
+            action.activated = true;
+            return action;
+        }
+        // `ai_stand` leaves for `th_walk` once `pause_time` has passed and
+        // a `path_corner` goal exists; `ai_walk` follows it and drops back
+        // to stand when the chain ends.
+        if matches!(self.state, MonsterState::Stand)
+            && !self.kind.is_boss()
+            && input.goal.is_some()
+            && self.pause_ticks == 0
+        {
+            self.enter_state(MonsterState::Walk);
+        }
+        if matches!(self.state, MonsterState::Walk) {
+            if input.goal.is_none() {
+                self.enter_state(MonsterState::Stand);
+            } else {
+                action.face_goal = true;
+                action.move_units = move_distance(self.kind, MonsterState::Walk, self.frame);
+            }
+        }
+        if let Some(idle) = self.idle_voice() {
+            action.sound_id = Some(idle);
+            action.sound_idle = true;
+        }
+        self.advance_looping();
+        action.frame = self.frame;
+        return action;
+    }
+
     /// Attack selection. This is the only genuinely per-monster decision in the
     /// run state and mirrors each `fn_check_attack` in the preserved runtime.
+    #[optimize(size)]
     fn try_begin_attack(&mut self, input: MonsterThinkInput) -> bool {
         // A leap that outlasts its own animation must not start another one
         // from the air; only the landing arms the next attack.
@@ -1373,7 +1522,7 @@ impl MonsterRuntime {
                 self.enter_state(MonsterState::Melee);
                 true
             }
-            MonsterKind::Dog if (80..150).contains(&input.distance) && input.leap_height_ok => {
+            MonsterKind::Dog if (80..=150).contains(&input.flat_distance) && input.leap_height_ok => {
                 self.enter_state(MonsterState::Missile);
                 true
             }
@@ -1385,10 +1534,10 @@ impl MonsterRuntime {
             MonsterKind::Demon => {
                 // demon_check_jump: never below 100 units, and beyond 200 only
                 // one think in ten.
-                if !input.leap_height_ok || input.distance < 100 {
+                if !input.leap_height_ok || input.flat_distance < 100 {
                     return false;
                 }
-                if input.distance > 200 && self.random_fraction_q12() < Q12_ONE * 9 / 10 {
+                if input.flat_distance > 200 && self.random_fraction_q12() < Q12_ONE * 9 / 10 {
                     return false;
                 }
                 self.enter_state(MonsterState::Missile);
@@ -1431,20 +1580,38 @@ impl MonsterRuntime {
                 self.enter_state(state);
                 true
             }
-            MonsterKind::Shambler | MonsterKind::Ogre => {
-                // Both cap their bolt or grenade at 600 units and reload for
-                // two to four seconds.
+            MonsterKind::Shambler => {
+                // `ShamCheckAttack`: the bolt reaches 600 units and reloads
+                // for `2 + 2 * random()` seconds.
                 if self.attack_cooldown != 0 || input.distance > 600 {
                     return false;
                 }
-                self.attack_cooldown = 2 * ONE_SECOND
-                    + ((u32::from(self.random_fraction_q12()) * u32::from(2 * ONE_SECOND)) >> 12)
-                        as u16;
+                self.attack_cooldown = 2 * ONE_SECOND + self.random_ticks(2 * ONE_SECOND);
+                self.enter_state(MonsterState::Missile);
+                true
+            }
+            MonsterKind::Ogre => {
+                // `OgreCheckAttack` works out a `chance` from the range and
+                // then never rolls it, so the grenade flies at anything the
+                // ogre can see short of `RANGE_FAR`, and reloads for
+                // `1 + 2 * random()` seconds.
+                if self.attack_cooldown != 0 || input.distance >= MONSTER_FAR_RANGE {
+                    return false;
+                }
+                self.attack_cooldown = ONE_SECOND + self.random_ticks(2 * ONE_SECOND);
                 self.enter_state(MonsterState::Missile);
                 true
             }
             MonsterKind::Wizard => {
-                if self.attack_cooldown != 0 || input.distance >= MONSTER_FAR_RANGE {
+                // `WizardCheckAttack`: nothing before the reload is up; out
+                // of range it runs straight in; otherwise it rolls the shot
+                // and a failed roll leaves it running (mid range) or
+                // strafing (close in).
+                if self.attack_cooldown != 0 {
+                    return false;
+                }
+                if input.distance >= MONSTER_FAR_RANGE {
+                    self.wizard_run_straight();
                     return false;
                 }
                 let chance = if input.distance < MONSTER_MELEE_RANGE {
@@ -1454,18 +1621,37 @@ impl MonsterRuntime {
                 } else {
                     Q12_ONE / 5
                 };
-                if self.random_fraction_q12() >= chance {
-                    return false;
+                if self.random_fraction_q12() < chance {
+                    self.enter_state(MonsterState::Missile);
+                    return true;
                 }
-                self.attack_cooldown = 2 * ONE_SECOND;
-                self.enter_state(MonsterState::Missile);
-                true
+                if input.distance >= MONSTER_NEAR_RANGE {
+                    self.wizard_run_straight();
+                } else if !matches!(self.state, MonsterState::Side) {
+                    self.enter_state(MonsterState::Side);
+                }
+                false
             }
             MonsterKind::Zombie => {
+                // The generic `CheckAttack` with only a `th_missile`: no
+                // melee branch, so the melee band rolls 0.9 (and clears the
+                // reload), near 0.4, mid 0.1, and a throw reloads for
+                // `2 * random()` seconds.
                 if self.attack_cooldown != 0 || input.distance >= MONSTER_FAR_RANGE {
                     return false;
                 }
-                self.attack_cooldown = ONE_SECOND;
+                let chance = if input.distance < MONSTER_MELEE_RANGE {
+                    self.attack_cooldown = 0;
+                    Q12_ONE * 9 / 10
+                } else if input.distance < MONSTER_NEAR_RANGE {
+                    Q12_ONE * 2 / 5
+                } else {
+                    Q12_ONE / 10
+                };
+                if self.random_fraction_q12() >= chance {
+                    return false;
+                }
+                self.attack_cooldown = self.random_ticks(2 * ONE_SECOND);
                 // One of three authored throw animations.
                 let random = self.random_fraction_q12();
                 let state = if random < Q12_ONE * 3 / 10 {
@@ -1500,28 +1686,76 @@ impl MonsterRuntime {
         }
     }
 
-    /// The ogre is the one monster with a distinct resting voice: `ogre_stand5`
-    /// and `ogre_walk3` play `ogre/ogidle.wav` one time in five, while its run
-    /// cycle uses `ogidle2`.
-    fn rest_idle_voice_due(&mut self) -> bool {
-        if !matches!(self.kind, MonsterKind::Ogre) {
-            return false;
+    /// `attack_state = AS_STRAIGHT; wiz_run1()`.
+    fn wizard_run_straight(&mut self) {
+        if !matches!(self.state, MonsterState::Run) {
+            self.enter_state(MonsterState::Run);
         }
+    }
+
+    /// The `random() < 0.2` idle voices scattered through the `*_stand`,
+    /// `*_walk` and `*_run` chains: each plays on one frame of the cycle at
+    /// `ATTN_IDLE`. The ogre also drags its saw on `ogre_walk6` (one time in
+    /// ten) and the scrag's `Wiz_idlesound` rolls at most once in two seconds.
+    #[inline(never)]
+    #[optimize(size)]
+    fn idle_voice(&mut self) -> Option<i16> {
         let offset = self
             .frame
             .saturating_sub(first_frame(self.kind, self.state));
-        let authored = match self.state {
-            MonsterState::Stand => offset == 4,
-            MonsterState::Walk => offset == 2,
-            _ => false,
+        let cycle = matches!(self.state, MonsterState::Walk | MonsterState::Run);
+        let (chance, sound) = match (self.kind, self.state, offset) {
+            (MonsterKind::Wizard, state, 0)
+                if matches!(state, MonsterState::Walk | MonsterState::Run | MonsterState::Side) =>
+            {
+                // `wr = random() * 5`: above 4.5 is widle1, below 1.5 widle2,
+                // and `waitmin` keeps the next roll two seconds away.
+                self.flags ^= FLAG_IDLE_GATE;
+                if self.flags & FLAG_IDLE_GATE == 0 {
+                    return None;
+                }
+                let roll = self.random_fraction_q12();
+                return if roll > Q12_ONE * 9 / 10 {
+                    Some(WIZARD_IDLE_SOUND)
+                } else if roll < Q12_ONE * 3 / 10 {
+                    Some(WIZARD_IDLE2_SOUND)
+                } else {
+                    None
+                };
+            }
+            (MonsterKind::Ogre, MonsterState::Stand, 4) => (Q12_ONE / 5, OGRE_IDLE_SOUND),
+            (MonsterKind::Ogre, MonsterState::Walk, 2) => (Q12_ONE / 5, OGRE_IDLE_SOUND),
+            (MonsterKind::Ogre, MonsterState::Walk, 5) => (Q12_ONE / 10, OGRE_DRAG_SOUND),
+            (MonsterKind::Ogre, MonsterState::Run, 0) => (Q12_ONE / 5, OGRE_IDLE2_SOUND),
+            (
+                MonsterKind::Soldier | MonsterKind::Dog | MonsterKind::Knight | MonsterKind::Demon,
+                _,
+                0,
+            ) if cycle => (Q12_ONE / 5, self.kind.idle_sound()),
+            (MonsterKind::Shambler, MonsterState::Walk, 11)
+            | (MonsterKind::Shambler, MonsterState::Run, 5)
+            | (MonsterKind::Zombie, MonsterState::Walk, 18)
+            | (MonsterKind::Zombie, MonsterState::Run, 17) => {
+                (Q12_ONE / 5, self.kind.idle_sound())
+            }
+            _ => return None,
         };
-        authored && self.random_fraction_q12() < Q12_ONE / 5
+        (self.random_fraction_q12() < chance).then_some(sound)
     }
 
     /// State entered when an attack animation runs out. Everything returns to
     /// run except the shambler's swings: `sham_swingl9` and `sham_swingr9`
     /// chain into the opposite swing half the time.
-    fn attack_exit(&mut self, state: MonsterState) -> MonsterState {
+    fn attack_exit(&mut self, state: MonsterState, input: MonsterThinkInput) -> MonsterState {
+        if matches!(self.kind, MonsterKind::Wizard) {
+            // `WizardAttackFinished`: back to running at mid range or
+            // beyond, or when the player is out of sight; otherwise strafe.
+            return if input.distance >= MONSTER_NEAR_RANGE || !input.visible {
+                MonsterState::Run
+            } else {
+                MonsterState::Side
+            };
+        }
         if !matches!(self.kind, MonsterKind::Shambler) || self.frame < last_frame(self.kind, state)
         {
             return MonsterState::Run;
@@ -1551,6 +1785,10 @@ impl MonsterRuntime {
 
     /// Per-frame attack events. The frame numbers are the authored ones; the
     /// damage rolls are the authored formulas.
+    // Resident, not overlay: `think` with this inlined overflows the 15 KiB
+    // half of the transfer buffer the monster image is loaded through.
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
+    #[optimize(size)]
     fn attack_frame_event(
         &mut self,
         state: MonsterState,
@@ -1569,7 +1807,7 @@ impl MonsterRuntime {
             (MonsterKind::Dog, MonsterState::Melee) if offset == 3 => (
                 Some(MonsterAttack::Contact {
                     damage: self.scaled_three_random(8),
-                    reach: MONSTER_MELEE_RANGE,
+                    reach: MONSTER_CLAW_REACH,
                 }),
                 Some(DOG_ATTACK_SOUND),
                 0,
@@ -1599,6 +1837,11 @@ impl MonsterRuntime {
                 None,
                 0,
             ),
+            // `ogre_nail2` and `ogre_nail3` both show frame 62, so the wind-up
+            // lasts one think longer than the frame count suggests.
+            (MonsterKind::Ogre, MonsterState::Missile) if offset == 1 => {
+                (None, None, MONSTER_THINK_TICKS)
+            }
             (MonsterKind::Ogre, MonsterState::Missile) if offset == 2 => (
                 Some(MonsterAttack::Grenade { damage: 40 }),
                 Some(GRENADE_LAUNCH_SOUND),
@@ -1610,7 +1853,7 @@ impl MonsterRuntime {
             (MonsterKind::Ogre, MonsterState::Melee) if (4..=10).contains(&offset) => (
                 Some(MonsterAttack::Contact {
                     damage: self.scaled_three_random(4),
-                    reach: MONSTER_MELEE_RANGE,
+                    reach: MONSTER_CLAW_REACH,
                 }),
                 None,
                 0,
@@ -1619,12 +1862,12 @@ impl MonsterRuntime {
                 (None, Some(OGRE_SAW_SOUND), 0)
             }
             (MonsterKind::Ogre, MonsterState::MeleeB)
-                if matches!(offset, 5 | 6 | 7 | 8 | 10 | 11) =>
+                if (5..=10).contains(&offset) =>
             {
                 (
                     Some(MonsterAttack::Contact {
                         damage: self.scaled_three_random(4),
-                        reach: MONSTER_MELEE_RANGE,
+                        reach: MONSTER_CLAW_REACH,
                     }),
                     None,
                     0,
@@ -1633,7 +1876,7 @@ impl MonsterRuntime {
             (MonsterKind::Demon, MonsterState::Melee) if offset == 4 || offset == 10 => (
                 Some(MonsterAttack::Contact {
                     damage: 10 + scale_random(self.random_fraction_q12(), 5) as i16,
-                    reach: MONSTER_MELEE_RANGE,
+                    reach: MONSTER_CLAW_REACH,
                 }),
                 Some(DEMON_HIT_SOUND),
                 0,
@@ -1652,7 +1895,7 @@ impl MonsterRuntime {
                 // sham_smash10: (random() + random() + random()) * 40.
                 Some(MonsterAttack::Contact {
                     damage: self.scaled_three_random(40),
-                    reach: MONSTER_MELEE_RANGE,
+                    reach: MONSTER_CLAW_REACH,
                 }),
                 Some(SHAMBLER_SMACK_SOUND),
                 0,
@@ -1667,7 +1910,7 @@ impl MonsterRuntime {
                 (
                     Some(MonsterAttack::Contact {
                         damage: self.scaled_three_random(20),
-                        reach: MONSTER_MELEE_RANGE,
+                        reach: MONSTER_CLAW_REACH,
                     }),
                     Some(SHAMBLER_SMACK_SOUND),
                     0,
@@ -1676,12 +1919,11 @@ impl MonsterRuntime {
             (MonsterKind::Shambler, MonsterState::Missile) if offset == 0 => {
                 (None, Some(SHAMBLER_MAGIC_SOUND), 0)
             }
-            (MonsterKind::Shambler, MonsterState::Missile) if offset == 2 => {
-                // MAGIC3 holds for two extra frames while the hands charge.
-                (None, None, 2 * MONSTER_THINK_TICKS)
-            }
+            // `sham_magic6` casts and booms, `magic9` and `magic10` cast again,
+            // and `magic11` adds a fourth bolt on nightmare.
             (MonsterKind::Shambler, MonsterState::Missile)
-                if matches!(offset, 5 | 8 | 9) && input.visible =>
+                if (matches!(offset, 5 | 8 | 9) || (offset == 10 && input.nightmare))
+                    && input.visible =>
             {
                 (
                     Some(MonsterAttack::Lightning { damage: 10 }),
@@ -1703,6 +1945,13 @@ impl MonsterRuntime {
                 Some(WIZARD_ATTACK_SOUND),
                 0,
             ),
+            (MonsterKind::Wizard, MonsterState::Missile) if offset == 9 => {
+                // `wiz_fast10`: `SUB_AttackFinished(2)` on the last frame.
+                if !input.nightmare {
+                    self.attack_cooldown = 2 * ONE_SECOND;
+                }
+                (None, None, 0)
+            }
             (MonsterKind::Zombie, MonsterState::Missile) if offset == 12 => (
                 Some(MonsterAttack::ZombieGib {
                     damage: 10,
@@ -1795,6 +2044,9 @@ impl MonsterRuntime {
     }
 
     /// Quake's `xmul32(xrand32() + xrand32() + xrand32(), scale)`.
+    // Out of line so its several dozen call sites share one resident copy
+    // instead of each carrying the arithmetic inside the overlay image.
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     fn scaled_three_random(&mut self, scale: u32) -> i16 {
         let sum = u32::from(self.random_fraction_q12())
             + u32::from(self.random_fraction_q12())
@@ -1802,10 +2054,21 @@ impl MonsterRuntime {
         ((sum * scale) >> 12) as i16
     }
 
+    /// `random() * ticks` in whole ticks.
+    // Out of line so its several dozen call sites share one resident copy
+    // instead of each carrying the arithmetic inside the overlay image.
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
+    fn random_ticks(&mut self, ticks: u16) -> u16 {
+        ((u32::from(self.random_fraction_q12()) * u32::from(ticks)) >> 12) as u16
+    }
+
     fn trace_random_q12(&mut self) -> i32 {
         2 * (i32::from(self.random_fraction_q12()) - i32::from(Q12_ONE >> 1))
     }
 
+    // Out of line so its several dozen call sites share one resident copy
+    // instead of each carrying the arithmetic inside the overlay image.
+    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     fn random_fraction_q12(&mut self) -> u16 {
         self.random_state = self
             .random_state
@@ -1833,6 +2096,14 @@ impl MonsterRuntime {
     fn advance_finite(&mut self, next: Option<MonsterState>) -> bool {
         if self.frame < last_frame(self.kind, self.state) {
             self.frame += 1;
+            // `sham_magic6` hands over to `sham_magic9`: frames 71 and 72
+            // (`magic7`, `magic8`) are never shown.
+            if self.kind == MonsterKind::Shambler
+                && self.state == MonsterState::Missile
+                && self.frame == 71
+            {
+                self.frame = 73;
+            }
             false
         } else if let Some(next) = next {
             self.enter_state(next);
@@ -1901,6 +2172,7 @@ pub const fn frame_range(kind: MonsterKind, state: MonsterState) -> Option<Monst
         (MonsterKind::Wizard, MonsterState::Stand) => (0, 7),
         (MonsterKind::Wizard, MonsterState::Walk) => (0, 7),
         (MonsterKind::Wizard, MonsterState::Run) => (15, 28),
+        (MonsterKind::Wizard, MonsterState::Side) => (0, 7),
         (MonsterKind::Wizard, MonsterState::Missile) => (29, 38),
         (MonsterKind::Wizard, MonsterState::PainA) => (42, 45),
         (MonsterKind::Wizard, MonsterState::DeathA) => (46, 53),
@@ -1978,10 +2250,11 @@ pub const fn last_frame(kind: MonsterKind, state: MonsterState) -> u16 {
 /// Highest authored frame index for a monster, so the host can prove every
 /// state fits inside the cooked alias model.
 pub const fn highest_frame(kind: MonsterKind) -> u16 {
-    const STATES: [MonsterState; 17] = [
+    const STATES: [MonsterState; 18] = [
         MonsterState::Stand,
         MonsterState::Walk,
         MonsterState::Run,
+        MonsterState::Side,
         MonsterState::Missile,
         MonsterState::Melee,
         MonsterState::MeleeB,
@@ -2025,7 +2298,7 @@ pub fn move_distance(kind: MonsterKind, state: MonsterState, frame: u16) -> i16 
         return 0;
     };
     let offset = frame.saturating_sub(range.first) as usize;
-    let table: &[i16] = match (kind, state) {
+    let table: &[i8] = match (kind, state) {
         (MonsterKind::Soldier, MonsterState::Run) => &[11, 15, 10, 10, 8, 15, 10, 8],
         (MonsterKind::Soldier, MonsterState::Walk) => &[
             1, 1, 1, 1, 2, 3, 4, 4, 2, 2, 2, 1, 0, 1, 1, 1, 3, 3, 3, 3, 2, 1, 1, 1,
@@ -2042,12 +2315,14 @@ pub fn move_distance(kind: MonsterKind, state: MonsterState, frame: u16) -> i16 
         (MonsterKind::Knight, MonsterState::Run) => &[16, 20, 13, 7, 16, 20, 14, 6],
         (MonsterKind::Knight, MonsterState::Walk) => &[3, 2, 3, 4, 3, 3, 3, 4, 3, 3, 2, 3, 4, 3],
         (MonsterKind::Knight, MonsterState::Melee) => &[0, 7, 4, 0, 3, 4, 1, 3, 1, 5],
-        (MonsterKind::Knight, MonsterState::MeleeB) => &[20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10],
+        (MonsterKind::Knight, MonsterState::MeleeB) => &[20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 10],
         (MonsterKind::Demon, MonsterState::Run) => &[20, 15, 36, 20, 15, 36],
         (MonsterKind::Demon, MonsterState::Walk) => &[8, 6, 6, 7, 4, 6, 10, 10],
-        (MonsterKind::Demon, MonsterState::Melee) => &[4, 0, 0, 1, 2, 1, 6, 8, 4, 2, 0, 5, 8, 4, 4],
+        // `Demon_Melee` walks twelve units before each claw (frames 5 and 11).
+        (MonsterKind::Demon, MonsterState::Melee) => &[4, 0, 0, 1, 14, 1, 6, 8, 4, 2, 12, 5, 8, 4, 4],
         (MonsterKind::Wizard, MonsterState::Run) => &[16; 14],
         (MonsterKind::Wizard, MonsterState::Walk) => &[8; 8],
+        (MonsterKind::Wizard, MonsterState::Side) => &[8; 8],
         (MonsterKind::Shambler, MonsterState::Run) => &[20, 24, 20, 20, 24, 20],
         (MonsterKind::Shambler, MonsterState::Walk) => &[10, 9, 9, 5, 6, 12, 8, 3, 13, 9, 7, 7],
         (MonsterKind::Shambler, MonsterState::Melee) => &[2, 6, 6, 5, 4, 1, 0, 0, 0, 0, 5, 4],
@@ -2062,7 +2337,7 @@ pub fn move_distance(kind: MonsterKind, state: MonsterState, frame: u16) -> i16 
         _ => return 0,
     };
     if offset < table.len() {
-        table[offset]
+        i16::from(table[offset])
     } else {
         0
     }
@@ -2071,13 +2346,21 @@ pub fn move_distance(kind: MonsterKind, state: MonsterState, frame: u16) -> i16 
 /// Backward (`ai_pain`) and forward (`ai_painforward`) recoil per pain frame.
 fn pain_move(kind: MonsterKind, state: MonsterState, offset: u16) -> i16 {
     let offset = offset as usize;
-    let table: &[i16] = match (kind, state) {
+    let table: &[i8] = match (kind, state) {
+        // `army_pain6`, `army_painb2/3/12` and `army_painc2..12`.
+        (MonsterKind::Soldier, MonsterState::PainA) => &[0, 0, 0, 0, 0, -1],
+        (MonsterKind::Soldier, MonsterState::PainB) => &[0, 13, 9, 0, 0, 0, 0, 0, 0, 0, 0, -2],
+        (MonsterKind::Soldier, MonsterState::PainC) => &[0, -1, 0, 0, 1, 1, 0, -1, 4, 3, 6, 8],
+        // `dog_painb3..10`.
+        (MonsterKind::Dog, MonsterState::PainB) => &[0, 0, -4, -12, -12, -2, 0, -4, 0, -10],
         (MonsterKind::Knight, MonsterState::PainB) => &[0, 3, 0, 0, 2, 4, 2, 5, 5, 0, 0],
         (MonsterKind::Ogre, MonsterState::PainD) | (MonsterKind::Ogre, MonsterState::PainE) => {
             &[0, -10, -9, -4]
         }
-        (MonsterKind::Zombie, MonsterState::PainA) => &[0, 3, 1, 0, -1, -3, -1],
-        (MonsterKind::Zombie, MonsterState::PainB) => &[0, -2, -8, -6, -2],
+        (MonsterKind::Zombie, MonsterState::PainA) => &[0, 3, 1, -1, -3, -1],
+        (MonsterKind::Zombie, MonsterState::PainB) => &[
+            0, -2, -8, -6, -2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ],
         (MonsterKind::Zombie, MonsterState::PainC) => &[0, 0, -3, -1, 0, 0, 0, 0, 0, 0, 1, 1],
         (MonsterKind::Zombie, MonsterState::PainD) => &[0, 0, 0, 0, 0, 0, 0, 0, -1],
         (MonsterKind::Zombie, MonsterState::PainE) => &[
@@ -2087,10 +2370,16 @@ fn pain_move(kind: MonsterKind, state: MonsterState, offset: u16) -> i16 {
         _ => return 0,
     };
     if offset < table.len() {
-        table[offset]
+        i16::from(table[offset])
     } else {
         0
     }
+}
+
+#[cfg(test)]
+fn move_distance_death(kind: MonsterKind, offset: u16) -> i16 {
+    let first = first_frame(kind, MonsterState::DeathB);
+    death_move(kind, MonsterState::DeathB, first + offset)
 }
 
 /// Per-frame forward lurch inside a death sequence (`ogre_die_b`).
@@ -2101,8 +2390,17 @@ fn death_move(kind: MonsterKind, state: MonsterState, frame: u16) -> i16 {
     let offset = frame.saturating_sub(range.first) as usize;
     match (kind, state) {
         (MonsterKind::Ogre, MonsterState::DeathB) => {
-            const TABLE: [i16; 10] = [0, 5, 0, 1, 3, 7, 25, 0, 0, 0];
-            TABLE[offset.min(9)]
+            const TABLE: [i8; 10] = [0, 5, 0, 1, 3, 7, 25, 0, 0, 0];
+            i16::from(TABLE[offset.min(9)])
+        }
+        // `army_cdie2..6`: `ai_back` 5, 4, 13, 3, 4 as the soldier falls.
+        (MonsterKind::Soldier, MonsterState::DeathB) => {
+            const TABLE: [i8; 6] = [0, -5, -4, -13, -3, -4];
+            if offset < TABLE.len() {
+                i16::from(TABLE[offset])
+            } else {
+                0
+            }
         }
         _ => 0,
     }
@@ -2155,15 +2453,6 @@ const fn face_during(kind: MonsterKind, state: MonsterState) -> bool {
         // The demon commits to its leap arc after the wind-up.
         (MonsterKind::Demon, MonsterState::Missile) => false,
         _ => true,
-    }
-}
-
-const fn idle_chance_q12(kind: MonsterKind) -> u16 {
-    match kind {
-        MonsterKind::Ogre => Q12_ONE / 10,
-        MonsterKind::Wizard => Q12_ONE / 20,
-        // The shambler idles on `rand > 0.8`, the same one-in-five chance.
-        _ => Q12_ONE / 5,
     }
 }
 
@@ -2311,7 +2600,7 @@ mod tests {
         }
         assert!(exercised_override);
         assert_eq!(core::mem::size_of::<MonsterRuntime>(), 24);
-        assert_eq!(core::mem::size_of::<MonsterThinkInput>(), 32);
+        assert_eq!(core::mem::size_of::<MonsterThinkInput>(), 36);
     }
 
     #[test]
@@ -2357,7 +2646,7 @@ mod tests {
             assert_eq!(action.move_units, units);
             if offset == 9 {
                 assert_eq!(action.attack, Some(MonsterAttack::Contact {
-                    damage: expected_damage, reach: MONSTER_MELEE_RANGE,
+                    damage: expected_damage, reach: MONSTER_CLAW_REACH,
                 }));
                 assert_eq!(action.sound_id, Some(SHAMBLER_SMACK_SOUND));
                 assert_eq!(runtime.random_state, reference.random_state);
@@ -2371,6 +2660,7 @@ mod tests {
     fn visible(distance: i32) -> MonsterThinkInput {
         MonsterThinkInput {
             distance,
+            flat_distance: distance,
             visible: true,
             in_front: true,
             player_alive: true,
@@ -2567,8 +2857,15 @@ mod tests {
                 action.attack.is_some()
             });
             assert!(attack.attack.is_some(), "{kind:?} never attacked");
+            // A scrag that has just fired strafes at close range instead of
+            // running (`WizardAttackFinished`).
+            let after = if kind == MonsterKind::Wizard {
+                MonsterState::Side
+            } else {
+                MonsterState::Run
+            };
             run_until(&mut runtime, visible(distance), 200, |runtime, _| {
-                runtime.state() == MonsterState::Run
+                runtime.state() == after
             });
         }
     }
@@ -2653,11 +2950,11 @@ mod tests {
     fn melee_damage_rolls_stay_inside_their_authored_bounds() {
         for (kind, distance, max_damage, reach) in [
             (MonsterKind::Knight, 60, 9, 60),
-            (MonsterKind::Ogre, 60, 12, MONSTER_MELEE_RANGE),
+            (MonsterKind::Ogre, 60, 12, MONSTER_CLAW_REACH),
             // The smash rolls up to 120, the claws up to 60.
-            (MonsterKind::Shambler, 60, 120, MONSTER_MELEE_RANGE),
-            (MonsterKind::Demon, 60, 15, MONSTER_MELEE_RANGE),
-            (MonsterKind::Dog, 60, 24, MONSTER_MELEE_RANGE),
+            (MonsterKind::Shambler, 60, 120, MONSTER_CLAW_REACH),
+            (MonsterKind::Demon, 60, 15, MONSTER_CLAW_REACH),
+            (MonsterKind::Dog, 60, 24, MONSTER_CLAW_REACH),
         ] {
             let mut runtime = wake(kind, 13, distance);
             for _ in 0..12 {
@@ -3237,7 +3534,9 @@ mod tests {
         assert!(ogre.active());
         assert_eq!(ogre.enemy(), MonsterEnemy::Monster(7));
         assert_eq!(ogre.state(), MonsterState::Run);
-        // Already hunting: a swap is not a second wake.
+        // Already hunting: taking a new enemy is another `FoundTarget`, but
+        // asking for the enemy it already has is not.
+        assert!(ogre.set_enemy(MonsterEnemy::Player));
         assert!(!ogre.set_enemy(MonsterEnemy::Player));
         assert_eq!(ogre.enemy(), MonsterEnemy::Player);
         let action = next_think(&mut ogre, visible(300));
@@ -3311,6 +3610,416 @@ mod tests {
             panic!("soldier did not fire");
         }
         assert_eq!(sequence(), sequence());
+    }
+
+    /// `range()` calls anything under 120 units `RANGE_MELEE`; a claw still
+    /// only reaches 100.
+    #[test]
+    fn melee_is_decided_at_120_units_and_claws_reach_100() {
+        for (kind, state) in [
+            (MonsterKind::Dog, MonsterState::Melee),
+            (MonsterKind::Demon, MonsterState::Melee),
+            (MonsterKind::Ogre, MonsterState::Melee),
+            (MonsterKind::Shambler, MonsterState::Melee),
+        ] {
+            for seed in 0..32 {
+                let mut inside = MonsterRuntime::new(kind, seed);
+                inside.active = true;
+                inside.enter_state(MonsterState::Run);
+                assert!(inside.try_begin_attack(visible(119)), "{kind:?} at 119");
+                assert!(inside.state().is_melee(), "{kind:?} should melee at 119");
+                let _ = state;
+                let mut outside = MonsterRuntime::new(kind, seed);
+                outside.active = true;
+                outside.enter_state(MonsterState::Run);
+                assert!(
+                    !outside.try_begin_attack(visible(120)) || !outside.state().is_melee(),
+                    "{kind:?} must not melee at 120"
+                );
+            }
+        }
+        assert_eq!(MONSTER_MELEE_RANGE, 120);
+        assert_eq!(MONSTER_CLAW_REACH, 100);
+    }
+
+    /// `OgreCheckAttack` never rolls its `chance`: any visible target inside
+    /// `RANGE_FAR` draws a grenade, then `1 + 2 * random()` seconds of reload.
+    #[test]
+    fn the_ogre_lobs_at_any_visible_range_and_reloads_one_to_three_seconds() {
+        for seed in 0..64 {
+            let mut ogre = MonsterRuntime::new(MonsterKind::Ogre, seed);
+            ogre.active = true;
+            ogre.enter_state(MonsterState::Run);
+            assert!(ogre.try_begin_attack(visible(900)), "no grenade at 900");
+            assert_eq!(ogre.state(), MonsterState::Missile);
+            assert!(
+                (ONE_SECOND..ONE_SECOND + 2 * ONE_SECOND).contains(&ogre.attack_cooldown),
+                "reload {}",
+                ogre.attack_cooldown
+            );
+            ogre.enter_state(MonsterState::Run);
+            assert!(!ogre.try_begin_attack(visible(900)), "fired inside the reload");
+        }
+        let mut far = MonsterRuntime::new(MonsterKind::Ogre, 1);
+        far.active = true;
+        far.enter_state(MonsterState::Run);
+        assert!(!far.try_begin_attack(visible(1_000)));
+    }
+
+    /// The zombie has only a `th_missile`, so the generic `CheckAttack`
+    /// rolls 0.9 / 0.4 / 0.1 by band and reloads `2 * random()` seconds.
+    #[test]
+    fn zombie_throws_follow_the_generic_chance_roll() {
+        for (distance, low, high) in [(90, 800u32, 995), (300, 300, 520), (800, 30, 200)] {
+            let mut throws = 0u32;
+            for seed in 0..1000u16 {
+                let mut zombie = MonsterRuntime::new(MonsterKind::Zombie, seed);
+                zombie.active = true;
+                zombie.enter_state(MonsterState::Run);
+                if zombie.try_begin_attack(visible(distance)) {
+                    throws += 1;
+                    assert!(zombie.attack_cooldown < 2 * ONE_SECOND);
+                }
+            }
+            assert!(
+                (low..=high).contains(&throws),
+                "{throws} throws in 1000 at {distance}"
+            );
+        }
+    }
+
+    /// `Wiz_FastFire`'s reload starts on the last attack frame, and a scrag
+    /// at close range strafes (`AS_SLIDING`) instead of running.
+    #[test]
+    fn the_scrag_reloads_from_its_last_frame_and_strafes_up_close() {
+        let mut wizard = wake(MonsterKind::Wizard, 9, 300);
+        // Wait out the first-sight delay.
+        wizard.attack_cooldown = 0;
+        let input = visible(300);
+        run_until(&mut wizard, input, 400, |runtime, _| {
+            runtime.state() == MonsterState::Missile
+        });
+        // The decision alone arms nothing.
+        assert_eq!(wizard.attack_cooldown, 0);
+        let first = first_frame(MonsterKind::Wizard, MonsterState::Missile);
+        run_until(&mut wizard, input, 20, |runtime, _| {
+            runtime.frame() == first + 9
+        });
+        next_think(&mut wizard, input);
+        assert_eq!(wizard.attack_cooldown, 2 * ONE_SECOND);
+        // 300 units is inside RANGE_NEAR and visible: it strafes.
+        assert_eq!(wizard.state(), MonsterState::Side);
+        let step = next_think(&mut wizard, input);
+        assert!(step.slide && step.move_units == 8 && !step.chase);
+        // Out of range it runs straight again.
+        wizard.attack_cooldown = 0;
+        assert!(!wizard.try_begin_attack(visible(1_200)));
+        assert_eq!(wizard.state(), MonsterState::Run);
+        // The strafe side flips when blocked.
+        let before = wizard.lefty();
+        wizard.flip_lefty();
+        assert_ne!(before, wizard.lefty());
+    }
+
+    #[test]
+    fn spike_wizards_pain_roll_uses_70_and_other_voices_follow_the_id1_pain_functions() {
+        // `Wiz_Pain`: `random() * 70 > damage` shrugs the hit off.
+        let mut flinches = 0;
+        for seed in 0..1000u16 {
+            let mut wizard = MonsterRuntime::new(MonsterKind::Wizard, seed);
+            let transition = wizard.take_damage(35, 40, false);
+            assert_eq!(transition.sound_id, Some(WIZARD_PAIN_SOUND));
+            if wizard.state().is_pain() {
+                flinches += 1;
+            }
+        }
+        assert!((450..=550).contains(&flinches), "{flinches}");
+        // `demon1_pain` voices even a hit that does not flinch her, and does
+        // nothing at all in mid-leap.
+        let mut quiet = 0;
+        for seed in 0..200u16 {
+            let mut demon = MonsterRuntime::new(MonsterKind::Demon, seed);
+            let transition = demon.take_damage(1, 299, false);
+            assert_eq!(transition.sound_id, Some(DEMON_PAIN_SOUND));
+            quiet += u32::from(!demon.state().is_pain());
+            let mut leaping = MonsterRuntime::new(MonsterKind::Demon, seed);
+            leaping.leap_ticks = 3;
+            assert_eq!(leaping.take_damage(1, 299, false).sound_id, None);
+        }
+        assert!(quiet > 150);
+        // `sham_pain` voices every hit, even inside its two second window.
+        let mut shambler = MonsterRuntime::new(MonsterKind::Shambler, 4);
+        shambler.pain_cooldown = 90;
+        assert_eq!(
+            shambler.take_damage(1, 599, false).sound_id,
+            Some(SHAMBLER_PAIN_SOUND)
+        );
+        // `army_pain` uses pain1 for the short flinch and pain2 for the rest.
+        let mut seen = [false; 2];
+        for seed in 0..64u16 {
+            let mut soldier = MonsterRuntime::new(MonsterKind::Soldier, seed);
+            let transition = soldier.take_damage(5, 25, false);
+            let slot = match (soldier.state(), transition.sound_id) {
+                (MonsterState::PainA, Some(SOLDIER_PAIN1_SOUND)) => 0,
+                (MonsterState::PainB | MonsterState::PainC, Some(SOLDIER_PAIN_SOUND)) => 1,
+                other => panic!("unexpected {other:?}"),
+            };
+            seen[slot] = true;
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    /// Frame tables compared against `progs.dat`: the saw lands on smash
+    /// frames 6 to 11, the shambler's bolt loses frames 71 and 72 and adds a
+    /// nightmare bolt, the scrag's ogre cousin winds up for one more think.
+    #[test]
+    fn frame_events_follow_the_id1_state_chains() {
+        let mut ogre = MonsterRuntime::new(MonsterKind::Ogre, 1);
+        let mut saw = [false; 14];
+        let first = first_frame(MonsterKind::Ogre, MonsterState::MeleeB);
+        for offset in 0..14u16 {
+            ogre.state = MonsterState::MeleeB;
+            ogre.frame = first + offset;
+            let (attack, _, _) = ogre.attack_frame_event(MonsterState::MeleeB, visible(50));
+            saw[usize::from(offset)] = attack.is_some();
+        }
+        let expected: [bool; 14] = core::array::from_fn(|i| (5..=10).contains(&i));
+        assert_eq!(saw, expected);
+
+        // Ogre wind-up: nail2 and nail3 share a frame, firing is the 4th think.
+        let mut ogre = MonsterRuntime::new(MonsterKind::Ogre, 2);
+        ogre.active = true;
+        ogre.state = MonsterState::Missile;
+        ogre.frame = first_frame(MonsterKind::Ogre, MonsterState::Missile);
+        let mut fired_on = None;
+        for think in 0..8u32 {
+            let action = next_think(&mut ogre, visible(300));
+            if action.attack.is_some() && fired_on.is_none() {
+                fired_on = Some(think);
+            }
+        }
+        assert_eq!(fired_on, Some(3));
+
+        // Shambler bolt: 10 thinks, casts on the 6th, 7th and 8th (9th on
+        // nightmare).
+        for nightmare in [false, true] {
+            let mut shambler = MonsterRuntime::new(MonsterKind::Shambler, 3);
+            shambler.active = true;
+            shambler.state = MonsterState::Missile;
+            shambler.frame = first_frame(MonsterKind::Shambler, MonsterState::Missile);
+            let mut frames = [0u16; 10];
+            let mut casts = 0;
+            for think in 0..10 {
+                let input = MonsterThinkInput {
+                    nightmare,
+                    ..visible(300)
+                };
+                let action = next_think(&mut shambler, input);
+                frames[think] = action.frame;
+                casts += u32::from(action.attack.is_some());
+            }
+            assert_eq!(casts, if nightmare { 4 } else { 3 });
+            assert_eq!(shambler.state(), MonsterState::Run);
+            let _ = frames;
+        }
+    }
+
+    #[test]
+    fn the_knights_running_attack_sidesteps_on_frames_two_to_ten() {
+        let mut knight = MonsterRuntime::new(MonsterKind::Knight, 6);
+        knight.active = true;
+        knight.state = MonsterState::MeleeB;
+        knight.frame = first_frame(MonsterKind::Knight, MonsterState::MeleeB);
+        let mut pattern = [false; 11];
+        let mut moves = [0i16; 11];
+        for index in 0..11 {
+            let action = next_think(&mut knight, visible(90));
+            pattern[index] = action.charge_side;
+            moves[index] = action.move_units;
+        }
+        assert_eq!(
+            pattern,
+            [false, true, true, true, true, true, true, true, true, true, false]
+        );
+        assert_eq!(moves, [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 10]);
+    }
+
+    #[test]
+    fn recoil_tables_match_the_ai_pain_calls() {
+        assert_eq!(pain_move(MonsterKind::Soldier, MonsterState::PainB, 1), 13);
+        assert_eq!(pain_move(MonsterKind::Soldier, MonsterState::PainB, 11), -2);
+        assert_eq!(pain_move(MonsterKind::Soldier, MonsterState::PainC, 11), 8);
+        assert_eq!(pain_move(MonsterKind::Dog, MonsterState::PainB, 3), -12);
+        assert_eq!(pain_move(MonsterKind::Dog, MonsterState::PainB, 9), -10);
+        assert_eq!(pain_move(MonsterKind::Zombie, MonsterState::PainA, 4), -3);
+        assert_eq!(pain_move(MonsterKind::Zombie, MonsterState::PainB, 24), 1);
+        // Demon claws step twelve units first.
+        assert_eq!(move_distance(MonsterKind::Demon, MonsterState::Melee, 54 + 4), 14);
+        assert_eq!(move_distance(MonsterKind::Demon, MonsterState::Melee, 54 + 10), 12);
+    }
+
+    /// A hit on a sleeper or on a monster hunting someone else is a
+    /// `FoundTarget`: new enemy, one second before it may shoot.
+    #[test]
+    fn damage_wakes_with_found_target_semantics() {
+        let mut soldier = MonsterRuntime::new(MonsterKind::Soldier, 3);
+        assert!(!soldier.active());
+        soldier.found_target(MonsterEnemy::Player);
+        assert!(soldier.active());
+        assert_eq!(soldier.state(), MonsterState::Run);
+        assert_eq!(soldier.attack_cooldown, INITIAL_ATTACK_COOLDOWN);
+        soldier.attack_cooldown = 0;
+        // Already hunting the player: a request for the same enemy changes
+        // nothing; a different one re-arms the delay.
+        assert!(!soldier.set_enemy(MonsterEnemy::Player));
+        assert_eq!(soldier.attack_cooldown, 0);
+        assert!(soldier.set_enemy(MonsterEnemy::Monster(4)));
+        assert_eq!(soldier.attack_cooldown, INITIAL_ATTACK_COOLDOWN);
+    }
+
+    /// The knocked down zombie is solid again from `zombie_paine12`, and a
+    /// failed stand-up sends it back to the five second lie.
+    #[test]
+    fn zombie_stands_up_on_frame_twelve_and_retries_when_blocked() {
+        let first = first_frame(MonsterKind::Zombie, MonsterState::PainE);
+        let mut zombie = MonsterRuntime::new(MonsterKind::Zombie, 5);
+        zombie.state = MonsterState::PainE;
+        for (offset, solid) in [(8u16, true), (9, false), (10, false), (11, true), (12, true)] {
+            zombie.frame = first + offset;
+            assert_eq!(zombie.body_solid(), solid, "offset {offset}");
+        }
+        zombie.frame = first + 11;
+        let action = next_think(&mut zombie, visible(100));
+        assert!(action.stand_check);
+        zombie.retry_knockdown();
+        assert_eq!(zombie.frame(), first + 10);
+        let action = next_think(&mut zombie, visible(100));
+        assert!(!action.stand_check);
+        assert_eq!(zombie.hold_ticks, 5 * ONE_SECOND);
+    }
+
+    /// `CheckDogJump` and `CheckDemonJump` ignore the height difference.
+    #[test]
+    fn leaps_measure_the_flat_distance() {
+        let mut dog = MonsterRuntime::new(MonsterKind::Dog, 1);
+        dog.active = true;
+        dog.enter_state(MonsterState::Run);
+        let input = MonsterThinkInput {
+            distance: 170,
+            flat_distance: 120,
+            ..visible(170)
+        };
+        assert!(dog.try_begin_attack(input));
+        assert_eq!(dog.state(), MonsterState::Missile);
+    }
+
+    /// `ai_run` sends a hunter whose rival died back to the player only when
+    /// the player was the enemy it was turned from.
+    #[test]
+    fn a_dead_rival_returns_a_hunter_to_the_player_only_if_it_had_been_hunting_one() {
+        let mut ogre = MonsterRuntime::new(MonsterKind::Ogre, 4);
+        ogre.found_target(MonsterEnemy::Player);
+        ogre.found_target(MonsterEnemy::Monster(9));
+        assert_eq!(ogre.enemy(), MonsterEnemy::Monster(9));
+        ogre.enemy_lost();
+        assert_eq!(ogre.enemy(), MonsterEnemy::Player);
+        assert!(ogre.active());
+        assert_eq!(ogre.attack_cooldown, INITIAL_ATTACK_COOLDOWN);
+        // A sleeper woken by a rival's blow had no player to go back to.
+        let mut sleeper = MonsterRuntime::new(MonsterKind::Ogre, 5);
+        sleeper.found_target(MonsterEnemy::Monster(2));
+        assert!(sleeper.active());
+        sleeper.enemy_lost();
+        assert!(!sleeper.active());
+        assert_eq!(sleeper.state(), MonsterState::Stand);
+    }
+
+    #[test]
+    fn dying_bodies_block_until_their_solid_clearing_frame() {
+        for (kind, frames) in [
+            (MonsterKind::Soldier, 2u16),
+            (MonsterKind::Ogre, 2),
+            (MonsterKind::Knight, 2),
+            (MonsterKind::Wizard, 2),
+            (MonsterKind::Shambler, 2),
+            (MonsterKind::Demon, 5),
+            (MonsterKind::Dog, 0),
+        ] {
+            let mut runtime = MonsterRuntime::new(kind, 3);
+            runtime.state = MonsterState::DeathA;
+            let first = first_frame(kind, MonsterState::DeathA);
+            for offset in 0..8u16 {
+                runtime.frame = first + offset;
+                assert_eq!(runtime.body_solid(), offset < frames, "{kind:?} frame {offset}");
+            }
+        }
+        // The soldier's second death slides back 29 units.
+        let slide: i16 = (0..8)
+            .map(|offset| move_distance_death(MonsterKind::Soldier, offset))
+            .sum();
+        assert_eq!(slide, -29);
+    }
+
+    /// `army_walk1`, `dog_run1`, `sham_walk12` and friends: every walker
+    /// voices at rest or on the move, about one cycle in five.
+    #[test]
+    fn idle_voices_play_in_walk_and_run_cycles_at_the_id1_rates() {
+        for (kind, state, expected) in [
+            (MonsterKind::Soldier, MonsterState::Walk, SOLDIER_IDLE_SOUND),
+            (MonsterKind::Soldier, MonsterState::Run, SOLDIER_IDLE_SOUND),
+            (MonsterKind::Dog, MonsterState::Walk, DOG_IDLE_SOUND),
+            (MonsterKind::Knight, MonsterState::Run, KNIGHT_IDLE_SOUND),
+            (MonsterKind::Demon, MonsterState::Walk, DEMON_IDLE_SOUND),
+            (MonsterKind::Shambler, MonsterState::Run, SHAMBLER_IDLE_SOUND),
+            (MonsterKind::Zombie, MonsterState::Walk, ZOMBIE_IDLE_SOUND),
+            (MonsterKind::Ogre, MonsterState::Run, OGRE_IDLE2_SOUND),
+            (MonsterKind::Ogre, MonsterState::Walk, OGRE_IDLE_SOUND),
+            (MonsterKind::Ogre, MonsterState::Stand, OGRE_IDLE_SOUND),
+        ] {
+            let mut heard = 0u32;
+            for seed in 0..1000u16 {
+                let mut runtime = MonsterRuntime::new(kind, seed);
+                runtime.state = state;
+                // The authored frame of the cycle that carries the voice.
+                let offset = match (kind, state) {
+                    (MonsterKind::Shambler, MonsterState::Run) => 5,
+                    (MonsterKind::Zombie, MonsterState::Walk) => 18,
+                    (MonsterKind::Ogre, MonsterState::Walk) => 2,
+                    (MonsterKind::Ogre, MonsterState::Stand) => 4,
+                    _ => 0,
+                };
+                runtime.frame = first_frame(kind, state) + offset;
+                if runtime.idle_voice() == Some(expected) {
+                    heard += 1;
+                }
+            }
+            assert!((140..=270).contains(&heard), "{kind:?} {state:?}: {heard}/1000");
+        }
+        // The saw drag fires one walk cycle in ten, from the sixth frame.
+        let mut drags = 0u32;
+        for seed in 0..1000u16 {
+            let mut ogre = MonsterRuntime::new(MonsterKind::Ogre, seed);
+            ogre.state = MonsterState::Walk;
+            ogre.frame = first_frame(MonsterKind::Ogre, MonsterState::Walk) + 5;
+            drags += u32::from(ogre.idle_voice() == Some(OGRE_DRAG_SOUND));
+        }
+        assert!((60..=150).contains(&drags), "{drags}");
+        // A scrag rolls on every other call: three widle2 to one widle1.
+        let mut wizard = MonsterRuntime::new(MonsterKind::Wizard, 3);
+        wizard.state = MonsterState::Run;
+        wizard.frame = first_frame(MonsterKind::Wizard, MonsterState::Run);
+        let (mut idle1, mut idle2, mut calls) = (0, 0, 0);
+        for _ in 0..4000 {
+            match wizard.idle_voice() {
+                Some(WIZARD_IDLE_SOUND) => idle1 += 1,
+                Some(WIZARD_IDLE2_SOUND) => idle2 += 1,
+                _ => {}
+            }
+            calls += 1;
+        }
+        assert_eq!(calls, 4000);
+        assert!((150..=250).contains(&idle1), "{idle1}");
+        assert!((500..=700).contains(&idle2), "{idle2}");
     }
 
     #[test]

@@ -27,6 +27,8 @@ ent worldspawn
   mdl progs/v_shot2.mdl
   mdl progs/v_light.mdl
   mdl progs/spike.mdl
+  # Super nails fly as `s_spike.mdl`.
+  mdl progs/s_spike.mdl
   mdl progs/gib1.mdl
   mdl progs/gib2.mdl
   mdl progs/gib3.mdl
@@ -177,7 +179,9 @@ ent monster_army
   mdl progs/h_guard.mdl
   sfx sound/soldier/idle.wav
   sfx sound/soldier/sight1.wav
+  sfx sound/soldier/pain1.wav
   sfx sound/soldier/pain2.wav
+  sfx sound/soldier/sattck1.wav
   sfx sound/soldier/death1.wav
 
 ent monster_dog

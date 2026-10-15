@@ -32,7 +32,7 @@ use quake_core::monster::MonsterState;
 use quake_core::monster::{
     predicted_target, BackpackAmmo, MonsterAttack, MonsterEnemy, MonsterKind, MonsterLeap,
     MonsterRuntime, MonsterThinkInput, CLASS_ARMY, CLASS_BOSS, CLASS_ZOMBIE, LAVA_BALL_MODEL_ID,
-    ZOMBIE_GIB_MODEL_ID, ZOMBIE_HIT_SOUND, ZOMBIE_MISS_SOUND,
+    OGRE_DRAG_SOUND, ZOMBIE_GIB_MODEL_ID, ZOMBIE_HIT_SOUND, ZOMBIE_MISS_SOUND,
 };
 use quake_core::movement::{MovementTrace, MovementTraceResult};
 use quake_core::mover::{
@@ -247,6 +247,9 @@ pub struct RenderEntity {
     pending_gib: bool,
     /// A `misc_explobox` died since the scene last ran `barrel_explode`.
     pending_explosion: bool,
+    /// `T_Damage` ran `FoundTarget` on this monster: the next monster pass
+    /// voices its sight sound and lets the pack see it.
+    pending_sight: bool,
 }
 
 impl RenderEntity {
@@ -1376,6 +1379,7 @@ impl EntityScene {
                     projectile: false,
                     pending_gib: false,
                     pending_explosion: false,
+                    pending_sight: false,
                     monster: None,
                     patrol: 0,
                     ideal_yaw: 0,
@@ -1517,6 +1521,7 @@ impl EntityScene {
                 projectile: false,
                 pending_gib: false,
                 pending_explosion: false,
+                    pending_sight: false,
                 monster,
                 patrol,
                 ideal_yaw,
@@ -1945,6 +1950,7 @@ impl EntityScene {
                 projectile: true,
                 pending_gib: false,
                 pending_explosion: false,
+                    pending_sight: false,
                 monster: None,
                 patrol: 0,
                 ideal_yaw: 0,
@@ -2067,6 +2073,8 @@ impl EntityScene {
             result.consumed = result.consumed.saturating_add(1);
             result.last_source_index = Some(entity.source_index);
             result.sound_id = Some(RUNE_SOUND_ID);
+            // `sigil_touch`: `centerprint (other, "You got the rune!")`.
+            result.message = Some("You got the rune!");
             // `sigil_touch` finishes with `activator = other; SUB_UseTargets`.
             // E1M7's sigil targets `monster_boss`, so skipping this left the
             // whole Chthon encounter unreachable through the authored chain.
@@ -2485,6 +2493,9 @@ impl EntityScene {
         let Some(render) = self.entities.get_mut(render_index) else {
             return false;
         };
+        if !set_nail_model(map, render, spawn.super_model) {
+            return false;
+        }
         if !update_projectile_render(map, render, spawn.origin, spawn.step, &styles) {
             return false;
         }
@@ -2517,6 +2528,10 @@ impl EntityScene {
         let step = traps::spike_step(move_direction(source.angles));
         let render_index = self.nail_render_start as usize + slot_index;
         let render = self.entities.get_mut(render_index)?;
+        let damage = traps::spikeshooter_damage(source.spawn_flags);
+        if !set_nail_model(map, render, damage == traps::SUPERSPIKE_DAMAGE) {
+            return None;
+        }
         if !update_projectile_render(map, render, source.origin, step, &styles) {
             return None;
         }
@@ -2524,7 +2539,7 @@ impl EntityScene {
             origin: source.origin,
             step,
             remaining_ticks: traps::SPIKE_LIFETIME_TICKS,
-            damage: traps::spikeshooter_damage(source.spawn_flags),
+            damage,
             hostile: true,
         });
         Some(SoundEvent::at(traps::SPIKE_SOUND_ID, source.origin))
@@ -2549,7 +2564,8 @@ impl EntityScene {
             origin: spawn.origin,
             velocity: spawn.velocity,
             angles: spawn.angles,
-            angular_velocity: Vec3I16 { x: 57, y: 0, z: 0 },
+            // `missile.avelocity = '300 300 300'`: 57 Q12 units a tick on each axis.
+            angular_velocity: Vec3I16 { x: 57, y: 57, z: 57 },
             resting: false,
             remaining_ticks: spawn.lifetime_ticks,
             damage: spawn.damage,
@@ -2651,6 +2667,15 @@ impl EntityScene {
                         weapon,
                         &mut result,
                     )?;
+                    // `T_MissileTouch` damages from the contact point and only
+                    // then backs the explosion off eight units along its path,
+                    // so the sprite and light sit clear of the wall.
+                    let heading = normalize_q12(rocket.step);
+                    result.last_impact = Some(Vec3I32 {
+                        x: impact.x.saturating_sub(heading.x.saturating_mul(8)),
+                        y: impact.y.saturating_sub(heading.y.saturating_mul(8)),
+                        z: impact.z.saturating_sub(heading.z.saturating_mul(8)),
+                    });
                     removed = true;
                     break;
                 }
@@ -3284,8 +3309,18 @@ impl EntityScene {
                 .get(self.entities[index].source_index as usize)
                 .unwrap_or_default()
                 .class_name;
-            let points =
-                explosion_splash_points(splash_damage, distance, false, true, class_name == 0x41);
+            // `if (head == attacker) points = points * 0.5`.
+            let is_attacker = matches!(
+                attacker,
+                DamageAttacker::Monster { index: owner, .. } if usize::from(owner) == index
+            );
+            let points = explosion_splash_points(
+                splash_damage,
+                distance,
+                is_attacker,
+                true,
+                class_name == 0x41,
+            );
             if points <= 0 {
                 index += 1;
                 continue;
@@ -3293,12 +3328,7 @@ impl EntityScene {
             // `T_Damage` multiplies by four for an attacker holding the quad
             // after the falloff, so the quad never widens the radius.
             let points = points.saturating_mul(splash_scale);
-            let mut scratch = TraceScratch::default();
-            let mut trace = Trace::default();
-            if !self.trace_point(map, &impact, &target, &mut scratch, &mut trace) {
-                return None;
-            }
-            if trace.fraction != 1 << 12 {
+            if !self.can_damage(map, &impact, self.entities[index].origin)? {
                 index += 1;
                 continue;
             }
@@ -3359,22 +3389,21 @@ impl EntityScene {
             return Some(());
         };
         let player_distance = distance_units(impact, player_origin);
-        let mut player_scratch = TraceScratch::default();
-        let mut player_trace = Trace::default();
-        if !self.trace_point(
-            map,
-            &impact,
-            &player_origin,
-            &mut player_scratch,
-            &mut player_trace,
-        ) {
-            return None;
-        }
+        // `CanDamage` aims at `targ.origin`, four units below the box centre
+        // the falloff measures.
+        let player_feet_origin = Vec3I32 {
+            z: player_origin.z.saturating_sub(4 << 12),
+            ..player_origin
+        };
+        let player_visible = self.can_damage(map, &impact, player_feet_origin)?;
+        // Only the player's own blasts are halved against the player; an ogre
+        // grenade or a barrel (whose attacker is the barrel itself) hurts in
+        // full.
         let player_points = explosion_splash_points(
             splash_damage,
             player_distance,
-            true,
-            player_trace.fraction == 1 << 12,
+            matches!(attacker, DamageAttacker::Player),
+            player_visible,
             false,
         );
         let player_points = player_points.saturating_mul(splash_scale);
@@ -3385,10 +3414,48 @@ impl EntityScene {
             // player's own rocket pushes just the same (rocket jumping).
             result.player_impulse = add_vec(
                 result.player_impulse,
-                knockback_impulse(player_origin, impact, player_points),
+                knockback_impulse(
+                    // `targ.origin`, not the box centre the falloff measures.
+                    Vec3I32 {
+                        z: player_origin.z.saturating_sub(4 << 12),
+                        ..player_origin
+                    },
+                    impact,
+                    player_points,
+                ),
             );
         }
         Some(())
+    }
+
+    /// `CanDamage`: a blast reaches a target when a ray from the inflictor to
+    /// the target's origin, or to one of four points 15 units off it, is
+    /// clear. `None` is a failed trace.
+    #[inline(never)]
+    #[optimize(size)]
+    fn can_damage(
+        &self,
+        map: &ResidentMap,
+        from: &Vec3I32,
+        target_origin: Vec3I32,
+    ) -> Option<bool> {
+        const CORNERS: [(i32, i32); 5] = [(0, 0), (15, 15), (-15, -15), (15, -15), (-15, 15)];
+        let mut scratch = TraceScratch::default();
+        let mut trace = Trace::default();
+        for (x, y) in CORNERS {
+            let to = Vec3I32 {
+                x: target_origin.x.saturating_add(x << 12),
+                y: target_origin.y.saturating_add(y << 12),
+                z: target_origin.z,
+            };
+            if !self.trace_point(map, from, &to, &mut scratch, &mut trace) {
+                return None;
+            }
+            if trace.fraction == Q12_ONE {
+                return Some(true);
+            }
+        }
+        Some(false)
     }
 
     /// Shootable brush movers are in `findradius` as well. `CanDamage`
@@ -4858,6 +4925,25 @@ impl EntityScene {
                     continue;
                 }
             }
+            if self.entities[index].pending_sight {
+                // `T_Damage` called `FoundTarget`: the sight voice, and a
+                // monster that settled on the player is seen by its pack.
+                self.entities[index].pending_sight = false;
+                let origin = self.entities[index].origin;
+                if matches!(runtime.enemy(), MonsterEnemy::Player) {
+                    self.sight_alert_ticks = SIGHT_ALERT_TICKS;
+                    self.sight_index = index as u16;
+                }
+                if !runtime.dead()
+                    && distance_units(origin, player_origin)
+                        <= quake_core::monster::MONSTER_VOICE_RANGE
+                {
+                    result.push_sound(
+                        SoundEvent::at(runtime.kind().sight_sound(), origin)
+                            .on(self.entities[index].source_index, crate::audio::CHAN_VOICE),
+                    );
+                }
+            }
             let snapshot = MonsterSnapshot::of(&self.entities[index]);
             let alive = weapon.inventory().health() > 0;
             // The enemy is the player unless infighting substituted another
@@ -4876,7 +4962,7 @@ impl EntityScene {
                 if let Some(target) = self.infight_target(enemy_index) {
                     enemy = target;
                 } else {
-                    runtime.set_enemy(MonsterEnemy::Player);
+                    runtime.enemy_lost();
                 }
             }
             let monster_eye = Vec3I32 {
@@ -4892,7 +4978,16 @@ impl EntityScene {
                 y: enemy.origin.y,
                 z: enemy.origin.z.saturating_add(enemy.view_height << 12),
             };
-            let distance = distance_units(snapshot.origin, enemy.origin);
+            // `range()` measures eye to eye (`origin + view_ofs`).
+            let distance = distance_units(monster_eye, enemy_eye);
+            let flat_distance = {
+                let mut flat = Vec3I32 {
+                    z: enemy.origin.z,
+                    ..enemy.origin
+                };
+                flat.z = snapshot.origin.z;
+                distance_units(snapshot.origin, flat)
+            };
             let player_distance = if enemy.index.is_some() {
                 distance_units(snapshot.origin, player_origin)
             } else {
@@ -4914,7 +5009,12 @@ impl EntityScene {
                 if !self.trace_point(map, &monster_eye, &enemy_eye, &mut scratch, &mut trace) {
                     return None;
                 }
-                visible = !trace.start_solid && !trace.all_solid && trace.fraction == 1 << 12;
+                // `visible()` also fails a sight line that crossed a water
+                // surface (`trace_inopen && trace_inwater`).
+                visible = !trace.start_solid
+                    && !trace.all_solid
+                    && trace.fraction == 1 << 12
+                    && !(trace.in_open && trace.in_water);
             }
             // `sight_entity`: a monster that just found the player wakes the
             // resting monsters that can see it, inside RANGE_NEAR outright and
@@ -4941,6 +5041,7 @@ impl EntityScene {
                 };
             let input = MonsterThinkInput {
                 distance,
+                flat_distance,
                 visible,
                 in_front: target_in_front(snapshot.origin, snapshot.angles.y, enemy.origin),
                 player_hostile,
@@ -5016,7 +5117,48 @@ impl EntityScene {
                 if let Some(target) = facing {
                     yaw = turn_toward_yaw(yaw, yaw_toward(snapshot.origin, target), yaw_speed);
                 }
-                if action.move_units != 0 {
+                if action.slide && action.move_units != 0 {
+                    // `ai_run_slide`: face the enemy, then sidestep ninety
+                    // degrees off its bearing, the other way if blocked.
+                    let enemy_yaw = yaw_toward(snapshot.origin, enemy.origin);
+                    yaw = turn_toward_yaw(yaw, enemy_yaw, yaw_speed);
+                    let mut bodies = BodyBlockers::new();
+                    self.monster_step_bodies(
+                        index,
+                        i32::from(action.move_units.saturating_abs()),
+                        player_mins,
+                        player_maxs,
+                        alive,
+                        &mut bodies,
+                    );
+                    let side: i16 = if runtime.lefty() { 1_024 } else { -1_024 };
+                    let first = self.monster_fly_walkmove(
+                        map,
+                        snapshot.origin,
+                        enemy.origin,
+                        enemy_yaw.wrapping_add(side),
+                        action.move_units,
+                        hull,
+                        &bodies,
+                    )?;
+                    next_origin = match first {
+                        Some(origin) => origin,
+                        None => {
+                            runtime.flip_lefty();
+                            self.entities[index].monster = Some(runtime);
+                            self.monster_fly_walkmove(
+                                map,
+                                snapshot.origin,
+                                enemy.origin,
+                                enemy_yaw.wrapping_sub(side),
+                                action.move_units,
+                                hull,
+                                &bodies,
+                            )?
+                            .unwrap_or(snapshot.origin)
+                        }
+                    };
+                } else if action.move_units != 0 {
                     let mut bodies = BodyBlockers::new();
                     self.monster_step_bodies(
                         index,
@@ -5075,7 +5217,18 @@ impl EntityScene {
                         partial_ground,
                     };
                     let distance = i32::from(action.move_units);
-                    if action.chase || action.face_goal || (action.face_target && distance > 0) {
+                    if action.charge_side {
+                        // `ai_charge_side`: walk towards the point thirty
+                        // units to the enemy's side, not at the enemy.
+                        let angle = yaw as u16 & 0x0fff;
+                        let side_point = Vec3I32 {
+                            x: enemy.origin.x.saturating_sub(sin_q12(angle).saturating_mul(30)),
+                            y: enemy.origin.y.saturating_add(cos_q12(angle).saturating_mul(30)),
+                            z: enemy.origin.z,
+                        };
+                        let heading = yaw_toward(walker.origin, side_point);
+                        self.monster_walk_move(map, &mut walker, heading, distance, hull, &bodies)?;
+                    } else if action.chase || action.face_goal || (action.face_target && distance > 0) {
                         // `ai_run`, `ai_walk` and `ai_charge` all end in
                         // `movetogoal`: the enemy, or the next path corner.
                         let (goal_origin, goal_box) = if action.face_goal {
@@ -5120,6 +5273,23 @@ impl EntityScene {
                     partial_ground = walker.partial_ground;
                 }
             }
+            if action.stand_check {
+                // `zombie_paine12`: solid again, `walkmove(0, 0)`. A body in
+                // the way sends the zombie back to lie down for five more
+                // seconds.
+                let mut bodies = BodyBlockers::new();
+                self.monster_step_bodies(index, 0, player_mins, player_maxs, alive, &mut bodies);
+                let mut walker = Walker {
+                    origin: next_origin,
+                    yaw,
+                    ideal,
+                    partial_ground,
+                };
+                if self.monster_walk_move(map, &mut walker, 0, 0, hull, &bodies)? == false {
+                    runtime.retry_knockdown();
+                    self.entities[index].monster = Some(runtime);
+                }
+            }
             {
                 let entity = &mut self.entities[index];
                 entity.angles.y = yaw;
@@ -5143,7 +5313,7 @@ impl EntityScene {
             if action.face_goal {
                 if let Some(corner) = patrol {
                     if path_corner_reached(next_origin, corner.origin) {
-                        self.arrive_at_corner(map, index, corner)?;
+                        self.arrive_at_corner(map, index, corner, player_origin, &mut result)?;
                     }
                 }
             }
@@ -5310,10 +5480,24 @@ impl EntityScene {
         map: &ResidentMap,
         index: usize,
         corner: MapEntity,
+        player_origin: Vec3I32,
+        result: &mut MonsterFrameResult,
     ) -> Option<()> {
         let mut runtime = self.entities[index].monster?;
-        runtime.arrive_at_goal(path_corner_wait_ticks(corner.wait));
+        // `t_movetarget` has no notion of `wait` (that belongs to
+        // `func_train`), so the monster walks straight on.
+        runtime.arrive_at_goal(0);
         self.entities[index].monster = Some(runtime);
+        if matches!(runtime.kind(), MonsterKind::Ogre)
+            && distance_units(self.entities[index].origin, player_origin)
+                <= quake_core::monster::MONSTER_IDLE_VOICE_RANGE
+        {
+            // `ogre/ogdrag.wav` at every corner it reaches.
+            result.push_sound(
+                SoundEvent::idle_at(OGRE_DRAG_SOUND, self.entities[index].origin)
+                    .on(self.entities[index].source_index, crate::audio::CHAN_VOICE),
+            );
+        }
         let mut next = PathCorner::EMPTY;
         let origin = self.entities[index].origin;
         self.entities[index].patrol =
@@ -5893,6 +6077,53 @@ impl EntityScene {
         Some(origin)
     }
 
+    /// `walkmove(heading, distance)` for a flier: one heading only, with the
+    /// same height trim toward `target` as [`Self::monster_fly_step`], and
+    /// `None` inside the option when the way is blocked.
+    #[allow(clippy::too_many_arguments)]
+    fn monster_fly_walkmove(
+        &self,
+        map: &ResidentMap,
+        origin: Vec3I32,
+        target: Vec3I32,
+        heading: i16,
+        distance: i16,
+        hull_index: usize,
+        bodies: &BodyBlockers,
+    ) -> Option<Option<Vec3I32>> {
+        const HEIGHT_STEP_Q12: i32 = 8 << 12;
+        let above = origin.z.saturating_sub(target.z);
+        let climb = if above > (40 << 12) {
+            -HEIGHT_STEP_Q12
+        } else if above < (30 << 12) {
+            HEIGHT_STEP_Q12
+        } else {
+            0
+        };
+        let heading = heading as u16 & 0x0fff;
+        let wished = Vec3I32 {
+            x: origin
+                .x
+                .saturating_add(cos_q12(heading).saturating_mul(i32::from(distance))),
+            y: origin
+                .y
+                .saturating_add(sin_q12(heading).saturating_mul(i32::from(distance))),
+            z: origin.z.saturating_add(climb),
+        };
+        if bodies.resolve(origin, wished, hull_index).is_some() {
+            return Some(None);
+        }
+        let mut scratch = TraceScratch::default();
+        let mut trace = Trace::default();
+        if !self.trace_hull(map, hull_index, &origin, &wished, &mut scratch, &mut trace) {
+            return None;
+        }
+        Some(
+            (!trace.start_solid && !trace.all_solid && trace.fraction == 1 << 12)
+                .then_some(wished),
+        )
+    }
+
     /// One frame of `SV_Physics_Toss` for a dog or fiend in mid-leap. Gravity
     /// lives in the runtime, so the body only has to sweep: horizontally
     /// first and then vertically, which keeps a wall from pinning the monster
@@ -6187,21 +6418,46 @@ impl EntityScene {
                 },
                 150,
             ),
-            MonsterAttack::Spit { damage, side } => (
-                MonsterMissileKind::Spit,
-                NAIL_MODEL_ID,
-                damage,
-                add_vec(
-                    add_vec(shooter.origin, scale(forward, 14)),
+            MonsterAttack::Spit { damage, side } => {
+                // `Wiz_StartFast` places each spike from the wizard's facing,
+                // 14 units ahead, `side` units across and 30 up; `Wiz_FastFire`
+                // then aims it from there at a point thirteen units to the
+                // far side of the enemy, so the pair of spikes cross.
+                let angle = shooter.angles.y as u16 & 0x0fff;
+                let facing = Vec3I32 {
+                    x: cos_q12(angle),
+                    y: sin_q12(angle),
+                    z: 0,
+                };
+                let facing_right = Vec3I32 {
+                    x: sin_q12(angle),
+                    y: -cos_q12(angle),
+                    z: 0,
+                };
+                let origin = add_vec(
+                    add_vec(shooter.origin, scale(facing, 14)),
                     Vec3I32 {
-                        x: right.x.saturating_mul(i32::from(side)),
-                        y: right.y.saturating_mul(i32::from(side)),
-                        z: up.z.saturating_mul(30),
+                        x: facing_right.x.saturating_mul(i32::from(side)),
+                        y: facing_right.y.saturating_mul(i32::from(side)),
+                        z: 30 << 12,
                     },
-                ),
-                per_tick(600),
-                180,
-            ),
+                );
+                let across = if side > 0 { 13 } else { -13 };
+                let aim_point = subtract_vec(player_origin, scale(facing_right, across));
+                let dir = normalize_q12(subtract_vec(aim_point, origin));
+                (
+                    MonsterMissileKind::Spit,
+                    NAIL_MODEL_ID,
+                    damage,
+                    origin,
+                    Vec3I32 {
+                        x: dir.x.saturating_mul(600) / 60,
+                        y: dir.y.saturating_mul(600) / 60,
+                        z: dir.z.saturating_mul(600) / 60,
+                    },
+                    180,
+                )
+            }
             MonsterAttack::LavaBall { damage, side } => {
                 let (origin, velocity) = quake_core::monster::lava_ball_launch(
                     shooter.origin,
@@ -6250,7 +6506,8 @@ impl EntityScene {
                     y: 68,
                     z: 205,
                 },
-                _ => Vec3I16 { x: 57, y: 0, z: 0 },
+                MonsterMissileKind::Grenade => Vec3I16 { x: 57, y: 57, z: 57 },
+                _ => Vec3I16::default(),
             },
             kind,
             damage,
@@ -6338,7 +6595,10 @@ impl EntityScene {
         weapon: &mut WeaponState,
         result: &mut MonsterFrameResult,
     ) -> Option<()> {
-        let player_origin = player_origin_from_mins(player_mins);
+        // `T_RadiusDamage` measures to the middle of the player's box, four
+        // units above the origin.
+        let mut player_origin = player_origin_from_mins(player_mins);
+        player_origin.z = player_origin.z.saturating_add(4 << 12);
         let (player_origin, spare_entity) = match spare {
             Some(MissileHit::Player) => (None, None),
             Some(MissileHit::Monster(index)) => (Some(player_origin), Some(index)),
@@ -7105,10 +7365,10 @@ impl EntityScene {
         entity.ideal_yaw = IDEAL_YAW_UNSET;
         entity.monster = Some(runtime);
         entity.frame = runtime.frame();
-        Some(
-            SoundEvent::at(runtime.kind().sight_sound(), entity.origin)
-                .on(entity.source_index, crate::audio::CHAN_VOICE),
-        )
+        // `monster_use` arms `think = FoundTarget`: the sight voice and the
+        // pack alert follow on the next monster pass, as for a damage wake.
+        entity.pending_sight = true;
+        None
     }
 
     /// Resolve the original implicit target through cooked IDs and actual
@@ -8215,6 +8475,7 @@ impl EntityScene {
             lifetime_ticks: quake_core::combat::NAIL_LIFETIME_TICKS,
             damage: quake_core::combat::NAIL_DAMAGE,
             sound_id: 0xcc,
+            super_model: false,
         };
         let mut count = 0usize;
         while count < NAIL_POOL_CAPACITY {
@@ -8976,6 +9237,20 @@ fn update_moving_alias_origin(
     true
 }
 
+/// `launch_spike`'s model: `s_spike.mdl` for a super spike, `spike.mdl`
+/// otherwise. A map that did not cook the super spike flies the plain one.
+fn set_nail_model(map: &ResidentMap, render: &mut RenderEntity, super_model: bool) -> bool {
+    let wanted = if super_model {
+        quake_core::combat::SUPER_NAIL_MODEL_ID
+    } else {
+        NAIL_MODEL_ID
+    };
+    if render.model_id == wanted || set_alias_model(map, render, wanted) {
+        return true;
+    }
+    render.model_id == NAIL_MODEL_ID || set_alias_model(map, render, NAIL_MODEL_ID)
+}
+
 fn set_alias_model(map: &ResidentMap, render: &mut RenderEntity, model_id: i16) -> bool {
     let models = map.alias_models();
     let Some(model_index) = (0..models.len()).find(|&index| {
@@ -9075,7 +9350,14 @@ fn yaw_toward(from: Vec3I32, to: Vec3I32) -> i16 {
 fn target_in_front(origin: Vec3I32, yaw: i16, target: Vec3I32) -> bool {
     let dx = (target.x.saturating_sub(origin.x)) >> 12;
     let dy = (target.y.saturating_sub(origin.y)) >> 12;
-    let distance = isqrt_i32(square_i32_saturating(dx).saturating_add(square_i32_saturating(dy)));
+    let dz = (target.z.saturating_sub(origin.z)) >> 12;
+    // `infront` normalises the whole 3D delta but dots it with a level
+    // `v_forward`, so a target far above or below is less "in front".
+    let distance = isqrt_i32(
+        square_i32_saturating(dx)
+            .saturating_add(square_i32_saturating(dy))
+            .saturating_add(square_i32_saturating(dz)),
+    );
     if distance == 0 {
         return true;
     }
@@ -9127,15 +9409,6 @@ fn path_corner_reached(origin: Vec3I32, corner: Vec3I32) -> bool {
     axis(origin.x, corner.x) <= 24
         && axis(origin.y, corner.y) <= 24
         && axis(origin.z, corner.z) <= 48
-}
-
-/// A corner's authored `wait`, Q20.12 seconds, in 60 Hz ticks.
-fn path_corner_wait_ticks(wait: i32) -> u16 {
-    if wait <= 0 {
-        return 0;
-    }
-    ((wait >> 12).saturating_mul(60) + (((wait & 0x0fff) * 60) >> 12)).clamp(0, i32::from(u16::MAX))
-        as u16
 }
 
 fn turn_toward_yaw(current: i16, target: i16, maximum: i16) -> i16 {
@@ -9201,6 +9474,7 @@ fn apply_entity_damage(
         .unwrap_or_default()
         .class_name;
     if let Some(mut monster) = entity.monster {
+        let was_active = monster.active();
         let transition = monster.take_damage(damage, entity.health, nightmare);
         // `T_Damage`: a monster hit by something other than its enemy turns
         // on the attacker, unless it is another monster of its own class
@@ -9209,8 +9483,12 @@ fn apply_entity_damage(
             match attacker {
                 DamageAttacker::World => {}
                 DamageAttacker::Player => {
-                    if monster.enemy() != MonsterEnemy::Player {
-                        monster.set_enemy(MonsterEnemy::Player);
+                    // `attacker != self.enemy`: a sleeper has no enemy, so the
+                    // first hit is a `FoundTarget`; a monster already hunting
+                    // the player ignores further hits.
+                    if !was_active || monster.enemy() != MonsterEnemy::Player {
+                        monster.found_target(MonsterEnemy::Player);
+                        entity.pending_sight = true;
                         entity.ideal_yaw = IDEAL_YAW_UNSET;
                     }
                 }
@@ -9221,7 +9499,8 @@ fn apply_entity_damage(
                     if monster.enemy() != MonsterEnemy::Monster(index)
                         && (attacker_class != class_name || class_name == CLASS_ARMY)
                     {
-                        monster.set_enemy(MonsterEnemy::Monster(index));
+                        monster.found_target(MonsterEnemy::Monster(index));
+                        entity.pending_sight = true;
                         entity.ideal_yaw = IDEAL_YAW_UNSET;
                     }
                 }

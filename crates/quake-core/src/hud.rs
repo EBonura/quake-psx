@@ -30,6 +30,9 @@ pub struct HudView {
     pub pain: bool,
     /// `serverflags`: one bit per rune held, `IT_SIGIL1` in bit zero.
     pub runes: u8,
+    /// Strip slots (shotgun in bit zero) whose icon is lit by
+    /// `cl.item_gettime`'s pickup flash this frame.
+    pub weapon_flash: u8,
 }
 
 /// `cl.faceanimtime`: the original holds the pain face for 0.2 seconds, which
@@ -131,6 +134,7 @@ impl HudView {
             ],
             pain: false,
             runes: 0,
+            weapon_flash: 0,
         }
     }
 
@@ -159,6 +163,24 @@ impl HudView {
             Weapon::RocketLauncher => 5,
             Weapon::Lightning => 6,
         })
+    }
+
+    /// `Sbar_DrawInventory`'s pickup flash for the strip slots in `mask`.
+    #[optimize(size)]
+    pub const fn with_weapon_flash(mut self, mask: u8) -> Self {
+        self.weapon_flash = mask;
+        self
+    }
+
+    /// The strip slots drawn in their lit (`inv2_*`) state: the active weapon
+    /// plus any icon in the lit half of its pickup flash.
+    #[optimize(size)]
+    pub const fn lit_weapon_slots(self) -> u8 {
+        let active = match self.active_weapon_slot() {
+            Some(index) => 1u8 << index,
+            None => 0,
+        };
+        active | (self.weapon_flash & (self.owned_weapons >> 1))
     }
 
     /// Latch the pain face for this frame.
@@ -277,6 +299,7 @@ mod tests {
                 powerup_seconds: [0; 4],
                 pain: false,
                 runes: 0,
+                weapon_flash: 0,
             }
         );
 
@@ -304,6 +327,7 @@ mod tests {
                 powerup_seconds: [0; 4],
                 pain: false,
                 runes: 0,
+                weapon_flash: 0,
             }
         );
     }
@@ -496,7 +520,43 @@ mod tests {
                 powerup_seconds: [0; 4],
                 pain: false,
                 runes: 0,
+                weapon_flash: 0,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod weapon_flash_tests {
+    use super::*;
+    use crate::combat::{pickup_for_entity, WeaponState};
+
+    #[test]
+    fn a_new_weapon_flashes_its_icon_for_a_second_then_settles() {
+        let mut weapon = WeaponState::new();
+        assert_eq!(weapon.weapon_flash_mask(), 0);
+        weapon.apply_pickup(pickup_for_entity(0x55, 0).unwrap());
+        // The nailgun is strip slot 2 and is also the weapon taken in hand.
+        let view = HudView::from_inventory(weapon.inventory());
+        assert_eq!(view.lit_weapon_slots(), 1 << 2);
+        let mut lit = 0u32;
+        let mut dark = 0u32;
+        for _ in 0..60 {
+            let mask = weapon.weapon_flash_mask();
+            let view = HudView::from_inventory(weapon.inventory()).with_weapon_flash(mask);
+            // The held icon stays lit either way; check the flash bit itself.
+            if mask & (1 << 2) != 0 {
+                lit += 1;
+            } else {
+                dark += 1;
+            }
+            let _ = view;
+            weapon.tick(1);
+        }
+        assert!(lit >= 25 && dark >= 25, "{lit} lit {dark} dark");
+        assert_eq!(weapon.weapon_flash_mask(), 0);
+        // A weapon that was already owned does not flash again.
+        weapon.apply_pickup(pickup_for_entity(0x55, 0).unwrap());
+        assert_eq!(weapon.weapon_flash_mask(), 0);
     }
 }

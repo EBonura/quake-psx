@@ -25,6 +25,8 @@ pub const LIGHTNING_MODEL_ID: i16 = 0x4f;
 pub const GRENADE_MODEL_ID: i16 = 0x2a;
 pub const ROCKET_MODEL_ID: i16 = 0x40;
 pub const NAIL_MODEL_ID: i16 = 0x4a;
+/// `progs/s_spike.mdl`, what `W_FireSuperSpikes` and superspike shooters launch.
+pub const SUPER_NAIL_MODEL_ID: i16 = 0x46;
 pub const LIGHTNING_BOLT_MODEL_ID: i16 = 0x13;
 pub const SHOTGUN_PELLETS: usize = 6;
 pub const SUPER_SHOTGUN_PELLETS: usize = 14;
@@ -1035,6 +1037,8 @@ pub struct NailSpawn {
     pub lifetime_ticks: u16,
     pub damage: i16,
     pub sound_id: i16,
+    /// Flies as `s_spike.mdl` rather than `spike.mdl`.
+    pub super_model: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1192,7 +1196,20 @@ pub struct WeaponState {
     /// `self.t_width` of `W_FireLightning`: `lhit` plays whenever it is in
     /// the past and then pushes it 0.6 s out.
     lightning_hit_ticks: u16,
+    /// `T_Damage` plays `protect3` on a hit the pentagram turns away, at most
+    /// once in two seconds.
+    protect_sound_ticks: u16,
+    protect_sound_pending: bool,
+    /// `cl.item_gettime` for the seven strip weapons, as ticks left of the
+    /// one second pickup flash.
+    weapon_flash_ticks: [u8; 7],
 }
+
+/// `Sbar_DrawInventory` flashes a new weapon for ten tenths of a second.
+pub const WEAPON_FLASH_TICKS: u8 = 60;
+
+/// `self.invincible_sound = time + 2`.
+pub const PROTECT_SOUND_TICKS: u16 = 120;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum QueuedImpulse {
@@ -1224,6 +1241,9 @@ impl WeaponState {
             axe_strike_due: false,
             queued_impulse: None,
             lightning_hit_ticks: 0,
+            protect_sound_ticks: 0,
+            protect_sound_pending: false,
+            weapon_flash_ticks: [0; 7],
         }
     }
 
@@ -1275,7 +1295,9 @@ impl WeaponState {
         // the player up to it. Weapon pickups and backpacks do not.
         let best_before = matches!(pickup, Pickup::Ammo { .. })
             .then(|| self.inventory.best_weapon(self.survival.water_level()));
+        let owned_before = self.inventory.owned_weapons;
         let mut outcome = self.inventory.apply_pickup(pickup);
+        self.note_new_weapons(owned_before);
         if let Some(best_before) = best_before {
             if outcome.consumed && self.inventory.active_weapon == best_before {
                 let best_after = self.inventory.best_weapon(self.survival.water_level());
@@ -1289,6 +1311,30 @@ impl WeaponState {
             self.reset_animation();
         }
         outcome
+    }
+
+    /// `CL_ParseClientdata`: a weapon bit which appeared stamps
+    /// `item_gettime`, starting that icon's flash.
+    fn note_new_weapons(&mut self, before: u8) {
+        let gained = self.inventory.owned_weapons & !before;
+        for slot in 0..7 {
+            if gained & (1 << (slot + 1)) != 0 {
+                self.weapon_flash_ticks[slot] = WEAPON_FLASH_TICKS;
+            }
+        }
+    }
+
+    /// Strip slots lit by the pickup flash this tick: ten steps a second, lit
+    /// on every other one.
+    pub fn weapon_flash_mask(&self) -> u8 {
+        let mut mask = 0u8;
+        for slot in 0..7 {
+            let left = self.weapon_flash_ticks[slot];
+            if left != 0 && ((WEAPON_FLASH_TICKS - left) / VIEW_MODEL_FRAME_TICKS) % 2 == 0 {
+                mask |= 1 << slot;
+            }
+        }
+        mask
     }
 
     pub fn select(&mut self, weapon: Weapon) -> bool {
@@ -1339,7 +1385,20 @@ impl WeaponState {
     }
 
     pub fn take_damage(&mut self, damage: i16) -> i16 {
+        if damage > 0
+            && !self.inventory.god_mode()
+            && self.protect_sound_ticks == 0
+            && self.inventory.powerups.active(PowerupKind::Pentagram)
+        {
+            self.protect_sound_pending = true;
+            self.protect_sound_ticks = PROTECT_SOUND_TICKS;
+        }
         self.inventory.take_damage(damage)
+    }
+
+    /// Whether `T_Damage`'s `items/protect3.wav` is due since the last call.
+    pub fn take_protect_sound(&mut self) -> bool {
+        core::mem::take(&mut self.protect_sound_pending)
     }
 
     pub fn set_god_mode(&mut self, enabled: bool) {
@@ -1351,7 +1410,18 @@ impl WeaponState {
     }
 
     pub fn impulse_nine(&mut self) {
+        let before = self.inventory.owned_weapons;
         self.inventory.impulse_nine();
+        self.note_new_weapons(before);
+    }
+
+    /// The pain voice for a hit that left the player alive, if `PainSound`'s
+    /// half second throttle allows one.
+    pub fn external_pain_voice(&mut self) -> Option<i16> {
+        if self.inventory.health() <= 0 {
+            return None;
+        }
+        self.survival.external_pain_voice()
     }
 
     /// `attacker.super_damage_finished > time`, asked when a blast lands.
@@ -1375,6 +1445,10 @@ impl WeaponState {
         let ticks = elapsed_ticks.clamp(1, 4);
         self.refire_ticks = self.refire_ticks.saturating_sub(ticks);
         self.lightning_hit_ticks = self.lightning_hit_ticks.saturating_sub(ticks);
+        self.protect_sound_ticks = self.protect_sound_ticks.saturating_sub(ticks);
+        for left in &mut self.weapon_flash_ticks {
+            *left = left.saturating_sub(ticks as u8);
+        }
         if self.axe_swing_ticks != 0 {
             self.axe_swing_ticks = self.axe_swing_ticks.saturating_sub(ticks);
             if self.axe_swing_ticks == 0 {
@@ -1676,11 +1750,11 @@ impl WeaponState {
                     } else {
                         NAIL_DAMAGE
                     },
-                    sound_id: if active == Weapon::SuperNailgun {
-                        0xcf
-                    } else {
-                        0xcc
-                    },
+                    // `W_FireSuperSpikes` plays spike2; the one nail a
+                    // super nailgun fires on its last round is the plain
+                    // `W_FireSpikes` shot, rocket1i and all.
+                    sound_id: if super_nail { 0xcf } else { 0xcc },
+                    super_model: super_nail,
                 })
             }
             Weapon::GrenadeLauncher => {
@@ -2937,6 +3011,7 @@ mod tests {
         };
         assert_eq!(super_nail.damage, SUPER_NAIL_DAMAGE);
         assert_eq!(super_nail.sound_id, 0xcf);
+        assert!(super_nail.super_model);
         assert_eq!(state.inventory().ammo(AmmoKind::Nails), 57);
 
         for _ in 0..NAIL_REFIRE_TICKS {
@@ -3042,7 +3117,9 @@ mod tests {
             panic!("single super nail fallback");
         };
         assert_eq!(nail.damage, NAIL_DAMAGE);
-        assert_eq!(nail.sound_id, 0xcf);
+        // The last round is a plain nail in sound and model too.
+        assert_eq!(nail.sound_id, 0xcc);
+        assert!(!nail.super_model);
         assert_eq!(state.inventory().ammo(AmmoKind::Nails), 0);
     }
 
