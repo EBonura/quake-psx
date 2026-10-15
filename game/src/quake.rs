@@ -219,6 +219,10 @@ pub fn run() -> ! {
     let mut clock_generation = presentation.generation();
     // `cl.faceanimtime`, held beside the loop that owns the damage signal.
     let mut pain_face = quake_core::hud::PainFaceTimer::new();
+    // `PlayerDeathThink`: ticks of death animation left before `DEAD_DEAD`,
+    // then whether every button has been let go since (`DEAD_RESPAWNABLE`).
+    let mut death_wait = 0u16;
+    let mut death_released = false;
 
     loop {
         #[cfg(not(feature = "perf-fixed-ticks"))]
@@ -505,6 +509,7 @@ pub fn run() -> ! {
                 player.update(&world, &entities, controls, elapsed_ticks)
             }
         } else {
+            player.update_dead(&world, &entities, elapsed_ticks);
             crate::player::PlayerFrame::default()
         };
         // Deterministic route/audio probes park the player in a trigger or on
@@ -579,6 +584,11 @@ pub fn run() -> ! {
                 }
             }
         }
+        if survival.died {
+            player.die(survival.death_hop);
+            death_wait = survival.death_ticks;
+            death_released = false;
+        }
         // `DeathSound`'s submerged branch also calls `DeathBubbles(20)`. The
         // fixed pool renders the original sprite, one birth per 0.1 seconds.
         if survival.death_bubbles {
@@ -595,9 +605,18 @@ pub fn run() -> ! {
         // input gives the release half for free. Single player restarts the
         // current level, so this reuses the ordinary map-load path with the
         // one difference that matters: the inventory does not carry over.
-        if weapon.inventory().health() <= 0
-            && (controls.fire_pressed() || controls.jump_pressed() || controls.use_pressed())
-        {
+        // The fall animation runs first; then nothing happens until every
+        // button has been let go, and the press after that respawns.
+        death_wait = death_wait.saturating_sub(elapsed_ticks);
+        if death_wait == 0 && !death_released && !controls.action_held() {
+            death_released = true;
+        }
+        let respawn_pressed = death_released
+            && (controls.action_held()
+                || controls.fire_pressed()
+                || controls.jump_pressed()
+                || controls.use_pressed());
+        if weapon.inventory().health() <= 0 && respawn_pressed {
             let restart = world.map();
             let Some(next_player) = load_level(
                 &mut world,
@@ -759,6 +778,9 @@ pub fn run() -> ! {
         }
         if let Some(sound) = gameplay.message_sound {
             play_sound_event(&mut audio, sound, audio_tick);
+        }
+        if gameplay.message_talk && audio.contains(0x7b) {
+            let _ = audio.play_one_shot_on(0x7b, PLAYER_VOICE, audio_tick);
         }
         for &sound in gameplay.mover_sounds() {
             play_sound_event(&mut audio, sound, audio_tick);
@@ -1316,16 +1338,13 @@ pub fn run() -> ! {
         pain_face.tick(elapsed_ticks);
         if blood != 0 || armor != 0 {
             pain_face.take_damage();
-            // `V_ParseDamage`: `from` is the inflictor, which sits opposite the
-            // knockback it dealt; world damage has no direction and only
-            // arms the kick timer.
+            // `V_ParseDamage`: `from` is the inflictor's centre, which sits
+            // opposite the knockback it dealt. Damage with no inflictor
+            // entity (lava, drowning, a fall) names the world, whose centre is
+            // the middle of its model's bounds.
             player.view_damage(
                 (i32::from(blood) + i32::from(armor)) / 2,
-                quake_formats::Vec3I32 {
-                    x: damage_impulse.x.saturating_neg(),
-                    y: damage_impulse.y.saturating_neg(),
-                    z: damage_impulse.z.saturating_neg(),
-                },
+                damage_source_direction(&world, player.origin(), damage_impulse),
             );
         }
         player.tick_view(elapsed_ticks);
@@ -1417,6 +1436,34 @@ pub fn run() -> ! {
 
         #[cfg(feature = "episode1-regression")]
         crate::regression::observe_render(_render_stats);
+    }
+}
+
+/// The direction from the player toward whatever dealt this frame's damage:
+/// against the knockback when there was one, else toward the world's centre.
+#[optimize(size)]
+fn damage_source_direction(
+    world: &crate::asset::ResidentMap,
+    origin: quake_formats::Vec3I32,
+    impulse: quake_formats::Vec3I32,
+) -> quake_formats::Vec3I32 {
+    if impulse.x != 0 || impulse.y != 0 || impulse.z != 0 {
+        return quake_formats::Vec3I32 {
+            x: impulse.x.saturating_neg(),
+            y: impulse.y.saturating_neg(),
+            z: impulse.z.saturating_neg(),
+        };
+    }
+    let Some(model) = world.brush_models().get(0) else {
+        return impulse;
+    };
+    let centre = |min: i16, max: i16, at: i32| {
+        ((i32::from(min) + i32::from(max)) << 11).saturating_sub(at)
+    };
+    quake_formats::Vec3I32 {
+        x: centre(model.mins.x, model.maxs.x, origin.x),
+        y: centre(model.mins.y, model.maxs.y, origin.y),
+        z: centre(model.mins.z, model.maxs.z, origin.z),
     }
 }
 
@@ -1635,7 +1682,8 @@ fn play_movement_audio(
         let _ = audio.play_one_shot_on(0xA6, PLAYER_BODY, video_tick);
     }
     if events.contains(MovementEvents::SWIM) {
-        let id = if video_tick & 1 == 0 { 0x7D } else { 0x7E };
+        // `random() < 0.5` picks water1 or water2.
+        let id = if (video_tick.wrapping_mul(0x9e37_79b9) >> 16) & 1 == 0 { 0x7D } else { 0x7E };
         let _ = audio.play_one_shot_on(id, PLAYER_BODY, video_tick);
     }
     if events.contains(MovementEvents::HARD_LAND) {

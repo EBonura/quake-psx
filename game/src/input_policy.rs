@@ -149,6 +149,12 @@ impl InputFrame {
         self.pressed & button::CROSS != 0
     }
 
+    /// Attack, jump or use is down: the buttons `PlayerDeathThink` waits on.
+    #[optimize(size)]
+    pub const fn action_held(self) -> bool {
+        self.held & (button::R2 | button::CROSS | button::SQUARE) != 0
+    }
+
     #[optimize(size)]
     pub const fn use_pressed(self) -> bool {
         self.pressed & button::SQUARE != 0

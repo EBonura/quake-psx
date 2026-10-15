@@ -557,6 +557,9 @@ pub struct GameplayResult {
     pub fired_target_edges: u16,
     pub completed_counters: u16,
     pub message_source: Option<u16>,
+    /// The message came from an entity fired by a target edge, so `talk.wav`
+    /// plays from the player's own voice channel.
+    pub message_talk: bool,
     /// `counter_use`'s countdown line, from the last counter stepped.
     pub counter_message: Option<&'static str>,
     /// Trigger noise selected by the authored `sounds` field.
@@ -3796,6 +3799,13 @@ impl EntityScene {
                     sound,
                     midpoint_vec_all(trigger.mins, trigger.maxs),
                 ));
+            } else if source.noise == 0 && source.string != 0 {
+                // `SUB_UseTargets`: a message with no noise of its own is
+                // read out with `misc/talk.wav`.
+                result.message_sound = Some(SoundEvent::at(
+                    0x7b,
+                    midpoint_vec_all(trigger.mins, trigger.maxs),
+                ));
             }
             if trigger.once {
                 trigger.armed = false;
@@ -4404,6 +4414,12 @@ impl EntityScene {
                 .saturating_add(actions.completed_counters());
             if actions.counter_message().is_some() {
                 result.counter_message = actions.counter_message();
+            }
+            // `SUB_UseTargets` prints a fired entity's message and, when it
+            // has no noise of its own, plays `misc/talk.wav`.
+            if actions.message_source().is_some() {
+                result.message_source = actions.message_source();
+                result.message_talk = true;
             }
             if actions.is_empty() {
                 actions.clear();
@@ -7971,62 +7987,14 @@ impl EntityScene {
         _scratch: &mut TraceScratch,
         output: &mut Trace,
     ) -> bool {
-        let Some(world) = map.brush_models().get(0) else {
-            return false;
-        };
-        let mut best = Trace::default();
-        let mut render_scratch = RenderTraceScratch::default();
-        // The aligned resident views: the cooked records' unaligned fields
-        // cost a byte load each on every node step.
-        let planes = map.collision_planes();
-        let nodes = map.render_nodes();
-        if !trace_render_bsp_into(
-            planes,
-            nodes,
-            map.leaves(),
-            world.head_nodes[0],
+        trace_scene_point(
+            map,
+            &self.entities,
+            &self.collision_indices,
             start,
             end,
-            &mut render_scratch,
-            &mut best,
-        ) {
-            return false;
-        }
-        for &index in &self.collision_indices {
-            let entity = &self.entities[usize::from(index)];
-            if !entity.visible
-                || !entity.solid
-                || entity.model_id >= 0
-                || !segment_overlaps_entity(*start, *end, entity)
-            {
-                continue;
-            }
-            let Some(model) = map.brush_models().get(entity.model_index as usize) else {
-                return false;
-            };
-            let mut candidate = Trace::default();
-            if !trace_translated_render_bsp_into(
-                planes,
-                nodes,
-                map.leaves(),
-                model.head_nodes[0],
-                entity.origin,
-                start,
-                end,
-                &mut render_scratch,
-                &mut candidate,
-            ) {
-                return false;
-            }
-            if candidate.fraction < best.fraction
-                || (candidate.start_solid && !best.start_solid)
-                || (candidate.all_solid && !best.all_solid)
-            {
-                best = candidate;
-            }
-        }
-        *output = best;
-        true
+            output,
+        )
     }
 
     #[cfg(any(feature = "monster-regression", feature = "monsterjump-regression"))]
@@ -9876,6 +9844,75 @@ fn monster_death_sound(class_name: u8) -> Option<i16> {
 #[cfg(feature = "episode1-regression")]
 static mut TRAIN_LEG_DEBUG: [i32; 13] = [0; 13];
 
+/// A zero-size trace through the world render hull and every visible solid
+/// brush entity, skipping monsters: `SV_Move` with `MOVE_NOMONSTERS` and
+/// `vec3_origin` bounds.
+fn trace_scene_point(
+    map: &ResidentMap,
+    entities: &[RenderEntity],
+    collision_indices: &[u16],
+    start: &Vec3I32,
+    end: &Vec3I32,
+    output: &mut Trace,
+) -> bool {
+    let Some(world) = map.brush_models().get(0) else {
+        return false;
+    };
+    let mut best = Trace::default();
+    let mut render_scratch = RenderTraceScratch::default();
+    // The aligned resident views: the cooked records' unaligned fields
+    // cost a byte load each on every node step.
+    let planes = map.collision_planes();
+    let nodes = map.render_nodes();
+    if !trace_render_bsp_into(
+        planes,
+        nodes,
+        map.leaves(),
+        world.head_nodes[0],
+        start,
+        end,
+        &mut render_scratch,
+        &mut best,
+    ) {
+        return false;
+    }
+    for &index in collision_indices {
+        let entity = &entities[usize::from(index)];
+        if !entity.visible
+            || !entity.solid
+            || entity.model_id >= 0
+            || !segment_overlaps_entity(*start, *end, entity)
+        {
+            continue;
+        }
+        let Some(model) = map.brush_models().get(entity.model_index as usize) else {
+            return false;
+        };
+        let mut candidate = Trace::default();
+        if !trace_translated_render_bsp_into(
+            planes,
+            nodes,
+            map.leaves(),
+            model.head_nodes[0],
+            entity.origin,
+            start,
+            end,
+            &mut render_scratch,
+            &mut candidate,
+        ) {
+            return false;
+        }
+        if candidate.fraction < best.fraction
+            || (candidate.start_solid && !best.start_solid)
+            || (candidate.all_solid && !best.all_solid)
+        {
+            best = candidate;
+        }
+    }
+    *output = best;
+    true
+}
+
 pub struct SceneCollision<'a> {
     map: &'a ResidentMap,
     entities: &'a [RenderEntity],
@@ -10000,6 +10037,35 @@ impl MovementTrace for SceneCollision<'_> {
         return unsafe { CollisionStack::run(|| self.trace_in_place(start, end, scratch, output)) };
         #[cfg(not(feature = "collision-scratchpad-stack"))]
         self.trace_in_place(start, end, scratch, output)
+    }
+
+    fn trace_line(
+        &self,
+        start: &Vec3I32,
+        end: &Vec3I32,
+        _scratch: &mut TraceScratch,
+        output: &mut MovementTraceResult,
+    ) -> bool {
+        let mut best = Trace::default();
+        if !trace_scene_point(
+            self.map,
+            self.entities,
+            self.collision_indices,
+            start,
+            end,
+            &mut best,
+        ) {
+            return false;
+        }
+        *output = MovementTraceResult {
+            all_solid: best.all_solid,
+            start_solid: best.start_solid,
+            fraction: best.fraction,
+            end: best.end,
+            normal: best.normal,
+            blocking_body: None,
+        };
+        true
     }
 }
 

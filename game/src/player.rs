@@ -26,7 +26,14 @@ const PLAYER_MAXS_Q12: Vec3I32 = Vec3I32 {
     y: 16 << 12,
     z: 32 << 12,
 };
-const MAX_PITCH: i16 = 1_012; // 89 degrees in Quake's 4096-unit turn.
+/// `CL_AdjustAngles`: the view stops at 80 degrees down and 70 up, in Quake's
+/// 4096-unit turn.
+const MAX_LOOK_DOWN: i16 = 910;
+const MAX_LOOK_UP: i16 = 796;
+/// `V_CalcRefdef`'s stair filter: the eye climbs at 80 units a second and
+/// never trails the origin by more than 12.
+const STAIR_SMOOTH_PER_TICK_Q12: i32 = (80 << 12) / 60;
+const STAIR_SMOOTH_MAX_Q12: i32 = 12 << 12;
 const CLASS_INFO_PLAYER_START2: u8 = 0x18;
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -52,6 +59,8 @@ pub struct Player {
     dead: bool,
     view: ViewFeel,
     pub view_angles: [i16; 3],
+    /// `oldz` of `V_CalcRefdef`: the stair-smoothed height of the origin.
+    view_z: i32,
 }
 
 impl Player {
@@ -63,7 +72,7 @@ impl Player {
         self.view_angles[1] = self.view_angles[1].wrapping_add(yaw_delta);
         self.view_angles[0] = self.view_angles[0]
             .saturating_add(pitch_delta)
-            .clamp(-MAX_PITCH, MAX_PITCH);
+            .clamp(-MAX_LOOK_UP, MAX_LOOK_DOWN);
         (yaw_delta, pitch_delta)
     }
 
@@ -84,12 +93,18 @@ impl Player {
     }
 
     fn from_entity(entity: MapEntity) -> Option<Self> {
+        // `PutClientInServer`: `self.origin = spot.origin + '0 0 1'`.
+        let origin = Vec3I32 {
+            z: entity.origin.z.saturating_add(1 << 12),
+            ..entity.origin
+        };
         Some(Self {
-            movement: MovementState::new(entity.origin),
+            movement: MovementState::new(origin),
             movement_scratch: MovementScratch::default(),
             dead: false,
             view: ViewFeel::new(),
             view_angles: [entity.angles.x, entity.angles.y, entity.angles.z],
+            view_z: origin.z,
         })
     }
 
@@ -97,6 +112,30 @@ impl Player {
     /// where the player fell and only the eye height drops.
     pub fn set_dead(&mut self, dead: bool) {
         self.dead = dead;
+    }
+
+    /// `PlayerDie`: the body leaves the ground as a tossed corpse, with the
+    /// `random() * 300` hop the survival rules rolled.
+    pub fn die(&mut self, hop_units: i16) {
+        self.movement.die(i32::from(hop_units));
+    }
+
+    /// `SV_Physics_Toss` for the corpse, so a player killed in the air or on
+    /// a slope settles on the floor.
+    pub fn update_dead(&mut self, map: &ResidentMap, entities: &EntityScene, elapsed_ticks: u16) {
+        if let Some(collision) = entities.collision(map, self.origin()) {
+            let gravity = if map.map() == EpisodeMap::E1M8 {
+                100
+            } else {
+                quake_core::movement::DEFAULT_GRAVITY
+            };
+            self.movement.update_dead(
+                &collision,
+                &mut self.movement_scratch,
+                elapsed_ticks,
+                gravity,
+            );
+        }
     }
 
     /// The gameplay view: `cl.viewangles` and the eye height, before
@@ -123,7 +162,11 @@ impl Player {
     pub fn render_camera(&self) -> Camera {
         let mut camera = self.camera();
         let (pitch, roll, bob_z) = self.view.offsets();
-        camera.origin.z = camera.origin.z.saturating_add(bob_z);
+        camera.origin.z = camera
+            .origin
+            .z
+            .saturating_add(bob_z)
+            .saturating_add(self.view_z - self.movement.origin().z);
         camera.angles[0] = camera.angles[0].wrapping_add(pitch);
         camera.angles[2] = camera.angles[2].wrapping_add(roll);
         camera
@@ -149,6 +192,17 @@ impl Player {
 
     /// Advance punch, kick, roll and bob for the frame about to render.
     pub fn tick_view(&mut self, elapsed_ticks: u16) {
+        // `V_CalcRefdef`: while standing, the eye follows a rise in the
+        // origin at 80 units a second, at most 12 behind it, so a stair
+        // glides instead of popping; any other frame it is the origin.
+        let z = self.movement.origin().z;
+        if self.movement.grounded() && z > self.view_z {
+            self.view_z = (self.view_z + STAIR_SMOOTH_PER_TICK_Q12 * i32::from(elapsed_ticks))
+                .min(z)
+                .max(z - STAIR_SMOOTH_MAX_Q12);
+        } else {
+            self.view_z = z;
+        }
         let (_, right, _) = quake_core::combat::view_basis(self.view_angles);
         self.view
             .tick(self.movement.velocity(), right, self.dead, elapsed_ticks);
@@ -311,7 +365,13 @@ impl Player {
     #[optimize(size)]
     pub fn update_noclip(&mut self, input: InputFrame, elapsed_ticks: u16) -> PlayerFrame {
         let (yaw_delta, pitch_delta) = self.update_look(input, elapsed_ticks);
-        let (forward, right, _) = quake_core::combat::view_basis(self.view_angles);
+        // `SV_AirMove` builds the wish from `v.angles`, whose pitch is a third
+        // of the view's, noclip included.
+        let (forward, right, _) = quake_core::combat::view_basis([
+            self.view_angles[0] / 3,
+            self.view_angles[1],
+            self.view_angles[2],
+        ]);
         let ticks = i32::from(elapsed_ticks.clamp(1, 4));
         let step = |forward_axis: i32, right_axis: i32| {
             let wish = (forward_axis
