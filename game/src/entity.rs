@@ -19,6 +19,7 @@ use quake_core::combat::{
     GRENADE_MODEL_ID, MAX_SHOTGUN_PELLETS, NAIL_MODEL_ID, NAIL_POOL_CAPACITY, ROCKET_MODEL_ID,
 };
 use quake_core::door;
+use quake_core::survival::QUAD_DAMAGE_MULTIPLIER;
 use quake_core::effects::{ImpactParticles, ParticleKind};
 use quake_core::level::MonsterCounter;
 use quake_core::lightstyle::{self, sample_leaf as leaf_light};
@@ -706,7 +707,6 @@ pub struct LightningResult {
     pub discharge: bool,
     pub world_clipped: bool,
     pub trace_end: Vec3I32,
-    pub side_end: Vec3I32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -3089,74 +3089,53 @@ impl EntityScene {
             return None;
         }
         let geometry = lightning_trace_geometry(attack, world.fraction);
-        let mut hit_entities = [None; 3];
-        let mut hit_count = 0usize;
+        // `LightningDamage`: the one ray that can hurt anything. Its two
+        // flanking rays are thrown thousands of units aside by the id1
+        // function's un-normalised direction, so they never reach a target.
         let mut result = LightningResult {
             world_clipped: world.fraction < 1 << 12,
             trace_end: geometry.beam_end,
-            side_end: geometry.ends[1],
             ..LightningResult::default()
         };
-        let mut line = 0usize;
-        while line < 3 {
-            let mut scratch = TraceScratch::default();
-            let mut world = Trace::default();
-            if !self.trace_point(
+        let (ray_start, ray_end) = (geometry.damage_start, geometry.damage_end);
+        let mut scratch = TraceScratch::default();
+        let mut world = Trace::default();
+        if !self.trace_point(map, &ray_start, &ray_end, &mut scratch, &mut world) {
+            return None;
+        }
+        let mut best_fraction = world.fraction;
+        let mut best_entity = None;
+        for (index, entity) in self.entities.iter().enumerate() {
+            if !entity.visible || !entity.damageable || entity.health <= 0 {
+                continue;
+            }
+            let Some(fraction) =
+                segment_aabb_fraction(ray_start, ray_end, entity.hit_mins, entity.hit_maxs)
+            else {
+                continue;
+            };
+            if fraction < best_fraction {
+                best_fraction = fraction;
+                best_entity = Some(index);
+            }
+        }
+        if let Some((hit, _)) = self.shootable_brush_hit(ray_start, ray_end, best_fraction) {
+            self.damage_shootable_brush(hit, attack.damage, &mut result.damage);
+        } else if let Some(index) = best_entity {
+            let damaged_before = result.damage.damaged_targets;
+            apply_entity_damage(
                 map,
-                &geometry.starts[line],
-                &geometry.ends[line],
-                &mut scratch,
-                &mut world,
-            ) {
-                return None;
+                self.nightmare(),
+                &mut self.entities[index],
+                attack.damage,
+                DamageAttacker::Player,
+                &mut result.damage,
+                &mut self.pending_scene_work,
+            );
+            if result.damage.damaged_targets != damaged_before {
+                result.damage.last_impact =
+                    Some(interpolate_impact(ray_start, ray_end, best_fraction));
             }
-            let mut best_fraction = world.fraction;
-            let mut best_entity = None;
-            for (index, entity) in self.entities.iter().enumerate() {
-                if !entity.visible || !entity.damageable || entity.health <= 0 {
-                    continue;
-                }
-                let Some(fraction) = segment_aabb_fraction(
-                    geometry.starts[line],
-                    geometry.ends[line],
-                    entity.hit_mins,
-                    entity.hit_maxs,
-                ) else {
-                    continue;
-                };
-                if fraction < best_fraction {
-                    best_fraction = fraction;
-                    best_entity = Some(index);
-                }
-            }
-            if let Some((hit, _)) =
-                self.shootable_brush_hit(geometry.starts[line], geometry.ends[line], best_fraction)
-            {
-                self.damage_shootable_brush(hit, attack.damage, &mut result.damage);
-            } else if let Some(index) = best_entity {
-                if !hit_entities[..hit_count].contains(&Some(index)) {
-                    let damaged_before = result.damage.damaged_targets;
-                    apply_entity_damage(
-                        map,
-                        self.nightmare(),
-                        &mut self.entities[index],
-                        attack.damage,
-                        DamageAttacker::Player,
-                        &mut result.damage,
-                        &mut self.pending_scene_work,
-                    );
-                    if result.damage.damaged_targets != damaged_before {
-                        result.damage.last_impact = Some(interpolate_impact(
-                            geometry.starts[line],
-                            geometry.ends[line],
-                            best_fraction,
-                        ));
-                    }
-                    hit_entities[hit_count] = Some(index);
-                    hit_count += 1;
-                }
-            }
-            line += 1;
         }
         self.lightning_beam = Some(LightningBeam {
             start: geometry.beam_start,
@@ -3179,6 +3158,13 @@ impl EntityScene {
         };
         self.lightning_beam = None;
         self.lightning_beam_frames = 0;
+        // `T_RadiusDamage` hands each target's `points` to `T_Damage`, which
+        // multiplies them by four under the quad.
+        let quad: i16 = if weapon.quad_active() {
+            QUAD_DAMAGE_MULTIPLIER
+        } else {
+            1
+        };
         let mut index = 0usize;
         while index < self.entities.len() {
             if !self.entities[index].visible
@@ -3202,7 +3188,8 @@ impl EntityScene {
                 false,
                 true,
                 class_name == 0x41,
-            );
+            )
+            .saturating_mul(quad);
             if points <= 0 {
                 index += 1;
                 continue;
@@ -3227,7 +3214,8 @@ impl EntityScene {
         }
         let player_distance = distance_units(discharge.origin, player_origin);
         let player_points =
-            explosion_splash_points(discharge.damage, player_distance, true, true, false);
+            explosion_splash_points(discharge.damage, player_distance, true, true, false)
+                .saturating_mul(quad);
         let _ = weapon.take_damage(player_points);
         Some(result)
     }
@@ -8348,31 +8336,18 @@ impl EntityScene {
                 right,
                 damage: quake_core::combat::LIGHTNING_DAMAGE,
                 sound_id: None,
+                hit_sound_id: None,
             };
             let result = self.fire_lightning(map, attack)?;
             if !result.world_clipped {
                 continue;
             }
             let beam = self.lightning_beam?;
-            let expected_side = Vec3I32 {
-                x: result
-                    .trace_end
-                    .x
-                    .saturating_add(right.x.saturating_mul(16)),
-                y: result
-                    .trace_end
-                    .y
-                    .saturating_add(right.y.saturating_mul(16)),
-                z: result
-                    .trace_end
-                    .z
-                    .saturating_add(right.z.saturating_mul(16)),
-            };
             let mut flags = 1;
             if beam.start == origin && beam.end == result.trace_end {
                 flags |= 1 << 1;
             }
-            if result.trace_end != attack.end && result.side_end == expected_side {
+            if result.trace_end != attack.end {
                 flags |= 1 << 2;
             }
             return Some((flags, forward));

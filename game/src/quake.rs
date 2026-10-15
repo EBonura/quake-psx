@@ -878,11 +878,14 @@ pub fn run() -> ! {
             {
                 // `select` refuses an unowned or empty weapon without
                 // disturbing the current one, matching Quake's impulses.
-                weapon.select(direct);
+                // `W_WeaponFrame` only reads the impulse once
+                // `attack_finished` has passed, so a switch asked for
+                // mid-refire waits for the window to close.
+                weapon.request_select(direct);
             } else if controls.next_weapon_pressed() {
-                weapon.cycle(true);
+                weapon.request_cycle(true);
             } else if controls.previous_weapon_pressed() {
-                weapon.cycle(false);
+                weapon.request_cycle(false);
             }
         }
         let fire_held = controls.fire_held() && alive;
@@ -941,6 +944,9 @@ pub fn run() -> ! {
                 view_model_muzzle_flash = true;
             }
             match attack {
+                // The click only swings: `ax1` and the arm animation. The
+                // blow follows two swing frames later as `Axe`.
+                quake_core::combat::WeaponAttack::AxeSwing => {}
                 quake_core::combat::WeaponAttack::Axe(attack) => {
                     if let Some(result) = entities.fire_hitscan(&world, attack) {
                         play_response_sound(&mut audio, result.response_sound, audio_tick);
@@ -992,6 +998,23 @@ pub fn run() -> ! {
                 }
             }
             if let Some(sound) = sound.filter(|sound| audio.contains(*sound)) {
+                let channel = if matches!(
+                    attack,
+                    quake_core::combat::WeaponAttack::Lightning(_)
+                        | quake_core::combat::WeaponAttack::LightningDischarge(_)
+                ) {
+                    // `lstart` is played on `CHAN_AUTO`, beside the
+                    // `CHAN_WEAPON` `lhit`.
+                    PLAYER_AUTO
+                } else {
+                    PLAYER_WEAPON
+                };
+                let _ = audio.play_one_shot_on(sound, channel, audio_tick);
+            }
+            if let Some(sound) = attack
+                .secondary_sound_id()
+                .filter(|sound| audio.contains(*sound))
+            {
                 let _ = audio.play_one_shot_on(sound, PLAYER_WEAPON, audio_tick);
             }
         }
@@ -1562,6 +1585,9 @@ const PLAYER_BODY: u16 =
 /// `PainSound`, `DeathSound`, the gasp and `CheckPowerups`' warning.
 const PLAYER_VOICE: u16 =
     crate::audio::sound_key(crate::audio::OWNER_PLAYER, crate::audio::CHAN_VOICE);
+/// `CHAN_AUTO` never cuts another sound: `W_Attack`'s `lstart`.
+const PLAYER_AUTO: u16 =
+    crate::audio::sound_key(crate::audio::OWNER_PLAYER, crate::audio::CHAN_AUTO);
 /// `W_Attack`'s firing noise.
 const PLAYER_WEAPON: u16 =
     crate::audio::sound_key(crate::audio::OWNER_PLAYER, crate::audio::CHAN_WEAPON);

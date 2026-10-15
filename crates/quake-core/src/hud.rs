@@ -197,7 +197,7 @@ impl HudView {
             let step = if self.health >= 100 {
                 4
             } else {
-                self.health / 25
+                self.health / 20
             };
             if self.pain {
                 match step {
@@ -355,14 +355,14 @@ mod tests {
         let mut inventory = Inventory::new();
         inventory.take_damage(30);
         let healthy = HudView::from_inventory(inventory);
-        assert_eq!(healthy.face_picture(), GraphicsPictureId::Face3);
+        assert_eq!(healthy.face_picture(), GraphicsPictureId::Face2);
 
         let mut timer = PainFaceTimer::new();
         timer.take_damage();
         assert!(timer.active());
         assert_eq!(
             healthy.with_pain(timer.active()).face_picture(),
-            GraphicsPictureId::FacePain3
+            GraphicsPictureId::FacePain2
         );
 
         timer.tick(PAIN_FACE_TICKS as u16 - 1);
@@ -371,7 +371,7 @@ mod tests {
         assert!(!timer.active());
         assert_eq!(
             healthy.with_pain(timer.active()).face_picture(),
-            GraphicsPictureId::Face3
+            GraphicsPictureId::Face2
         );
     }
 
@@ -379,11 +379,17 @@ mod tests {
     #[test]
     fn the_pain_strip_covers_every_health_step_but_yields_to_the_artifacts() {
         let mut inventory = Inventory::new();
+        // `Sbar_DrawFace`: `health / 20`, with 100 and above the best face.
         let expected = [
             (100u16, GraphicsPictureId::FacePain1),
-            (80, GraphicsPictureId::FacePain2),
-            (55, GraphicsPictureId::FacePain3),
-            (30, GraphicsPictureId::FacePain4),
+            (80, GraphicsPictureId::FacePain1),
+            (79, GraphicsPictureId::FacePain2),
+            (60, GraphicsPictureId::FacePain2),
+            (59, GraphicsPictureId::FacePain3),
+            (40, GraphicsPictureId::FacePain3),
+            (39, GraphicsPictureId::FacePain4),
+            (20, GraphicsPictureId::FacePain4),
+            (19, GraphicsPictureId::FacePain5),
             (5, GraphicsPictureId::FacePain5),
         ];
         for (health, face) in expected {
