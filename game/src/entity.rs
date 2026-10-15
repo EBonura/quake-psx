@@ -971,8 +971,13 @@ impl EntityScene {
                 2
             } else if cfg!(feature = "spawn-skill-1") {
                 1
-            } else {
+            } else if cfg!(feature = "emulator-telemetry") {
+                // Every regression and bench scene is authored against Easy.
                 0
+            } else {
+                // A fresh boot starts on the menu's own default, as the
+                // original's `skill` cvar does, not on Easy.
+                quake_core::menu::DEFAULT_SKILL
             },
             runes: 0,
             sight_index: 0,

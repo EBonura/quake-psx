@@ -15,7 +15,7 @@ the Rust runtime in this repository, not the registered episodes.
 | E1M5 | Yes | Partial |
 | E1M6 | Yes | Focused monster-jump test |
 | E1M7 | Yes | Focused mechanism and boss tests |
-| E1M8 | Yes | Load and boss tests |
+| E1M8 | Yes | Load tests |
 
 The map regression follows all ten Episode 1 transitions, including the E1M4
 secret exit and the E1M7 return to Start. A complete player-driven route for
@@ -73,7 +73,7 @@ drops the new effect instead of allocating memory during play.
 Shared behavior includes target acquisition, walking, melee and ranged
 attacks, pain, death, collision and authored sounds. Class-specific behavior
 includes Zombie resurrection, Ogre grenades, Demon leaps, Wizard missiles,
-Shambler lightning and Chthon's map-controlled death.
+Shambler lightning and Chthon's map-controlled death (E1M7).
 
 Some details from desktop Quake remain incomplete, including full infighting,
 all patrol behavior and several cosmetic gib variations. Monsters that appear
@@ -88,11 +88,12 @@ Supported map behavior includes:
 - change-level and teleport triggers;
 - relays, counters, delays, killtargets and target chains;
 - difficulty and game-mode filters;
-- hurt, push, once and multiple triggers;
+- once and multiple triggers (`trigger_hurt`, `trigger_push` and `trigger_gravity`
+  are not implemented: no Episode 1 map uses them);
 - secrets, messages and center prints;
 - spikes, fireballs, lightning and explosive boxes;
 - ambient sound sources and moving-brush sounds;
-- E1M7 lightning mechanisms and the E1M8 Chthon sequence.
+- E1M7's lightning mechanisms and Chthon sequence (Chthon is only in E1M7).
 
 The cooker checks target names, teleport destinations, map limits and entity
 references before writing the disc.
@@ -109,7 +110,7 @@ Implemented:
 - Minimal and Classic HUD modes;
 - menus, pause screen, screen blends and light styles;
 - weapon models, pickups, monsters, particles and shadows;
-- positional SPU sound and optional user-supplied CD audio.
+- positional SPU sound and ambient XA music streamed from the disc.
 
 Extreme projected surfaces can still show fixed-point seams or affine
 distortion. These cases remain under investigation.

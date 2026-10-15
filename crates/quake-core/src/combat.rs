@@ -1154,6 +1154,10 @@ impl WeaponAttack {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WeaponState {
     inventory: Inventory,
+    /// `client->spawn_parms`: the inventory this life entered the level with,
+    /// saved by `SetChangeParms` at the last level change (or `SetNewParms`
+    /// for a new game). Dying restarts the level from these, not from scratch.
+    entry_inventory: Inventory,
     survival: Survival,
     refire_ticks: u16,
     view_frame: u16,
@@ -1169,6 +1173,7 @@ impl WeaponState {
     pub const fn new() -> Self {
         Self {
             inventory: Inventory::new(),
+            entry_inventory: Inventory::new(),
             survival: Survival::new(),
             refire_ticks: 0,
             view_frame: 0,
@@ -1187,12 +1192,17 @@ impl WeaponState {
         self.survival.tick(&mut self.inventory, input)
     }
 
-    /// Restart a life with `SetNewParms`: axe and shotgun, 25 shells, 100
-    /// health, no armor, no keys, no powerups, and a fresh air supply. Every
-    /// other level change keeps the inventory, so this is deliberately the
-    /// only path that discards it.
+    /// Restart a life the way `Host_Restart_f` does: the level reloads and the
+    /// player is put back with the parms saved when the level was entered
+    /// (`SetChangeParms` after a level change, `SetNewParms` on a new game),
+    /// so every weapon, armor and ammo stack carried in survives a death and
+    /// only what was picked up on this level is lost. Firing state, air supply
+    /// and megahealth rot start fresh.
     pub fn respawn(&mut self) {
+        let entry = self.entry_inventory;
         *self = Self::new();
+        self.inventory = entry;
+        self.entry_inventory = entry;
     }
 
     pub const fn shells(&self) -> u16 {
@@ -1797,6 +1807,7 @@ impl WeaponState {
         // death rather than carrying a corpse through, so the live path is the
         // only reachable one.
         self.inventory.apply_change_parms();
+        self.entry_inventory = self.inventory;
         self.reset_animation();
     }
 
@@ -1981,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn respawning_restores_set_new_parms_and_discards_everything_else() {
+    fn dying_on_the_first_level_restores_set_new_parms() {
         let mut weapon = WeaponState::new();
         weapon.apply_pickup(pickup_for_entity(0x56, 0).expect("rocket launcher"));
         weapon.apply_pickup(Pickup::Armor {
@@ -2021,6 +2032,50 @@ mod tests {
             assert!(!inventory.owns(weapon_kind));
         }
         assert_eq!(weapon, WeaponState::new());
+    }
+
+    /// `Host_Restart_f` re-enters with the parms saved at the last level
+    /// change, so a death on a later level keeps what was carried in and loses
+    /// what this level handed out.
+    #[test]
+    fn dying_after_a_level_change_restores_the_loadout_you_entered_with() {
+        let mut weapon = WeaponState::new();
+        weapon.apply_pickup(pickup_for_entity(0x56, 0).expect("rocket launcher"));
+        weapon.apply_pickup(Pickup::Armor {
+            tier: ArmorTier::Red,
+            amount: 200,
+        });
+        weapon.apply_pickup(Pickup::Key { bit: 1 });
+        weapon.apply_pickup(Pickup::Ammo {
+            kind: AmmoKind::Rockets,
+            amount: 30,
+        });
+        weapon.map_loaded();
+        let entered = weapon.inventory();
+        assert!(entered.owns(Weapon::RocketLauncher));
+        assert_eq!(entered.keys(), 0, "SetChangeParms strips keys");
+
+        // Everything below is picked up or spent on the new level.
+        weapon.apply_pickup(pickup_for_entity(0x55, 0).expect("super nailgun"));
+        weapon.apply_pickup(Pickup::Ammo {
+            kind: AmmoKind::Nails,
+            amount: 100,
+        });
+        weapon.apply_pickup(Pickup::Key { bit: 2 });
+        weapon.take_damage(1000);
+        assert!(weapon.inventory().health() <= 0);
+
+        weapon.respawn();
+        let inventory = weapon.inventory();
+        assert_eq!(inventory, entered);
+        assert!(inventory.owns(Weapon::RocketLauncher));
+        assert!(!inventory.owns(Weapon::SuperNailgun));
+        assert_eq!(inventory.ammo(AmmoKind::Nails), 0);
+        assert_eq!(inventory.keys(), 0);
+        // A second death restarts from the same parms.
+        weapon.take_damage(1000);
+        weapon.respawn();
+        assert_eq!(weapon.inventory(), entered);
     }
 
     /// An ordinary level change carries the armour, ammo and weapons. Only
