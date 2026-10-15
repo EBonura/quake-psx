@@ -3639,7 +3639,6 @@ impl EntityScene {
     /// Out of line for the same reason as `collect_pickups`: its mover loop
     /// reloaded 61 values per mover from `quake::run`'s frame.
     #[inline(never)]
-    #[optimize(size)]
     pub fn update_gameplay(
         &mut self,
         map: &ResidentMap,
