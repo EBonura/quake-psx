@@ -24,6 +24,8 @@ mod combat_regression;
 mod e1m1_chain_regression;
 #[cfg(feature = "e1m2-normal-journey")]
 mod journey_combat;
+#[cfg(any(feature = "e1m1-normal-journey", feature = "e1m2-normal-journey"))]
+mod journey_pad;
 #[cfg(feature = "e1m2-e1m3-route-regression")]
 mod e1m2_e1m3_route_regression;
 mod entity;

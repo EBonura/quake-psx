@@ -341,6 +341,12 @@ static mut ROUTE_INDEX: usize = 0;
 /// when the approach stops shrinking, the heading steps through a bounded fan
 /// of offsets. No waypoint moved and no mechanism requirement changed.
 static mut STALL_FRAMES: u32 = 0;
+/// Frames to stand clear after the bridge door fires. The door slab sweeps in
+/// from the side and pushes anything its path overlaps; the first attempt that
+/// stepped toward the bridge edge as it arrived was carried off it and fell
+/// into the slime. A player waits for the bridge to settle.
+static mut SETTLE_FRAMES: u32 = 0;
+const BRIDGE_SETTLE_FRAMES: u32 = 60;
 static mut DETOUR: usize = 0;
 static mut BEST_DISTANCE: i32 = i32::MAX;
 
@@ -368,14 +374,19 @@ pub fn map_loaded(map: EpisodeMap) {
             // can deliver it.
             EpisodeMap::E1M2 => {
                 let state = read_volatile(addr_of_mut!((*probe).player_state));
-                if state & CROSSED_T10 == 0 {
-                    fail(FAILURE_CHAIN_ORDER, map_index(map), state);
-                    return;
-                }
-                let sounds = read_volatile(addr_of_mut!((*probe).weapon_selected));
-                if sounds & REQUIRED_ROUTE_MOVER_SOUNDS != REQUIRED_ROUTE_MOVER_SOUNDS {
-                    fail(FAILURE_CHAIN_ORDER, map_index(map), sounds);
-                    return;
+                // A replayed tape has no controller to witness the doorway
+                // crossing; the shipping changelevel having fired is the proof.
+                #[cfg(not(feature = "journey-replay"))]
+                {
+                    if state & CROSSED_T10 == 0 {
+                        fail(FAILURE_CHAIN_ORDER, map_index(map), state);
+                        return;
+                    }
+                    let sounds = read_volatile(addr_of_mut!((*probe).weapon_selected));
+                    if sounds & REQUIRED_ROUTE_MOVER_SOUNDS != REQUIRED_ROUTE_MOVER_SOUNDS {
+                        fail(FAILURE_CHAIN_ORDER, map_index(map), sounds);
+                        return;
+                    }
                 }
                 write_volatile(addr_of_mut!((*probe).player_state), state | EXIT_E1M2);
                 write_volatile(addr_of_mut!((*probe).maps_loaded), 0x006);
@@ -482,12 +493,19 @@ pub fn controls(map: EpisodeMap, player: &Player) -> InputFrame {
             u32::from(crate::entity::regression_last_player_collision_source()),
         );
 
+        if SETTLE_FRAMES > 0 {
+            SETTLE_FRAMES -= 1;
+            return InputFrame::default();
+        }
         while let Some(target) = ROUTE.get(ROUTE_INDEX).copied() {
             let mechanisms = read_volatile(addr_of_mut!((*probe).player_state));
             if target.z == i32::MIN
                 && target.require.count_ones() == 1
                 && mechanisms & target.require == target.require
             {
+                if target.require == BRIDGE_T2 {
+                    SETTLE_FRAMES = BRIDGE_SETTLE_FRAMES;
+                }
                 ROUTE_INDEX += 1;
                 write_volatile(addr_of_mut!((*probe).route_index), ROUTE_INDEX as u32);
                 BEST_DISTANCE = i32::MAX;
@@ -665,6 +683,10 @@ pub fn observe(map: EpisodeMap, gameplay: GameplayResult, entities: &EntityScene
                 }
                 _ => 0,
             };
+            // The doorway crossing is witnessed by the controller's route, which
+            // a replayed tape does not have.
+            #[cfg(feature = "journey-replay")]
+            let required_before = required_before & !CROSSED_T10;
             if mechanisms & required_before != required_before {
                 fail(FAILURE_CHAIN_ORDER, map_index(map), u32::from(source_index));
                 return;

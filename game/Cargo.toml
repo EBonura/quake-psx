@@ -52,10 +52,15 @@ e1m1-chain-regression = ["emulator-telemetry"]
 # still steps on fixed ticks, monsters just run.
 route-monsters = ["e1m1-chain-regression"]
 # Ordinary title and START entry, live enemies, then E1M1 authored exit.
-e1m1-normal-journey = ["route-monsters"]
+e1m1-normal-journey = ["route-monsters", "perf-fixed-ticks-30hz"]
 e1m2-e1m3-route-regression = ["emulator-telemetry"]
 # Ordinary map-menu entry with authored enemies retained.
-e1m2-normal-journey = ["e1m2-e1m3-route-regression"]
+e1m2-normal-journey = ["e1m2-e1m3-route-regression", "perf-fixed-ticks-30hz"]
+# Replay image for a recorded controller tape: the same journey image with the
+# controllers inert, so the pad drives the game and the probes only observe.
+# Both images advance two ticks per frame, so a poll-bound tape means the same
+# thing on each.
+journey-replay = []
 # One continuous journey: title, START, then every Episode 1 map in turn with
 # live enemies, each map under its own controller.
 e1-chain-journey = ["e1m1-normal-journey", "e1m2-normal-journey"]

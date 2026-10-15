@@ -245,6 +245,7 @@ enum Action {
     E1m1NormalBuild,
     E1m2NormalBuild,
     E1ChainBuild,
+    E1m1ReplayBuild,
     E1m1ChainBench,
     E1m1MonsterRouteBench,
     E1m1SelectionCacheBench,
@@ -499,6 +500,14 @@ fn real_main() -> Result<()> {
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(&root, &build, Some("e1m2-normal-journey"), false)?;
+        }
+        Action::E1m1ReplayBuild => {
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-e1m1-replay");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(&root, &build, Some("e1m1-normal-journey,journey-replay"), false)?;
         }
         Action::E1ChainBuild => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2742,6 +2751,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-normal-build"
             | "e1m2-normal-build"
             | "e1-chain-build"
+            | "e1m1-replay-build"
             | "e1m1-chain-bench"
             | "e1m1-monster-route-bench"
             | "e1m1-selection-cache-bench"
@@ -2802,6 +2812,7 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-normal-build" => Action::E1m1NormalBuild,
                     "e1m2-normal-build" => Action::E1m2NormalBuild,
                     "e1-chain-build" => Action::E1ChainBuild,
+                    "e1m1-replay-build" => Action::E1m1ReplayBuild,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
                     "e1m1-selection-cache-bench" => Action::E1m1SelectionCacheBench,
@@ -8914,6 +8925,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-e1m1-normal-journey"
             | "build-psoxide-e1m2-normal-journey"
             | "build-psoxide-e1-chain-journey"
+            | "build-psoxide-e1m1-replay"
             | "build-psoxide-e1m1-selection-cache-bench"
             | "build-psoxide-e1m1-topology-cache-bench"
             | "build-psoxide-e1m1-indexed-projection-bench"

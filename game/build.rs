@@ -154,7 +154,9 @@ fn main() {
     let stack_reserve = env::var("QUAKE_PSX_JOURNEY_STACK_RESERVE")
         .ok()
         .filter(|value| {
-            env::var_os("CARGO_FEATURE_E1_CHAIN_JOURNEY").is_some()
+            (env::var_os("CARGO_FEATURE_E1_CHAIN_JOURNEY").is_some()
+                || env::var_os("CARGO_FEATURE_E1M1_NORMAL_JOURNEY").is_some()
+                || env::var_os("CARGO_FEATURE_E1M2_NORMAL_JOURNEY").is_some())
                 && value.starts_with("0x")
                 && value[2..].chars().all(|c| c.is_ascii_hexdigit())
         })

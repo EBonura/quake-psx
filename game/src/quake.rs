@@ -451,7 +451,9 @@ pub fn run() -> ! {
         #[cfg(feature = "start-route-regression")]
         let controls = crate::start_route_regression::controls(world.map(), &player);
         #[cfg(feature = "e1m1-chain-regression")]
-        let controls = if cfg!(feature = "e1m1-normal-journey") && menu.active() {
+        let controls = if cfg!(feature = "journey-replay")
+            || (cfg!(feature = "e1m1-normal-journey") && menu.active())
+        {
             apply_look_settings(raw_controls, &menu)
         } else {
             #[cfg(feature = "e1m1-normal-journey")]
@@ -472,7 +474,9 @@ pub fn run() -> ! {
             })
         };
         #[cfg(feature = "e1m2-e1m3-route-regression")]
-        let controls = if cfg!(feature = "e1-chain-journey")
+        let controls = if cfg!(feature = "journey-replay") {
+            apply_look_settings(raw_controls, &menu)
+        } else if cfg!(feature = "e1-chain-journey")
             && (menu.active()
                 || matches!(world.map(), crate::asset::EpisodeMap::Start | crate::asset::EpisodeMap::E1M1))
         {
@@ -492,6 +496,19 @@ pub fn run() -> ! {
         #[cfg(feature = "episode1-route-regression")]
         let controls = crate::episode1_regression::controls(&world, &entities, &player);
 
+        #[cfg(any(feature = "e1m1-normal-journey", feature = "e1m2-normal-journey"))]
+        #[cfg(not(feature = "journey-replay"))]
+        let controls = {
+            static mut JOURNEY_PAD: crate::journey_pad::JourneyPad = crate::journey_pad::JourneyPad::new();
+            // Menu frames carry the hardware pad (the title press); game
+            // frames carry the controller's request.
+            // The hardware pad (the pulsed title press) joins the controller's
+            // request, so the logged sample is the whole pad the game saw.
+            let mut want = controls;
+            want.held |= raw_controls.held;
+            // SAFETY: the game loop is single-threaded and owns this static.
+            unsafe { (*core::ptr::addr_of_mut!(JOURNEY_PAD)).through_pad(want, menu.deadzone_radius(), menu.active()) }
+        };
         #[cfg(feature = "e1m1-normal-journey")]
         crate::e1m1_chain_regression::observe_health(weapon.inventory().health());
         #[cfg(any(feature = "e1m2-normal-journey", feature = "e1-chain-journey"))]

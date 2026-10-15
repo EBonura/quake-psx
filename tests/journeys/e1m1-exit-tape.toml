@@ -1,0 +1,62 @@
+# Replays the recorded pad tape through the real title, START and E1M1 on the
+# replay image (cargo quake-build e1m1-replay-build): same game code as the
+# authoring image with the controllers inert, so the pad is the only input.
+# Controller input only: no state is written, no map is forced.
+name = "quake-e1m1-exit-tape"
+title = "Quake: pad tape from boot through START and E1M1 to the E1M2 load"
+disc = ["build-psoxide-e1m1-replay/quake-psx.cue"]
+symbols = ["build-psoxide-e1m1-replay/quake-psx.map"]
+pad = "analog"
+card_observe = true
+max_ticks = 12000
+
+# Bound to the build this journey was written against.
+[addr]
+E1M1_PROBE = 0x8008a3f8
+
+[[step]]
+label = "pad tape: title press, START skill door and slipgate, E1M1 with live enemies, exit"
+tape = "tapes/e1m1-exit.pxtape"
+tape_rebase = true
+timeout = 9000
+
+[[step]]
+label = "let E1M2 finish loading"
+wait = 300
+
+[[step]]
+checkpoint = "e1m2-loaded"
+golden = false
+[[step.assert]]
+kind = "not_flat"
+[[step.assert]]
+kind = "card_unchanged"
+[[step.assert]]
+kind = "ram"
+sym = "E1M1_PROBE"
+offset = 88
+size = 4
+op = "eq"
+value = 2
+[[step.assert]]
+kind = "ram"
+sym = "E1M1_PROBE"
+offset = 124
+size = 4
+op = "eq"
+value = 32703
+[[step.assert]]
+kind = "ram"
+sym = "E1M1_PROBE"
+offset = 116
+size = 4
+op = "between"
+value = 1
+value_hi = 200
+[[step.assert]]
+kind = "ram"
+sym = "E1M1_PROBE"
+offset = 16
+size = 4
+op = "eq"
+value = 0
