@@ -5338,6 +5338,7 @@ impl EntityScene {
     /// Every walking monster stands -24 below its origin and is 16 (hull 1) or
     /// 32 (hull 2) wide each side, which is also the clip hull it is traced in.
     #[inline(never)]
+    #[optimize(size)]
     fn monster_check_bottom(
         &self,
         map: &ResidentMap,
@@ -5420,6 +5421,8 @@ impl EntityScene {
     /// the frame like any other. Live bodies are cleared by a horizontal sweep
     /// first, because a vertical probe through a neighbour's box reports a
     /// floor-facing normal and would let monsters stand on each other's heads.
+    #[inline(never)]
+    #[optimize(size)]
     #[allow(clippy::too_many_arguments)]
     fn monster_move_step(
         &self,
@@ -5489,6 +5492,8 @@ impl EntityScene {
     }
 
     /// `ai_walkmove`: one step along an explicit heading, no turning.
+    #[inline(never)]
+    #[optimize(size)]
     fn monster_walk_move(
         &self,
         map: &ResidentMap,
@@ -5512,6 +5517,8 @@ impl EntityScene {
     /// `SV_StepDirection`: turn toward `heading` (`PF_changeyaw`), then step
     /// along it. A step taken while still more than 45 degrees off the
     /// heading is undone, though it still counts as success.
+    #[inline(never)]
+    #[optimize(size)]
     #[allow(clippy::too_many_arguments)]
     fn monster_step_direction(
         &self,
@@ -5551,6 +5558,8 @@ impl EntityScene {
     /// heading, then any direction but straight back. A monster that finds no
     /// way keeps its old heading and, with no valid footing, goes
     /// `FL_PARTIALGROUND`.
+    #[inline(never)]
+    #[optimize(size)]
     #[allow(clippy::too_many_arguments)]
     fn monster_new_chase_dir(
         &mut self,
@@ -5658,6 +5667,8 @@ impl EntityScene {
     /// one step, otherwise take the standing heading three times in four and
     /// let `SV_NewChaseDir` choose when that is blocked or the dice say so.
     /// `goal_box` is the enemy's absolute box; a path corner passes `None`.
+    #[inline(never)]
+    #[optimize(size)]
     #[allow(clippy::too_many_arguments)]
     fn monster_move_to_goal(
         &mut self,
