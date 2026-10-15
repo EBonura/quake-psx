@@ -22,8 +22,7 @@
 //! restarts the schedule from the top afterwards: nothing resumes in the
 //! middle of a song, so no state has to survive a read.
 
-use psx_hw::cd::{CMD_READS, CMD_SETFILTER, MODE_XA_ADPCM, MODE_XA_FILTER};
-use psx_io::disc_base::shift_lba;
+use psx_io::cd::xa::{DriveSpeed, File, Player};
 use psx_io::periph::Cd;
 use psx_pack::cd::{SectorReader, SECTOR_WORDS};
 use quake_core::ambient::{Schedule, Step, FADE_MAX, TICKS_PER_SECOND};
@@ -39,10 +38,6 @@ pub const BANNER_TICKS: u32 = 240;
 /// The drive's own mixer level (`0x80` is unity). The SPU's CD volume carries
 /// the fades and the Options slider.
 const DRIVE_VOLUME: u8 = 0x80;
-/// Per-command spin budget. Emulators answer instantly; silicon does not.
-const SPINS: u32 = 131_072;
-/// Spin budget for a pause to finish.
-const PAUSE_SPINS: u32 = 2_000_000;
 
 const SONG_COUNT: usize = XA_SONGS.len();
 
@@ -87,10 +82,10 @@ pub struct Music {
     probed: bool,
     /// The schedule's stream has been seeded from the clock.
     seeded: bool,
-    /// First sector of each file.
-    files: [u32; XA_FILE_COUNT],
-    /// A song is being read.
-    playing: bool,
+    /// First sector and sector count of each file.
+    files: [(u32, u32); XA_FILE_COUNT],
+    /// The SDK's XA player; it owns the CD token once the files are found.
+    player: Option<Player>,
     /// Tick the current loop was started on, for the now-playing banner.
     announced_at: Option<u32>,
     schedule: Schedule,
@@ -106,8 +101,8 @@ impl Music {
             fade: 0,
             probed: false,
             seeded: false,
-            files: [0; XA_FILE_COUNT],
-            playing: false,
+            files: [(0, 0); XA_FILE_COUNT],
+            player: None,
             announced_at: None,
             schedule: schedule(),
         }
@@ -288,11 +283,26 @@ impl Music {
     fn begin(&mut self, song: u8, tick: u32) {
         self.set_fade(0);
         let (file, channel, _) = XA_SONGS[song as usize];
-        let started = self.start_drive(
-            self.files[file as usize],
+        let (lba, sectors) = self.files[file as usize];
+        // The song is one uninterrupted read (see the module note), so the
+        // player never polls and the sector count only describes the file.
+        let file = File::new(
+            lba,
+            sectors,
             XA_FILE_NUMBERS[file as usize],
-            channel,
+            if XA_SPEED_DOUBLE {
+                DriveSpeed::Double
+            } else {
+                DriveSpeed::Single
+            },
         );
+        let started = match self.player.as_mut() {
+            Some(player) => {
+                player.set_volume(DRIVE_VOLUME, DRIVE_VOLUME);
+                player.play(file.song(channel), false).is_ok()
+            }
+            None => false,
+        };
         #[cfg(feature = "music-trace")]
         trace(
             if started { "start" } else { "start-refused" },
@@ -310,47 +320,18 @@ impl Music {
         }
     }
 
-    /// Stream channel `channel` of XA file `number` (starting at `lba`) from the
-    /// top: Demute, Setmode, Setfilter, Setloc, ReadS.
-    #[optimize(size)]
-    #[inline(never)]
-    fn start_drive(&mut self, lba: u32, number: u8, channel: u8) -> bool {
-        // SAFETY: this module is the only CD user between a level load and the
-        // next; `suspend_for_load` stops the drive before the loader's turn.
-        let mut cd = unsafe { Cd::steal() };
-        cd.set_audio_mixer(DRIVE_VOLUME, 0, DRIVE_VOLUME, 0);
-        self.playing = cd.try_unmute(SPINS).is_some()
-            && cd
-                .try_set_mode(MODE_XA_ADPCM | MODE_XA_FILTER, SPINS)
-                .is_some()
-            && cd
-                .try_command(CMD_SETFILTER, &[number, channel], SPINS)
-                .is_some()
-            && cd.try_set_target_lba(shift_lba(lba), SPINS).is_some()
-            && cd.try_command(CMD_READS, &[], SPINS).is_some();
-        self.playing
-    }
-
-    /// Pause the drive if a song is being read. A pause refused during the seek
-    /// that opens a read is tried once more; the loader's own commands
-    /// supersede a read that is still running.
+    /// Pause the drive if a song is being read.
     #[optimize(size)]
     #[inline(never)]
     fn stop_drive(&mut self) {
-        if !self.playing {
-            return;
-        }
-        self.playing = false;
-        // SAFETY: see `start_drive`.
-        let mut cd = unsafe { Cd::steal() };
-        if !cd.try_pause_until_complete(PAUSE_SPINS) {
-            cd.try_pause_until_complete(PAUSE_SPINS);
+        if let Some(player) = self.player.as_mut() {
+            player.stop();
         }
     }
 
     /// Find the music files by name in the disc's root directory, so no sector
-    /// number is baked into the executable. False if any file is missing (a
-    /// disc built without music).
+    /// number is baked into the executable, and take the CD token the player
+    /// drives. False if any file is missing (a disc built without music).
     #[optimize(size)]
     #[inline(never)]
     fn locate_files(&mut self) -> bool {
@@ -377,8 +358,8 @@ impl Music {
                     break;
                 };
                 for (file, name) in XA_FILE_NAMES.iter().enumerate() {
-                    if let Some((lba, _)) = find_in_directory(directory, name) {
-                        self.files[file] = lba;
+                    if let Some((lba, bytes)) = find_in_directory(directory, name) {
+                        self.files[file] = (lba, bytes / 2048);
                         found[file] = true;
                     }
                 }
@@ -387,6 +368,7 @@ impl Music {
             if !found.iter().all(|f| *f) {
                 return false;
             }
+            self.player = Some(Player::new(Cd::steal()));
         }
         // The SPU's CD input is routed once at boot (`quake.rs`); the volume
         // is this module's from here on.

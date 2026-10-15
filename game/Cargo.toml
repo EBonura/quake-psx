@@ -177,7 +177,6 @@ psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
 psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-192", "present-queue"] }
 psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
-psx-hw = { path = "../.psoxide/crates/psx-hw" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
 psx-font = { path = "../.psoxide/sdk/crates/psx-font" }
