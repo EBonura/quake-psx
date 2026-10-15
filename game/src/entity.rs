@@ -4607,6 +4607,7 @@ impl EntityScene {
     /// they use the same gate and `spawn_tdeath` rules as player teleporters.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
+    #[optimize(size)]
     fn teleport_monster_if_touching(
         &mut self,
         map: &ResidentMap,
@@ -5752,6 +5753,7 @@ impl EntityScene {
     /// while alive, plus every other live monster within a conservative radius
     /// of the step. Candidates are visited in ascending authored source index
     /// and the set denies on full (see `quake_core::body`).
+    #[optimize(size)]
     fn monster_step_bodies(
         &self,
         mover_index: usize,
@@ -5868,6 +5870,7 @@ impl EntityScene {
     /// trims height toward the enemy instead, so this sweeps the hull straight
     /// at the wished position through world, movers, and live bodies.
     #[allow(clippy::too_many_arguments)]
+    #[optimize(size)]
     fn monster_fly_step(
         &self,
         map: &ResidentMap,
@@ -5920,6 +5923,7 @@ impl EntityScene {
     /// in the air. The first live body the arc reaches takes `Dog_JumpTouch`'s
     /// blow, and ground under the box ends the leap.
     #[allow(clippy::too_many_arguments)]
+    #[optimize(size)]
     fn fly_leap(
         &mut self,
         map: &ResidentMap,
