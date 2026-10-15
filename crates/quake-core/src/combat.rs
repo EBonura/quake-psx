@@ -1199,6 +1199,9 @@ pub struct WeaponState {
     /// `cl.item_gettime` for the seven strip weapons, as ticks left of the
     /// one second pickup flash.
     weapon_flash_ticks: [u8; 7],
+    /// `W_ChangeWeapon`'s `sprint` ("no weapon.", "not enough ammo.") waiting
+    /// for the caller to show it.
+    change_message: Option<&'static str>,
 }
 
 /// `Sbar_DrawInventory` flashes a new weapon for ten tenths of a second.
@@ -1240,6 +1243,7 @@ impl WeaponState {
             protect_sound_ticks: 0,
             protect_sound_pending: false,
             weapon_flash_ticks: [0; 7],
+            change_message: None,
         }
     }
 
@@ -1353,7 +1357,7 @@ impl WeaponState {
     /// impulse byte does).
     pub fn request_select(&mut self, weapon: Weapon) {
         if self.refire_ticks == 0 {
-            self.select(weapon);
+            self.impulse_select(weapon);
         } else {
             self.queued_impulse = Some(QueuedImpulse::Select(weapon));
         }
@@ -1368,11 +1372,25 @@ impl WeaponState {
         }
     }
 
+    /// `W_ChangeWeapon`: switch, or say why not.
+    fn impulse_select(&mut self, weapon: Weapon) {
+        if !self.inventory.owns(weapon) {
+            self.change_message = Some("no weapon.");
+        } else if !self.inventory.can_select(weapon) {
+            self.change_message = Some("not enough ammo.");
+        } else {
+            self.select(weapon);
+        }
+    }
+
+    /// The `sprint` line `W_ChangeWeapon` raised since the last call.
+    pub fn take_change_message(&mut self) -> Option<&'static str> {
+        self.change_message.take()
+    }
+
     fn run_queued_impulse(&mut self) {
         match self.queued_impulse.take() {
-            Some(QueuedImpulse::Select(weapon)) => {
-                self.select(weapon);
-            }
+            Some(QueuedImpulse::Select(weapon)) => self.impulse_select(weapon),
             Some(QueuedImpulse::Cycle(forward)) => {
                 self.cycle(forward);
             }
@@ -3303,6 +3321,22 @@ mod tests {
         assert!(!state.ready_to_fire());
         state.tick(1);
         assert!(state.ready_to_fire());
+    }
+
+    #[test]
+    fn a_refused_impulse_says_why() {
+        let mut state = WeaponState::new();
+        state.request_select(Weapon::RocketLauncher);
+        assert_eq!(state.take_change_message(), Some("no weapon."));
+        assert_eq!(state.take_change_message(), None);
+        state.apply_pickup(pickup_for_entity(0x58, 0).unwrap());
+        state.inventory.ammo[AmmoKind::Shells.index()] = 1;
+        state.request_select(Weapon::SuperShotgun);
+        assert_eq!(state.take_change_message(), Some("not enough ammo."));
+        assert_eq!(state.active_weapon(), Weapon::SuperShotgun, "the pickup selected it");
+        state.request_select(Weapon::Axe);
+        assert_eq!(state.take_change_message(), None);
+        assert_eq!(state.active_weapon(), Weapon::Axe);
     }
 
     #[test]

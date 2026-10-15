@@ -570,6 +570,14 @@ pub fn run() -> ! {
         if survival.bonus_flash {
             presentation.screen_blend_mut().pick_up();
         }
+        // `CheckPowerups`: "Quad Damage is wearing off" and its siblings.
+        if survival.warned != 0 {
+            for kind in quake_core::survival::PowerupKind::ALL {
+                if survival.warned & kind.bit() != 0 {
+                    presentation.push_notify(kind.expiry_text());
+                }
+            }
+        }
         // `DeathSound`'s submerged branch also calls `DeathBubbles(20)`. The
         // fixed pool renders the original sprite, one birth per 0.1 seconds.
         if survival.death_bubbles {
@@ -755,6 +763,7 @@ pub fn run() -> ! {
             play_sound_event(&mut audio, sound, audio_tick);
         }
         presentation.tick_centerprint(elapsed_ticks);
+        presentation.tick_notify(elapsed_ticks);
         // Only gameplay frames reach here, so the intermission panel prints
         // time actually spent playing the level.
         presentation.tick_level_clock(elapsed_ticks);
@@ -807,7 +816,13 @@ pub fn run() -> ! {
             let _ = audio.play_one_shot_on(sound, PLAYER_ITEM, audio_tick);
         }
         if let Some(text) = pickup.message {
-            presentation.set_centerprint(CenterprintText::Fixed(text), CENTERPRINT_TICKS);
+            // `sprint` prints to the console notify area; only the rune's
+            // `centerprint` goes to the middle of the screen.
+            if text == "You got the rune!" {
+                presentation.set_centerprint(CenterprintText::Fixed(text), CENTERPRINT_TICKS);
+            } else {
+                presentation.push_notify(text);
+            }
         }
         if let Some((destination, no_intermission, _)) = pending_change_level {
             #[cfg(feature = "start-route-regression")]
@@ -892,6 +907,9 @@ pub fn run() -> ! {
             } else if controls.previous_weapon_pressed() {
                 weapon.request_cycle(false);
             }
+        }
+        if let Some(text) = weapon.take_change_message() {
+            presentation.push_notify(text);
         }
         let fire_held = controls.fire_held() && alive;
         #[cfg(feature = "combat-regression")]
@@ -1352,6 +1370,7 @@ pub fn run() -> ! {
         // the eye was still above the surface.
         let view_contents = renderer.view_contents(&world, render_camera);
         presentation.screen_blend_mut().set_contents(view_contents);
+        renderer.set_notify(presentation.notify_lines());
         let _render_stats = renderer.draw_frame(
             &world,
             render_camera,
