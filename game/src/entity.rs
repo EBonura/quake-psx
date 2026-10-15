@@ -4735,6 +4735,7 @@ impl EntityScene {
     /// weapon traces, and live bodies block on both sides.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
+    #[optimize(size)]
     pub fn update_monsters(
         &mut self,
         map: &ResidentMap,
