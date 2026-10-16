@@ -2081,7 +2081,7 @@ fn validate_sound_bank(map: &str, actual: &[u8], expected: &[u8]) -> Result<()> 
 }
 
 /// Guest render-entity pool size (`game/src/entity.rs`).
-const MAX_RENDER_ENTITIES: usize = 384;
+const MAX_RENDER_ENTITIES: usize = 312;
 /// Per-trace dynamic body candidate ceiling (`quake_core::body`).
 const MAX_BODY_CANDIDATES: usize = 16;
 /// Fixed projectile render slots the guest installs in every map: eight
@@ -2302,18 +2302,18 @@ fn validate_monster_population_for_skill(
 /// `crates/quake-core`. Every one is checked against the real worst case the
 /// cooked shareware maps author, so a pool can never silently drop authored
 /// content the way the ambient voice pool is checked.
-const GUEST_MAX_RENDER_ENTITIES: usize = 384;
-const GUEST_MAX_MOVERS: usize = 60;
-const GUEST_MAX_TRIGGERS: usize = 30;
-const GUEST_MAX_TELEPORTS: usize = 17;
-const GUEST_MAX_TRAINS: usize = 6;
-const GUEST_MAX_FIREBALL_EMITTERS: usize = 16;
+const GUEST_MAX_RENDER_ENTITIES: usize = 312;
+const GUEST_MAX_MOVERS: usize = 57;
+const GUEST_MAX_TRIGGERS: usize = 28;
+const GUEST_MAX_TELEPORTS: usize = 15;
+const GUEST_MAX_TRAINS: usize = 4;
+const GUEST_MAX_FIREBALL_EMITTERS: usize = 15;
 /// `AUDIO_EFFECT_CAPACITY` in `game/src/audio.rs`.
 const GUEST_AUDIO_EFFECT_CAPACITY: usize = 104;
 /// `COLLISION_PLANE_CAPACITY` and `RENDER_TEXTURE_CAPACITY` in `game/src/asset.rs`.
-const GUEST_COLLISION_PLANE_CAPACITY: usize = 2_960;
-const GUEST_RENDER_TEXTURE_CAPACITY: usize = 96;
-const GUEST_MAX_FIREBALLS: usize = 32;
+const GUEST_COLLISION_PLANE_CAPACITY: usize = 2_948;
+const GUEST_RENDER_TEXTURE_CAPACITY: usize = 81;
+const GUEST_MAX_FIREBALLS: usize = 30;
 
 const GUEST_MAX_TARGET_ACTIONS: usize = 128;
 const GUEST_MAX_PLAYER_ACTIVATIONS: usize = 8;

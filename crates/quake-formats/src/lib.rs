@@ -600,11 +600,11 @@ pub const TEXTURE_LAYERED_SKY: u8 = 64;
 /// brittle. `assert_cooked_maps_fit` loads every
 /// map through this exact capacity and pins the measured high-water mark.
 ///
-/// The ambient music (XA player, ISO lookup, schedule) took 3.4 KiB of the
-/// image and left the shipping heap 1.5 KiB free; 6,000 more bytes come out of
-/// the margin to pay for it, leaving about 1.9 KiB over the largest map. The
-/// builder rejects any cook that no longer fits, so growth fails loudly.
-pub const RESIDENT_MAP_ARENA_BYTES: usize = 868_000;
+/// The arena is exactly the largest map (`e1m3`, 866,122 bytes) rounded up to
+/// the next 8: every byte of margin would be shipping heap. The builder
+/// rejects any cook that no longer fits and pins the census (866,122), so a
+/// recook that grows a map fails the build loudly instead of the boot.
+pub const RESIDENT_MAP_ARENA_BYTES: usize = 866_128;
 
 /// One packed `pic_t` record in the Rust-cooked `gfx.dat` index.
 pub const GRAPHICS_PICTURE_RECORD_BYTES: usize = 6;

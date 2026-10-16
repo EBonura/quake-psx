@@ -157,14 +157,15 @@ const GRAPHICS_PICTURE_ROW_BYTES: usize = GRAPHICS_PICTURE_WIDTH as usize * 2;
 const GRAPHICS_PICTURE_BYTES: usize = GRAPHICS_PICTURE_ROW_BYTES * GRAPHICS_PICTURE_ROWS;
 const GRAPHICS_STREAM_ROWS: usize = 8;
 pub(crate) const STREAM_SCRATCH_BYTES: usize = TEXTURE_ROW_BYTES * TEXTURE_READ_ROWS;
+const _: () = assert!(RESIDENT_MAP_ARENA_BYTES % 4 == 0 && STREAM_SCRATCH_BYTES % 4 == 0);
 /// Episode 1's measured maximum is 2,948 planes (E1M4). The fixed bound keeps
 /// this transition-owned allocation one-time under the PS1 bump allocator;
 /// the host cooker mirrors it and refuses a map above it.
-const COLLISION_PLANE_CAPACITY: usize = 2_960;
+const COLLISION_PLANE_CAPACITY: usize = 2_948;
 /// Fixed decoded table for the compact texture records sampled by every
 /// visible world face. Episode 1's maximum is 81 (Start and E1M1); the host
 /// cooker mirrors this bound and refuses a map above it.
-pub(crate) const RENDER_TEXTURE_CAPACITY: usize = 96;
+pub(crate) const RENDER_TEXTURE_CAPACITY: usize = 81;
 /// Episode 1 authors at most four 64x64 turbulent textures in one map.
 const LIQUID_TEXTURE_CAPACITY: usize = 4;
 const LIQUID_TEXTURE_BYTES: usize = quake_core::liquid::LIQUID_TILE_BYTES;
@@ -282,12 +283,16 @@ impl ResidentMap {
             // Episode 1 corpus never uses is PS1 RAM the entity pools, audio
             // bank, and renderer arenas need. See `RESIDENT_MAP_ARENA_BYTES`.
             shared: SharedResidentMap::with_capacity(RESIDENT_MAP_ARENA_BYTES),
+            // Allocated straight after the word-multiple arena, before any
+            // pool whose size is not a multiple of four: the map-code overlay
+            // executes from this buffer and needs a word-aligned address,
+            // which a byte `Vec` only gets from the cursor that precedes it.
+            stream_scratch: Vec::with_capacity(STREAM_SCRATCH_BYTES),
             collision_planes: Vec::with_capacity(COLLISION_PLANE_CAPACITY),
             render_textures: Vec::with_capacity(RENDER_TEXTURE_CAPACITY),
             liquid_textures: Vec::with_capacity(LIQUID_TEXTURE_CAPACITY),
             liquid_source: Vec::with_capacity(LIQUID_SOURCE_CAPACITY),
             world_render_head_node: 0,
-            stream_scratch: Vec::with_capacity(STREAM_SCRATCH_BYTES),
             graphics: Vec::with_capacity(64),
             weapon_icons: Vec::with_capacity(GRAPHICS_WEAPON_ICON_BYTES),
             episode_directory: [0; EPISODE_DIRECTORY_BYTES],

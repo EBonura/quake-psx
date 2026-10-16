@@ -69,30 +69,31 @@ fn advance_monster(runtime: &mut MonsterRuntime, elapsed: u16, input: MonsterThi
     runtime.advance_ticks(elapsed, input)
 }
 
-// Host validation proves the Episode 1 high-water is 373 after every fixed
-// projectile slot is installed. Keep eleven spares without paying for 128
-// unreachable heap objects in the shipping image.
-const MAX_RENDER_ENTITIES: usize = 384;
+// Host validation proves the Episode 1 high-water is 310 render entities over
+// every skill, after every fixed projectile slot is installed (`cargo
+// quake-build check` prints it as "worst render slots"). Two spares; the
+// cooker refuses any map above the pool, so slack here would be shipping heap
+// for nothing (116 bytes a slot).
+const MAX_RENDER_ENTITIES: usize = 312;
 const MAX_CHANGE_LEVELS: usize = 4;
 // The verified shareware corpus peaks, over every skill the menu offers, at 57
-// supported brush movers, 28 touch triggers, 15 teleport volumes and 4 trains
-// in one map. These closed-corpus bounds leave three, two, two and two slots
-// respectively; the host cooker mirrors them and rejects any future map that
-// would exceed a pool before a disc is built. Each Vec below is allocated once
-// at its full capacity from the bump heap, so every slot of slack is shipping
-// heap.
-const MAX_MOVERS: usize = 60;
+// supported brush movers, 28 touch triggers, 15 teleport volumes, 4 trains and
+// 15 lava spouts in one map. The pools are exactly those closed-corpus bounds;
+// the host cooker mirrors them and rejects any future map that would exceed a
+// pool before a disc is built. Each Vec below is allocated once at its full
+// capacity from the bump heap, so every slot of slack is shipping heap.
+const MAX_MOVERS: usize = 57;
 /// A door's `LinkDoors` chain id is the index of a mover, and a frame's fired
 /// chains travel as one bit each.
 const _: () = assert!(MAX_MOVERS <= 64);
 /// `spawn_field` volumes on one map. The shareware maps author at most three.
 const MAX_DOOR_FIELDS: usize = 8;
-const MAX_TRIGGERS: usize = 30;
-const MAX_TELEPORTS: usize = 17;
-const MAX_TRAINS: usize = 6;
+const MAX_TRIGGERS: usize = 28;
+const MAX_TELEPORTS: usize = 15;
+const MAX_TRAINS: usize = 4;
 const MAX_ROCKETS: usize = 8;
 const MAX_GRENADES: usize = 8;
-const MAX_FIREBALL_EMITTERS: usize = 16;
+const MAX_FIREBALL_EMITTERS: usize = 15;
 /// Every spout re-arms after at least three seconds and each ball lives five,
 /// so two of a spout's balls are the most that are ever in flight.
 const FIREBALLS_PER_EMITTER: usize = 2;

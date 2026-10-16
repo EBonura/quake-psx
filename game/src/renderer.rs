@@ -167,8 +167,8 @@ type BatchSurfaceStorage = [MaybeUninit<ClassicAffineBatchSurface>; BATCH_MAX_SU
 type BatchSourceSurfaceStorage = [MaybeUninit<u16>; BATCH_MAX_SURFACES];
 
 const MAX_ALIAS_VERTICES: usize = 512;
-// Mirrored from `entity`: the verified Episode 1 high-water is 373.
-const MAX_RENDER_ENTITIES: usize = 384;
+// Mirrored from `entity`: the verified Episode 1 high-water is 310.
+const MAX_RENDER_ENTITIES: usize = 312;
 // Episode 1 peaks at 1,230 visible leaves, or 154 bytes per row. The water
 // portal is merged directly into this closed-corpus row, which stays far
 // smaller than the previous generic 1,024-byte scratch allocation.
