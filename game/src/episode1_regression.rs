@@ -370,7 +370,9 @@ pub fn map_loaded(map: EpisodeMap, entities: &EntityScene, world: &ResidentMap, 
                     let origin = player.origin();
                     (origin.x - entity.origin.x).abs() < (1 << 12)
                         && (origin.y - entity.origin.y).abs() < (1 << 12)
-                        && (origin.z - entity.origin.z).abs() < (1 << 12)
+                        // `SelectSpawnPoint` raises the player one unit above the
+                        // authored origin (`spot.origin + '0 0 1'`).
+                        && (origin.z - entity.origin.z).abs() <= (1 << 12)
                 });
                 if !at_authored_start {
                     fail(FAILURE_BAD_MAP, map_index(map), 0x5350_4157);
