@@ -169,7 +169,10 @@ a busy scene cannot grow the heap during play.
 
 `ship-boot` runs the normal release configuration rather than a reduced test
 feature. It checks that the real menu and gameplay path reach the main loop
-with at least the configured heap floor remaining.
+with at least the configured heap floor remaining, and that the deepest stack
+the emulator saw stays within four fifths of the reserved stack. `cargo
+quake-build ram` runs the same boot and prints the link-map breakdown of
+`.text`, `.data`, `.bss` and the overlay images (`docs/RAM.md`).
 
 ## Visual checks
 

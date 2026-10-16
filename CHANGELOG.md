@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The shipping heap has 29,540 bytes free (the `ship-boot` floor is 8,192; the
+  checkpoint had 9,912). The fixed pools are sized to the cooked Episode 1
+  maxima the builder already proves (they carried 74 spare render entities, a
+  few movers and triggers, and 1,878 bytes of map arena), `EntityScene::load`
+  keeps its size optimisation, the death bubbles use integers instead of
+  linking soft-float, and the loading error line no longer uses `alloc::format!`.
+  `cargo quake-build ram` prints the whole RAM breakdown; see `docs/RAM.md`.
 - Added the game's own music: eight dark-ambient loops on the disc as XA-ADPCM,
   played sporadically (a random loop after 30 to 90 s of silence, fading in and
   out, then 60 to 180 s of silence). The Options TRACK row is gone; MUSIC and
