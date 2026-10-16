@@ -85,15 +85,31 @@ pub const fn door_touch_key(spawn_flags: u16, held_keys: u8) -> DoorKeyOutcome {
 
 /// Centerprint text for a refused key door.
 ///
-/// The original also has worldtype-specific "silver keycard" and "silver
-/// runekey" wording. The cooked runtime map does not carry `worldtype`, so
-/// this port always prints the medieval phrasing.
+/// `door_touch` names the key by the map's `worldtype`: "key" in the medieval
+/// maps, "runekey" in the metal ones (E1M6 to E1M8) and "keycard" in the base
+/// ones (E1M1, which has no key door). The caller says which kind of map this
+/// is; [`key_wording`] does the same for the pickup line.
 #[optimize(size)]
-pub const fn needs_key_message(bit: u8) -> &'static str {
-    if bit == KEY_GOLD_BIT {
-        "You need the gold key"
-    } else {
-        "You need the silver key"
+pub const fn needs_key_message(bit: u8, rune_world: bool) -> &'static str {
+    match (bit == KEY_GOLD_BIT, rune_world) {
+        (true, true) => "You need the gold runekey",
+        (true, false) => "You need the gold key",
+        (false, true) => "You need the silver runekey",
+        (false, false) => "You need the silver key",
+    }
+}
+
+/// `item_key1`/`item_key2`'s "You got the silver key" with the metal maps'
+/// word; any other line passes through.
+#[optimize(size)]
+pub fn key_wording(text: &'static str, rune_world: bool) -> &'static str {
+    if !rune_world {
+        return text;
+    }
+    match text {
+        "You got the silver key" => "You got the silver runekey",
+        "You got the gold key" => "You got the gold runekey",
+        _ => text,
     }
 }
 
@@ -270,8 +286,12 @@ mod tests {
             }
         );
         assert_eq!(door_touch_key(0, 0), DoorKeyOutcome::NotLocked);
-        assert_eq!(needs_key_message(KEY_SILVER_BIT), "You need the silver key");
-        assert_eq!(needs_key_message(KEY_GOLD_BIT), "You need the gold key");
+        assert_eq!(needs_key_message(KEY_SILVER_BIT, false), "You need the silver key");
+        assert_eq!(needs_key_message(KEY_GOLD_BIT, false), "You need the gold key");
+        assert_eq!(needs_key_message(KEY_SILVER_BIT, true), "You need the silver runekey");
+        assert_eq!(key_wording("You got the gold key", true), "You got the gold runekey");
+        assert_eq!(key_wording("You got the gold key", false), "You got the gold key");
+        assert_eq!(key_wording("You receive 15 health", true), "You receive 15 health");
     }
 
     #[test]

@@ -400,9 +400,8 @@ pub struct PickupOutcome {
     /// every other touch function prints `"You got the " + netname`, so the
     /// amounts and netnames are folded into whole lines: this port has no
     /// integer formatting and the shareware boxes only ever heal 15, 25 or
-    /// 100. Keys keep the medieval wording for the same reason
-    /// [`crate::door::needs_key_message`] does, the cooked map carrying no
-    /// `worldtype` to select the keycard and runekey variants with.
+    /// 100. Keys carry the medieval wording; [`crate::door::key_wording`]
+    /// swaps in the metal maps' "runekey" where the host knows the map.
     pub message: Option<&'static str>,
 }
 

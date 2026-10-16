@@ -775,6 +775,13 @@ pub fn run() -> ! {
         if let Some(skill) = gameplay.selected_skill {
             menu.set_skill(skill);
         }
+        // `worldtype` 1: the metal maps call their keys runekeys.
+        let rune_world = matches!(
+            world.map(),
+            crate::asset::EpisodeMap::E1M6
+                | crate::asset::EpisodeMap::E1M7
+                | crate::asset::EpisodeMap::E1M8
+        );
         if let Some(bit) = gameplay.needs_key {
             // `door_touch`'s noise3, cooked from the worldtype-selected
             // medtry/runetry/basetry triple under the medtry id.
@@ -782,7 +789,7 @@ pub fn run() -> ! {
                 let _ = audio.play_one_shot(0x39, audio_tick);
             }
             presentation.set_centerprint(
-                CenterprintText::Fixed(quake_core::door::needs_key_message(bit)),
+                CenterprintText::Fixed(quake_core::door::needs_key_message(bit, rune_world)),
                 CENTERPRINT_TICKS,
             );
         }
@@ -877,7 +884,7 @@ pub fn run() -> ! {
             if text == "You got the rune!" {
                 presentation.set_centerprint(CenterprintText::Fixed(text), CENTERPRINT_TICKS);
             } else {
-                presentation.push_notify(text);
+                presentation.push_notify(quake_core::door::key_wording(text, rune_world));
             }
         }
         if let Some((destination, no_intermission, _)) = pending_change_level {
