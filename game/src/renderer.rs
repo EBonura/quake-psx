@@ -1228,6 +1228,13 @@ unsafe fn materialize_quake_baked_inline(
 /// Brush entities the renderer remembers a box-versus-PVS answer for.
 const BOX_VISIBILITY_ENTRIES: usize = 16;
 
+/// A brush model at least this tall (map units) is drawn when its box touches a
+/// visible leaf even if the leaf at its centre is not one.
+const TALL_BRUSH_UNITS: i32 = 160;
+
+/// Brush models whose drawability is remembered (the cooked maps have at most 120).
+const BRUSH_DRAWABLE_MODELS: usize = 128;
+
 /// One remembered answer: whether the entity's box touched a leaf in the
 /// PVS, for the box it had when asked.
 #[derive(Copy, Clone)]
@@ -1274,6 +1281,10 @@ pub struct Renderer {
     /// (`cached_visibility`) and for the bounds it was asked about.
     box_visibility_key: Option<(u32, usize, u16)>,
     box_visibility: [BoxVisibility; BOX_VISIBILITY_ENTRIES],
+    /// Per brush model of the resident map: 0 unknown, 1 nothing to draw (a
+    /// trigger volume), 2 has a drawable face. Reset when the map changes.
+    brush_drawable: [u8; BRUSH_DRAWABLE_MODELS],
+    brush_drawable_generation: u32,
     /// The camera does not move inside a frame, but `prepare_visibility`,
     /// `mark_visible_faces`, `water_portal` and the view-model lighting each
     /// located it independently. One memo collapses five BSP descents to one.
@@ -1354,6 +1365,8 @@ impl Renderer {
             cached_visibility: None,
             box_visibility_key: None,
             box_visibility: [BoxVisibility::UNKNOWN; BOX_VISIBILITY_ENTRIES],
+            brush_drawable: [0; BRUSH_DRAWABLE_MODELS],
+            brush_drawable_generation: 0,
             cached_camera_leaf: None,
             active_water_plane: -1,
             water_portal_key: None,
@@ -3395,23 +3408,31 @@ impl Renderer {
                 // touches, as in Quake's `SV_FindTouchedLeafs`; the leaf at
                 // its centre says little about a big one. A lift car sunk
                 // into its pit has its centre in solid (leaf 0) while its deck
-                // is in plain view, and a tall car or door has its centre in
-                // a leaf the camera cannot see while the rest of it stands in
-                // one it can. Frustum first, and the answer is remembered per
-                // PVS.
+                // is in plain view, and a tall car has its centre in a leaf
+                // the camera cannot see while the rest of it stands in one it
+                // can. Frustum first, and the answer is remembered per PVS.
+                // Only a model that is tall, or centred in solid, is asked: a
+                // door in a doorway is in the leaf of its centre or the next,
+                // and drawing every door whose box grazes a visible leaf cost
+                // a twentieth of the route's work for nothing a player sees.
                 #[cfg(feature = "probe-poses")]
                 let old_rule =
                     crate::visual_parity_regression::OLD_CULL && entity.leaf_index != 0;
                 #[cfg(not(feature = "probe-poses"))]
                 let old_rule = false;
+                let short = entity.leaf_index != 0
+                    && i32::from(entity.clip_maxs[2]) - i32::from(entity.clip_mins[2])
+                        < TALL_BRUSH_UNITS;
                 if entity.model_id >= 0
                     || old_rule
+                    || short
                     || scene::is_aabb_outside_clip4(
                         entity.clip_mins,
                         entity.clip_maxs,
                         &frustum,
                         0x0f,
                     )
+                    || !self.brush_model_drawable(map, entity)
                     || !self.box_touches_visible(map, index, entity)
                 {
                     continue;
@@ -3994,6 +4015,40 @@ impl Renderer {
         leaf
     }
 
+    /// Whether a brush model has any face the renderer draws: trigger volumes
+    /// and clip brushes are all invisible, and a hidden one must not cost a BSP
+    /// walk of its (often huge) box every time the view changes leaf.
+    #[optimize(size)]
+    #[inline(never)]
+    fn brush_model_drawable(&mut self, map: &ResidentMap, entity: &RenderEntity) -> bool {
+        if self.brush_drawable_generation != map.generation() {
+            self.brush_drawable_generation = map.generation();
+            self.brush_drawable = [0; BRUSH_DRAWABLE_MODELS];
+        }
+        let slot = usize::from(entity.model_index);
+        if slot >= BRUSH_DRAWABLE_MODELS {
+            return true;
+        }
+        if self.brush_drawable[slot] == 0 {
+            let mut drawable = false;
+            if let Some(model) = map.brush_models().get(slot) {
+                let first = model.first_face as usize;
+                for face in map.faces().iter().skip(first).take(model.face_count as usize) {
+                    let flags = self
+                        .active_textures
+                        .get(face.texture as usize)
+                        .map_or(0, |texture| texture.flags);
+                    if flags & (TEXTURE_INVISIBLE | TEXTURE_NULL | TEXTURE_SKY) == 0 {
+                        drawable = true;
+                        break;
+                    }
+                }
+            }
+            self.brush_drawable[slot] = 1 + u8::from(drawable);
+        }
+        self.brush_drawable[slot] == 2
+    }
+
     /// Whether a brush entity's box touches any leaf of the current PVS. The
     /// walk is repeated only when the PVS or the entity's box changes.
     #[optimize(size)]
@@ -4014,9 +4069,9 @@ impl Renderer {
             entity.clip_maxs[1],
             entity.clip_maxs[2],
         ];
-        // Slots are shared by index modulo their count; a clash only costs a
-        // second walk.
-        let slot = index % BOX_VISIBILITY_ENTRIES;
+        // Slots are shared by model number modulo their count; a clash only
+        // costs a second walk.
+        let slot = usize::from(entity.model_index) % BOX_VISIBILITY_ENTRIES;
         let memo = self.box_visibility[slot];
         if memo.state != 0 && usize::from(memo.index) == index && memo.bounds == bounds {
             return memo.state == 2;
