@@ -41,6 +41,7 @@ const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
 const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
 mod monster_code;
 mod music;
+mod ram_report;
 
 const GUEST_RECIPE_PATHS: &[&str] = &[
     // The guest's workspace root: its manifest carries the release profile
@@ -308,6 +309,10 @@ struct Cli {
     no_music: bool,
     /// A PSoXide checkout at the xa-pack revision, instead of fetching one.
     xa_pack: Option<PathBuf>,
+    /// `ram --map PATH`: report an existing link map without building.
+    ram_map: Option<PathBuf>,
+    /// `ram --items`: list every placed input section instead of the summary.
+    ram_items: bool,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -408,6 +413,17 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let cli = parse_cli()?;
+    if let Some(map) = &cli.ram_map {
+        let text = fs::read_to_string(map)
+            .map_err(|error| format!("read link map {}: {error}", map.display()))?;
+        let parsed = ram_report::parse(&text);
+        if cli.ram_items {
+            print!("{}", ram_report::items(&parsed));
+        } else {
+            print!("{}", ram_report::report(&parsed));
+        }
+        return Ok(());
+    }
     let root = repository_root();
     audit_sources(&root)?;
     let sdk = hydrate_psoxide(&root, cli.psoxide.as_deref(), cli.allow_psoxide_drift)?;
@@ -2746,6 +2762,8 @@ fn parse_cli() -> Result<Cli> {
     let mut music_dir = env::var_os("QUAKE_PSX_MUSIC_DIR").map(PathBuf::from);
     let mut no_music = false;
     let mut xa_pack = env::var_os("QUAKE_PSX_XA_PACK").map(PathBuf::from);
+    let mut ram_map = None;
+    let mut ram_items = false;
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy();
         match text.as_ref() {
@@ -2755,6 +2773,7 @@ fn parse_cli() -> Result<Cli> {
             | "disc"
             | "check"
             | "ship-boot"
+            | "ram"
             | "music-disc"
             | "map-regress"
             | "start-route-regress"
@@ -2813,7 +2832,7 @@ fn parse_cli() -> Result<Cli> {
                     "compile" => Action::Compile,
                     "disc" => Action::Disc,
                     "check" => Action::Check,
-                    "ship-boot" => Action::ShipBoot,
+                    "ship-boot" | "ram" => Action::ShipBoot,
                     "music-disc" => Action::MusicDisc,
                     "map-regress" => Action::MapRegress,
                     "start-route-regress" => Action::StartRouteRegress,
@@ -2883,6 +2902,8 @@ fn parse_cli() -> Result<Cli> {
             "--music-dir" => music_dir = Some(next_path(&mut args, "--music-dir")?),
             "--xa-pack" => xa_pack = Some(next_path(&mut args, "--xa-pack")?),
             "--no-music" => no_music = true,
+            "--map" => ram_map = Some(next_path(&mut args, "--map")?),
+            "--items" => ram_items = true,
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -2898,6 +2919,8 @@ fn parse_cli() -> Result<Cli> {
         music_dir,
         no_music,
         xa_pack,
+        ram_map,
+        ram_items,
     })
 }
 
@@ -2921,6 +2944,7 @@ fn print_help() {
            disc      Build and package the disc from current assets\n  \
            check     Validate source data and PSoXide tool discovery\n  \
            ship-boot  Boot the real shipping disc headlessly and report heap headroom\n  \
+           ram       ship-boot plus the link-map RAM breakdown (`ram --map PATH [--items]` reads a map only)\n  \
            map-regress  Exercise every Episode 1 map load and change-level edge\n  \
            start-route-regress  Walk Start's real Easy slipgate into E1M1 headlessly\n  \
            visual-parity-regress  Capture the pinned E1M1 owner camera and audit GP0(E2) scope\n  \
@@ -5553,6 +5577,9 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
     );
     fs::write(capture.join("summary.txt"), &summary)?;
     print!("{summary}");
+    let breakdown = ram_report::report(&ram_report::parse(&map_text));
+    fs::write(capture.join("ram-report.txt"), &breakdown)?;
+    print!("\n{breakdown}");
     if failures.is_empty() {
         return Ok(());
     }
