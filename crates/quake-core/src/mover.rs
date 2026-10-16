@@ -520,6 +520,12 @@ impl QuakeMover {
             return false;
         }
         if self.targeted_plat {
+            if self.state == QuakeMoverState::Bottom && self.wait_remaining != 0 {
+                // Raised again after its first ride: `plat_center_touch` on
+                // `STATE_TOP` pushes the next lowering a second away.
+                self.wait_remaining = 60;
+                return false;
+            }
             if self.state != QuakeMoverState::Top {
                 return false;
             }
@@ -773,7 +779,18 @@ impl QuakeMover {
         }
         let mut progressed = false;
         match self.state {
-            QuakeMoverState::Bottom => {}
+            QuakeMoverState::Bottom => {
+                // A targeted platform is a normal one after its first ride:
+                // `plat_hit_top` waits three seconds and `plat_go_down`s again.
+                // The fresh platform has no wait running and waits for `plat_use`.
+                if self.targeted_plat && self.wait_remaining != 0 {
+                    self.wait_remaining -= 1;
+                    if self.wait_remaining == 0 {
+                        self.state = QuakeMoverState::Up;
+                        self.driver.set_open(true);
+                    }
+                }
+            }
             QuakeMoverState::Up => {
                 self.driver.set_open(true);
                 progressed = self.driver.tick();
@@ -801,6 +818,9 @@ impl QuakeMover {
                 progressed = self.driver.tick();
                 if self.driver.fully_closed() {
                     self.state = QuakeMoverState::Bottom;
+                    if self.targeted_plat {
+                        self.wait_remaining = self.wait_ticks;
+                    }
                 }
             }
         }
@@ -1485,6 +1505,49 @@ mod tests {
         }
         assert_eq!(mover.state(), QuakeMoverState::Bottom);
         assert_eq!(mover.transform().origin.z, 0);
+    }
+
+    #[test]
+    fn a_targeted_platform_cycles_like_a_normal_one_after_its_first_ride() {
+        let mut source = source(CLASS_FUNC_PLAT);
+        source.height = 16;
+        source.target_name = 88;
+        let mut mover = QuakeMover::from_entity(
+            source,
+            model(Vec3I16 {
+                x: 64,
+                y: 64,
+                z: 32,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        // Used once, ridden up by a touch.
+        mover.activate();
+        for _ in 0..7 {
+            mover.tick();
+        }
+        assert!(mover.plat_center_touch());
+        for _ in 0..7 {
+            mover.tick();
+        }
+        assert_eq!(mover.state(), QuakeMoverState::Bottom);
+        // Standing on it holds it raised; left alone it lowers after its wait.
+        for _ in 0..170 {
+            mover.tick();
+        }
+        assert!(!mover.plat_center_touch());
+        for _ in 0..50 {
+            mover.tick();
+        }
+        assert_eq!(mover.state(), QuakeMoverState::Bottom, "the touch pushed the lowering back");
+        for _ in 0..30 {
+            mover.tick();
+        }
+        assert_eq!(mover.state(), QuakeMoverState::Top);
+        assert_eq!(mover.transform().origin.z, -16 << 12);
+        // And it can be ridden again.
+        assert!(mover.plat_center_touch());
     }
 
     #[test]
