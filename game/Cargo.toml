@@ -66,6 +66,13 @@ e1m2-e1m3-route-regression = ["emulator-telemetry"]
 systems-regression = ["emulator-telemetry"]
 survival-regression = ["emulator-telemetry"]
 visual-parity-regression = ["emulator-telemetry"]
+# Diagnostic: the visual-parity run, but with the camera (and any brush model's
+# origin) following a script compiled in from QUAKE_PSX_PROBE_POSES, so a view
+# seen in a playtest can be rebuilt, frame for frame, on any build.
+# Diagnostic: write the frame's camera to a RAM block (QUAKE_POSE) that a headless
+# route replay can watch with `--route-watch-u32`.
+probe-pose-log = []
+probe-poses = ["visual-parity-regression"]
 # Benchmark companion for a route regression: advance the simulation by a
 # fixed three ticks per rendered frame so the scripted route takes the same
 # path on builds of differing speed and only the frame cost changes.
@@ -82,6 +89,9 @@ smooth-poses = ["quake-core/smooth-poses"]
 # DualShock rumble on damage and gunfire. Needs the SDK's motor API (the pad
 # integration branch: psx_pad::Rumble, poll_rumble_on, enable_rumble_on), which
 # the pinned SDK does not have yet, so this does not build until the pin moves.
+# Diagnostic: clear the frame to magenta instead of black, so cracks and
+# dropped triangles read as magenta. Never part of a shipping image.
+probe-clear-magenta = []
 rumble = []
 emulator-telemetry = ["psx-telemetry/emit"]
 # Log every music schedule transition (tick, loop, fade level) to the emulator

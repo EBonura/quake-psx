@@ -7802,6 +7802,27 @@ impl EntityScene {
         ground
     }
 
+    /// Diagnostic probe: put the brush model `model_index` at `origin` the way
+    /// `place_mover` would, bounds and leaf included.
+    #[cfg(feature = "probe-poses")]
+    pub fn probe_set_brush_origin(&mut self, map: &ResidentMap, model_index: u8, origin: Vec3I32) {
+        for entity in self.entities.iter_mut() {
+            if entity.model_id >= 0 || entity.model_index != model_index {
+                continue;
+            }
+            entity.origin = origin;
+            let Some(model) = map.brush_models().get(model_index as usize) else {
+                continue;
+            };
+            entity.clip_mins = translated_model_bounds(origin, model.mins);
+            entity.clip_maxs = translated_model_bounds(origin, model.maxs);
+            let center = bounds_center(entity.clip_mins, entity.clip_maxs);
+            if let Some(leaf) = map.point_leaf_index(center) {
+                entity.leaf_index = leaf.min(u16::MAX as usize) as u16;
+            }
+        }
+    }
+
     /// Write one mover's canonical transform into its render entity and rebuild
     /// the bounds and leaf that render, broad phase and collision all read.
     fn place_mover(&mut self, map: &ResidentMap, render_index: usize, mover_index: usize) {

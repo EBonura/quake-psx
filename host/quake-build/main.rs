@@ -260,6 +260,7 @@ enum Action {
     E1m1GpuPolygonBakedMaterializeBench,
     GpuPolygonCellPolicyDisc,
     GpuPolygonLeaderDisc,
+    ProbeDisc,
     GpuPolygonScratchLiquidDisc,
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLeaderBench,
@@ -714,6 +715,21 @@ fn real_main() -> Result<()> {
             )?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_ship_boot(&root, &frontend, &build, &map)?;
+        }
+        Action::ProbeDisc => {
+            // A diagnostic disc: the default guest plus the features named in
+            // QUAKE_PSX_PROBE_FEATURES (the pose and clear-colour probes, say),
+            // with its link map beside it. Nothing is run and nothing ships.
+            let features = env::var("QUAKE_PSX_PROBE_FEATURES")
+                .ok()
+                .filter(|features| !features.is_empty())
+                .ok_or("probe-disc needs QUAKE_PSX_PROBE_FEATURES")?;
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-probe");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(&root, &build, Some(&features), false)?;
         }
         Action::GpuPolygonLeaderDisc => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2793,6 +2809,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-gpu-polygon-baked-materialize-bench"
             | "gpu-polygon-cell-policy-disc"
             | "gpu-polygon-leader-disc"
+            | "probe-disc"
             | "gpu-polygon-scratch-liquid-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-leader-bench"
@@ -2857,6 +2874,7 @@ fn parse_cli() -> Result<Cli> {
                     }
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
                     "gpu-polygon-leader-disc" => Action::GpuPolygonLeaderDisc,
+                    "probe-disc" => Action::ProbeDisc,
                     "gpu-polygon-scratch-liquid-disc" => Action::GpuPolygonScratchLiquidDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
                     "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
@@ -2964,6 +2982,7 @@ fn print_help() {
            e1m1-gpu-polygon-scratch-liquid-bench  A/B scratchpad turbulence phase reads\n  \
            gpu-polygon-cell-policy-disc  Build and boot-test the playable 23.432 renderer feature stack\n  \
            gpu-polygon-leader-disc  Build and boot-test the playable 23.656 renderer feature stack\n  \
+           probe-disc  Build a diagnostic disc with QUAKE_PSX_PROBE_FEATURES (nothing is run)\n  \
            gpu-polygon-scratch-liquid-disc  Build and boot-test the playable scratchpad-liquid stack\n  \
            e1m1-block-frustum-bench  A/B cached 16-face conservative frustum blocks\n  \
            block-frustum-regress  Visual, route and shipping validation of 16-face blocks\n  \

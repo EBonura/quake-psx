@@ -447,7 +447,7 @@ pub const fn quake_coordinate_rotation() -> Mat3I16 {
 /// a negative angle) -2.8. `rotate_x_q12` and `rotate_y_q12` interpolate the
 /// same table, and agree with `rotate_x` and `rotate_y` exactly on every
 /// multiple of 16.
-fn quake_view_rotation(angles: [i16; 3]) -> Mat3I16 {
+pub fn quake_view_rotation(angles: [i16; 3]) -> Mat3I16 {
     let roll = angles[2] as u16;
     let (c, s) = (psx_math::cos_q12(roll) as i16, psx_math::sin_q12(roll) as i16);
     Mat3I16::rotate_x_q12(angles[0] as u16)
@@ -607,7 +607,16 @@ unsafe fn queue_frame() {
     preamble.draw_offset = 0xE500_0000 | ((target_y & 0x7FF) << 11);
     preamble.draw_mode = material.draw_mode_word();
     preamble.texture_window = material.texture_window_word();
-    preamble.fill = 0x0200_0000;
+    // Diagnostic: a magenta clear makes every pixel no polygon covered (a crack,
+    // a dropped oversize triangle) stand out from lit and dark surfaces alike.
+    #[cfg(feature = "probe-clear-magenta")]
+    {
+        preamble.fill = 0x02FF_00FF;
+    }
+    #[cfg(not(feature = "probe-clear-magenta"))]
+    {
+        preamble.fill = 0x0200_0000;
+    }
     preamble.fill_xy = target_y << 16;
     preamble.fill_wh = (u32::from(HEIGHT) << 16) | u32::from(WIDTH);
     preamble.clear_tag = (5 << 24) | (ot_head & 0x00FF_FFFF);

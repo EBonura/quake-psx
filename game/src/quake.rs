@@ -44,6 +44,11 @@ struct Intermission {
 /// sectors while leaving the renderer and gameplay workers at speed. The
 /// fixed-step E1M1 route measured 22.201 fps versus 22.221 without it, well
 /// inside the established 0.122 fps code-layout band.
+/// The probe pose log (feature `probe-pose-log`).
+#[cfg(feature = "probe-pose-log")]
+#[no_mangle]
+pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
+
 #[optimize(size)]
 pub fn run() -> ! {
     // Match VoXide's hardware-proven ordering exactly: initialise the GPU,
@@ -1402,6 +1407,23 @@ pub fn run() -> ! {
         // and the warp follow the leaf the drawn eye is in. The player's
         // `waterlevel` counts wading feet, so it tinted the canal walk while
         // the eye was still above the surface.
+        #[cfg(feature = "probe-poses")]
+        crate::visual_parity_regression::apply_movers(&mut entities, &world);
+        #[cfg(feature = "probe-pose-log")]
+        unsafe {
+            // Diagnostic: the camera the frame draws from, for a route replay's
+            // `--route-watch-u32` columns (origin Q12 x y z, angles pitch yaw roll).
+            use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+            let p = addr_of_mut!(QUAKE_POSE) as *mut i32;
+            write_volatile(p.add(0), 0x504f5345);
+            write_volatile(p.add(1), render_camera.origin.x);
+            write_volatile(p.add(2), render_camera.origin.y);
+            write_volatile(p.add(3), render_camera.origin.z);
+            write_volatile(p.add(4), i32::from(render_camera.angles[0]));
+            write_volatile(p.add(5), i32::from(render_camera.angles[1]));
+            write_volatile(p.add(6), i32::from(render_camera.angles[2]));
+            write_volatile(p.add(7), read_volatile(p.add(7)).wrapping_add(1));
+        }
         let view_contents = renderer.view_contents(&world, render_camera);
         presentation.screen_blend_mut().set_contents(view_contents);
         renderer.set_notify(presentation.notify_lines());
@@ -1424,7 +1446,10 @@ pub fn run() -> ! {
                     .powerups()
                     .active(quake_core::survival::PowerupKind::Ring))
             .then_some(crate::renderer::ViewModelInput {
+                #[cfg(not(feature = "probe-poses"))]
                 weapon: weapon.view(),
+                #[cfg(feature = "probe-poses")]
+                weapon: crate::visual_parity_regression::view_model_override().unwrap_or(weapon.view()),
                 velocity: player.velocity(),
                 elapsed_ticks,
                 muzzle_flash: view_model_muzzle_flash,
