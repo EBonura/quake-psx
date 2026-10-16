@@ -13,7 +13,9 @@
   waits for a button; named lifts cycle again after their first ride; a secret
   door's message prints; trains voice `train2` only at waiting corners; a dead
   player touches no trigger; monsters flash the room when they fire; Start's skill
-  portals set the Options row; the classic status bar's ammo counts sit at id's x.
+  portals set the Options row; the classic status bar's ammo counts sit at id's x;
+  key doors and pickups say runekey in E1M6 to E1M8. The E1M1 route's fixed-step
+  work is +0.17 percent (the texture chains) and `heap_free` is 10,744.
 
 - The 2026-10-15 playtest: a lift car or door sorts four ordering-table slots
   closer than the world faces around it, so a wall piece with a nearer average
