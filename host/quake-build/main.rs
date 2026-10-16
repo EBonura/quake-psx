@@ -11,7 +11,7 @@ use quake_formats::{
     CookedRecord, EpisodeDirectoryEncoder, Face, Leaf, LumpKind, MapEntity, PsbIndex, PsbVersion,
     RecordSlice, SliceReader, SoundBankKind, SoundEffect, TextureInfo, EPISODE_DIRECTORY_BYTES,
     RESIDENT_MAP_ARENA_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_SPU_END, TEXTURE_LAYERED_SKY,
-    TEXTURE_SKY,
+    TEXTURE_LIQUID, TEXTURE_SKY,
 };
 use sha2::{Digest, Sha256};
 use std::env;
@@ -2314,6 +2314,8 @@ const GUEST_AUDIO_EFFECT_CAPACITY: usize = 104;
 const GUEST_COLLISION_PLANE_CAPACITY: usize = 2_948;
 const GUEST_RENDER_TEXTURE_CAPACITY: usize = 81;
 const GUEST_MAX_FIREBALLS: usize = 30;
+/// `LIQUID_TEXTURE_CAPACITY` in `game/src/asset.rs`.
+const GUEST_LIQUID_TEXTURE_CAPACITY: usize = 4;
 
 const GUEST_MAX_TARGET_ACTIONS: usize = 128;
 const GUEST_MAX_PLAYER_ACTIVATIONS: usize = 8;
@@ -3501,6 +3503,9 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
     const EXPECTED_MAX_PVS_FACES: [usize; 9] =
         [1_176, 1_325, 1_052, 898, 1_046, 939, 1_201, 913, 1_306];
     let mut largest_required = 0usize;
+    let mut worst_planes = 0usize;
+    let mut worst_textures = 0usize;
+    let mut worst_liquid = 0usize;
     let mut pickup_count = 0usize;
     let mut floor_boundary_pickups = 0usize;
     for (map_index, map) in [
@@ -3549,6 +3554,20 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
         // would fail to load on the disc.
         let plane_count = resident.planes().len();
         let texture_count = resident.textures().len();
+        let liquid_count = resident
+            .textures()
+            .iter()
+            .filter(|texture| texture.flags & TEXTURE_LIQUID != 0)
+            .count();
+        worst_planes = worst_planes.max(plane_count);
+        worst_textures = worst_textures.max(texture_count);
+        worst_liquid = worst_liquid.max(liquid_count);
+        if liquid_count > GUEST_LIQUID_TEXTURE_CAPACITY {
+            return Err(format!(
+                "cooked {map} has {liquid_count} turbulent textures; the guest holds {GUEST_LIQUID_TEXTURE_CAPACITY}"
+            )
+            .into());
+        }
         if plane_count > GUEST_COLLISION_PLANE_CAPACITY
             || texture_count > GUEST_RENDER_TEXTURE_CAPACITY
         {
@@ -3689,6 +3708,9 @@ fn assert_cooked_maps_fit_resident_arena(root: &Path) -> Result<()> {
     println!(
         "PSB5 resident arena: {largest_required} bytes required, {RESIDENT_MAP_ARENA_BYTES} reserved ({} bytes margin)",
         RESIDENT_MAP_ARENA_BYTES - largest_required
+    );
+    println!(
+        "PSB5 pools: planes {worst_planes}/{GUEST_COLLISION_PLANE_CAPACITY}, textures {worst_textures}/{GUEST_RENDER_TEXTURE_CAPACITY}, turbulent textures {worst_liquid}/{GUEST_LIQUID_TEXTURE_CAPACITY}"
     );
     println!(
         "pickup visibility leaves: {pickup_count} authored, {floor_boundary_pickups} lifted out of solid leaf 0"
