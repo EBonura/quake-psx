@@ -50,7 +50,7 @@ const PATTERNS: [&[u8]; 12] = [
     // 1 flicker
     b"mmnmmommommnonmmonqnmmo",
     // 2 slow strong pulse
-    b"abcdefghijklmnopqrrqponmlkjihgfedcba",
+    b"abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
     // 3 candle
     b"mmmmmaaaaammmmmaaaaaabcdefgabcdefg",
     // 4 fast strobe
@@ -214,6 +214,15 @@ mod tests {
         // Style 1 is twenty-three entries and must not share style 4's period.
         assert_eq!(animated_value(1, 23), animated_value(1, 0));
         assert_ne!(animated_value(1, 12), animated_value(1, 0));
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn the_slow_strong_pulse_climbs_to_z_over_fifty_one_steps() {
+        // world.qc style 2: a..z..a, which is not style 11's shorter pulse.
+        assert_eq!(animated_value(2, 25), 25 * LETTER_SCALE);
+        assert_eq!(animated_value(2, 50), 0);
+        assert_eq!(animated_value(2, 51), animated_value(2, 0));
     }
 
     #[optimize(size)]
