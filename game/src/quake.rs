@@ -772,6 +772,9 @@ pub fn run() -> ! {
         if gameplay.crush_damage != 0 {
             weapon.take_damage(gameplay.crush_damage.min(i16::MAX as u16) as i16);
         }
+        if let Some(skill) = gameplay.selected_skill {
+            menu.set_skill(skill);
+        }
         if let Some(bit) = gameplay.needs_key {
             // `door_touch`'s noise3, cooked from the worldtype-selected
             // medtry/runetry/basetry triple under the medtry id.

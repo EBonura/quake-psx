@@ -512,6 +512,13 @@ impl Menu {
         }
     }
 
+    /// A Start skill portal changed the `skill` cvar: New Game reads the cvar,
+    /// so the Options row follows it.
+    #[optimize(size)]
+    pub fn set_skill(&mut self, skill: u8) {
+        self.skill = skill.min(SKILL_LABELS.len() as u8 - 1);
+    }
+
     /// Refresh the music rows from the music module. The player edits them,
     /// but the module owns whether music exists on this disc, so it re-states
     /// the truth each frame and the menu is only the surface. Losing the rows mid-page cannot strand the
