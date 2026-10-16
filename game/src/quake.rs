@@ -19,15 +19,18 @@ use quake_core::level_session::{CenterprintText, LevelPresentation};
 /// The original holds a centerprint for two seconds.
 const CENTERPRINT_TICKS: u16 = 120;
 
-/// How long the end-of-level panel holds before the next map loads.
+/// How long the end-of-level panel holds before the next map loads in a
+/// headless gate build.
 ///
-/// The original waits for `+attack` after a minimum dwell. A console port
-/// cannot stall a headless run on a button, so the dwell is bounded and a
-/// press only skips the remainder. Every gate therefore crosses the panel
-/// deterministically without pressing anything.
+/// `IntermissionThink` waits for a button after `intermission_exittime`
+/// (`time + 2`), with no timeout, and so does the shipping build. A headless
+/// run cannot press one, so the telemetry builds every gate uses keep a bounded
+/// dwell and cross the panel deterministically.
 const INTERMISSION_TICKS: u16 = 150;
-/// Earliest tick a press may skip the panel.
-const INTERMISSION_SKIP_TICKS: u16 = 30;
+const WAIT_FOR_BUTTON: bool = !cfg!(feature = "emulator-telemetry");
+/// Earliest tick a press may skip the panel: id's two seconds, or a shorter
+/// dwell in a gate build.
+const INTERMISSION_SKIP_TICKS: u16 = if WAIT_FOR_BUTTON { 120 } else { 30 };
 
 /// The end-of-level panel between two maps.
 struct Intermission {
@@ -297,7 +300,9 @@ pub fn run() -> ! {
         let raw_controls = input.poll(menu.deadzone_radius());
         if let Some(active) = intermission.as_mut() {
             active.elapsed = active.elapsed.saturating_add(elapsed_ticks);
-            active.remaining = active.remaining.saturating_sub(elapsed_ticks);
+            if !WAIT_FOR_BUTTON {
+                active.remaining = active.remaining.saturating_sub(elapsed_ticks);
+            }
             // The panel is the one screen the blends were never ticked on, so
             // a flash from the last gameplay frame used to hang there. This
             // also drives the port's transition fade below.
@@ -309,7 +314,8 @@ pub fn run() -> ! {
             }
             let skipped = active.elapsed >= INTERMISSION_SKIP_TICKS
                 && raw_controls.pressed
-                    & (psx_pad::button::CROSS
+                    & (psx_pad::button::R2
+                        | psx_pad::button::CROSS
                         | psx_pad::button::START
                         | psx_pad::button::SQUARE
                         | psx_pad::button::CIRCLE)
