@@ -1665,6 +1665,8 @@ impl Renderer {
         // showed it, leaving a strip of sky at the screen edge. Rounding here
         // leaves the projection bit-identical.
         camera.origin = whole_unit_origin(camera.origin);
+        #[cfg(feature = "probe-poses")]
+        let water_alpha = water_alpha && !crate::visual_parity_regression::NO_WATER;
         #[cfg(feature = "smooth-poses")]
         {
             self.pose_clock = animation_tick_60hz;
@@ -3375,17 +3377,35 @@ impl Renderer {
             if !entity.visible {
                 continue;
             }
+            // Probe scenes are brush-model studies: no monsters wander in.
+            #[cfg(feature = "probe-poses")]
+            if entity.model_id >= 0 {
+                continue;
+            }
             if entity.is_projectile() {
                 stats.projectile_entities = stats.projectile_entities.saturating_add(1);
             }
-            if !self.point_visible(entity.leaf_index as usize) {
-                // A brush submodel whose centre sits in solid (leaf 0: a lift
-                // car sunk into its pit, a button set in its wall) is visible
-                // through any leaf its box touches, as in Quake's
-                // `SV_FindTouchedLeafs`; the centre says nothing about it.
-                // Frustum first, and the answer is remembered per PVS.
+            #[cfg(feature = "probe-poses")]
+            let probe_draw_all =
+                entity.model_id < 0 && unsafe { crate::visual_parity_regression::NO_BRUSH_CULL };
+            #[cfg(not(feature = "probe-poses"))]
+            let probe_draw_all = false;
+            if !probe_draw_all && !self.point_visible(entity.leaf_index as usize) {
+                // A brush submodel is visible through any leaf its box
+                // touches, as in Quake's `SV_FindTouchedLeafs`; the leaf at
+                // its centre says little about a big one. A lift car sunk
+                // into its pit has its centre in solid (leaf 0) while its deck
+                // is in plain view, and a tall car or door has its centre in
+                // a leaf the camera cannot see while the rest of it stands in
+                // one it can. Frustum first, and the answer is remembered per
+                // PVS.
+                #[cfg(feature = "probe-poses")]
+                let old_rule =
+                    crate::visual_parity_regression::OLD_CULL && entity.leaf_index != 0;
+                #[cfg(not(feature = "probe-poses"))]
+                let old_rule = false;
                 if entity.model_id >= 0
-                    || entity.leaf_index != 0
+                    || old_rule
                     || scene::is_aabb_outside_clip4(
                         entity.clip_mins,
                         entity.clip_maxs,
@@ -3427,7 +3447,14 @@ impl Renderer {
                 #[cfg(not(feature = "episode1-regression"))]
                 {
                     crate::platform::sort_probe_class(crate::platform::sort_class::WORLD);
+                    let first_packet = next;
                     next = self.draw_brush_entity(map, entity, camera, view, next, end, stats);
+                    #[cfg(feature = "probe-poses")]
+                    let bias = u32::from(unsafe { crate::visual_parity_regression::BRUSH_BIAS });
+                    #[cfg(not(feature = "probe-poses"))]
+                    let bias = BRUSH_SLOT_BIAS;
+                    // SAFETY: `first_packet..next` is the tagged stream this call wrote.
+                    unsafe { pull_packets_nearer(first_packet, next, bias) };
                     crate::platform::sort_probe_class(crate::platform::sort_class::MODEL);
                     if stats.packet_overflow_avoided {
                         break;
@@ -3883,6 +3910,12 @@ impl Renderer {
                     batch_vertices_mut(batch_vertices, batch_vertex_count, reserve_count)
                 };
                 self.materialize_face(indexed, face, texture, &mut vertices[..vertex_count]);
+                #[cfg(feature = "probe-poses")]
+                if entity.model_index == unsafe { crate::visual_parity_regression::TINT_MODEL } {
+                    for vertex in vertices[..vertex_count].iter_mut() {
+                        vertex.color = 0x0000_A000;
+                    }
+                }
                 let vertex_count = if near {
                     match unsafe {
                         near_face(
@@ -5599,30 +5632,22 @@ fn push_text(
     }
 }
 
+/// The cull frustum's four planes, built from the view matrix the GTE draws
+/// with (`quake_view_rotation`), so a rolled camera culls the same screen it
+/// draws. The axes of that matrix are not Quake's `AngleVectors`: its roll
+/// turns the other way and is applied last, so a frustum from the textbook
+/// formulas, tilted by the strafe roll the wrong way, cut a corner of the
+/// screen off (a hole at the top of the view, and holes along the edge that
+/// moved with every step).
 fn quake_frustum(camera: Camera) -> [AabbClipPlane; 4] {
-    let yaw = camera.angles[1] as u16 & 0x0fff;
-    let pitch = camera.angles[0] as u16 & 0x0fff;
-    let roll = camera.angles[2] as u16 & 0x0fff;
-    let sy = sin_q12(yaw);
-    let cy = cos_q12(yaw);
-    let sp = sin_q12(pitch);
-    let cp = cos_q12(pitch);
-    let sr = sin_q12(roll);
-    let cr = cos_q12(roll);
-    let multiply = |left: i32, right: i32| mul_q12_i32(left, right);
-    let clamp = |value: i32| value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-
-    let forward = [clamp(multiply(cp, cy)), clamp(multiply(cp, sy)), clamp(-sp)];
-    let right = [
-        clamp(multiply(multiply(-sr, sp), cy) + multiply(-cr, -sy)),
-        clamp(multiply(multiply(-sr, sp), sy) + multiply(-cr, cy)),
-        clamp(multiply(-sr, cp)),
-    ];
-    let up = [
-        clamp(multiply(multiply(cr, sp), cy) + multiply(-sr, -sy)),
-        clamp(multiply(multiply(cr, sp), sy) + multiply(-sr, cy)),
-        clamp(multiply(cr, cp)),
-    ];
+    let view = crate::platform::quake_view_rotation(camera.angles).m;
+    // Row `i` of the view matrix times the Quake-to-view basis: the view's
+    // x (right), y (down) and z (forward) axes in world coordinates.
+    let axis = |row: usize| [view[row][2], view[row][0].saturating_neg(), view[row][1].saturating_neg()];
+    let forward = axis(2);
+    let right = axis(0);
+    let down = axis(1);
+    let up = [down[0].saturating_neg(), down[1].saturating_neg(), down[2].saturating_neg()];
     // The horizontal half-angle really is 45 degrees: OFX 160 with a 160
     // projection plane puts the screen edge at exactly one. The vertical one is
     // not. OFY 120 over the same plane puts the top and bottom edges at 0.75,
@@ -6060,6 +6085,32 @@ fn alias_projected_buffer(
         unsafe { psx_engine::scratchpad::ptr_at::<ClassicAliasProjectedVertex>(0) }
     } else {
         fallback.as_mut_ptr()
+    }
+}
+
+/// Ordering-table slots a brush model's packets are pulled nearer by. The
+/// table sorts a polygon by the average depth of its corners and a lift car
+/// or a door is a few big polygons next to the world's, so a wall piece with
+/// a nearer average than the car's overdrew the part of the car it is behind
+/// (a lift cut in half, depending where the player stood). A mover is never
+/// behind the world faces it sits among, so it wins their near ties.
+const BRUSH_SLOT_BIAS: u32 = 8;
+
+/// Move every packet of a staged tagged stream `bias` slots nearer (never
+/// into slot 0, which the writers reject, nor off the screen-packet sentinel).
+#[optimize(size)]
+#[inline(never)]
+unsafe fn pull_packets_nearer(first: *mut u32, end: *mut u32, bias: u32) {
+    let mut at = first;
+    while bias != 0 && at < end {
+        unsafe {
+            let tag = at.read();
+            let slot = tag & 0xffff;
+            if slot != 0xffff {
+                at.write((tag & 0xffff_0000) | slot.saturating_sub(bias).max(1));
+            }
+            at = at.add(1 + (tag >> 24) as usize);
+        }
     }
 }
 
