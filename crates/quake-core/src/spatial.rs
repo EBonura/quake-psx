@@ -2,6 +2,15 @@
 
 use psx_math::int32::div_u64_by_u32;
 
+/// The listener's right vector in the floor plane, in Q12: `AngleVectors`'
+/// `right` for a level view, `(sin yaw, -cos yaw)`. Quake's y axis points to the
+/// listener's left when facing +x, so this is the vector the pan has to be
+/// measured against; its negation is the left ear.
+pub fn listener_right_q12(yaw: u16) -> (i32, i32) {
+    let yaw = yaw & 0x0fff;
+    (psx_math::sin_q12(yaw), -psx_math::cos_q12(yaw))
+}
+
 /// `S_Spatialize`'s pan: `(dot / distance)` clamped to `[-one, one]`, where
 /// `dot` is the 64-bit sum of two products and `distance` a positive 32-bit
 /// length. Identical to `(dot / i64::from(distance)).clamp(-one, one)` for every
@@ -28,6 +37,19 @@ pub fn pan_q12(dot: i64, distance: u32, one: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source on the player's right must be louder in the right ear. The
+    /// right vector is the one the view and the weapons use.
+    #[test]
+    fn the_listener_right_vector_is_the_views_right() {
+        for yaw in (0..4096u16).step_by(37) {
+            let (x, y) = listener_right_q12(yaw);
+            let (_, right, _) = crate::combat::view_basis([0, yaw as i16, 0]);
+            assert!((x - right.x).abs() <= 2 && (y - right.y).abs() <= 2, "yaw {yaw}");
+        }
+        // Facing +x, the right-hand side is -y.
+        assert_eq!(listener_right_q12(0).1, -4096);
+    }
 
     #[test]
     fn matches_the_wide_division_on_edges_and_a_sweep() {

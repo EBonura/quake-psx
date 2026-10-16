@@ -878,8 +878,7 @@ fn spatial_volumes(
     }
 
     let angle = yaw as u16 & 0x0fff;
-    let right_x = -psx_math::sin_q12(angle);
-    let right_y = psx_math::cos_q12(angle);
+    let (right_x, right_y) = quake_core::spatial::listener_right_q12(angle);
     let pan = if distance == 0 {
         0
     } else {
