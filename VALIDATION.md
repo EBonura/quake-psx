@@ -58,6 +58,30 @@ QUAKE_PSX_PROBE_POSES='...' cargo quake-build probe-disc
 and run it with `--guest-frames`, `--route-screenshot-dir` and a
 `--route-watch-u32` on `QUAKE_VISUAL_PARITY_PROBE + 8` (the frame counter).
 
+## Route-simulator sweeps
+
+`tools/routesim` links the same movement and collision as the guest and runs
+over the cooked maps, so a movement defect can be swept for across a whole map
+in seconds. The three sweeps hold full forward from a standstill and need no
+guest build:
+
+```sh
+cargo build --release --manifest-path tools/routesim/Cargo.toml
+for map in start e1m1 e1m2 e1m3 e1m4 e1m5 e1m6 e1m7 e1m8; do
+  for mode in slopes ramps traps; do
+    ROUTESIM_OPEN_MOVERS=1 <target>/release/quake-routesim id1psx/maps/$map.psb $mode
+  done
+done
+```
+
+`ramps` tries every floor step and slope of a 16 unit grid at 1, 2, 3 and 4
+simulation ticks per frame, `slopes` every walkable ramp face, `traps` every
+standable floor in eight directions. All nine maps report none blocked and none
+trapped (`ramps tested 1064 blocked 0` on E1M1; before the leaning-riser step
+it was 3). `walk X Y Z DX DY [--ticks n] [--frames n]` prints one start frame by
+frame and `ROUTESIM_TRACE_CALLS=1` logs every trace the motor makes, which is
+how the three stalls were taken apart.
+
 ## MIPS liquid load-delay regression
 
 Host tests use the scalar implementation, so also execute the actual MIPS inline
