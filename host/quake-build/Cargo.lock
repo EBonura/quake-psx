@@ -114,7 +114,7 @@ dependencies = [
 [[package]]
 name = "psoxide-link"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=5e112a7876d2ca3950ee0365937d5b2cc07f8b21#5e112a7876d2ca3950ee0365937d5b2cc07f8b21"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=b5365b1863fd0d3081602e65f3cfe49826d4e99e#b5365b1863fd0d3081602e65f3cfe49826d4e99e"
 dependencies = [
  "serde_json",
  "toml",
@@ -286,9 +286,10 @@ dependencies = [
 
 [[package]]
 name = "psx-sfx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "psx-asset",
+ "psx-math",
  "psx-spu",
 ]
 
