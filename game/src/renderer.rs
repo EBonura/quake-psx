@@ -5214,7 +5214,7 @@ fn push_inventory_strip(
 
     index = 0;
     while index < 4 {
-        push_inventory_u16(packets, 10 + index as i16 * 48, 192, view.ammo_pools[index]);
+        push_inventory_u16(packets, 6 + index as i16 * 48, 192, view.ammo_pools[index]);
         index += 1;
     }
 
