@@ -13,6 +13,7 @@
 use alloc::boxed::Box;
 
 use quake_affine::ClassicAliasProjectedVertex;
+use quake_core::combat::{NAILGUN_MODEL_ID, SUPER_NAILGUN_MODEL_ID};
 use quake_core::pose::{self, Pose, PoseTracker};
 use quake_formats::{AliasModelView, Vec3I32};
 
@@ -83,11 +84,25 @@ impl Renderer {
         frame: usize,
         current: &[u8],
     ) -> *const u8 {
+        // The nailguns' frames are not poses of one moving thing. The nailgun
+        // lights its muzzle flash at one of two muzzles and swaps sides every
+        // frame, and the super nailgun's four barrels step an eighth of a turn
+        // each frame; blending either slides the flash between the muzzles
+        // (or shrinks the barrels through their own axis) instead of showing
+        // the frame id drew. They are shown a frame at a time.
+        let id = model.header().id;
+        #[cfg(feature = "probe-poses")]
+        let stepped = !crate::visual_parity_regression::BLEND_NAILGUNS;
+        #[cfg(not(feature = "probe-poses"))]
+        let stepped = true;
+        if stepped && (id == NAILGUN_MODEL_ID || id == SUPER_NAILGUN_MODEL_ID) {
+            return current.as_ptr();
+        }
         let pose = Pose {
             origin: [0; 3],
             yaw: 0,
             frame: frame as u16,
-            model: model.header().id,
+            model: id,
         };
         self.smooth_pose_core(model, VIEW_MODEL_KEY, &pose, current, true)
             .vertices
