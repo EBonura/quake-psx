@@ -30,7 +30,7 @@ use quake_core::lightstyle::{self, sample_leaf as leaf_light};
 ))]
 use quake_core::monster::MonsterState;
 use quake_core::monster::{
-    predicted_target, BackpackAmmo, MonsterAttack, MonsterEnemy, MonsterKind, MonsterLeap,
+    normalize_q12, predicted_target, BackpackAmmo, MonsterAttack, MonsterEnemy, MonsterKind, MonsterLeap,
     MonsterRuntime, MonsterThinkInput, CLASS_ARMY, CLASS_BOSS, CLASS_ZOMBIE, LAVA_BALL_MODEL_ID,
     OGRE_DRAG_SOUND, ZOMBIE_GIB_MODEL_ID, ZOMBIE_HIT_SOUND, ZOMBIE_MISS_SOUND,
 };
@@ -5394,7 +5394,13 @@ impl EntityScene {
                     | MonsterAttack::ZombieGib { .. }
                     | MonsterAttack::Spit { .. }
                     | MonsterAttack::LavaBall { .. } => {
-                        self.launch_monster_missile(map, index, enemy.origin, attack);
+                        self.launch_monster_missile(
+                            map,
+                            index,
+                            enemy.origin,
+                            enemy.velocity,
+                            attack,
+                        );
                         0
                     }
                 };
@@ -6435,6 +6441,7 @@ impl EntityScene {
         map: &ResidentMap,
         shooter_index: usize,
         player_origin: Vec3I32,
+        player_velocity: Vec3I32,
         attack: MonsterAttack,
     ) -> bool {
         // `R_LightPoint` reads the live style table; copy it so the per-entity
@@ -6449,13 +6456,8 @@ impl EntityScene {
             y: vector.y.saturating_mul(units),
             z: vector.z.saturating_mul(units),
         };
-        // Quake launches all four at units per second; the pools step once per
-        // 60 Hz tick, so the stored velocity is units per tick in Q20.12.
-        let per_tick = |units_per_second: i32| Vec3I32 {
-            x: forward.x.saturating_mul(units_per_second) / 60,
-            y: forward.y.saturating_mul(units_per_second) / 60,
-            z: forward.z.saturating_mul(units_per_second) / 60,
-        };
+        // Quake launches at units per second; the pools step once per 60 Hz
+        // tick, so the stored velocity is units per tick in Q20.12.
         let (kind, model_id, damage, origin, velocity, lifetime) = match attack {
             MonsterAttack::Grenade { damage } => {
                 let (origin, velocity) = quake_core::monster::ogre_grenade_launch(shooter.origin, forward);
@@ -6513,21 +6515,26 @@ impl EntityScene {
                     180,
                 )
             }
-            MonsterAttack::LavaBall { damage, side } => (
-                MonsterMissileKind::LavaBall,
-                LAVA_BALL_MODEL_ID,
-                damage,
-                add_vec(
-                    add_vec(shooter.origin, scale(forward, 100)),
-                    Vec3I32 {
-                        x: right.x.saturating_mul(i32::from(side)),
-                        y: right.y.saturating_mul(i32::from(side)),
-                        z: 200 << 12,
-                    },
-                ),
-                per_tick(300),
-                300,
-            ),
+            MonsterAttack::LavaBall { damage, side } => {
+                // `boss_missile`; the geometry lives in quake-core.
+                let (origin, velocity) = quake_core::monster::lava_ball_launch(
+                    shooter.origin,
+                    forward,
+                    right,
+                    side,
+                    player_origin,
+                    player_velocity,
+                    self.skill,
+                );
+                (
+                    MonsterMissileKind::LavaBall,
+                    LAVA_BALL_MODEL_ID,
+                    damage,
+                    origin,
+                    velocity,
+                    300,
+                )
+            }
             _ => return false,
         };
         let Some(slot_index) = self.claim_missile_slot() else {
@@ -10292,34 +10299,6 @@ fn dot_q12(left: Vec3I32, right: Vec3I32) -> i32 {
     mul_q12_i32(left.x, right.x)
         .saturating_add(mul_q12_i32(left.y, right.y))
         .saturating_add(mul_q12_i32(left.z, right.z))
-}
-
-/// Unit Q12 direction of a Q12 offset; zero stays zero. The offset is
-/// scaled down to 14 bits per axis first so the squares fit an i32 while
-/// keeping more precision than whole units would.
-#[inline(never)]
-fn normalize_q12(vector: Vec3I32) -> Vec3I32 {
-    let largest = vector
-        .x
-        .unsigned_abs()
-        .max(vector.y.unsigned_abs())
-        .max(vector.z.unsigned_abs());
-    let mut shift = 0u32;
-    while (largest >> shift) >= 1 << 14 {
-        shift += 1;
-    }
-    let x = vector.x >> shift;
-    let y = vector.y >> shift;
-    let z = vector.z >> shift;
-    let length = isqrt_i32(x * x + y * y + z * z);
-    if length <= 0 {
-        return Vec3I32::default();
-    }
-    Vec3I32 {
-        x: (x << 12) / length,
-        y: (y << 12) / length,
-        z: (z << 12) / length,
-    }
 }
 
 #[cfg(any(

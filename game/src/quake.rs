@@ -427,6 +427,11 @@ pub fn run() -> ! {
             Some(quake_core::menu::MenuAction::Resume) | None => {}
         }
         weapon.set_god_mode(menu_view.god_mode);
+        // The scripted E1M7 route stands in front of Chthon, whose lava balls
+        // now aim at the player as id's do; the gate proves the mechanism
+        // chain, not that fight.
+        #[cfg(feature = "episode1-route-regression")]
+        weapon.set_god_mode(true);
         // A level action reloads and resets the SPU voices above, so consume
         // its deferred enter cue only after that reset. Page moves and slider
         // changes reach here in the same frame as their input.

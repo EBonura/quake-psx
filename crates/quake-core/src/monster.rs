@@ -51,6 +51,96 @@ pub fn ogre_grenade_launch(origin: Vec3I32, forward_q12: Vec3I32) -> (Vec3I32, V
     })
 }
 
+/// Chthon's lava ball launch: where it spawns and its velocity in Q20.12 units
+/// per 60 Hz tick.
+///
+/// `boss_missile` spawns the ball 100 units along the line to the player
+/// (`forward`), `side` units across it (`right`) and 200 up, and then flies it
+/// from that spawn point at the player's origin (`normalize (d - org) * 300`),
+/// so aiming from the boss itself would miss a stationary player by the spawn
+/// offset. Skill 2 and 3 aim at where the player's horizontal motion carries
+/// him by the flight time at 300 units a second. `player_velocity` is in Q12
+/// units per second; all of it stays in 32-bit integers.
+#[inline(never)]
+#[optimize(size)]
+pub fn lava_ball_launch(
+    shooter: Vec3I32,
+    forward: Vec3I32,
+    right: Vec3I32,
+    side: i16,
+    player_origin: Vec3I32,
+    player_velocity: Vec3I32,
+    skill: u8,
+) -> (Vec3I32, Vec3I32) {
+    // Map coordinates are far inside 32 bits, so plain arithmetic suffices.
+    let side = i32::from(side);
+    let origin = Vec3I32 {
+        x: shooter.x + forward.x * 100 + right.x * side,
+        y: shooter.y + forward.y * 100 + right.y * side,
+        z: shooter.z + forward.z * 100 + (200 << 12),
+    };
+    let offset = |to: Vec3I32| Vec3I32 {
+        x: to.x - origin.x,
+        y: to.y - origin.y,
+        z: to.z - origin.z,
+    };
+    let (mut heading, reach) = normalize_with_length_q12(offset(player_origin));
+    if skill > 1 {
+        let flight = reach >> 12;
+        let target = Vec3I32 {
+            x: player_origin.x + (player_velocity.x / 300) * flight,
+            y: player_origin.y + (player_velocity.y / 300) * flight,
+            z: player_origin.z,
+        };
+        heading = normalize_with_length_q12(offset(target)).0;
+    }
+    // 300 units a second as units per 60 Hz tick.
+    (
+        origin,
+        Vec3I32 {
+            x: heading.x * 5,
+            y: heading.y * 5,
+            z: heading.z * 5,
+        },
+    )
+}
+
+/// Unit vector of a Q12 offset in Q12, taken at a scale where the squares fit
+/// 32 bits; zero for a zero offset.
+pub fn normalize_q12(vector: Vec3I32) -> Vec3I32 {
+    normalize_with_length_q12(vector).0
+}
+
+/// [`normalize_q12`] and the offset's length in Q12 as well.
+#[inline(never)]
+pub fn normalize_with_length_q12(vector: Vec3I32) -> (Vec3I32, i32) {
+    use psx_math::int32::isqrt_i32;
+    let largest = vector
+        .x
+        .unsigned_abs()
+        .max(vector.y.unsigned_abs())
+        .max(vector.z.unsigned_abs());
+    let mut shift = 0u32;
+    while (largest >> shift) >= 1 << 14 {
+        shift += 1;
+    }
+    let x = vector.x >> shift;
+    let y = vector.y >> shift;
+    let z = vector.z >> shift;
+    let length = isqrt_i32(x * x + y * y + z * z);
+    if length <= 0 {
+        return (Vec3I32::default(), 0);
+    }
+    (
+        Vec3I32 {
+            x: (x << 12) / length,
+            y: (y << 12) / length,
+            z: (z << 12) / length,
+        },
+        length << shift,
+    )
+}
+
 pub const CLASS_ARMY: u8 = 0x36;
 pub const CLASS_BOSS: u8 = 0x37;
 pub const CLASS_DEMON: u8 = 0x38;
@@ -2488,6 +2578,62 @@ pub fn quake_monster_advance(runtime: &mut MonsterRuntime, elapsed: u16, input: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ball flies from its own spawn point to the player, so a stationary
+    /// player is struck: after the flight time the ball is on the player's
+    /// origin, within a unit. Skill 2 and 3 lead a running player by the flight
+    /// time.
+    #[test]
+    fn a_lava_ball_flies_from_its_spawn_point_to_the_player() {
+        // Boss at the origin, facing +x, so forward is +x and right is -y.
+        let boss = Vec3I32::default();
+        let forward = Vec3I32 { x: 4096, y: 0, z: 0 };
+        let right = Vec3I32 { x: 0, y: -4096, z: 0 };
+        let player = Vec3I32 {
+            x: 600 << 12,
+            y: -250 << 12,
+            z: -120 << 12,
+        };
+        let units = |value: i32| f64::from(value) / 4096.0;
+        for skill in 0..4u8 {
+            let run = Vec3I32 {
+                x: 0,
+                y: 200 << 12,
+                z: 0,
+            };
+            let (spawn, velocity) =
+                lava_ball_launch(boss, forward, right, 100, player, run, skill);
+            assert_eq!((spawn.x >> 12, spawn.y >> 12, spawn.z >> 12), (100, -100, 200));
+            let speed = (units(velocity.x).powi(2)
+                + units(velocity.y).powi(2)
+                + units(velocity.z).powi(2))
+            .sqrt()
+                * 60.0;
+            assert!((speed - 300.0).abs() < 3.0, "skill {skill}: {speed}");
+            // Where the ball is after t seconds against where the player is.
+            let distance = (units(player.x - spawn.x).powi(2)
+                + units(player.y - spawn.y).powi(2)
+                + units(player.z - spawn.z).powi(2))
+            .sqrt();
+            let still_ticks = distance / 300.0 * 60.0;
+            let ball = |ticks: f64| {
+                (
+                    units(spawn.x) + units(velocity.x) * ticks,
+                    units(spawn.y) + units(velocity.y) * ticks,
+                )
+            };
+            if skill < 2 {
+                let (bx, by) = ball(still_ticks);
+                assert!((bx - units(player.x)).abs() < 3.0, "skill {skill} x {bx}");
+                assert!((by - units(player.y)).abs() < 3.0, "skill {skill} y {by}");
+            } else {
+                // The aim point is the lead, so the ball passes it, not the
+                // player's present spot: it is ahead along the player's run.
+                let (_, by) = ball(still_ticks);
+                assert!(by > units(player.y) + 100.0, "skill {skill} y {by}");
+            }
+        }
+    }
 
     #[test]
     fn zombie_gib_all_authored_throws_use_the_hand_and_feet_height() {
