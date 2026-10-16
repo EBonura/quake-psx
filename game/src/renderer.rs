@@ -1334,6 +1334,9 @@ pub struct Renderer {
     notify_lines: [Option<&'static str>; quake_core::level_session::NOTIFY_LINES],
     screen_tints: [[ScreenTintQuad; SCREEN_TINT_CAPACITY]; 2],
     liquid_generation: u32,
+    /// `(int)(cl.time * 10)` the animated texture chains were last resolved
+    /// at; `u32::MAX` after a map change.
+    texture_step: u32,
     liquid_phase: u8,
     liquid_uploaded_mask: u8,
     liquid_alternate_mask: u8,
@@ -1403,6 +1406,7 @@ impl Renderer {
             screen_tints: [[ScreenTintQuad::new((0, 0, 0), BlendMode::Add); SCREEN_TINT_CAPACITY];
                 2],
             liquid_generation: u32::MAX,
+            texture_step: u32::MAX,
             liquid_phase: u8::MAX,
             liquid_uploaded_mask: 0,
             liquid_alternate_mask: 0,
@@ -1514,6 +1518,38 @@ impl Renderer {
                 dynamic_light_add(light, origin.x >> 12, origin.y >> 12, origin.z >> 12).max(0)
             }
             None => 0,
+        }
+    }
+
+    /// `R_TextureAnimation`: a face on any member of a `+0` chain shows the
+    /// frame `(int)(cl.time * 10) % anim_total` selects, so the table the
+    /// faces index is re-pointed at that frame's record whenever the tenth of
+    /// a second turns over. Every frame is already in the atlas.
+    #[optimize(size)]
+    #[inline(never)]
+    fn animate_texture_chains(&mut self, map: &ResidentMap, tick_60hz: u32) {
+        let step = tick_60hz / 6;
+        if step == self.texture_step {
+            return;
+        }
+        self.texture_step = step;
+        let textures = map.render_textures();
+        for (index, head) in textures.iter().enumerate() {
+            if head.animation_total <= 0 {
+                continue;
+            }
+            let relative = (step % head.animation_total as u32) as i32;
+            let mut at = index;
+            for _ in 0..head.animation_total {
+                let frame = &textures[at];
+                if i32::from(frame.animation_min) <= relative
+                    && relative < i32::from(frame.animation_max)
+                {
+                    break;
+                }
+                at = frame.animation_next as usize;
+            }
+            self.active_textures[index] = textures[at];
         }
     }
 
@@ -1710,10 +1746,12 @@ impl Renderer {
             self.active_textures
                 .extend_from_slice(map.render_textures());
             self.liquid_generation = map.generation();
+            self.texture_step = u32::MAX;
             self.liquid_phase = u8::MAX;
             self.liquid_uploaded_mask = 0;
             self.liquid_alternate_mask = 0;
         }
+        self.animate_texture_chains(map, animation_tick_60hz);
 
         let start = unsafe {
             addr_of_mut!(GPU_ARENAS)
@@ -3828,6 +3866,16 @@ impl Renderer {
             let Some(&texture) = self.active_textures.get(face.texture as usize) else {
                 stats.packet_overflow_avoided = true;
                 break;
+            };
+            // `button_wait` sets `frame = 1`, which selects the `+a` textures
+            // of a pressed button.
+            let texture = if entity.frame != 0 && texture.animation_alt >= 0 {
+                self.active_textures
+                    .get(texture.animation_alt as usize)
+                    .copied()
+                    .unwrap_or(texture)
+            } else {
+                texture
             };
             if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL | TEXTURE_SKY) != 0
                 || !front_facing(map, face, model_camera)
