@@ -118,8 +118,9 @@ pub fn run() -> ! {
     );
     if global_audio.is_err() {
         psx_rt::tty::println("quake-psx: Rust global sound load failed");
-        let status = alloc::format!("SOUND ERROR {:08X}", crate::platform::storage_diag());
-        renderer.draw_loading_status(loading_picture, boot_map, &status);
+        let mut line = [0u8; STATUS_LINE_BYTES];
+        let status = status_line(b"SOUND ERROR ", crate::platform::storage_diag(), &mut line);
+        renderer.draw_loading_status(loading_picture, boot_map, status);
         psx_rt::halt();
     }
     let Some(mut player) = load_level(
@@ -1630,6 +1631,28 @@ fn play_sound_event(
     };
 }
 
+const STATUS_LINE_BYTES: usize = 24;
+
+/// `PREFIX 0000ABCD` for the loading screen's error line, built by hand so the
+/// shipping image links none of `core::fmt`'s integer formatting for two cold
+/// error paths (`alloc::format!` also leaked the string into the bump heap).
+#[cold]
+#[inline(never)]
+#[optimize(size)]
+fn status_line<'a>(prefix: &[u8], code: u32, out: &'a mut [u8; STATUS_LINE_BYTES]) -> &'a str {
+    let mut at = 0;
+    for &byte in prefix.iter().take(STATUS_LINE_BYTES - 8) {
+        out[at] = byte;
+        at += 1;
+    }
+    for nibble in (0..8).rev() {
+        let digit = ((code >> (nibble * 4)) & 0xf) as u8;
+        out[at] = if digit < 10 { b'0' + digit } else { b'A' + digit - 10 };
+        at += 1;
+    }
+    core::str::from_utf8(&out[..at]).unwrap_or("ERROR")
+}
+
 #[optimize(size)]
 fn load_level(
     world: &mut crate::asset::ResidentMap,
@@ -1694,8 +1717,9 @@ fn load_level(
 
     if loaded.is_none() {
         if let Some(disc) = world.picture(quake_formats::GraphicsPictureId::Disc) {
-            let status = alloc::format!("LEVEL ERROR {:08X}", crate::platform::storage_diag());
-            renderer.draw_loading_status(disc, map, &status);
+            let mut line = [0u8; STATUS_LINE_BYTES];
+            let status = status_line(b"LEVEL ERROR ", crate::platform::storage_diag(), &mut line);
+            renderer.draw_loading_status(disc, map, status);
         }
     }
     music.resume_after_load(psx_rt::interrupts::vblank_count());
