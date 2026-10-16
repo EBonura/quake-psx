@@ -7078,6 +7078,20 @@ impl EntityScene {
         Some((missile.origin, kind, step_units))
     }
 
+    /// Where `EF_ROCKET`'s light goes: the first rocket in flight, else a lava
+    /// ball (`lavaball.mdl` carries the flag too). Only one light exists.
+    #[inline(never)]
+    pub fn flight_glow_origin(&self) -> Option<Vec3I32> {
+        if let Some(rocket) = self.rockets.iter().flatten().next() {
+            return Some(rocket.origin);
+        }
+        self.missiles
+            .iter()
+            .flatten()
+            .find(|missile| matches!(missile.kind, MonsterMissileKind::LavaBall))
+            .map(|missile| missile.origin)
+    }
+
     /// `CL_RelinkEntities`' model-flag trails, in one pass over the live
     /// projectile pools. The original walks each frame's segment in 3-unit
     /// steps and keeps every particle for two seconds; the port steps far

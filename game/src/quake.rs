@@ -1345,6 +1345,9 @@ pub fn run() -> ! {
         // `CL_RelinkEntities` leaves the model-flag trails once every
         // projectile has moved, so this reads the settled origins.
         entities.emit_projectile_trails(presentation.impact_particles_mut());
+        if let Some(origin) = entities.flight_glow_origin() {
+            dynamic_lights.spawn_rocket_glow(origin);
+        }
         let centerprint_text = presentation.centerprint().and_then(|active| match active {
             CenterprintText::Cooked(offset) => world
                 .string_at(offset)

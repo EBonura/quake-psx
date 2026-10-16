@@ -58,6 +58,9 @@ const EXPLOSION_LIGHT_DECAY: i16 = 5;
 const MUZZLE_LIGHT_RADIUS_UNITS: i16 = 200;
 /// `dl->die = cl.time + 0.1`, and `MUZZLEFLASH` sets no decay.
 const MUZZLE_LIGHT_TICKS: u8 = 6;
+/// `EF_ROCKET`: `dl->radius = 200`, `dl->die = cl.time + 0.01`, so it is
+/// laid again every frame the projectile is alive.
+const ROCKET_LIGHT_RADIUS_UNITS: i16 = 200;
 
 /// Colour ramp and physics class of one pooled particle.
 ///
@@ -796,6 +799,13 @@ impl DynamicLights {
             EXPLOSION_LIGHT_DECAY,
             EXPLOSION_LIGHT_TICKS,
         );
+    }
+
+    /// `EF_ROCKET`'s light on a flying rocket or lava ball. One tick long, so
+    /// it never displaces a muzzle flash or an explosion that has more life.
+    #[inline(never)]
+    pub fn spawn_rocket_glow(&mut self, origin: Vec3I32) {
+        self.push(origin, ROCKET_LIGHT_RADIUS_UNITS, 0, 1);
     }
 
     /// `MUZZLEFLASH`, which the original attaches to the firing player.
