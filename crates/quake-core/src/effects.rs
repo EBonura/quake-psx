@@ -204,10 +204,16 @@ const DEATH_BUBBLE_INTERVAL: u8 = 6; // original nextthink = time + 0.1
 const BUBBLE_THINK_INTERVAL: u8 = 30; // original nextthink = time + 0.5
 const MAX_DEATH_BUBBLES: usize = DEATH_BUBBLES as usize * 2;
 
+/// One world unit in the bubbles' own fixed-point scale (Q16). Position and
+/// velocity (units per second) both use it, so the original float arithmetic
+/// of `bubble_bob` maps onto exact integer steps and the PS1 build links no
+/// soft-float code.
+const BUBBLE_ONE: i32 = 1 << 16;
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct DeathBubble {
-    origin: [f32; 3],
-    velocity: [f32; 3],
+    origin: [i32; 3],
+    velocity: [i32; 3],
     until_think: u8,
     count: u8,
     active: bool,
@@ -215,7 +221,7 @@ struct DeathBubble {
 
 impl DeathBubble {
     const EMPTY: Self = Self {
-        origin: [0.0; 3], velocity: [0.0; 3], until_think: 0,
+        origin: [0; 3], velocity: [0; 3], until_think: 0,
         count: 0, active: false,
     };
 
@@ -224,9 +230,9 @@ impl DeathBubble {
     fn particle(self) -> ImpactParticle {
         ImpactParticle {
             origin: Vec3I32 {
-                x: (self.origin[0] * 4096.0) as i32,
-                y: (self.origin[1] * 4096.0) as i32,
-                z: (self.origin[2] * 4096.0) as i32,
+                x: self.origin[0] >> 4,
+                y: self.origin[1] >> 4,
+                z: self.origin[2] >> 4,
             },
             velocity: Vec3I16 { x: 0, y: 0, z: 0 },
             age_ticks: 0, kind: ParticleKind::Bubble, active: self.active,
@@ -235,18 +241,20 @@ impl DeathBubble {
     }
 }
 
-/// Original `bubble_bob` arithmetic, retaining float reset thresholds.
+/// Original `bubble_bob` arithmetic with the same strict reset thresholds.
+/// `random` holds the 16-bit draws, so `random / 65536 * 20` in units is
+/// `random * 20` in Q16, exact.
 #[inline(never)]
 #[optimize(size)]
-fn bubble_velocity(mut velocity: [f32; 3], random: [f32; 3]) -> [f32; 3] {
+fn bubble_velocity(mut velocity: [i32; 3], random: [u32; 3]) -> [i32; 3] {
     for axis in 0..2 {
-        velocity[axis] += -10.0 + random[axis] * 20.0;
-        if velocity[axis] > 10.0 { velocity[axis] = 5.0; }
-        if velocity[axis] < -10.0 { velocity[axis] = -5.0; }
+        velocity[axis] += -10 * BUBBLE_ONE + (random[axis] * 20) as i32;
+        if velocity[axis] > 10 * BUBBLE_ONE { velocity[axis] = 5 * BUBBLE_ONE; }
+        if velocity[axis] < -10 * BUBBLE_ONE { velocity[axis] = -5 * BUBBLE_ONE; }
     }
-    velocity[2] = (velocity[2] + 10.0) + random[2] * 10.0;
-    if velocity[2] < 10.0 { velocity[2] = 15.0; }
-    if velocity[2] > 30.0 { velocity[2] = 25.0; }
+    velocity[2] = (velocity[2] + 10 * BUBBLE_ONE) + (random[2] * 10) as i32;
+    if velocity[2] < 10 * BUBBLE_ONE { velocity[2] = 15 * BUBBLE_ONE; }
+    if velocity[2] > 30 * BUBBLE_ONE { velocity[2] = 25 * BUBBLE_ONE; }
     velocity
 }
 
@@ -476,12 +484,12 @@ impl ImpactParticles {
                 return;
             }
             // Advance the fixed simulation clock in order, including births
-            // inside a multi-tick frame. Float integration stays identical
-            // when the renderer groups the same ticks into different frames.
-            let seconds = 1.0 / 60.0;
+            // inside a multi-tick frame. The integration is one fixed step per
+            // tick, so it stays identical when the renderer groups the same
+            // ticks into different frames.
             for bubble in &mut self.bubbles {
                 if !bubble.active { continue; }
-                for axis in 0..3 { bubble.origin[axis] += bubble.velocity[axis] * seconds; }
+                for axis in 0..3 { bubble.origin[axis] += bubble.velocity[axis] / 60; }
                 bubble.until_think -= 1;
             }
             if self.bubble_remaining != 0 { self.bubble_until_next -= 1; }
@@ -505,9 +513,9 @@ impl ImpactParticles {
                     continue;
                 }
                 let random = [
-                    self.bubble_random.next() as f32 / 65536.0,
-                    self.bubble_random.next() as f32 / 65536.0,
-                    self.bubble_random.next() as f32 / 65536.0,
+                    self.bubble_random.next(),
+                    self.bubble_random.next(),
+                    self.bubble_random.next(),
                 ];
                 self.bubbles[index].velocity = bubble_velocity(self.bubbles[index].velocity, random);
                 self.bubbles[index].until_think = BUBBLE_THINK_INTERVAL;
@@ -525,7 +533,7 @@ impl ImpactParticles {
     }
 
     /// Each new bubble begins at owner.origin + '0 0 24', with the original
-    /// '0 0 15' initial velocity, retained as original float world units/second.
+    /// '0 0 15' initial velocity, retained as original world units/second.
     #[cold]
     #[inline(never)]
     #[optimize(size)]
@@ -534,9 +542,9 @@ impl ImpactParticles {
         /// keeps from the original.
         const SPAWN_HEIGHT_UNITS: i32 = 24;
         self.insert_bubble(DeathBubble {
-            origin: [origin.x as f32 / 4096.0, origin.y as f32 / 4096.0,
-                origin.z as f32 / 4096.0 + SPAWN_HEIGHT_UNITS as f32],
-            velocity: [0.0, 0.0, 15.0], until_think: BUBBLE_THINK_INTERVAL,
+            origin: [origin.x << 4, origin.y << 4,
+                (origin.z << 4) + SPAWN_HEIGHT_UNITS * BUBBLE_ONE],
+            velocity: [0, 0, 15 * BUBBLE_ONE], until_think: BUBBLE_THINK_INTERVAL,
             count: 0, active: true,
         });
     }
@@ -919,11 +927,54 @@ mod tests {
     }
 
     #[test]
-    fn original_bob_resets_preserve_strict_float_thresholds() {
-        assert_eq!(bubble_velocity([10.0,-10.0,20.0], [0.5,0.5,0.0]), [10.0,-10.0,30.0]);
-        assert_eq!(bubble_velocity([11.0,-11.0,21.0], [0.5,0.5,0.0]), [5.0,-5.0,25.0]);
-        assert_eq!(bubble_velocity([0.0,0.0,-1.0], [0.5,0.5,0.0]), [0.0,0.0,15.0]);
-        assert_eq!(bubble_velocity([f32::from_bits(10.0f32.to_bits()+1),0.0,20.0], [0.5,0.5,0.0])[0],5.0);
+    fn original_bob_resets_preserve_strict_thresholds() {
+        let q = |x: i32| x * BUBBLE_ONE;
+        let half = [32_768, 32_768, 0];
+        assert_eq!(bubble_velocity([q(10), q(-10), q(20)], half), [q(10), q(-10), q(30)]);
+        assert_eq!(bubble_velocity([q(11), q(-11), q(21)], half), [q(5), q(-5), q(25)]);
+        assert_eq!(bubble_velocity([0, 0, q(-1)], half), [0, 0, q(15)]);
+        // One Q16 step over the limit resets, exactly the limit does not.
+        assert_eq!(bubble_velocity([q(10) + 1, 0, q(20)], half)[0], q(5));
+        assert_eq!(bubble_velocity([q(10), 0, q(20)], half)[0], q(10));
+    }
+
+    /// The fixed-point bubble matches the original float `bubble_bob` walk to a
+    /// small fraction of a unit over a whole lifetime (twenty thinks), driven by
+    /// the same random draws.
+    #[test]
+    fn fixed_point_bubble_tracks_the_float_reference() {
+        let mut random = TrapRandom::new(7);
+        let mut velocity = [0, 0, 15 * BUBBLE_ONE];
+        let mut origin = [0, 0, 24 * BUBBLE_ONE];
+        let mut ref_velocity = [0.0f32, 0.0, 15.0];
+        let mut ref_origin = [0.0f32, 0.0, 24.0];
+        for _think in 0..20 {
+            for _tick in 0..BUBBLE_THINK_INTERVAL {
+                for axis in 0..3 {
+                    origin[axis] += velocity[axis] / 60;
+                    ref_origin[axis] += ref_velocity[axis] * (1.0 / 60.0);
+                }
+            }
+            let draws = [random.next(), random.next(), random.next()];
+            velocity = bubble_velocity(velocity, draws);
+            let r = [
+                draws[0] as f32 / 65536.0,
+                draws[1] as f32 / 65536.0,
+                draws[2] as f32 / 65536.0,
+            ];
+            for axis in 0..2 {
+                ref_velocity[axis] += -10.0 + r[axis] * 20.0;
+                if ref_velocity[axis] > 10.0 { ref_velocity[axis] = 5.0; }
+                if ref_velocity[axis] < -10.0 { ref_velocity[axis] = -5.0; }
+            }
+            ref_velocity[2] = (ref_velocity[2] + 10.0) + r[2] * 10.0;
+            if ref_velocity[2] < 10.0 { ref_velocity[2] = 15.0; }
+            if ref_velocity[2] > 30.0 { ref_velocity[2] = 25.0; }
+            for axis in 0..3 {
+                let fixed = origin[axis] as f32 / BUBBLE_ONE as f32;
+                assert!((fixed - ref_origin[axis]).abs() < 0.05, "axis {axis}: {fixed} vs {}", ref_origin[axis]);
+            }
+        }
     }
 
     #[test]
