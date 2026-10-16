@@ -9,6 +9,17 @@
   keeps its size optimisation, the death bubbles use integers instead of
   linking soft-float, and the loading error line no longer uses `alloc::format!`.
   `cargo quake-build ram` prints the whole RAM breakdown; see `docs/RAM.md`.
+- Survival, view and message rows (the physics and triggers pass, without its
+  player motor rewrite): the damage flash counts half of blood plus armour with
+  a floor of ten, powerup tint order and expiry text, death clears the
+  artifacts and times its fall animation (the body falls through the ordinary
+  motor with no input), respawn waits for a release and then a press, the
+  pain voice is muted during weapon frames and the ring, view kick points at
+  the real damage source, stairs smooth the view, look limits are 80 and 70
+  degrees, the player spawns one unit up, and `SUB_UseTargets` messages play
+  `talk.wav`.
+- The lightning beam shortening and the sound pan no longer divide 64-bit
+  numbers, so the guest links no `__divdi3`.
 - Weapons now follow the single player rules: the best-weapon order and ammo
   thresholds (no auto-equip of the launchers, two rounds to select the double
   barrel and super nailgun), the best-weapon upgrade on an ammo box, weapon

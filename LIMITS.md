@@ -18,3 +18,14 @@ Added with the weapons and monsters pass (`fix/quake-weapons-monsters-2026-10-15
 | A newly picked up weapon flashes its status bar icon by alternating its lit and unlit icons ten times a second for a second, not through the five `inva*` frames. | The resident picture band is completely packed; only the plain and selected icon states are kept in RAM. | `tools/cfg/id1/picmap.txt` comment above `inv_shotgun`. |
 | `PF_checkclient`'s PVS gate is replaced by a line-of-sight trace. | Line of sight implies the PVS test passes, so only sightlines through a PVS-only gap differ; the cooked maps carry no per-leaf visibility the monster think could afford to consult. | `crates/quake-core/src/monster.rs` think input; sight trace budget comment in `game/src/entity.rs`. |
 | Blood, trail and explosion particle counts and the single dynamic light remain reduced. | Particle and light pools are fixed and small. | `crates/quake-core/src/effects.rs` header comment (unchanged by this pass). |
+
+## Survival, view and messages
+
+Added with the survival pass (`fix/quake-physics-triggers-2026-10-15`, player motor not included).
+
+| Difference | Reason | Evidence |
+| --- | --- | --- |
+| Pain voices are the cooked subset (3 of 6), and `gasp2`, `drown1`, `lburn2` and `death2` to `death5` are absent. | The SPU bank holds only the samples cooked into it. | `crates/quake-core/src/survival.rs` comments; `SPU high-water` in the cooker output. |
+| No `V_DriftPitch` / `SV_SetIdealPitch`. | The pad is always free look, which turns the original drift off (`cl.nodrift`). | `game/src/input_policy.rs`. |
+| `trigger_hurt`, `trigger_push` and `trigger_gravity` are not implemented. | No Episode 1 map authors them (inventory census). | `COVERAGE.md`. |
+| The map arena has no margin any more: `RESIDENT_MAP_ARENA_BYTES` is the largest map (`e1m3`, 866,122 bytes) rounded to 8. Every "arena margin" figure above predates it and the conclusions stand. | Shipping heap (`docs/RAM.md`). | `cargo quake-build check` prints the arena census. |
