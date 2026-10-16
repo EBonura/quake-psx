@@ -7057,8 +7057,10 @@ impl EntityScene {
                 (ParticleKind::Blood, GIB_STEP_UNITS)
             }
             MonsterMissileKind::Gib => (ParticleKind::Blood, ZOMBIE_GIB_STEP_UNITS),
-            // The spit, the lava ball and the backpack carry no model effect
-            // flag, so they leave nothing behind.
+            // `lavaball.mdl` carries EF_ROCKET (flags 1 in PAK0), so Chthon's
+            // balls smoke like a rocket.
+            MonsterMissileKind::LavaBall => (ParticleKind::Fire, SMOKE_STEP_UNITS),
+            // The spit and the backpack carry no trail flag.
             _ => return None,
         };
         Some((missile.origin, kind, step_units))
