@@ -4596,6 +4596,12 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     // flag (and with it every crate's fingerprint) is fixed per stage.
     let map = stage.path.join("game/target/quake-psx.map");
     rustflags.push(format!("-C link-arg=-Map={}", map.display()));
+    // Diagnostic hook (type sizes, LLVM switches): extra flags for the guest
+    // crates. They change the cargo fingerprint, so use a private
+    // QUAKE_PSX_GUEST_STAGE_ROOT for the experiment.
+    if let Some(extra) = env::var_os("QUAKE_PSX_EXTRA_RUSTFLAGS") {
+        rustflags.push(extra.to_string_lossy().into_owned());
+    }
     // An environment RUSTFLAGS replaces game/.cargo/config.toml's target
     // rustflags outright, so everything the build needs travels together
     // here.
