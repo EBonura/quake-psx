@@ -53,7 +53,9 @@ pub fn beam_endpoints(bounds: [[Vec3I32; 2]; 2]) -> [Vec3I32; 2] {
     let delta = [(p2.x - p1.x) >> 12, (p2.y - p1.y) >> 12, (p2.z - p1.z) >> 12];
     let length = psx_math::int32::isqrt_u64(delta.iter().map(|&v| (i64::from(v) * i64::from(v)) as u64).sum());
     if length != 0 {
-        let shorten = |v| (i64::from(v) * (100 << 12) / i64::from(length)) as i32;
+        // `mul_div_i32` is `(v * 100 << 12 / length) as i32` through the wide
+        // product, with no 64-bit divide helper in the image.
+        let shorten = |v| psx_math::int32::mul_div_i32(v, 100 << 12, length as i32);
         p2.x -= shorten(delta[0]); p2.y -= shorten(delta[1]); p2.z -= shorten(delta[2]);
     }
     [p1, p2]
@@ -93,5 +95,30 @@ mod tests {
         assert_eq!(beam_endpoints([[v(329,249,129),v(391,311,447)],
             [v(329,-183,129),v(391,-121,447)]]),
             [v(360,280,113),v(360,-52,113)]);
+    }
+    #[test]
+    fn beam_shortening_matches_the_wide_division_it_replaced() {
+        let mut state = 0x2545_f491u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state >> 8
+        };
+        for _ in 0..4000 {
+            let delta = [
+                (next() % 16_384) as i32 - 8_192,
+                (next() % 16_384) as i32 - 8_192,
+                (next() % 4_096) as i32 - 2_048,
+            ];
+            let length = psx_math::int32::isqrt_u64(
+                delta.iter().map(|&v| (i64::from(v) * i64::from(v)) as u64).sum(),
+            );
+            if length == 0 {
+                continue;
+            }
+            for v in delta {
+                let wide = (i64::from(v) * (100 << 12) / i64::from(length)) as i32;
+                assert_eq!(psx_math::int32::mul_div_i32(v, 100 << 12, length as i32), wide);
+            }
+        }
     }
 }

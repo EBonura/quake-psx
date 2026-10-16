@@ -883,8 +883,11 @@ fn spatial_volumes(
     let pan = if distance == 0 {
         0
     } else {
-        ((dx * i64::from(right_x) + dy * i64::from(right_y)) / i64::from(distance))
-            .clamp(i64::from(-Q12_ONE), i64::from(Q12_ONE)) as i32
+        quake_core::spatial::pan_q12(
+            dx * i64::from(right_x) + dy * i64::from(right_y),
+            distance as u32,
+            Q12_ONE,
+        )
     };
     let left_scale = ((i64::from(distance_scale) * i64::from(Q12_ONE - pan)) >> 12) as i32;
     let right_scale = ((i64::from(distance_scale) * i64::from(Q12_ONE + pan)) >> 12) as i32;
