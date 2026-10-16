@@ -11,11 +11,13 @@ cargo quake-build ram --map PATH --items   # every placed input section, largest
 The first lines are the numbers a change has to defend:
 
 ```text
-heap_free=29540 bytes (floor 8192)            # ship-boot, after boot and a sampled gameplay period
-stack_depth=39824 bytes of 53248 reserved     # the emulator's own high-water over that run
-heap region 1131924 B                         # link time: STACK_INIT - STACK_RESERVE - __bss_end
-image 846184 B = .text 499596 + .data 46936 + .bss 299652
+heap_free=13124 bytes (floor 8192)            # ship-boot, after boot and a sampled gameplay period
+stack_depth=39952 bytes of 53248 reserved     # the emulator's own high-water over that run
+heap region 1115508 B                         # link time: STACK_INIT - STACK_RESERVE - __bss_end
+image 862592 B = .text 515700 + .data 47240 + .bss 299652
 ```
+
+(The figures are the integration tip's; the ledger below is the RAM branch, before fix-b and fix-c.)
 
 Below them come the same breakdown per crate, per module and per symbol for
 `.text`, `.data` (read-only data included), `.bss` and the overlay images.
