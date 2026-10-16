@@ -1544,6 +1544,54 @@ mod tests {
         assert!((vector_length(diagonal_direction) - Q12_ONE).abs() < 32);
     }
 
+    /// Strafing is the same motor as walking, turned a quarter: for any mix of
+    /// frame lengths the ground covered per frame is the same on both axes, so
+    /// the motor cannot be what makes a strafe feel different from a walk.
+    #[test]
+    fn a_strafe_covers_the_same_ground_per_frame_as_a_walk() {
+        let frames = [2u16, 3, 2, 2, 3, 2, 4, 2, 3, 2, 2, 3, 2, 2, 3, 2];
+        let run = |forward: i16, strafe: i16| {
+            let mut state = MovementState::new(Vec3I32 {
+                x: 0,
+                y: 0,
+                z: 24 << 12,
+            });
+            let mut scratch = MovementScratch::new();
+            let mut steps = [0i32; 16];
+            for (step, &ticks) in steps.iter_mut().zip(frames.iter()) {
+                let before = state.origin();
+                state.update_ticks(
+                    &Floor,
+                    &mut scratch,
+                    MovementInput {
+                        forward,
+                        strafe,
+                        yaw: 0,
+                        pitch: 0,
+                        jump: false,
+                    },
+                    ticks,
+                    |_| Some(CONTENTS_EMPTY),
+                );
+                let after = state.origin();
+                *step = vector_length(Vec3I32 {
+                    x: after.x - before.x,
+                    y: after.y - before.y,
+                    z: 0,
+                });
+            }
+            steps
+        };
+        let walk = run(127, 0);
+        let strafe = run(0, 127);
+        for (frame, (walked, strafed)) in walk.iter().zip(strafe.iter()).enumerate() {
+            assert!(
+                (walked - strafed).abs() <= 8,
+                "frame {frame}: walk {walked} strafe {strafed}"
+            );
+        }
+    }
+
     /// Open water: nothing to hit, every sample point is water.
     struct OpenWater;
 
