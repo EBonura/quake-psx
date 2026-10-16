@@ -306,6 +306,11 @@ pub struct MovementState {
     water_jump_ticks: u8,
     /// `self.movedir` for the climb: the ledge normal times -50, XY only.
     water_jump_push: Vec3I32,
+    /// The origin the water level and type above were last resolved at, with
+    /// every sample answered. Contents are fixed for a map, so the same origin
+    /// gives the same answer and the three leaf walks are skipped (a player
+    /// standing still would otherwise pay them every tick).
+    water_origin: Option<Vec3I32>,
 }
 
 impl MovementState {
@@ -321,6 +326,7 @@ impl MovementState {
             steep_seam_recovered: false,
             water_jump_ticks: 0,
             water_jump_push: Vec3I32 { x: 0, y: 0, z: 0 },
+            water_origin: None,
         }
     }
 
@@ -420,6 +426,7 @@ impl MovementState {
     /// the original shareware `worldspawn` rule that makes its platform jumps
     /// possible. Keeping the policy at the caller prevents a map exception
     /// from leaking into the provider-neutral motor.
+    #[inline(always)]
     pub fn update_ticks_with_gravity<C, F>(
         &mut self,
         collision: &C,
@@ -726,6 +733,9 @@ impl MovementState {
     ) where
         F: FnMut(&Vec3I32) -> Option<i16>,
     {
+        if self.water_origin == Some(self.origin) {
+            return;
+        }
         let previous_level = self.water_level;
         let previous_type = self.water_type;
         let mut resolved = true;
@@ -742,6 +752,7 @@ impl MovementState {
         if !resolved {
             scratch.stalls.insert(MovementStalls::CONTENTS);
         }
+        self.water_origin = resolved.then_some(self.origin);
         self.water_level = water_level;
         self.water_type = water_type;
         if previous_level == 0 && water_level > 0 {

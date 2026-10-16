@@ -7695,6 +7695,7 @@ impl EntityScene {
 
     /// Compose the immutable world hull with solid translated brush entities
     /// for a frame of player traces anchored at `anchor` (the player origin).
+    #[inline(always)]
     pub fn collision<'a>(
         &'a self,
         map: &'a ResidentMap,
