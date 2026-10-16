@@ -1116,6 +1116,7 @@ impl EntityScene {
         self.runes
     }
 
+    #[inline(never)]
     #[optimize(size)]
     pub fn load(&mut self, map: &ResidentMap) -> Result<(), EntityLoadError> {
         self.entities.clear();
