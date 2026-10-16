@@ -172,18 +172,26 @@ adopted. If it is revisited, it needs the SDK's `choose` ranking on several
 tapes, a builder step that builds the twin and rebinds a committed portable
 profile, and a way to keep the overlay images out of the profile.
 
-## What the pending branches need
+## Integration (fix-b and fix-c merged)
 
-Trial merges on top of the tip (not committed; size only, behaviour unchecked):
+`integ/quake-2026-10-16` merges the weapons and monsters pass (without the
+Chthon lead-aim commit, which kills the scripted player in E1M7) and the
+survival, view and message rows (without the player motor rewrite, which
+stalled on the E1M1 ramp; the corpse runs the old motor through
+`MovementState::die`/`update_dead` and a monster-blind `trace_line`).
 
-| tree | ship-boot free | cost |
-| --- | ---: | ---: |
-| tip | 29,540 | |
-| + fix-b (weapons and monsters, 584df6f; the Chthon lead-aim commit stays out) | 17,428 | 12,112 |
-| + fix-c survival/view/messages (ported onto the old motor) | 14,148 | 3,280 |
+| step | ship-boot free |
+| --- | ---: |
+| RAM branch tip | 29,540 |
+| + fix-b | 17,428 |
+| + fix-c survival rows | 14,148 |
+| + 64-bit divides out of the guest (below) | 13,124 |
 
-Both fit above the 8,192 floor with 5,956 bytes to spare, and fix-b's monster
-code stays under the 15,360 byte overlay half.
+The two 64-bit divides in game code are gone: the lightning beam shortening
+(`electrode::shorten_q12`) and the sound pan (`spatial::pan_q12`) use the SDK's
+64 by 32 divide, each tested against the wide expression. One `__udivdi3` call
+remains in `load_level`; it comes from pinned engine code (psx-bsp), so
+`u64_div_rem` (1,276 bytes) stays until the engine moves.
 
 Manual save/load (`wip/quake-save-load-2026-10-15`, overlay packages 6 to 8)
 costs 13,424 bytes of resident heap region in its current shape (`.text` +12.5 KB,
@@ -191,9 +199,9 @@ costs 13,424 bytes of resident heap region in its current shape (`.text` +12.5 K
 `psx_mc::with_card` instantiated in resident code instead of the card image
 (its closures were not matched by the `quake_card` section patterns), and
 `overlay-compose` stops at `undeclared typed cold call`. With `with_card` in the
-card image the resident cost is about 6.5 KB, which fits next to fix-b and fix-c
-(14,148 - 6,500 = 7,648, just under the floor), so it also needs either about
-0.6 KB more, or the floor policy lowered to 4,096 (see below).
+card image the resident cost is about 6.5 KB; against 13,124 free that leaves
+about 6.6 KB, which is 1.6 KB short of the 8,192 floor, so it also needs either
+that much more code size or the floor lowered (below).
 
 Policy levers that need a decision, not code:
 
