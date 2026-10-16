@@ -5477,6 +5477,18 @@ fn frontend_field<'a>(log: &'a str, prefix: &str) -> Result<&'a str> {
         .ok_or_else(|| format!("frontend log lacks {prefix}<value>").into())
 }
 
+/// Deepest stack use, in bytes below the entry stack pointer, from a frontend
+/// `--stack-profile-log` (`call,root_pc,return_pc,entry_sp,min_sp,depth_bytes,..`).
+fn stack_profile_depth(log: &Path) -> Result<u32> {
+    let text = fs::read_to_string(log)
+        .map_err(|error| format!("stack profile {}: {error}", log.display()))?;
+    text.lines()
+        .skip(1)
+        .filter_map(|line| line.split(',').nth(5)?.parse::<u32>().ok())
+        .max()
+        .ok_or_else(|| format!("stack profile {} has no rows", log.display()).into())
+}
+
 /// Boot the release image and check its main loop and remaining heap.
 ///
 /// A live image continues polling the controller. The final PC distinguishes
@@ -5503,6 +5515,8 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
         .arg(&route)
         .arg("--dump-ram")
         .arg(&ram)
+        .arg("--stack-profile-log")
+        .arg(capture.join("stack.csv"))
         .output()?;
     if !output.status.success() {
         return Err(format!(
@@ -5540,6 +5554,12 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
     let heap_total = SHIP_BOOT_HEAP_END - heap_start;
     let heap_used = cursor - heap_start;
     let heap_free = SHIP_BOOT_HEAP_END - cursor;
+    // The emulator's own stack high-water over the boot run (it observes, the
+    // guest is untouched): the reserve must cover it with a quarter to spare.
+    // This route only reaches the Start map, so it is the floor of the
+    // measurement; docs/RAM.md records the deeper gameplay routes.
+    let stack_depth = stack_profile_depth(&capture.join("stack.csv"))?;
+    let stack_reserve = ram_report::parse(&map_text).stack_reserve.unwrap_or(0);
 
     let halted = (halt.address..halt.address.saturating_add(halt.size)).contains(&pc);
     let mut failures = Vec::new();
@@ -5563,6 +5583,12 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
              boot fail outright"
         ));
     }
+    if u64::from(stack_depth) * 5 > u64::from(stack_reserve) * 4 {
+        failures.push(format!(
+            "the stack reached {stack_depth} bytes, over four fifths of the {stack_reserve}-byte \
+             reserve (STACK_RESERVE in game/build.rs)"
+        ));
+    }
 
     let summary = format!(
         "quake-psx shipping boot: {}\n\
@@ -5574,6 +5600,7 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
          heap_end=0x{SHIP_BOOT_HEAP_END:08x}\n\
          heap_used={heap_used} of {heap_total} bytes\n\
          heap_free={heap_free} bytes (floor {SHIP_BOOT_MIN_HEAP_FREE})\n\
+         stack_depth={stack_depth} bytes of {stack_reserve} reserved\n\
          link_map={}\n",
         if failures.is_empty() { "PASS" } else { "FAIL" },
         if halted { "halted" } else { "running" },
