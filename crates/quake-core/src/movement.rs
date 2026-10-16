@@ -551,7 +551,7 @@ impl MovementState {
                 accelerate(&mut self.velocity, wish_direction, wish_speed, false);
                 self.velocity.z = 0;
                 impact_velocity = 0;
-                self.ground_move(collision, scratch);
+                self.ground_move(collision, scratch, wish_direction, wish_speed);
             } else {
                 accelerate(&mut self.velocity, wish_direction, wish_speed, true);
                 self.velocity.z = self.velocity.z.saturating_sub(gravity_per_tick_q12);
@@ -785,6 +785,8 @@ impl MovementState {
         &mut self,
         collision: &C,
         scratch: &mut MovementScratch,
+        wish_direction: Vec3I32,
+        wish_speed: i32,
     ) {
         if self.velocity.x == 0 && self.velocity.y == 0 {
             return;
@@ -812,44 +814,76 @@ impl MovementState {
         // push is all-solid, but `SV_WalkMove` still attempts the forward
         // slide and its precision-seam recovery from there. Returning early
         // here bypassed the very `SV_TryUnstick` path this branch exists for.
-        let mut up_origin = if scratch.trace.trapped() {
+        let raised_origin = if scratch.trace.trapped() {
             original_origin
         } else {
             scratch.trace.end
         };
-        let mut up_velocity = original_velocity;
-        let up_clip = fly_move(collision, scratch, &mut up_origin, &mut up_velocity);
-        // `SV_WalkMove` detects the precision seam where stepping up and
-        // sliding made effectively no horizontal progress, then retries after
-        // a two-unit nudge in each axial/diagonal direction. Without this,
-        // E1M1's hull can confine the player to a 24-unit wedge forever.
-        if up_clip != 0
-            && abs_i32(up_origin.x.saturating_sub(original_origin.x)) < Q12_ONE / 32
-            && abs_i32(up_origin.y.saturating_sub(original_origin.y)) < Q12_ONE / 32
-        {
-            let _ = try_unstick(
-                collision,
-                scratch,
-                &mut up_origin,
-                &mut up_velocity,
-                original_velocity,
-            );
-        }
-        let step_down_target = Vec3I32 {
-            x: up_origin.x,
-            y: up_origin.y,
-            z: up_origin.z.saturating_sub(STEP_HEIGHT_Q12),
+        // A riser that leans a few degrees (E1M1 has three, plane normal z
+        // 0.124) is not Quake's `normal[2] == 0` step, so the original never
+        // climbs it. A player who has only just started to walk moves under a
+        // unit a tick, too little to carry the raised box past the lean before
+        // the step down lands on it again, and flickers on the spot. When that
+        // is the reason the step failed, repeat the raised leg once with the
+        // pressed walking speed, which is where a player at speed would be.
+        // The velocity the player keeps is the unboosted one.
+        let mut assisted = false;
+        let mut leg_velocity = original_velocity;
+        let (up_origin, up_velocity) = loop {
+            let mut up_origin = raised_origin;
+            let mut up_velocity = leg_velocity;
+            let up_clip = fly_move(collision, scratch, &mut up_origin, &mut up_velocity);
+            // `SV_WalkMove` detects the precision seam where stepping up and
+            // sliding made effectively no horizontal progress, then retries
+            // after a two-unit nudge in each axial/diagonal direction. Without
+            // this, E1M1's hull can confine the player to a 24-unit wedge
+            // forever.
+            if up_clip != 0
+                && abs_i32(up_origin.x.saturating_sub(original_origin.x)) < Q12_ONE / 32
+                && abs_i32(up_origin.y.saturating_sub(original_origin.y)) < Q12_ONE / 32
+            {
+                let _ = try_unstick(
+                    collision,
+                    scratch,
+                    &mut up_origin,
+                    &mut up_velocity,
+                    leg_velocity,
+                );
+            }
+            let step_down_target = Vec3I32 {
+                x: up_origin.x,
+                y: up_origin.y,
+                z: up_origin.z.saturating_sub(STEP_HEIGHT_Q12),
+            };
+            trace(collision, &up_origin, &step_down_target, scratch);
+            let walkable = !scratch.trace.trapped()
+                && scratch.trace.fraction != Q12_ONE
+                && (scratch.trace.normal.z as i32) >= WALKABLE_NORMAL_Q12;
+            if walkable {
+                break (
+                    scratch.trace.end,
+                    if assisted {
+                        original_velocity
+                    } else {
+                        up_velocity
+                    },
+                );
+            }
+            let leaning = !scratch.trace.trapped()
+                && scratch.trace.fraction < Q12_ONE
+                && scratch.trace.normal.z > 0;
+            if assisted || !leaning || wish_speed <= 0 {
+                self.origin = down_origin;
+                self.velocity = down_velocity;
+                return;
+            }
+            assisted = true;
+            leg_velocity = Vec3I32 {
+                x: mul_q12_i32(wish_direction.x, wish_speed),
+                y: mul_q12_i32(wish_direction.y, wish_speed),
+                z: 0,
+            };
         };
-        trace(collision, &up_origin, &step_down_target, scratch);
-        if scratch.trace.trapped()
-            || scratch.trace.fraction == Q12_ONE
-            || (scratch.trace.normal.z as i32) < WALKABLE_NORMAL_Q12
-        {
-            self.origin = down_origin;
-            self.velocity = down_velocity;
-            return;
-        }
-        up_origin = scratch.trace.end;
 
         if horizontal_distance_squared(original_origin, down_origin)
             > horizontal_distance_squared(original_origin, up_origin)
@@ -864,6 +898,56 @@ impl MovementState {
                 z: down_velocity.z,
             };
         }
+    }
+
+    /// A riser that leans a few degrees (E1M1 has risers cooked with a 0.124
+    /// normal) is not Quake's `normal[2] == 0` step, so the original never
+    /// tries to climb it, and a player standing at its foot who has only just
+    /// started to walk moves under a unit per tick: too little to carry the
+    /// raised box past the lean before the step down lands on it again. The
+    /// player then oscillates on the spot. This retries the raised leg with
+    /// the distance one tick at the pressed walking speed covers, which is
+    /// where a player already at speed would be, and takes the step only when
+    /// that leg is clear and the step down lands on walkable ground. The
+    /// velocity is left alone, so the run-up is not given for free.
+    fn step_onto_leaning_riser<C: MovementTrace + ?Sized>(
+        &self,
+        collision: &C,
+        scratch: &mut MovementScratch,
+        raised_origin: Vec3I32,
+        wish_direction: Vec3I32,
+        wish_speed: i32,
+    ) -> Option<Vec3I32> {
+        if wish_speed <= 0 {
+            return None;
+        }
+        let reach = wish_speed / VIDEO_TICKS_PER_SECOND;
+        let forward = Vec3I32 {
+            x: raised_origin
+                .x
+                .saturating_add(mul_q12_i32(wish_direction.x, reach)),
+            y: raised_origin
+                .y
+                .saturating_add(mul_q12_i32(wish_direction.y, reach)),
+            z: raised_origin.z,
+        };
+        trace(collision, &raised_origin, &forward, scratch);
+        if scratch.trace.trapped() || scratch.trace.fraction != Q12_ONE {
+            return None;
+        }
+        let down = Vec3I32 {
+            x: forward.x,
+            y: forward.y,
+            z: forward.z.saturating_sub(STEP_HEIGHT_Q12),
+        };
+        trace(collision, &forward, &down, scratch);
+        if scratch.trace.trapped()
+            || scratch.trace.fraction == Q12_ONE
+            || (scratch.trace.normal.z as i32) < WALKABLE_NORMAL_Q12
+        {
+            return None;
+        }
+        Some(scratch.trace.end)
     }
 }
 

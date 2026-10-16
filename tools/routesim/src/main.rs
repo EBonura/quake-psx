@@ -488,6 +488,16 @@ impl MovementTrace for SceneTrace<'_> {
             normal: best.normal,
             blocking_body: None,
         };
+        if std::env::var_os("ROUTESIM_TRACE_CALLS").is_some() {
+            let q = |v: i32| v as f64 / 4096.0;
+            eprintln!(
+                "  trace ({:.3},{:.3},{:.3}) -> ({:.3},{:.3},{:.3}) frac {:.4} end ({:.3},{:.3},{:.3}) n ({:.3},{:.3},{:.3}) solid {}{}",
+                q(start.x), q(start.y), q(start.z), q(end.x), q(end.y), q(end.z),
+                q(best.fraction), q(best.end.x), q(best.end.y), q(best.end.z),
+                q(best.normal.x as i32), q(best.normal.y as i32), q(best.normal.z as i32),
+                best.all_solid as u8, best.start_solid as u8
+            );
+        }
         true
     }
 }
@@ -550,6 +560,7 @@ fn main() {
         "slopes" => sweep_slopes(&scene, &args),
         "ramps" => sweep_ramps(&scene, &args),
         "traps" => sweep_traps(&scene, &args),
+        "walk" => walk_from(&scene, &args),
         "standing" => standing_filter(&scene),
         "faces" => dump_faces(&scene),
         other => {
@@ -2502,6 +2513,62 @@ fn sweep_ramps(scene: &Scene, args: &[String]) {
     println!("RAMPS tested {tested} blocked {blocked}");
     if blocked != 0 {
         std::process::exit(1);
+    }
+}
+
+/// `walk X Y Z DX DY [--ticks n] [--frames n]`
+///
+/// Holds full forward from standstill at the given whole-unit origin toward the
+/// compass heading (`DX`, `DY` each -1, 0 or 1) and prints the pose after every
+/// frame. For taking one stall found by `ramps` apart.
+fn walk_from(scene: &Scene, args: &[String]) {
+    let number = |i: usize| -> i32 { args[i].parse().expect("walk X Y Z DX DY") };
+    let (sx, sy, sz, dx, dy) = (number(3), number(4), number(5), number(6), number(7));
+    let mut ticks = 1u16;
+    let mut frames = 48u32;
+    let mut index = 8;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ticks" => {
+                ticks = args[index + 1].parse().expect("--ticks n");
+                index += 2;
+            }
+            "--frames" => {
+                frames = args[index + 1].parse().expect("--frames n");
+                index += 2;
+            }
+            other => panic!("unknown walk argument {other}"),
+        }
+    }
+    let leaves = scene.map.leaves();
+    let map = &scene.map;
+    let collision = SceneTrace { scene, blocker: std::cell::Cell::new(None) };
+    let mut movement_scratch = MovementScratch::default();
+    let mut state = MovementState::new(Vec3I32 { x: sx << 12, y: sy << 12, z: sz << 12 });
+    let yaw = psx_math::atan2_q12(dy, dx);
+    for frame in 0..frames {
+        state.update_ticks_with_gravity(
+            &collision,
+            &mut movement_scratch,
+            MovementInput { forward: 127, strafe: 0, yaw: yaw & 0x0fff, pitch: 0, jump: false },
+            ticks,
+            quake_core::movement::DEFAULT_GRAVITY,
+            |point| {
+                let leaf = map.point_leaf_index(*point)?;
+                Some(leaves.get(leaf)?.contents)
+            },
+        );
+        let (o, v) = (state.origin(), state.velocity());
+        println!(
+            "{frame} origin {:.3} {:.3} {:.3} vel {:.3} {:.3} {:.3} grounded {}",
+            o.x as f64 / 4096.0,
+            o.y as f64 / 4096.0,
+            o.z as f64 / 4096.0,
+            v.x as f64 / 4096.0,
+            v.y as f64 / 4096.0,
+            v.z as f64 / 4096.0,
+            state.grounded()
+        );
     }
 }
 
