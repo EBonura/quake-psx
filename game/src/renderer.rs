@@ -1334,9 +1334,12 @@ pub struct Renderer {
     notify_lines: [Option<&'static str>; quake_core::level_session::NOTIFY_LINES],
     screen_tints: [[ScreenTintQuad; SCREEN_TINT_CAPACITY]; 2],
     liquid_generation: u32,
-    /// `(int)(cl.time * 10)` the animated texture chains were last resolved
-    /// at; `u32::MAX` after a map change.
+    /// Fifths of a second the animated texture chains were last resolved at;
+    /// `u32::MAX` after a map change.
     texture_step: u32,
+    /// The textures of this map that belong to a chain (E1 has at most 16).
+    animated_textures: [u8; 32],
+    animated_count: u8,
     liquid_phase: u8,
     liquid_uploaded_mask: u8,
     liquid_alternate_mask: u8,
@@ -1407,6 +1410,8 @@ impl Renderer {
                 2],
             liquid_generation: u32::MAX,
             texture_step: u32::MAX,
+            animated_textures: [0; 32],
+            animated_count: 0,
             liquid_phase: u8::MAX,
             liquid_uploaded_mask: 0,
             liquid_alternate_mask: 0,
@@ -1522,25 +1527,37 @@ impl Renderer {
     }
 
     /// `R_TextureAnimation`: a face on any member of a `+0` chain shows the
-    /// frame `(int)(cl.time * 10) % anim_total` selects, so the table the
-    /// faces index is re-pointed at that frame's record whenever the tenth of
-    /// a second turns over. Every frame is already in the atlas.
+    /// frame `(int)(cl.time * 10) % anim_total` selects, and every frame lasts
+    /// two tenths, so the table the faces index is re-pointed at that frame's
+    /// record when the fifth of a second turns over. Every frame is already in
+    /// the atlas. The animated textures of the map are listed once, the first
+    /// time through after a map change, so a step costs only the chains.
     #[optimize(size)]
     #[inline(never)]
     fn animate_texture_chains(&mut self, map: &ResidentMap, tick_60hz: u32) {
-        let step = tick_60hz / 6;
+        let step = tick_60hz / 12;
         if step == self.texture_step {
             return;
         }
-        self.texture_step = step;
         let textures = map.render_textures();
-        for (index, head) in textures.iter().enumerate() {
-            if head.animation_total <= 0 {
-                continue;
+        if self.texture_step == u32::MAX {
+            self.animated_count = 0;
+            for (index, texture) in textures.iter().enumerate() {
+                if texture.animation_total > 0
+                    && usize::from(self.animated_count) < self.animated_textures.len()
+                {
+                    self.animated_textures[usize::from(self.animated_count)] = index as u8;
+                    self.animated_count += 1;
+                }
             }
-            let relative = (step % head.animation_total as u32) as i32;
+        }
+        self.texture_step = step;
+        for &index in &self.animated_textures[..usize::from(self.animated_count)] {
+            let index = usize::from(index);
+            let total = textures[index].animation_total as u32;
+            let relative = (step * 2 % total) as i32;
             let mut at = index;
-            for _ in 0..head.animation_total {
+            for _ in 0..total {
                 let frame = &textures[at];
                 if i32::from(frame.animation_min) <= relative
                     && relative < i32::from(frame.animation_max)
