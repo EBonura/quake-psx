@@ -743,6 +743,9 @@ pub struct MonsterFrameResult {
     pub last_explosion: Option<Vec3I32>,
     /// Where the last monster was gibbed this frame, for the blood burst.
     pub last_gib: Option<Vec3I32>,
+    /// A monster that set `EF_MUZZLEFLASH` this frame (soldier, ogre, wizard,
+    /// shambler): the light goes 16 units above its origin.
+    pub last_muzzle_flash: Option<Vec3I32>,
     /// What `BackpackTouch` handed the player this frame, for the bonus flash
     /// and the line naming it.
     pub backpack_pickup: Option<BackpackAmmo>,
@@ -781,6 +784,7 @@ impl Default for MonsterFrameResult {
             player_impulse: Vec3I32::default(),
             last_explosion: None,
             last_gib: None,
+            last_muzzle_flash: None,
             backpack_pickup: None,
         }
     }
@@ -5364,6 +5368,19 @@ impl EntityScene {
 
             if let Some(attack) = action.attack {
                 result.attacks = result.attacks.saturating_add(1);
+                if !matches!(
+                    attack,
+                    MonsterAttack::Contact { .. }
+                        | MonsterAttack::Leap { .. }
+                        | MonsterAttack::ZombieGib { .. }
+                        | MonsterAttack::LavaBall { .. }
+                ) {
+                    let origin = self.entities[index].origin;
+                    result.last_muzzle_flash = Some(Vec3I32 {
+                        z: origin.z.saturating_add(16 << 12),
+                        ..origin
+                    });
+                }
                 let damage = match attack {
                     MonsterAttack::SoldierShot { spread } => self.soldier_attack_damage(
                         map,

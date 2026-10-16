@@ -1288,6 +1288,10 @@ pub fn run() -> ! {
                         quake_core::effects::EXPLOSION_RING_UNITS,
                     );
                 }
+                // `EF_MUZZLEFLASH` on a monster that just fired.
+                if let Some(origin) = result.last_muzzle_flash {
+                    dynamic_lights.spawn_muzzle_flash(origin);
+                }
                 // A gibbed monster bursts where it stood.
                 if let Some(origin) = result.last_gib {
                     presentation.impact_particles_mut().spawn_blood(origin);
