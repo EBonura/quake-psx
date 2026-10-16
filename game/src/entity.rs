@@ -3930,9 +3930,15 @@ impl EntityScene {
                     2,
                     2,
                 );
-            let message_touch = source.class_name == 0x0c
+            // `secret_touch` prints a secret door's message for any touch,
+            // at most once in two seconds (`attack_finished`).
+            let secret_message = source.class_name == 0x0d
+                && source.string != 0
+                && self.movers[mover_index].key_cooldown == 0;
+            let message_touch = (source.class_name == 0x0c
                 && source.target_name != 0
                 && source.string != 0
+                || secret_message)
                 && expanded_overlap(
                     player_mins,
                     player_maxs,
@@ -3966,6 +3972,9 @@ impl EntityScene {
                     )
             {
                 result.message_source = Some(entity_snapshot.source_index);
+                if secret_message {
+                    self.movers[mover_index].key_cooldown = door::DOOR_KEY_RETRY_TICKS;
+                }
                 // `door_touch` answers an authored door message with talk.wav.
                 result.message_sound = Some(SoundEvent::at(
                     0x7b,
@@ -4295,14 +4304,17 @@ impl EntityScene {
                 let state_after = self.trains[train_index].policy.state();
                 let arrivals_after = self.trains[train_index].policy.corner_arrivals();
                 // `sounds 1` selects plats/train1 at each leg start and
-                // plats/train2 on arrival; `sounds 0` is the original's silent
-                // misc/null pair.
+                // plats/train2 on arrival at a corner that waits; `sounds 0`
+                // is the original's silent misc/null pair.
                 if source.noise == 1 {
                     let body = self.entities[render_index];
                     let center = bounds_center(body.clip_mins, body.clip_maxs);
                     if state_before != TrainState::Moving && state_after == TrainState::Moving {
                         result.train_sound = Some(SoundEvent::at(0x8a, center));
-                    } else if arrivals_after != arrivals_before {
+                    } else if arrivals_after != arrivals_before
+                        && self.trains[train_index].policy.corner_wait() != 0
+                    {
+                        // `train_wait` is silent at a corner that does not wait.
                         result.train_sound = Some(SoundEvent::at(0x8b, center));
                     }
                 }

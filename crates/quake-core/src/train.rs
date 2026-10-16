@@ -285,6 +285,12 @@ impl QuakeTrain {
         true
     }
 
+    /// The authored wait of the corner the train last reached (or is heading
+    /// to): `train_wait` voices `plats/train2` only when it is not zero.
+    pub const fn corner_wait(&self) -> i32 {
+        self.pending_wait
+    }
+
     /// Advance exactly one 60 Hz tick. Returns `true` when the origin moved.
     #[optimize(size)]
     pub fn tick<S>(&mut self, source: &S) -> bool
