@@ -603,19 +603,15 @@ impl Inventory {
         self.god_mode
     }
 
-    /// Original Quake's `impulse 9` grants all eight weapons and fills the
-    /// four ammo pools. It deliberately neither changes the active weapon nor
-    /// gives either key.
+    /// `CheatCommand` (`impulse 9`, single player and coop only): shells
+    /// 100, nails 200, rockets 100, cells 200 (set without
+    /// `bound_other_ammo`, so the cell pool really holds 200), all eight
+    /// weapons, both keys, and the rocket launcher in hand.
     pub fn impulse_nine(&mut self) {
         self.owned_weapons = u8::MAX;
-        for kind in [
-            AmmoKind::Shells,
-            AmmoKind::Nails,
-            AmmoKind::Rockets,
-            AmmoKind::Cells,
-        ] {
-            self.ammo[kind.index()] = kind.maximum();
-        }
+        self.ammo = [100, 200, 100, 200];
+        self.keys = crate::door::KEY_SILVER_BIT | crate::door::KEY_GOLD_BIT;
+        self.active_weapon = Weapon::RocketLauncher;
     }
 
     /// `door_touch`'s `other.items = other.items - self.items`. A key door
@@ -656,12 +652,31 @@ impl Inventory {
         }
     }
 
+    /// `W_ChangeWeapon`'s `am` test: the double barrel and the super
+    /// nailgun need two rounds to be selected ("not enough ammo."), every
+    /// other gun one. `can_use` is the looser `currentammo > 0` test that
+    /// `W_CheckNoAmmo` applies to the weapon already in hand.
+    pub const fn can_select(self, weapon: Weapon) -> bool {
+        if !self.owns(weapon) {
+            return false;
+        }
+        match weapon {
+            Weapon::Axe => true,
+            Weapon::Shotgun => self.ammo(AmmoKind::Shells) >= 1,
+            Weapon::SuperShotgun => self.ammo(AmmoKind::Shells) >= 2,
+            Weapon::Nailgun => self.ammo(AmmoKind::Nails) >= 1,
+            Weapon::SuperNailgun => self.ammo(AmmoKind::Nails) >= 2,
+            Weapon::GrenadeLauncher | Weapon::RocketLauncher => self.ammo(AmmoKind::Rockets) >= 1,
+            Weapon::Lightning => self.ammo(AmmoKind::Cells) >= 1,
+        }
+    }
+
     pub const fn active_weapon(self) -> Weapon {
         self.active_weapon
     }
 
     pub fn select(&mut self, weapon: Weapon) -> bool {
-        if !self.can_use(weapon) {
+        if !self.can_select(weapon) {
             return false;
         }
         self.active_weapon = weapon;
@@ -694,7 +709,7 @@ impl Inventory {
         let mut offset = 1usize;
         while offset < bound {
             index = (index + step) % ORDER.len();
-            if self.can_use(ORDER[index]) {
+            if self.can_select(ORDER[index]) {
                 self.active_weapon = ORDER[index];
                 break;
             }
@@ -703,26 +718,25 @@ impl Inventory {
         self.active_weapon
     }
 
+    /// `W_BestWeapon`: the Thunderbolt (never from water), the super nailgun
+    /// and double barrel on two rounds, the nailgun and shotgun on one,
+    /// otherwise the axe. The rocket and grenade launchers are deliberately
+    /// absent from the id1 list, so running dry never auto-equips them.
     #[optimize(size)]
-    fn best_usable(self, water_level: u8) -> Weapon {
-        for weapon in [
-            Weapon::Lightning,
-            Weapon::RocketLauncher,
-            Weapon::GrenadeLauncher,
-            Weapon::SuperNailgun,
-            Weapon::Nailgun,
-            Weapon::SuperShotgun,
-            Weapon::Shotgun,
-            Weapon::Axe,
-        ] {
-            if water_level > 1 && weapon == Weapon::Lightning {
-                continue;
-            }
-            if self.can_use(weapon) {
-                return weapon;
-            }
+    pub(crate) fn best_weapon(self, water_level: u8) -> Weapon {
+        if water_level <= 1 && self.can_select(Weapon::Lightning) {
+            Weapon::Lightning
+        } else if self.can_select(Weapon::SuperNailgun) {
+            Weapon::SuperNailgun
+        } else if self.can_select(Weapon::SuperShotgun) {
+            Weapon::SuperShotgun
+        } else if self.can_select(Weapon::Nailgun) {
+            Weapon::Nailgun
+        } else if self.can_select(Weapon::Shotgun) {
+            Weapon::Shotgun
+        } else {
+            Weapon::Axe
         }
-        self.active_weapon
     }
 
     #[optimize(size)]
@@ -836,9 +850,6 @@ impl Inventory {
     }
 
     pub fn take_damage(&mut self, damage: i16) -> i16 {
-        if self.god_mode {
-            return 0;
-        }
         let damage = damage.max(0);
         let saved = self
             .armor_tier
@@ -853,9 +864,10 @@ impl Inventory {
         if self.armor == 0 {
             self.armor_tier = None;
         }
-        // `T_Damage` deducts armor and only then checks invincibility, so the
-        // Pentagram protects health while the armor still burns down.
-        if self.powerups.active(PowerupKind::Pentagram) {
+        // `T_Damage` deducts armor and only then checks `FL_GODMODE` and
+        // invincibility, so both protect health while the armor still burns
+        // down.
+        if self.god_mode || self.powerups.active(PowerupKind::Pentagram) {
             return 0;
         }
         let taken = damage.saturating_sub(saved as i16);
@@ -1043,6 +1055,7 @@ pub struct LightningAttack {
     pub right: Vec3I32,
     pub damage: i16,
     pub sound_id: Option<i16>,
+    pub hit_sound_id: Option<i16>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1052,12 +1065,18 @@ pub struct LightningDischarge {
     pub sound_id: Option<i16>,
 }
 
+/// Where the bolt is drawn and where `LightningDamage` looks for a victim.
+///
+/// The id1 function builds a side offset from an un-normalised direction (it
+/// discards `normalize`'s result), so its two flanking rays start thousands
+/// of units off to the side and in play only the centre ray, from
+/// `self.origin` to four units past the bolt's end, ever hurts anything.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct LightningTraceGeometry {
     pub beam_start: Vec3I32,
     pub beam_end: Vec3I32,
-    pub starts: [Vec3I32; 3],
-    pub ends: [Vec3I32; 3],
+    pub damage_start: Vec3I32,
+    pub damage_end: Vec3I32,
 }
 
 pub fn lightning_trace_geometry(
@@ -1075,45 +1094,19 @@ pub fn lightning_trace_geometry(
         z: component(attack.beam_start.z, attack.end.z)
             .saturating_add(attack.forward.z.saturating_mul(4)),
     };
-    let offset = Vec3I32 {
-        x: attack.right.x.saturating_mul(16),
-        y: attack.right.y.saturating_mul(16),
-        z: attack.right.z.saturating_mul(16),
-    };
     LightningTraceGeometry {
         beam_start: attack.beam_start,
         beam_end: clipped,
-        starts: [
-            attack.start,
-            add_combat_vec(attack.start, offset),
-            sub_combat_vec(attack.start, offset),
-        ],
-        ends: [
-            clipped,
-            add_combat_vec(clipped, offset),
-            sub_combat_vec(clipped, offset),
-        ],
-    }
-}
-
-const fn add_combat_vec(a: Vec3I32, b: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: a.x.saturating_add(b.x),
-        y: a.y.saturating_add(b.y),
-        z: a.z.saturating_add(b.z),
-    }
-}
-
-const fn sub_combat_vec(a: Vec3I32, b: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: a.x.saturating_sub(b.x),
-        y: a.y.saturating_sub(b.y),
-        z: a.z.saturating_sub(b.z),
+        damage_start: attack.beam_start,
+        damage_end: clipped,
     }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WeaponAttack {
+    /// The click of an axe swing: `ax1` and the swing animation. The blow
+    /// itself arrives two frames later as [`WeaponAttack::Axe`].
+    AxeSwing,
     Axe(HitscanAttack),
     Shotgun(ShotgunAttack),
     Nail(NailSpawn),
@@ -1126,7 +1119,8 @@ pub enum WeaponAttack {
 impl WeaponAttack {
     pub const fn sound_id(self) -> Option<i16> {
         match self {
-            Self::Axe(_) => Some(0xc0),
+            Self::AxeSwing => Some(0xc0),
+            Self::Axe(_) => None,
             Self::Shotgun(attack) => Some(attack.sound_id),
             Self::Nail(spawn) => Some(spawn.sound_id),
             Self::Grenade(_) => Some(0xc2),
@@ -1141,7 +1135,7 @@ impl WeaponAttack {
     /// attack frame has already raised the muzzle flash.
     pub const fn recoil_pitch(self) -> i32 {
         match self {
-            Self::Axe(_) | Self::LightningDischarge(_) => 0,
+            Self::AxeSwing | Self::Axe(_) | Self::LightningDischarge(_) => 0,
             Self::Shotgun(attack) if attack.pellet_count as usize > SHOTGUN_PELLETS => -4,
             Self::Shotgun(_)
             | Self::Nail(_)
@@ -1154,7 +1148,16 @@ impl WeaponAttack {
     /// `player_shot1`, `player_nail1`, `player_rocket1` and `player_light1`
     /// all set `EF_MUZZLEFLASH`; only the axe attack omits it.
     pub const fn muzzle_flashes(self) -> bool {
-        !matches!(self, Self::Axe(_))
+        !matches!(self, Self::AxeSwing | Self::Axe(_))
+    }
+
+    /// The second sound a firing call can raise: `W_FireLightning`'s `lhit`,
+    /// replayed every 0.6 s beside the `lstart` of a fresh press.
+    pub const fn secondary_sound_id(self) -> Option<i16> {
+        match self {
+            Self::Lightning(attack) => attack.hit_sound_id,
+            _ => None,
+        }
     }
 }
 
@@ -1176,7 +1179,48 @@ pub struct WeaponState {
     shots_fired: u32,
     sustained_weapon: Option<Weapon>,
     nail_next_positive: bool,
+    /// Ticks until the axe's third swing frame calls `W_FireAxe`; zero when
+    /// no swing is in flight.
+    axe_swing_ticks: u16,
+    /// The swing reached its strike frame and waits for the next attack call
+    /// to collect the strike with the then-current view.
+    axe_strike_due: bool,
+    /// `W_WeaponFrame` returns before `ImpulseCommands` while
+    /// `attack_finished` is pending, and the engine keeps the impulse byte
+    /// set, so a weapon change asked for in that window runs when it closes.
+    queued_impulse: Option<QueuedImpulse>,
+    /// `self.t_width` of `W_FireLightning`: `lhit` plays whenever it is in
+    /// the past and then pushes it 0.6 s out.
+    lightning_hit_ticks: u16,
+    /// `T_Damage` plays `protect3` on a hit the pentagram turns away, at most
+    /// once in two seconds.
+    protect_sound_ticks: u16,
+    protect_sound_pending: bool,
+    /// `cl.item_gettime` for the seven strip weapons, as ticks left of the
+    /// one second pickup flash.
+    weapon_flash_ticks: [u8; 7],
+    /// `W_ChangeWeapon`'s `sprint` ("no weapon.", "not enough ammo.") waiting
+    /// for the caller to show it.
+    change_message: Option<&'static str>,
 }
+
+/// `Sbar_DrawInventory` flashes a new weapon for ten tenths of a second.
+pub const WEAPON_FLASH_TICKS: u8 = 60;
+
+/// `self.invincible_sound = time + 2`.
+pub const PROTECT_SOUND_TICKS: u16 = 120;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum QueuedImpulse {
+    Select(Weapon),
+    Cycle(bool),
+}
+
+/// Ticks from the axe click to its strike: the strike runs on the third of
+/// four 0.1 s swing frames.
+pub const AXE_STRIKE_DELAY_TICKS: u16 = 12;
+/// `W_FireLightning` replays `lhit` every 0.6 s of continuous fire.
+pub const LIGHTNING_HIT_SOUND_TICKS: u16 = 36;
 
 impl WeaponState {
     pub const fn new() -> Self {
@@ -1192,6 +1236,14 @@ impl WeaponState {
             shots_fired: 0,
             sustained_weapon: None,
             nail_next_positive: true,
+            axe_swing_ticks: 0,
+            axe_strike_due: false,
+            queued_impulse: None,
+            lightning_hit_ticks: 0,
+            protect_sound_ticks: 0,
+            protect_sound_pending: false,
+            weapon_flash_ticks: [0; 7],
+            change_message: None,
         }
     }
 
@@ -1237,11 +1289,52 @@ impl WeaponState {
     }
 
     pub fn apply_pickup(&mut self, pickup: Pickup) -> PickupOutcome {
-        let outcome = self.inventory.apply_pickup(pickup);
+        // `ammo_touch` asks `W_BestWeapon` before adding the box and, if the
+        // player was holding that best weapon, asks again afterwards: a box
+        // which makes a better gun usable (or revives an empty one) moves
+        // the player up to it. Weapon pickups and backpacks do not.
+        let best_before = matches!(pickup, Pickup::Ammo { .. })
+            .then(|| self.inventory.best_weapon(self.survival.water_level()));
+        let owned_before = self.inventory.owned_weapons;
+        let mut outcome = self.inventory.apply_pickup(pickup);
+        self.note_new_weapons(owned_before);
+        if let Some(best_before) = best_before {
+            if outcome.consumed && self.inventory.active_weapon == best_before {
+                let best_after = self.inventory.best_weapon(self.survival.water_level());
+                if best_after != best_before {
+                    self.inventory.active_weapon = best_after;
+                    outcome.switched_weapon = true;
+                }
+            }
+        }
         if outcome.switched_weapon {
             self.reset_animation();
         }
         outcome
+    }
+
+    /// `CL_ParseClientdata`: a weapon bit which appeared stamps
+    /// `item_gettime`, starting that icon's flash.
+    fn note_new_weapons(&mut self, before: u8) {
+        let gained = self.inventory.owned_weapons & !before;
+        for slot in 0..7 {
+            if gained & (1 << (slot + 1)) != 0 {
+                self.weapon_flash_ticks[slot] = WEAPON_FLASH_TICKS;
+            }
+        }
+    }
+
+    /// Strip slots lit by the pickup flash this tick: ten steps a second, lit
+    /// on every other one.
+    pub fn weapon_flash_mask(&self) -> u8 {
+        let mut mask = 0u8;
+        for slot in 0..7 {
+            let left = self.weapon_flash_ticks[slot];
+            if left != 0 && ((WEAPON_FLASH_TICKS - left) / VIEW_MODEL_FRAME_TICKS) % 2 == 0 {
+                mask |= 1 << slot;
+            }
+        }
+        mask
     }
 
     pub fn select(&mut self, weapon: Weapon) -> bool {
@@ -1258,8 +1351,68 @@ impl WeaponState {
         selected
     }
 
+    /// An `impulse 1` to `8` as the player's weapon frame sees it: acted on
+    /// at once when `attack_finished` has passed, otherwise held until it
+    /// does (a later impulse replaces an earlier one, as the engine's single
+    /// impulse byte does).
+    pub fn request_select(&mut self, weapon: Weapon) {
+        if self.refire_ticks == 0 {
+            self.impulse_select(weapon);
+        } else {
+            self.queued_impulse = Some(QueuedImpulse::Select(weapon));
+        }
+    }
+
+    /// `impulse 10` / `impulse 12`, deferred the same way.
+    pub fn request_cycle(&mut self, forward: bool) {
+        if self.refire_ticks == 0 {
+            self.cycle(forward);
+        } else {
+            self.queued_impulse = Some(QueuedImpulse::Cycle(forward));
+        }
+    }
+
+    /// `W_ChangeWeapon`: switch, or say why not.
+    fn impulse_select(&mut self, weapon: Weapon) {
+        if !self.inventory.owns(weapon) {
+            self.change_message = Some("no weapon.");
+        } else if !self.inventory.can_select(weapon) {
+            self.change_message = Some("not enough ammo.");
+        } else {
+            self.select(weapon);
+        }
+    }
+
+    /// The `sprint` line `W_ChangeWeapon` raised since the last call.
+    pub fn take_change_message(&mut self) -> Option<&'static str> {
+        self.change_message.take()
+    }
+
+    fn run_queued_impulse(&mut self) {
+        match self.queued_impulse.take() {
+            Some(QueuedImpulse::Select(weapon)) => self.impulse_select(weapon),
+            Some(QueuedImpulse::Cycle(forward)) => {
+                self.cycle(forward);
+            }
+            None => {}
+        }
+    }
+
     pub fn take_damage(&mut self, damage: i16) -> i16 {
+        if damage > 0
+            && !self.inventory.god_mode()
+            && self.protect_sound_ticks == 0
+            && self.inventory.powerups.active(PowerupKind::Pentagram)
+        {
+            self.protect_sound_pending = true;
+            self.protect_sound_ticks = PROTECT_SOUND_TICKS;
+        }
         self.inventory.take_damage(damage)
+    }
+
+    /// Whether `T_Damage`'s `items/protect3.wav` is due since the last call.
+    pub fn take_protect_sound(&mut self) -> bool {
+        core::mem::take(&mut self.protect_sound_pending)
     }
 
     pub fn set_god_mode(&mut self, enabled: bool) {
@@ -1271,7 +1424,23 @@ impl WeaponState {
     }
 
     pub fn impulse_nine(&mut self) {
+        let before = self.inventory.owned_weapons;
         self.inventory.impulse_nine();
+        self.note_new_weapons(before);
+    }
+
+    /// The pain voice for a hit that left the player alive, if `PainSound`'s
+    /// half second throttle allows one.
+    pub fn external_pain_voice(&mut self) -> Option<i16> {
+        if self.inventory.health() <= 0 {
+            return None;
+        }
+        self.survival.external_pain_voice()
+    }
+
+    /// `attacker.super_damage_finished > time`, asked when a blast lands.
+    pub fn quad_active(&self) -> bool {
+        self.inventory.powerups.active(PowerupKind::Quad)
     }
 
     pub const fn shots_fired(&self) -> u32 {
@@ -1289,6 +1458,20 @@ impl WeaponState {
     pub fn tick(&mut self, elapsed_ticks: u16) {
         let ticks = elapsed_ticks.clamp(1, 4);
         self.refire_ticks = self.refire_ticks.saturating_sub(ticks);
+        self.lightning_hit_ticks = self.lightning_hit_ticks.saturating_sub(ticks);
+        self.protect_sound_ticks = self.protect_sound_ticks.saturating_sub(ticks);
+        for left in &mut self.weapon_flash_ticks {
+            *left = left.saturating_sub(ticks as u8);
+        }
+        if self.axe_swing_ticks != 0 {
+            self.axe_swing_ticks = self.axe_swing_ticks.saturating_sub(ticks);
+            if self.axe_swing_ticks == 0 {
+                self.axe_strike_due = true;
+            }
+        }
+        if self.refire_ticks == 0 {
+            self.run_queued_impulse();
+        }
         // `W_CheckNoAmmo`: once the last round is gone the original swaps
         // to `W_BestWeapon` on the next `W_Attack` after `attack_finished`.
         // Doing it here as soon as the refire window closes keeps that
@@ -1296,7 +1479,7 @@ impl WeaponState {
         // trigger was released.
         let active = self.inventory.active_weapon();
         if self.refire_ticks == 0 && !self.inventory.can_use(active) {
-            let best = self.inventory.best_usable(self.survival.water_level());
+            let best = self.inventory.best_weapon(self.survival.water_level());
             if best != active {
                 self.inventory.active_weapon = best;
                 self.reset_animation();
@@ -1380,10 +1563,7 @@ impl WeaponState {
         }
         let mut weapon = self.inventory.active_weapon();
         if !self.inventory.can_use(weapon) {
-            weapon = self.inventory.best_usable(water_level);
-        }
-        if weapon == Weapon::SuperShotgun && self.inventory.ammo(AmmoKind::Shells) == 1 {
-            weapon = Weapon::Shotgun;
+            weapon = self.inventory.best_weapon(water_level);
         }
         weapon
     }
@@ -1423,6 +1603,40 @@ impl WeaponState {
         admission: AttackAdmission,
         aim_forward: Option<Vec3I32>,
     ) -> Option<WeaponAttack> {
+        if self.axe_strike_due {
+            // The strike frame of `player_axe3`/`player_axeb3`: `W_FireAxe`
+            // traces from wherever the player now looks, whether or not the
+            // trigger is still down. A player who died mid swing never lands
+            // it (the death frames replace the swing).
+            self.axe_strike_due = false;
+            if self.inventory.health() > 0 {
+                let (forward, _, _) = view_basis(view_angles);
+                let start = Vec3I32 {
+                    x: camera_origin.x,
+                    y: camera_origin.y,
+                    z: camera_origin.z.saturating_sub(6 << 12),
+                };
+                let mut attack = WeaponAttack::Axe(HitscanAttack {
+                    start,
+                    end: Vec3I32 {
+                        x: start
+                            .x
+                            .saturating_add(forward.x.saturating_mul(AXE_RANGE_UNITS)),
+                        y: start
+                            .y
+                            .saturating_add(forward.y.saturating_mul(AXE_RANGE_UNITS)),
+                        z: start
+                            .z
+                            .saturating_add(forward.z.saturating_mul(AXE_RANGE_UNITS)),
+                    },
+                    damage: AXE_DAMAGE,
+                });
+                if self.inventory.powerups.active(PowerupKind::Quad) {
+                    quad_damage(&mut attack);
+                }
+                return Some(attack);
+            }
+        }
         if !trigger_held {
             self.reset_sustained_fire();
             return None;
@@ -1451,33 +1665,36 @@ impl WeaponState {
         }
         let mut attack = match active {
             Weapon::Axe => {
+                // `W_Attack`: `ax1` and one of four swings; the strike
+                // itself lands two frames (0.2 s) into the swing.
                 self.refire_ticks = AXE_REFIRE_TICKS;
-                let start = Vec3I32 {
-                    x: camera_origin.x,
-                    y: camera_origin.y,
-                    z: camera_origin.z.saturating_sub(6 << 12),
-                };
-                WeaponAttack::Axe(HitscanAttack {
-                    start,
-                    end: Vec3I32 {
-                        x: start
-                            .x
-                            .saturating_add(forward.x.saturating_mul(AXE_RANGE_UNITS)),
-                        y: start
-                            .y
-                            .saturating_add(forward.y.saturating_mul(AXE_RANGE_UNITS)),
-                        z: start
-                            .z
-                            .saturating_add(forward.z.saturating_mul(AXE_RANGE_UNITS)),
-                    },
-                    damage: AXE_DAMAGE,
-                })
+                self.axe_swing_ticks = AXE_STRIKE_DELAY_TICKS;
+                self.axe_strike_due = false;
+                WeaponAttack::AxeSwing
             }
             Weapon::Shotgun => {
                 if !self.inventory.consume(AmmoKind::Shells, 1) {
                     return None;
                 }
                 self.refire_ticks = SHOTGUN_REFIRE_TICKS;
+                WeaponAttack::Shotgun(self.pellet_attack(
+                    camera_origin,
+                    forward,
+                    aim,
+                    right,
+                    up,
+                    SHOTGUN_PELLETS,
+                    SHOTGUN_SPREAD_Q12,
+                    SHOTGUN_SPREAD_Q12,
+                    0xc3,
+                ))
+            }
+            Weapon::SuperShotgun if self.inventory.ammo(AmmoKind::Shells) == 1 => {
+                // `W_FireSuperShotgun`: `if (currentammo == 1)
+                // W_FireShotgun`, but `W_Attack` still arms the double
+                // barrel's 0.7 s and the model stays the double barrel.
+                self.inventory.consume(AmmoKind::Shells, 1);
+                self.refire_ticks = SUPER_SHOTGUN_REFIRE_TICKS;
                 WeaponAttack::Shotgun(self.pellet_attack(
                     camera_origin,
                     forward,
@@ -1547,11 +1764,10 @@ impl WeaponState {
                     } else {
                         NAIL_DAMAGE
                     },
-                    sound_id: if active == Weapon::SuperNailgun {
-                        0xcf
-                    } else {
-                        0xcc
-                    },
+                    // `W_FireSuperSpikes` plays spike2; the one nail a
+                    // super nailgun fires on its last round is the plain
+                    // `W_FireSpikes` shot, rocket1i and all.
+                    sound_id: if super_nail { 0xcf } else { 0xcc },
                 })
             }
             Weapon::GrenadeLauncher => {
@@ -1639,13 +1855,10 @@ impl WeaponState {
             }
             Weapon::Lightning => {
                 let cells = self.inventory.ammo(AmmoKind::Cells);
-                let sound_id = if !continued {
-                    Some(0xc6)
-                } else if self.view_frame == 1 {
-                    Some(0xc4)
-                } else {
-                    None
-                };
+                // `W_Attack` plays `lstart` on every fresh press (a held
+                // trigger is `player_light1/2` looping, which never
+                // re-enters it).
+                let sound_id = (!continued).then_some(0xc6);
                 if water_level > 1 {
                     if !self.inventory.consume(AmmoKind::Cells, cells) {
                         return None;
@@ -1671,6 +1884,14 @@ impl WeaponState {
                         z: camera_origin.z.saturating_sub(6 << 12),
                     };
                     self.sustained_weapon = Some(Weapon::Lightning);
+                    // `W_FireLightning`: `if (self.t_width < time)` play
+                    // `lhit`, then `t_width = time + 0.6`.
+                    let hit_sound_id = if self.lightning_hit_ticks == 0 {
+                        self.lightning_hit_ticks = LIGHTNING_HIT_SOUND_TICKS;
+                        Some(0xc4)
+                    } else {
+                        None
+                    };
                     WeaponAttack::Lightning(LightningAttack {
                         beam_start: Vec3I32 {
                             x: camera_origin.x,
@@ -1693,6 +1914,7 @@ impl WeaponState {
                         right,
                         damage: LIGHTNING_DAMAGE,
                         sound_id,
+                        hit_sound_id,
                     })
                 }
             }
@@ -1707,12 +1929,26 @@ impl WeaponState {
         }
         if matches!(attack, WeaponAttack::LightningDischarge(_)) {
             self.reset_animation();
+        } else if matches!(attack, WeaponAttack::AxeSwing) {
+            // Four swing variants: `player_axe` and `player_axec` show view
+            // frames 1 to 4, `player_axeb` and `player_axed` frames 5 to 8.
+            let last_frame = view_model_frames.saturating_sub(1);
+            let first_frame = if self.random_fraction_q12() >= Q12_ONE / 2 && last_frame >= 8 {
+                5
+            } else {
+                1.min(last_frame)
+            };
+            self.view_frame = first_frame;
+            self.view_frame_end = (first_frame + 3).min(last_frame);
+            self.view_frame_ticks = 0;
         } else if matches!(
             active,
             Weapon::Nailgun | Weapon::SuperNailgun | Weapon::Lightning
         ) {
             let first_frame = 1.min(view_model_frames.saturating_sub(1));
-            let last_frame = view_model_frames.saturating_sub(1);
+            // `player_nail` wraps at weaponframe 9 and `player_light` at 5.
+            let loop_end = if active == Weapon::Lightning { 4 } else { 8 };
+            let last_frame = view_model_frames.saturating_sub(1).min(loop_end);
             self.view_frame = if !continued {
                 first_frame
             } else if self.view_frame < last_frame {
@@ -1794,6 +2030,8 @@ impl WeaponState {
     }
 
     fn reset_animation(&mut self) {
+        self.axe_swing_ticks = 0;
+        self.axe_strike_due = false;
         self.view_frame = 0;
         self.view_frame_end = 0;
         self.view_frame_ticks = 0;
@@ -1809,6 +2047,8 @@ impl WeaponState {
     /// change exactly as `SetChangeParms` does.
     pub fn map_loaded(&mut self) {
         self.refire_ticks = 0;
+        self.queued_impulse = None;
+        self.lightning_hit_ticks = 0;
         self.random_state = INITIAL_RANDOM_STATE;
         self.survival.map_loaded();
         // A player who arrives at the change-level volume dead would have gone
@@ -1842,18 +2082,21 @@ impl Default for WeaponState {
     }
 }
 
-/// Quadruple an attack's carried damage. The rocket's radius damage is not
-/// carried on the spawn, so it stays at its base value.
+/// Quadruple the damage an attack carries. A grenade carries its quadrupled
+/// 120 and the explosion divides the multiplier back out to scale each
+/// target's points after the falloff; the underwater discharge is scaled per
+/// target by the caller ([`WeaponState::quad_active`]).
 fn quad_damage(attack: &mut WeaponAttack) {
     let scale = |damage: &mut i16| *damage = damage.saturating_mul(QUAD_DAMAGE_MULTIPLIER);
     match attack {
+        WeaponAttack::AxeSwing => {}
         WeaponAttack::Axe(attack) => scale(&mut attack.damage),
         WeaponAttack::Shotgun(attack) => scale(&mut attack.damage_per_pellet),
         WeaponAttack::Nail(spawn) => scale(&mut spawn.damage),
         WeaponAttack::Grenade(spawn) => scale(&mut spawn.damage),
+        WeaponAttack::LightningDischarge(_) => {}
         WeaponAttack::Rocket(spawn) => scale(&mut spawn.direct_damage),
         WeaponAttack::Lightning(attack) => scale(&mut attack.damage),
-        WeaponAttack::LightningDischarge(discharge) => scale(&mut discharge.damage),
     }
 }
 
@@ -1979,6 +2222,22 @@ mod tests {
     use super::*;
 
     const ORIGIN: Vec3I32 = Vec3I32 { x: 0, y: 0, z: 0 };
+
+    const fn add_combat_vec(a: Vec3I32, b: Vec3I32) -> Vec3I32 {
+        Vec3I32 {
+            x: a.x + b.x,
+            y: a.y + b.y,
+            z: a.z + b.z,
+        }
+    }
+
+    const fn sub_combat_vec(a: Vec3I32, b: Vec3I32) -> Vec3I32 {
+        Vec3I32 {
+            x: a.x - b.x,
+            y: a.y - b.y,
+            z: a.z - b.z,
+        }
+    }
 
     #[optimize(size)]
     #[test]
@@ -2214,6 +2473,22 @@ mod tests {
         assert_eq!(explosion_splash_points(120, 160, false, true, false), 40);
     }
 
+    /// Fire one attack and, for the axe, wait out the swing to its strike.
+    fn first_damaging_attack(state: &mut WeaponState) -> WeaponAttack {
+        let attack = state
+            .try_attack(true, ORIGIN, [0, 0, 0], 9)
+            .expect("attack");
+        if !matches!(attack, WeaponAttack::AxeSwing) {
+            return attack;
+        }
+        for _ in 0..AXE_STRIKE_DELAY_TICKS {
+            state.tick(1);
+        }
+        state
+            .try_attack(false, ORIGIN, [0, 0, 0], 9)
+            .expect("axe strike")
+    }
+
     #[test]
     fn the_quad_quadruples_every_carried_attack_damage() {
         let cases: &[(Option<u8>, i16, i16)] = &[
@@ -2240,11 +2515,10 @@ mod tests {
                     state.apply_pickup(Pickup::Powerup {
                         kind: PowerupKind::Quad,
                     });
+                    assert!(state.quad_active());
                 }
-                match state
-                    .try_attack(true, ORIGIN, [0, 0, 0], 7)
-                    .expect("attack")
-                {
+                match first_damaging_attack(&mut state) {
+                    WeaponAttack::AxeSwing => unreachable!(),
                     WeaponAttack::Axe(attack) => attack.damage,
                     WeaponAttack::Shotgun(attack) => attack.damage_per_pellet,
                     WeaponAttack::Nail(spawn) => spawn.damage,
@@ -2266,9 +2540,7 @@ mod tests {
         state.apply_pickup(Pickup::Powerup {
             kind: PowerupKind::Quad,
         });
-        let quadded = state
-            .try_attack(true, ORIGIN, [0, 0, 0], 7)
-            .expect("attack");
+        let quadded = first_damaging_attack(&mut state);
         assert!(matches!(quadded, WeaponAttack::Axe(attack) if attack.damage == AXE_DAMAGE * 4));
         for _ in 0..(crate::survival::POWERUP_TICKS / 4 + 1) {
             state.tick(4);
@@ -2278,9 +2550,8 @@ mod tests {
             });
         }
         assert!(!state.inventory().powerups().active(PowerupKind::Quad));
-        let plain = state
-            .try_attack(true, ORIGIN, [0, 0, 0], 7)
-            .expect("attack");
+        assert!(!state.quad_active());
+        let plain = first_damaging_attack(&mut state);
         assert!(matches!(plain, WeaponAttack::Axe(attack) if attack.damage == AXE_DAMAGE));
     }
 
@@ -2803,15 +3074,20 @@ mod tests {
         assert_eq!(state.take_damage(32_000), 0);
         assert_eq!(state.inventory().health(), 100);
 
+        assert_ne!(active, Weapon::RocketLauncher);
         state.impulse_nine();
         let inventory = state.inventory();
         assert_eq!(inventory.owned_weapons(), u8::MAX);
         assert_eq!(inventory.ammo(AmmoKind::Shells), 100);
         assert_eq!(inventory.ammo(AmmoKind::Nails), 200);
         assert_eq!(inventory.ammo(AmmoKind::Rockets), 100);
-        assert_eq!(inventory.ammo(AmmoKind::Cells), 100);
-        assert_eq!(inventory.keys(), 0);
-        assert_eq!(state.active_weapon(), active);
+        // `CheatCommand` sets `ammo_cells = 200` without `bound_other_ammo`.
+        assert_eq!(inventory.ammo(AmmoKind::Cells), 200);
+        assert_eq!(
+            inventory.keys(),
+            crate::door::KEY_SILVER_BIT | crate::door::KEY_GOLD_BIT
+        );
+        assert_eq!(state.active_weapon(), Weapon::RocketLauncher);
 
         state.set_god_mode(false);
         assert_eq!(state.take_damage(10), 10);
@@ -2823,50 +3099,66 @@ mod tests {
         let mut state = WeaponState::new();
         state.apply_pickup(pickup_for_entity(0x58, 0).unwrap());
         state.inventory.ammo[AmmoKind::Shells.index()] = 1;
+        assert_eq!(state.active_weapon(), Weapon::SuperShotgun);
         let WeaponAttack::Shotgun(shot) = state.try_attack(true, ORIGIN, [0, 0, 0], 7).unwrap()
         else {
             panic!("shotgun fallback");
         };
-        assert_eq!(state.active_weapon(), Weapon::Shotgun);
+        // `W_FireSuperShotgun` with one shell calls `W_FireShotgun`, but the
+        // gun in hand stays the double barrel and keeps its 0.7 s refire.
+        assert_eq!(state.active_weapon(), Weapon::SuperShotgun);
         assert_eq!(shot.pellet_count as usize, SHOTGUN_PELLETS);
-
+        assert_eq!(shot.sound_id, 0xc3);
+        assert_eq!(state.inventory().ammo(AmmoKind::Shells), 0);
+        assert!(!state.ready_to_fire());
         for _ in 0..SHOTGUN_REFIRE_TICKS {
             state.tick(1);
         }
+        assert!(!state.ready_to_fire());
+        for _ in SHOTGUN_REFIRE_TICKS..SUPER_SHOTGUN_REFIRE_TICKS {
+            state.tick(1);
+        }
+        assert!(state.ready_to_fire());
+        // Out of shells the gun falls to the axe (rockets and the like are
+        // never auto-equipped).
+        assert_eq!(state.active_weapon(), Weapon::Axe);
+
         state.apply_pickup(pickup_for_entity(0x57, 0).unwrap());
         state.inventory.ammo[AmmoKind::Nails.index()] = 1;
         let WeaponAttack::Nail(nail) = state.try_attack(true, ORIGIN, [0, 0, 0], 6).unwrap() else {
             panic!("single super nail fallback");
         };
         assert_eq!(nail.damage, NAIL_DAMAGE);
-        assert_eq!(nail.sound_id, 0xcf);
+        // The last round is a plain nail in sound too.
+        assert_eq!(nail.sound_id, 0xcc);
         assert_eq!(state.inventory().ammo(AmmoKind::Nails), 0);
     }
 
     #[test]
-    fn sustained_lightning_uses_hit_sound_only_when_frame_one_cycles() {
+    fn lightning_plays_lstart_on_a_press_and_lhit_every_six_tenths_of_a_second() {
         let mut state = WeaponState::new();
         state.apply_pickup(pickup_for_entity(0x54, 0).unwrap());
         let first = state
             .try_attack_in_water(true, ORIGIN, [0, 0, 0], 6, 0)
             .unwrap();
+        // A fresh press: `W_Attack`'s `lstart` and, since `t_width` is in
+        // the past, `W_FireLightning`'s `lhit` as well.
         assert_eq!(first.sound_id(), Some(0xc6));
+        assert_eq!(first.secondary_sound_id(), Some(0xc4));
         assert_eq!(state.view().frame, 1);
-        for (expected_sound, expected_frame) in [
-            (Some(0xc4), 2),
-            (None, 3),
-            (None, 4),
-            (None, 5),
-            (None, 1),
-            (Some(0xc4), 2),
-        ] {
+        // `player_light1/2` cycle weaponframe 1 to 4.
+        for (index, expected_frame) in [2u16, 3, 4, 1, 2, 3, 4].into_iter().enumerate() {
             for _ in 0..LIGHTNING_REFIRE_TICKS {
                 state.tick(1);
             }
             let sustained = state
                 .try_attack_in_water(true, ORIGIN, [0, 0, 0], 6, 0)
                 .unwrap();
-            assert_eq!(sustained.sound_id(), expected_sound);
+            assert_eq!(sustained.sound_id(), None);
+            // Shots 2 to 6 are inside the 0.6 s window; the seventh is at
+            // exactly 0.6 s after the first.
+            let expected_hit = (index == 5).then_some(0xc4);
+            assert_eq!(sustained.secondary_sound_id(), expected_hit, "shot {}", index + 2);
             assert_eq!(state.view().frame, expected_frame);
         }
         assert!(state
@@ -2878,7 +3170,197 @@ mod tests {
         let restarted = state
             .try_attack_in_water(true, ORIGIN, [0, 0, 0], 6, 0)
             .unwrap();
+        // A new press replays `lstart`; `lhit` was last heard less than
+        // 0.6 s ago, so it stays quiet.
         assert_eq!(restarted.sound_id(), Some(0xc6));
+        assert_eq!(restarted.secondary_sound_id(), None);
+    }
+
+    /// `W_BestWeapon`: Thunderbolt (not from water), super nailgun and
+    /// double barrel on two rounds, nailgun and shotgun on one, else the
+    /// axe. The rocket and grenade launchers never appear.
+    #[test]
+    fn best_weapon_follows_the_id1_order_and_thresholds() {
+        let mut inventory = Inventory::new();
+        inventory.owned_weapons = u8::MAX;
+        inventory.ammo = [0, 0, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::Axe);
+        inventory.ammo = [1, 0, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::Shotgun);
+        inventory.ammo = [2, 0, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::SuperShotgun);
+        inventory.ammo = [2, 1, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::SuperShotgun);
+        inventory.ammo = [1, 1, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::Nailgun);
+        inventory.ammo = [2, 2, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::SuperNailgun);
+        inventory.ammo = [2, 2, 100, 1];
+        assert_eq!(inventory.best_weapon(0), Weapon::Lightning);
+        assert_eq!(inventory.best_weapon(1), Weapon::Lightning);
+        assert_eq!(inventory.best_weapon(2), Weapon::SuperNailgun);
+        inventory.owned_weapons = WEAPON_AXE_BIT | WEAPON_SHOTGUN_BIT | WEAPON_NAILGUN_BIT;
+        inventory.ammo = [5, 1, 100, 0];
+        assert_eq!(inventory.best_weapon(0), Weapon::Nailgun);
+    }
+
+    /// `W_ChangeWeapon` refuses the double barrel and the super nailgun on a
+    /// single round ("not enough ammo.") and cycling skips them likewise.
+    #[test]
+    fn the_double_barrel_and_super_nailgun_need_two_rounds_to_be_selected() {
+        let mut inventory = Inventory::new();
+        inventory.owned_weapons = u8::MAX;
+        inventory.ammo = [1, 1, 0, 0];
+        assert!(!inventory.can_select(Weapon::SuperShotgun));
+        assert!(!inventory.can_select(Weapon::SuperNailgun));
+        assert!(inventory.can_select(Weapon::Shotgun));
+        assert!(inventory.can_select(Weapon::Nailgun));
+        assert!(!inventory.select(Weapon::SuperShotgun));
+        assert_eq!(inventory.active_weapon(), Weapon::Shotgun);
+        // The looser `currentammo > 0` test still keeps a gun in hand alive.
+        inventory.active_weapon = Weapon::SuperShotgun;
+        assert!(inventory.can_use(Weapon::SuperShotgun));
+        inventory.active_weapon = Weapon::Axe;
+        assert_eq!(inventory.cycle(true), Weapon::Shotgun);
+        assert_eq!(inventory.cycle(true), Weapon::Nailgun);
+        assert_eq!(inventory.cycle(true), Weapon::Axe);
+        inventory.ammo = [2, 2, 0, 0];
+        assert_eq!(inventory.cycle(true), Weapon::Shotgun);
+        assert_eq!(inventory.cycle(true), Weapon::SuperShotgun);
+        assert!(inventory.select(Weapon::SuperNailgun));
+    }
+
+    /// `ammo_touch`: a box which arrives while the best weapon is in hand
+    /// moves the player to the new best one; any other weapon stays put.
+    #[test]
+    fn an_ammo_box_upgrades_only_a_player_holding_the_best_weapon() {
+        let nails = Pickup::Ammo {
+            kind: AmmoKind::Nails,
+            amount: 25,
+        };
+        let shells = Pickup::Ammo {
+            kind: AmmoKind::Shells,
+            amount: 20,
+        };
+        // Out of shells with the axe in hand (the best the player had), then
+        // a shell box: back to the shotgun.
+        let mut state = WeaponState::new();
+        state.inventory.ammo = [0, 0, 0, 0];
+        state.inventory.active_weapon = Weapon::Axe;
+        let outcome = state.apply_pickup(shells);
+        assert!(outcome.consumed);
+        assert!(outcome.switched_weapon);
+        assert_eq!(state.active_weapon(), Weapon::Shotgun);
+
+        // A nailgun owner holding the shotgun (the best until now) picks up
+        // nails and moves to the nailgun.
+        let mut state = WeaponState::new();
+        state.apply_pickup(pickup_for_entity(0x55, 0).unwrap());
+        state.inventory.ammo = [25, 0, 0, 0];
+        state.inventory.active_weapon = Weapon::Shotgun;
+        assert!(state.apply_pickup(nails).switched_weapon);
+        assert_eq!(state.active_weapon(), Weapon::Nailgun);
+
+        // Holding something other than the best weapon: no change.
+        let mut state = WeaponState::new();
+        state.apply_pickup(pickup_for_entity(0x55, 0).unwrap());
+        state.inventory.ammo = [25, 0, 0, 0];
+        state.inventory.active_weapon = Weapon::Axe;
+        let outcome = state.apply_pickup(nails);
+        assert!(outcome.consumed);
+        assert!(!outcome.switched_weapon);
+        assert_eq!(state.active_weapon(), Weapon::Axe);
+
+        // A refused (full) box changes nothing.
+        let mut state = WeaponState::new();
+        state.inventory.ammo = [100, 0, 0, 0];
+        assert!(!state.apply_pickup(shells).consumed);
+    }
+
+    /// The axe click only swings; the blow lands on the third frame, 0.2 s
+    /// later, from wherever the player now looks, and the weapon cannot be
+    /// changed in between.
+    #[test]
+    fn the_axe_strike_lands_two_swing_frames_after_the_click() {
+        let mut state = WeaponState::new();
+        assert!(state.select(Weapon::Axe));
+        let swing = state
+            .try_attack(true, ORIGIN, [0, 0, 0], 9)
+            .expect("swing");
+        assert_eq!(swing, WeaponAttack::AxeSwing);
+        assert_eq!(swing.sound_id(), Some(0xc0));
+        assert!(!swing.muzzle_flashes());
+        // Four swing frames: 1 to 4 or 5 to 8.
+        let first = state.view().frame;
+        assert!(first == 1 || first == 5, "frame {first}");
+        for _ in 0..AXE_STRIKE_DELAY_TICKS - 1 {
+            state.tick(1);
+            assert!(state.try_attack(true, ORIGIN, [0, 0, 0], 9).is_none());
+        }
+        state.tick(1);
+        // The player turned during the swing: the blow follows the new aim,
+        // and arrives with the trigger released.
+        let yaw_quarter = [0, 1024, 0];
+        let strike = state
+            .try_attack(false, ORIGIN, yaw_quarter, 9)
+            .expect("strike");
+        let WeaponAttack::Axe(hit) = strike else {
+            panic!("expected the axe blow");
+        };
+        assert_eq!(hit.damage, AXE_DAMAGE);
+        assert_eq!(hit.start.z, -(6 << 12));
+        assert_eq!(hit.end.x, hit.start.x);
+        assert_eq!(hit.end.y, AXE_RANGE_UNITS * Q12_ONE);
+        assert_eq!(strike.sound_id(), None);
+        // One blow per swing.
+        assert!(state.try_attack(false, ORIGIN, yaw_quarter, 9).is_none());
+        // The 0.5 s refire is unchanged.
+        for _ in AXE_STRIKE_DELAY_TICKS..AXE_REFIRE_TICKS - 1 {
+            state.tick(1);
+        }
+        assert!(!state.ready_to_fire());
+        state.tick(1);
+        assert!(state.ready_to_fire());
+    }
+
+    #[test]
+    fn a_refused_impulse_says_why() {
+        let mut state = WeaponState::new();
+        state.request_select(Weapon::RocketLauncher);
+        assert_eq!(state.take_change_message(), Some("no weapon."));
+        assert_eq!(state.take_change_message(), None);
+        state.apply_pickup(pickup_for_entity(0x58, 0).unwrap());
+        state.inventory.ammo[AmmoKind::Shells.index()] = 1;
+        state.request_select(Weapon::SuperShotgun);
+        assert_eq!(state.take_change_message(), Some("not enough ammo."));
+        assert_eq!(state.active_weapon(), Weapon::SuperShotgun, "the pickup selected it");
+        state.request_select(Weapon::Axe);
+        assert_eq!(state.take_change_message(), None);
+        assert_eq!(state.active_weapon(), Weapon::Axe);
+    }
+
+    #[test]
+    fn a_weapon_change_asked_for_mid_refire_waits_for_attack_finished() {
+        let mut state = WeaponState::new();
+        state.apply_pickup(pickup_for_entity(0x56, 0).unwrap());
+        assert_eq!(state.active_weapon(), Weapon::RocketLauncher);
+        assert!(matches!(
+            state.try_attack(true, ORIGIN, [0, 0, 0], 7),
+            Some(WeaponAttack::Rocket(_))
+        ));
+        state.request_select(Weapon::Shotgun);
+        assert_eq!(state.active_weapon(), Weapon::RocketLauncher);
+        // A later impulse replaces the pending one.
+        state.request_select(Weapon::Axe);
+        for _ in 0..ROCKET_REFIRE_TICKS - 1 {
+            state.tick(1);
+            assert_eq!(state.active_weapon(), Weapon::RocketLauncher);
+        }
+        state.tick(1);
+        assert_eq!(state.active_weapon(), Weapon::Axe);
+        // With the window closed an impulse acts at once.
+        state.request_select(Weapon::Shotgun);
+        assert_eq!(state.active_weapon(), Weapon::Shotgun);
     }
 
     #[test]
@@ -2963,11 +3445,14 @@ mod tests {
         state.inventory.ammo[AmmoKind::Cells.index()] = 0;
         state.inventory.active_weapon = Weapon::Lightning;
 
+        // `W_BestWeapon` never lists the rocket launcher: with the cells gone
+        // the shells carry on, and underwater the Thunderbolt is skipped
+        // even when it has cells.
         let prepared = state.attack_weapon(true, 2);
-        assert_eq!(prepared, Weapon::RocketLauncher);
+        assert_eq!(prepared, Weapon::Shotgun);
         assert!(matches!(
             state.try_attack_in_water(true, ORIGIN, [0, 0, 0], 7, 2),
-            Some(WeaponAttack::Rocket(_))
+            Some(WeaponAttack::Shotgun(_))
         ));
         assert_eq!(state.view_frame_end, 6);
     }
@@ -2998,11 +3483,18 @@ mod tests {
         assert_eq!(state, before);
     }
 
+    /// `LightningDamage` throws away `normalize(f)`, so its flanking rays
+    /// start thousands of units to the side: only the centre ray, from the
+    /// player's origin to four units past the world hit, finds a victim.
     #[test]
-    fn lightning_side_rays_share_the_world_clipped_center_endpoint() {
+    fn lightning_damage_is_the_single_world_clipped_centre_ray() {
         let attack = LightningAttack {
             beam_start: ORIGIN,
-            start: ORIGIN,
+            start: Vec3I32 {
+                x: 0,
+                y: 0,
+                z: 16 << 12,
+            },
             end: Vec3I32 {
                 x: LIGHTNING_RANGE_UNITS << 12,
                 y: 0,
@@ -3020,16 +3512,15 @@ mod tests {
             },
             damage: LIGHTNING_DAMAGE,
             sound_id: None,
+            hit_sound_id: None,
         };
         let geometry = lightning_trace_geometry(attack, Q12_ONE / 2);
         let clipped_x = (LIGHTNING_RANGE_UNITS / 2 + 4) << 12;
         assert_eq!(geometry.beam_start, ORIGIN);
         assert_eq!(geometry.beam_end.x, clipped_x);
-        assert_eq!(geometry.ends[0].x, clipped_x);
-        assert_eq!(geometry.ends[1].x, clipped_x);
-        assert_eq!(geometry.ends[2].x, clipped_x);
-        assert_eq!(geometry.ends[1].y, 16 << 12);
-        assert_eq!(geometry.ends[2].y, -(16 << 12));
+        assert_eq!(geometry.damage_start, ORIGIN);
+        assert_eq!(geometry.damage_end.x, clipped_x);
+        assert_eq!(geometry.damage_end.y, 0);
     }
 
     #[test]

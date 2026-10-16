@@ -161,6 +161,17 @@ impl PowerupKind {
         }
     }
 
+    /// `CheckPowerups`' `sprint` when the artifact is about to run out.
+    #[optimize(size)]
+    pub const fn expiry_text(self) -> &'static str {
+        match self {
+            Self::Quad => "Quad Damage is wearing off",
+            Self::Pentagram => "Protection is almost burned out",
+            Self::Ring => "Ring of Shadows magic is fading",
+            Self::Biosuit => "Air supply in Biosuit expiring",
+        }
+    }
+
     /// Short status-bar label for the text HUD.
     #[optimize(size)]
     pub const fn label(self) -> &'static str {
@@ -289,6 +300,9 @@ pub struct SurvivalFrame {
     pub gibbed: bool,
     /// `CheckPowerups` issued a `bf` flash for an artifact about to expire.
     pub bonus_flash: bool,
+    /// Artifacts (bit per `PowerupKind::index`) whose three second warning
+    /// began this frame: `CheckPowerups` prints a line for each.
+    pub warned: u8,
     /// `DeathSound` took its submerged branch, which calls `DeathBubbles(20)`
     /// beside the h2odeath voice. Presentation only: the caller turns it into
     /// an approximation of the bubbles, never the sprite.
@@ -378,6 +392,7 @@ impl Survival {
         // `CheckPowerups` closes PlayerPostThink.
         let (warnings, flashes) = inventory.tick_powerups(ticks);
         frame.bonus_flash = flashes != 0;
+        frame.warned = warnings;
         let mut index = 0usize;
         while index < PowerupKind::ALL.len() {
             let kind = PowerupKind::ALL[index];
@@ -549,6 +564,17 @@ impl Survival {
                 }
             }
         }
+    }
+
+    /// `player_pain` -> `PainSound` for damage that did not come through
+    /// [`Survival::tick`]: the player's own rocket, a trap spike, a lava
+    /// ball. The ordinary roll is throttled by `pain_finished` like the rest.
+    pub fn external_pain_voice(&mut self) -> Option<i16> {
+        if self.pain_ticks != 0 {
+            return None;
+        }
+        self.pain_ticks = PAIN_INTERVAL_TICKS;
+        Some(self.pain_voice())
     }
 
     /// `PainSound`'s `rint((random() * 5) + 1)`, drawn over the pain voices

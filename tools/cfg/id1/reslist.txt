@@ -177,7 +177,9 @@ ent monster_army
   mdl progs/h_guard.mdl
   sfx sound/soldier/idle.wav
   sfx sound/soldier/sight1.wav
+  sfx sound/soldier/pain1.wav
   sfx sound/soldier/pain2.wav
+  sfx sound/soldier/sattck1.wav
   sfx sound/soldier/death1.wav
 
 ent monster_dog

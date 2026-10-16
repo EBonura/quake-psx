@@ -1319,6 +1319,8 @@ pub struct Renderer {
     hud_packets: [Vec<QuadTexturedMaterial>; 2],
     crosshair_packets: [[RectFlat; 4]; 2],
     centerprint_packets: [Vec<QuadTexturedMaterial>; 2],
+    /// The console's top-left notify lines (`sprint`), set per frame.
+    notify_lines: [Option<&'static str>; quake_core::level_session::NOTIFY_LINES],
     screen_tints: [[ScreenTintQuad; SCREEN_TINT_CAPACITY]; 2],
     liquid_generation: u32,
     liquid_phase: u8,
@@ -1384,6 +1386,7 @@ impl Renderer {
             centerprint_packets: core::array::from_fn(|_| {
                 Vec::with_capacity(CENTERPRINT_PACKET_CAPACITY)
             }),
+            notify_lines: [None; quake_core::level_session::NOTIFY_LINES],
             screen_tints: [[ScreenTintQuad::new((0, 0, 0), BlendMode::Add); SCREEN_TINT_CAPACITY];
                 2],
             liquid_generation: u32::MAX,
@@ -2365,6 +2368,10 @@ impl Renderer {
 
         if let Some(text) = centerprint {
             self.draw_centerprint(text);
+        } else if self.notify_lines[0].is_some() {
+            // The notify lines share the centerprint's packet buffer, so
+            // they give way to a centerprint rather than doubling it.
+            self.draw_notify();
         }
 
         if let Some(menu) = menu {
@@ -2419,14 +2426,23 @@ impl Renderer {
     #[optimize(size)]
     #[inline(never)]
     fn stage_weapon_icons(&mut self, map: &ResidentMap, view: HudView) {
-        let desired = view
-            .active_weapon_slot()
-            .map(|index| 1u8 << index)
-            .unwrap_or(0);
-        let changed = self.weapon_selected_mask ^ desired;
-        if changed == 0 {
+        // The held weapon plus any icon in the lit half of its pickup flash.
+        let wanted = view.lit_weapon_slots();
+        let pending = self.weapon_selected_mask ^ wanted;
+        if pending == 0 {
             return;
         }
+        // Two slots a frame is all the upload array holds; a third change
+        // (several pickups at once) waits for the next frame.
+        let mut changed = 0u8;
+        let mut taken = 0u8;
+        for index in 0..7 {
+            if pending & (1 << index) != 0 && taken < 2 {
+                changed |= 1 << index;
+                taken += 1;
+            }
+        }
+        let desired = (self.weapon_selected_mask & !changed) | (wanted & changed);
         const EMPTY: crate::platform::VramUploadRange = crate::platform::VramUploadRange {
             rect: psx_vram::VramRect::new(0, 0, 1, 1),
             start: 0,
@@ -2630,6 +2646,33 @@ impl Renderer {
                 QuadTexturedMaterial::WORDS,
             );
         }
+    }
+
+    /// `Con_DrawNotify`: the live `sprint` lines at the top left, eight
+    /// pixels apart.
+    #[inline(never)]
+    #[optimize(size)]
+    fn draw_notify(&mut self) {
+        let lines = self.notify_lines;
+        let packets = &mut self.centerprint_packets[self.arena];
+        packets.clear();
+        let mut y = 0i16;
+        for text in lines.into_iter().flatten() {
+            push_centerprint_text(packets, 8, y, text, (0x80, 0x80, 0x80));
+            y += 8;
+        }
+        unsafe {
+            crate::platform::register_screen_packets(
+                packets.as_mut_ptr().cast::<u32>(),
+                packets.len(),
+                QuadTexturedMaterial::WORDS,
+            );
+        }
+    }
+
+    /// Set this frame's notify lines (`Con_Printf` text that is still live).
+    pub fn set_notify(&mut self, lines: [Option<&'static str>; quake_core::level_session::NOTIFY_LINES]) {
+        self.notify_lines = lines;
     }
 
     fn draw_lightning_beam(

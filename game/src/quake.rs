@@ -138,6 +138,11 @@ pub fn run() -> ! {
         psx_rt::halt();
     };
     let mut weapon = quake_core::combat::WeaponState::new();
+    // `self.show_hostile = time + 1` from `W_Attack`, in ticks left.
+    let mut show_hostile_ticks: u16 = 0;
+    // `SuperDamageSound`'s `super_sound` and `CheckPowerups`' `invisible_sound`.
+    let mut quad_sound_ticks: u16 = 0;
+    let mut ring_sound_ticks: u16 = 0;
     #[cfg(feature = "arsenal-regression")]
     if !crate::arsenal_regression::setup(&world, &entities, &mut player) {
         psx_rt::tty::println("quake-psx: Rust arsenal regression setup failed");
@@ -566,6 +571,14 @@ pub fn run() -> ! {
         if survival.bonus_flash {
             presentation.screen_blend_mut().pick_up();
         }
+        // `CheckPowerups`: "Quad Damage is wearing off" and its siblings.
+        if survival.warned != 0 {
+            for kind in quake_core::survival::PowerupKind::ALL {
+                if survival.warned & kind.bit() != 0 {
+                    presentation.push_notify(kind.expiry_text());
+                }
+            }
+        }
         // `DeathSound`'s submerged branch also calls `DeathBubbles(20)`. The
         // fixed pool renders the original sprite, one birth per 0.1 seconds.
         if survival.death_bubbles {
@@ -751,6 +764,7 @@ pub fn run() -> ! {
             play_sound_event(&mut audio, sound, audio_tick);
         }
         presentation.tick_centerprint(elapsed_ticks);
+        presentation.tick_notify(elapsed_ticks);
         // Only gameplay frames reach here, so the intermission panel prints
         // time actually spent playing the level.
         presentation.tick_level_clock(elapsed_ticks);
@@ -803,7 +817,13 @@ pub fn run() -> ! {
             let _ = audio.play_one_shot_on(sound, PLAYER_ITEM, audio_tick);
         }
         if let Some(text) = pickup.message {
-            presentation.set_centerprint(CenterprintText::Fixed(text), CENTERPRINT_TICKS);
+            // `sprint` prints to the console notify area; only the rune's
+            // `centerprint` goes to the middle of the screen.
+            if text == "You got the rune!" {
+                presentation.set_centerprint(CenterprintText::Fixed(text), CENTERPRINT_TICKS);
+            } else {
+                presentation.push_notify(text);
+            }
         }
         if let Some((destination, no_intermission, _)) = pending_change_level {
             #[cfg(feature = "start-route-regression")]
@@ -879,12 +899,18 @@ pub fn run() -> ! {
             {
                 // `select` refuses an unowned or empty weapon without
                 // disturbing the current one, matching Quake's impulses.
-                weapon.select(direct);
+                // `W_WeaponFrame` only reads the impulse once
+                // `attack_finished` has passed, so a switch asked for
+                // mid-refire waits for the window to close.
+                weapon.request_select(direct);
             } else if controls.next_weapon_pressed() {
-                weapon.cycle(true);
+                weapon.request_cycle(true);
             } else if controls.previous_weapon_pressed() {
-                weapon.cycle(false);
+                weapon.request_cycle(false);
             }
+        }
+        if let Some(text) = weapon.take_change_message() {
+            presentation.push_notify(text);
         }
         let fire_held = controls.fire_held() && alive;
         #[cfg(feature = "combat-regression")]
@@ -917,6 +943,33 @@ pub fn run() -> ! {
                         quake_core::combat::view_forward(camera.angles),
                     )
                 });
+        show_hostile_ticks = show_hostile_ticks.saturating_sub(elapsed_ticks);
+        quad_sound_ticks = quad_sound_ticks.saturating_sub(elapsed_ticks);
+        if fire_held && weapon.ready_to_fire() && weapon.quad_active() && quad_sound_ticks == 0 {
+            // `SuperDamageSound` from `W_WeaponFrame`: `items/damage3.wav`
+            // on `CHAN_BODY`, at most once a second.
+            quad_sound_ticks = 60;
+            if audio.contains(0x58) {
+                let _ = audio.play_one_shot_on(0x58, PLAYER_BODY, audio_tick);
+            }
+        }
+        if weapon
+            .inventory()
+            .powerups()
+            .active(quake_core::survival::PowerupKind::Ring)
+        {
+            ring_sound_ticks = ring_sound_ticks.saturating_sub(elapsed_ticks);
+            if ring_sound_ticks == 0 {
+                // `CheckPowerups`: `inv3` at half volume, then again after
+                // `random() * 3 + 1` seconds.
+                ring_sound_ticks = 60 + (audio_tick.wrapping_mul(2_654_435_761) >> 24) as u16 % 181;
+                if audio.contains(0x5c) {
+                    let _ = audio.play_one_shot_half_on(0x5c, PLAYER_AUTO, audio_tick);
+                }
+            }
+        } else {
+            ring_sound_ticks = 0;
+        }
         if let Some(attack) = weapon.try_attack_aimed(
             fire_held,
             camera.origin,
@@ -926,6 +979,12 @@ pub fn run() -> ! {
             admission,
             aim_forward,
         ) {
+            // `W_Attack` runs only for a swing or shot that was admitted, and
+            // every one of them keeps the monsters near the player alert for
+            // a full second.
+            if !matches!(attack, quake_core::combat::WeaponAttack::Axe(_)) {
+                show_hostile_ticks = 60;
+            }
             let sound = attack.sound_id();
             let recoil = attack.recoil_pitch();
             if recoil != 0 {
@@ -942,6 +1001,9 @@ pub fn run() -> ! {
                 view_model_muzzle_flash = true;
             }
             match attack {
+                // The click only swings: `ax1` and the arm animation. The
+                // blow follows two swing frames later as `Axe`.
+                quake_core::combat::WeaponAttack::AxeSwing => {}
                 quake_core::combat::WeaponAttack::Axe(attack) => {
                     if let Some(result) = entities.fire_hitscan(&world, attack) {
                         play_response_sound(&mut audio, result.response_sound, audio_tick);
@@ -993,6 +1055,23 @@ pub fn run() -> ! {
                 }
             }
             if let Some(sound) = sound.filter(|sound| audio.contains(*sound)) {
+                let channel = if matches!(
+                    attack,
+                    quake_core::combat::WeaponAttack::Lightning(_)
+                        | quake_core::combat::WeaponAttack::LightningDischarge(_)
+                ) {
+                    // `lstart` is played on `CHAN_AUTO`, beside the
+                    // `CHAN_WEAPON` `lhit`.
+                    PLAYER_AUTO
+                } else {
+                    PLAYER_WEAPON
+                };
+                let _ = audio.play_one_shot_on(sound, channel, audio_tick);
+            }
+            if let Some(sound) = attack
+                .secondary_sound_id()
+                .filter(|sound| audio.contains(*sound))
+            {
                 let _ = audio.play_one_shot_on(sound, PLAYER_WEAPON, audio_tick);
             }
         }
@@ -1086,6 +1165,19 @@ pub fn run() -> ! {
             ),
         );
         player.add_velocity(damage_impulse);
+        // `T_Damage` runs `player_pain` for the player's own rocket, a trap
+        // spike and a lava ball too; only the hazards had a voice.
+        let projectile_hurt = rocket_result.unwrap_or_default().self_damage
+            | grenade_result.unwrap_or_default().damage.self_damage
+            | nail_result.unwrap_or_default().player_damage
+            | fireball_result.unwrap_or_default().player_damage;
+        if projectile_hurt != 0 {
+            if let Some(sound) = weapon.external_pain_voice() {
+                if audio.contains(sound) {
+                    let _ = audio.play_one_shot_on(sound, PLAYER_VOICE, audio_tick);
+                }
+            }
+        }
         // Route regressions prove the authored mechanism chains with
         // deterministic waypoint movement; like the Episode 1 map route they
         // keep the monster think loop out of the probe.
@@ -1111,7 +1203,7 @@ pub fn run() -> ! {
             #[cfg(feature = "monster-code-overlay")]
             let (missiles, monsters) = monster_code.update_monsters(
                 &world, &mut entities, player.origin(), player.velocity(),
-                player_mins, player_maxs, fire_held, &mut weapon, elapsed_ticks,
+                player_mins, player_maxs, show_hostile_ticks != 0, &mut weapon, elapsed_ticks,
             ).unwrap_or_else(|_| {
                 psx_rt::tty::println("quake-psx: monster code admission failed");
                 psx_rt::halt()
@@ -1119,7 +1211,7 @@ pub fn run() -> ! {
             #[cfg(not(feature = "monster-code-overlay"))]
             let monsters = entities.update_monsters(
                 &world, player.origin(), player.velocity(), player_mins,
-                player_maxs, fire_held, &mut weapon, elapsed_ticks,
+                player_maxs, show_hostile_ticks != 0, &mut weapon, elapsed_ticks,
             );
             // `barrel_explode` for any misc_explobox killed this frame, by
             // any weapon or by another explosion.
@@ -1216,6 +1308,10 @@ pub fn run() -> ! {
         let armor = armor_before.saturating_sub(armor_after);
         presentation.screen_blend_mut().take_damage(blood, armor);
         rumble.hurt(blood.saturating_add(armor));
+        if weapon.take_protect_sound() && audio.contains(0x60) {
+            // `T_Damage`: the pentagram turned a hit away.
+            let _ = audio.play_one_shot_on(0x60, PLAYER_ITEM, audio_tick);
+        }
         // `Sbar_DamageTake` runs off the same signal as the screen blend.
         pain_face.tick(elapsed_ticks);
         if blood != 0 || armor != 0 {
@@ -1275,6 +1371,7 @@ pub fn run() -> ! {
         // the eye was still above the surface.
         let view_contents = renderer.view_contents(&world, render_camera);
         presentation.screen_blend_mut().set_contents(view_contents);
+        renderer.set_notify(presentation.notify_lines());
         let _render_stats = renderer.draw_frame(
             &world,
             render_camera,
@@ -1286,7 +1383,14 @@ pub fn run() -> ! {
             presentation.explosion_effects().active(),
             presentation.impact_particles().active(),
             entities.rotating_yaw(),
-            Some(crate::renderer::ViewModelInput {
+            // `R_DrawViewModel` returns early for `IT_INVISIBILITY` and for a
+            // dead player: the ring hides the gun, a corpse holds none.
+            (weapon.inventory().health() > 0
+                && !weapon
+                    .inventory()
+                    .powerups()
+                    .active(quake_core::survival::PowerupKind::Ring))
+            .then_some(crate::renderer::ViewModelInput {
                 weapon: weapon.view(),
                 velocity: player.velocity(),
                 elapsed_ticks,
@@ -1296,7 +1400,8 @@ pub fn run() -> ! {
             Some(
                 quake_core::hud::HudView::from_inventory(weapon.inventory())
                     .with_pain(pain_face.active())
-                    .with_runes(entities.runes()),
+                    .with_runes(entities.runes())
+                    .with_weapon_flash(weapon.weapon_flash_mask()),
             ),
             centerprint_text,
             None,
@@ -1563,6 +1668,9 @@ const PLAYER_BODY: u16 =
 /// `PainSound`, `DeathSound`, the gasp and `CheckPowerups`' warning.
 const PLAYER_VOICE: u16 =
     crate::audio::sound_key(crate::audio::OWNER_PLAYER, crate::audio::CHAN_VOICE);
+/// `CHAN_AUTO` never cuts another sound: `W_Attack`'s `lstart`.
+const PLAYER_AUTO: u16 =
+    crate::audio::sound_key(crate::audio::OWNER_PLAYER, crate::audio::CHAN_AUTO);
 /// `W_Attack`'s firing noise.
 const PLAYER_WEAPON: u16 =
     crate::audio::sound_key(crate::audio::OWNER_PLAYER, crate::audio::CHAN_WEAPON);

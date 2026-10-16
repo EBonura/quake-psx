@@ -26,8 +26,17 @@ struct Centerprint {
     ticks: u16,
 }
 
+/// `con_notifytime`: how long a console line stays on screen, in ticks.
+pub const NOTIFY_TICKS: u16 = 3 * 60;
+/// Lines of the top-left notify block this port keeps. The original shows
+/// four; two is what the shared text packet buffer holds beside the longest
+/// pickup lines.
+pub const NOTIFY_LINES: usize = 2;
+
 /// Presentation state that must be recreated for every gameplay session.
 pub struct LevelPresentation {
+    /// `sprint` lines in the console's notify area, oldest first.
+    notify: [Option<(&'static str, u16)>; NOTIFY_LINES],
     generation: u32,
     centerprint: Option<Centerprint>,
     screen_blend: ScreenBlend,
@@ -41,6 +50,7 @@ impl LevelPresentation {
     #[optimize(size)]
     pub const fn new() -> Self {
         Self {
+            notify: [None; NOTIFY_LINES],
             generation: 0,
             centerprint: None,
             screen_blend: ScreenBlend::new(),
@@ -62,6 +72,7 @@ impl LevelPresentation {
             self.generation = 1;
         }
         self.centerprint = None;
+        self.notify = [None; NOTIFY_LINES];
         self.screen_blend = ScreenBlend::new();
         self.explosion_effects.enter_map(self.generation);
         self.impact_particles.enter_map(self.generation);
@@ -92,6 +103,45 @@ impl LevelPresentation {
     #[optimize(size)]
     pub fn set_centerprint(&mut self, text: CenterprintText, ticks: u16) {
         self.centerprint = Some(Centerprint { text, ticks });
+    }
+
+    /// `sprint`: add a line to the notify area, pushing the oldest off.
+    #[optimize(size)]
+    pub fn push_notify(&mut self, text: &'static str) {
+        let mut index = 0;
+        while index + 1 < NOTIFY_LINES {
+            self.notify[index] = self.notify[index + 1];
+            index += 1;
+        }
+        self.notify[NOTIFY_LINES - 1] = Some((text, NOTIFY_TICKS));
+    }
+
+    /// Age the notify lines; a line older than three seconds is dropped.
+    #[optimize(size)]
+    pub fn tick_notify(&mut self, ticks: u16) {
+        for line in &mut self.notify {
+            if let Some((_, left)) = line {
+                *left = left.saturating_sub(ticks);
+                if *left == 0 {
+                    *line = None;
+                }
+            }
+        }
+    }
+
+    /// The live notify lines, oldest first, with expired ones skipped as
+    /// `Con_DrawNotify` does.
+    #[optimize(size)]
+    pub fn notify_lines(&self) -> [Option<&'static str>; NOTIFY_LINES] {
+        let mut out = [None; NOTIFY_LINES];
+        let mut next = 0;
+        for line in self.notify {
+            if let Some((text, _)) = line {
+                out[next] = Some(text);
+                next += 1;
+            }
+        }
+        out
     }
 
     /// Advance and expire the center-screen message.
@@ -183,6 +233,33 @@ impl Default for LevelPresentation {
 mod tests {
     use super::*;
     use quake_formats::Vec3I32;
+
+    #[test]
+    fn notify_lines_stack_expire_after_three_seconds_and_compact() {
+        let mut presentation = LevelPresentation::new();
+        presentation.push_notify("You got the shells");
+        presentation.tick_notify(100);
+        presentation.push_notify("You got the nails");
+        assert_eq!(
+            presentation.notify_lines(),
+            [Some("You got the shells"), Some("You got the nails")]
+        );
+        // The first expires and the survivor closes up, as `Con_DrawNotify`.
+        presentation.tick_notify(NOTIFY_TICKS - 100);
+        assert_eq!(presentation.notify_lines(), [Some("You got the nails"), None]);
+        // A third line pushes the oldest off the top of a full block.
+        presentation.push_notify("You receive 25 health");
+        presentation.push_notify("You got the cells");
+        assert_eq!(
+            presentation.notify_lines(),
+            [Some("You receive 25 health"), Some("You got the cells")]
+        );
+        presentation.tick_notify(NOTIFY_TICKS);
+        assert_eq!(presentation.notify_lines(), [None, None]);
+        presentation.push_notify("stale");
+        presentation.reset();
+        assert_eq!(presentation.notify_lines(), [None, None]);
+    }
 
     #[optimize(size)]
     #[test]

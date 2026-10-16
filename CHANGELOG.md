@@ -9,6 +9,25 @@
   keeps its size optimisation, the death bubbles use integers instead of
   linking soft-float, and the loading error line no longer uses `alloc::format!`.
   `cargo quake-build ram` prints the whole RAM breakdown; see `docs/RAM.md`.
+- Weapons now follow the single player rules: the best-weapon order and ammo
+  thresholds (no auto-equip of the launchers, two rounds to select the double
+  barrel and super nailgun), the best-weapon upgrade on an ammo box, weapon
+  changes held until `attack_finished`, the axe landing two frames after the
+  click, the double barrel keeping its model on its last shell, the Thunderbolt's
+  `lstart`/`lhit` timing and single effective damage ray, impulse 9's loadout,
+  and a god-mode player still burning armour. Radius damage is only halved for
+  the attacker (barrels and ogre grenades no longer halved against the player),
+  tests five `CanDamage` rays, and the player voices pain on their own blasts.
+- Monsters: melee is decided at 120 units eye to eye, the ogre grenades anything
+  it sees inside 1000 units on a one to three second reload, zombies roll their
+  throw by range, scrags strafe, reload from their last attack frame and cross
+  their spikes, knights sidestep during the running attack, a damage wake is a
+  full `FoundTarget` (sight voice, pack alert), dogs, fiends, ogres and
+  shamblers turn to face before attacking, an ally in the line spoils a shot,
+  nightmare soldiers fire a second volley, and a killed scrag falls.
+- Pickup, powerup and weapon-change text prints in the top-left notify area
+  instead of the screen centre, and the weapon strip flashes a new gun. The
+  ring hides the gun. `LIMITS.md` lists the differences that stay on purpose.
 - Added the game's own music: eight dark-ambient loops on the disc as XA-ADPCM,
   played sporadically (a random loop after 30 to 90 s of silence, fading in and
   out, then 60 to 180 s of silence). The Options TRACK row is gone; MUSIC and
