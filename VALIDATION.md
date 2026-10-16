@@ -38,6 +38,26 @@ These tests cover checked file parsing, BSP conversion, collision, movement,
 movers, combat, monsters, loading, menus, input and fixed-capacity runtime
 state.
 
+## Visual probes
+
+Diagnostic guest features, never in a shipping image. `probe-clear-magenta`
+clears the frame to magenta, so any pixel no polygon covered (a crack, a culled
+corner) is easy to count. `probe-pose-log` writes the camera to `QUAKE_POSE`
+(watch it with `frontend launch --route-watch-u32`). `probe-poses` rebuilds a
+view from a script in `QUAKE_PSX_PROBE_POSES` (`x y z pitch yaw roll hold
+[mN=x:y:z] [tint=N] [bias=N] [nocull] [vm=MODEL:FRAME]`, origin in whole units,
+angles in 4096ths of a turn) and has switches for the behaviours the playtest
+fixes replaced (`QUAKE_PSX_PROBE_OLD_CULL`, `QUAKE_PSX_PROBE_BLEND_NAILGUNS`,
+`QUAKE_PSX_PROBE_BIAS`). Build one with
+
+```sh
+QUAKE_PSX_PROBE_FEATURES=probe-poses,probe-clear-magenta \
+QUAKE_PSX_PROBE_POSES='...' cargo quake-build probe-disc
+```
+
+and run it with `--guest-frames`, `--route-screenshot-dir` and a
+`--route-watch-u32` on `QUAKE_VISUAL_PARITY_PROBE + 8` (the frame counter).
+
 ## MIPS liquid load-delay regression
 
 Host tests use the scalar implementation, so also execute the actual MIPS inline

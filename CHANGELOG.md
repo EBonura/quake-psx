@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The 2026-10-15 playtest: a lift car or door sorts four ordering-table slots
+  closer than the world faces around it, so a wall piece with a nearer average
+  depth no longer overdraws half the car; a tall brush model (the E1M1 lift) is
+  drawn when its box touches a visible leaf even if the leaf at its centre is
+  not one; the cull frustum is built from the view matrix the GTE draws with,
+  because the strafe roll turned the other way in the textbook formulas and a
+  rolled view lost a corner of the screen (a hole showing the background; the
+  E1M1 route went from 58 frames with background pixels to 14, 25 frames with
+  a hole of over 100 pixels to 1); the nailguns are shown a frame at a time so
+  the muzzle flash no longer slides between the two muzzles. The E1M1 route's
+  fixed-step work is unchanged (+0.2 percent) and `heap_free` is 13,140.
+- `probe-disc`, with the `probe-poses`, `probe-clear-magenta` and
+  `probe-pose-log` features, rebuilds a playtest view from its camera pose and
+  finds holes and cracks by clearing the frame to magenta (VALIDATION.md).
 - The shipping heap has 29,540 bytes free (the `ship-boot` floor is 8,192; the
   checkpoint had 9,912). The fixed pools are sized to the cooked Episode 1
   maxima the builder already proves (they carried 74 spare render entities, a
