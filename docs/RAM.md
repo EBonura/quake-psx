@@ -132,8 +132,7 @@ reserve.
   33,792 words per frame (`map-regress`), and past
   `COARSE_BUDGET_REMAINING_WORDS` the world switches to coarser tessellation,
   so a smaller arena trades visible quality for bytes. Left alone.
-- **PGO**: Quake has no profile (the SDK pipeline, `psoxide-pgo`, exists). See
-  the PGO section.
+- **PGO**: no profile helps (see the PGO section).
 - **UI packet vectors** (menu 20,416, HUD 8,448): already trimmed by hand to
   measured maxima with 4 spare packets; sharing them with the GPU arena would
   need a lifetime change in the renderer.
@@ -142,6 +141,36 @@ reserve.
 - **64-bit divides** (`u64_div_rem` and two wrappers, 1.4 KB) come from
   `audio::spatial_volumes`, `apply_target_actions` and `load_level`; a 32-bit
   rewrite of the pan math is exact but touches three callers.
+
+## PGO
+
+Quake ships no sample profile. The SDK pipeline (`psoxide-pgo`: twin ELF with
+`-Cdebuginfo=1 -Zdebug-info-for-profiling`, `--pc-sample-log` replay, convert,
+`-Zprofile-sample-use`) was run by hand through `QUAKE_PSX_EXTRA_RUSTFLAGS`
+against the tip, with the control built under the same flags (the profiling
+flags alone grow the monster overlay package by 564 bytes, past its 15,360 byte
+half, so every run below used a 33,280 byte window; that change is not in the
+branch). Chain bench = `e1m1-chain-bench`; text is the shipping compile.
+
+| profile | text | vs control | chain fps | chain work |
+| --- | ---: | ---: | ---: | ---: |
+| none (control) | 504,180 | | 31.252 | 2,100,512,217 |
+| E1M1 monster route, default | 498,932 | -5,248 | not built | the overlay package grows to 19.9 KB and no longer fits its window |
+| same, `-profile-sample-accurate` | 441,012 | -63,168 | 28.865 | +5.8% |
+| same, accurate + hot-callsite 500 | 441,012 | -63,168 | 28.757 | +6.1% |
+| 4 routes merged (monster route, chain, arsenal, combat), accurate | 522,108 | +17,928 | 28.194 | +9.4% |
+| the same pruned to 99% of gameplay samples (102 functions), accurate | 504,632 | +452 | 28.289 | +20.7% |
+
+No variant is better than the control on both axes. The single-route profile
+shows how much code the route never runs (63 KB, 12.5 percent of `.text`), but
+the code the route does not run is not cold in the game: the chain route
+reaches code the monster route did not. Widening the training set made the
+image bigger (profile-guided inlining of the hot callees) and slower, and
+pruning the merged profile made the work worse. This matches the SDK's own note
+that PGO is a per-game `choose` decision with `off` always a candidate. Not
+adopted. If it is revisited, it needs the SDK's `choose` ranking on several
+tapes, a builder step that builds the twin and rebinds a committed portable
+profile, and a way to keep the overlay images out of the profile.
 
 ## What the pending branches need
 
