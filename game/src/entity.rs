@@ -7097,26 +7097,6 @@ impl EntityScene {
         Some((missile.origin, kind, step_units))
     }
 
-    /// Where `EF_ROCKET`'s light goes: the first rocket in flight, else a lava
-    /// ball (`lavaball.mdl` carries the flag too). Only one light exists.
-    #[inline(never)]
-    #[optimize(size)]
-    pub fn flight_glow_origin(&self) -> Option<Vec3I32> {
-        for slot in &self.rockets {
-            if let Some(rocket) = slot {
-                return Some(rocket.origin);
-            }
-        }
-        for slot in &self.missiles {
-            if let Some(missile) = slot {
-                if matches!(missile.kind, MonsterMissileKind::LavaBall) {
-                    return Some(missile.origin);
-                }
-            }
-        }
-        None
-    }
-
     /// `CL_RelinkEntities`' model-flag trails, in one pass over the live
     /// projectile pools. The original walks each frame's segment in 3-unit
     /// steps and keeps every particle for two seconds; the port steps far
@@ -7126,15 +7106,24 @@ impl EntityScene {
     /// The anchors live in their own array rather than in the projectiles so
     /// that the three big update loops, which copy a projectile in and out of
     /// its `Option` slot many times over, do not each grow with them.
+    ///
+    /// Returns where `EF_ROCKET`'s light goes: the first projectile whose trail
+    /// is fire, which is a rocket or a lava ball (`lavaball.mdl` carries the
+    /// flag too). Only one light exists.
     #[inline(never)]
-    pub fn emit_projectile_trails(&mut self, particles: &mut ImpactParticles) {
+    pub fn emit_projectile_trails(&mut self, particles: &mut ImpactParticles) -> Option<Vec3I32> {
+        let mut glow = None;
         for slot in 0..self.trail_anchors.len() {
             let Some((origin, kind, step_units)) = self.trail_source(slot) else {
                 continue;
             };
+            if glow.is_none() && kind == ParticleKind::Fire {
+                glow = Some(origin);
+            }
             self.trail_anchors[slot] =
                 particles.spawn_trail(self.trail_anchors[slot], origin, kind, step_units);
         }
+        glow
     }
 
     /// Advance the shared monster missile pool. Ballistic kinds fall and
