@@ -41,6 +41,21 @@ impl LightningEvent {
     }
 }
 
+/// `v * (100 << 12) / length` truncated toward zero, for `|v| <= length` (a
+/// component of a vector never exceeds its floored length). The quotient is at
+/// most `100 << 12`, so the SDK's 64 by 32 divide takes it exactly with no
+/// 64-bit helper and no second copy of `mul_div_i32`.
+fn shorten_q12(v: i32, length: u32) -> i32 {
+    debug_assert!(v.unsigned_abs() <= length);
+    let magnitude = u64::from(v.unsigned_abs()) * (100 << 12);
+    let quotient = psx_math::int32::div_u64_by_u32((magnitude >> 32) as u32, magnitude as u32, length) as i32;
+    if v < 0 {
+        -quotient
+    } else {
+        quotient
+    }
+}
+
 /// The visible discharge uses the electrodes' actual translated bounds.
 pub fn beam_endpoints(bounds: [[Vec3I32; 2]; 2]) -> [Vec3I32; 2] {
     let centre = |b: [Vec3I32; 2]| Vec3I32 {
@@ -53,13 +68,7 @@ pub fn beam_endpoints(bounds: [[Vec3I32; 2]; 2]) -> [Vec3I32; 2] {
     let delta = [(p2.x - p1.x) >> 12, (p2.y - p1.y) >> 12, (p2.z - p1.z) >> 12];
     let length = psx_math::int32::isqrt_u64(delta.iter().map(|&v| (i64::from(v) * i64::from(v)) as u64).sum());
     if length != 0 {
-        // `mul_div_i32` is `(v * 100 << 12 / length) as i32` through the wide
-        // product, with no 64-bit divide helper in the image.
-        // The scale goes through `black_box` so the call reuses the one
-        // `mul_div_i32` already in the image instead of cloning a copy for the
-        // constant (a 1.1 KB clone otherwise).
-        let scale = core::hint::black_box(100 << 12);
-        let shorten = |v| psx_math::int32::mul_div_i32(v, scale, length as i32);
+        let shorten = |v| shorten_q12(v, length);
         p2.x -= shorten(delta[0]); p2.y -= shorten(delta[1]); p2.z -= shorten(delta[2]);
     }
     [p1, p2]
@@ -121,7 +130,7 @@ mod tests {
             }
             for v in delta {
                 let wide = (i64::from(v) * (100 << 12) / i64::from(length)) as i32;
-                assert_eq!(psx_math::int32::mul_div_i32(v, 100 << 12, length as i32), wide);
+                assert_eq!(shorten_q12(v, length), wide);
             }
         }
     }
