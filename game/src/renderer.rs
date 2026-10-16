@@ -3868,8 +3868,8 @@ impl Renderer {
                 break;
             };
             // `button_wait` sets `frame = 1`, which selects the `+a` textures
-            // of a pressed button.
-            let texture = if entity.frame != 0 && texture.animation_alt >= 0 {
+            // of a pressed button (carried in the render entity's `skin`).
+            let texture = if entity.skin != 0 && texture.animation_alt >= 0 {
                 self.active_textures
                     .get(texture.animation_alt as usize)
                     .copied()

@@ -7883,9 +7883,11 @@ impl EntityScene {
         let origin = self.movers[mover_index].policy.transform().origin;
         let entity = &mut self.entities[render_index];
         // `button_wait`: `self.frame = 1` while the button waits at the top
-        // (the pressed `+a` textures), `button_return` puts it back to 0.
+        // (the pressed `+a` textures), `button_return` puts it back to 0. The
+        // render entity's own `frame` is stepped by the shared animation pass,
+        // so a brush model keeps the flag in `skin`, which only alias models read.
         if self.movers[mover_index].source.class_name == 0x0b {
-            entity.frame = u16::from(self.movers[mover_index].policy.state() == QuakeMoverState::Top);
+            entity.skin = u8::from(self.movers[mover_index].policy.state() == QuakeMoverState::Top);
         }
         if entity.origin == origin {
             return;
