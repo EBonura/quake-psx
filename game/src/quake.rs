@@ -502,26 +502,28 @@ pub fn run() -> ! {
             feature = "monsterjump-regression",
             feature = "e1m1-spawn-regression"
         )))]
-        let player_alive = weapon.inventory().health() > 0;
-        let player_frame = if player_alive && menu.view().noclip {
-            player.update_noclip(controls, elapsed_ticks)
-        } else {
-            // A corpse runs the same motor with no input, so a body killed in
-            // the air or on a slope settles on the floor.
-            let frame = player.update(
-                &world,
-                &entities,
-                if player_alive {
-                    controls
-                } else {
-                    crate::input::InputFrame::default()
-                },
-                elapsed_ticks,
-            );
-            if player_alive {
-                frame
+        let player_frame = {
+            let player_alive = weapon.inventory().health() > 0;
+            if player_alive && menu.view().noclip {
+                player.update_noclip(controls, elapsed_ticks)
             } else {
-                crate::player::PlayerFrame::default()
+                // A corpse runs the same motor with no input, so a body killed
+                // in the air or on a slope settles on the floor.
+                let frame = player.update(
+                    &world,
+                    &entities,
+                    if player_alive {
+                        controls
+                    } else {
+                        crate::input::InputFrame::default()
+                    },
+                    elapsed_ticks,
+                );
+                if player_alive {
+                    frame
+                } else {
+                    crate::player::PlayerFrame::default()
+                }
             }
         };
         // Deterministic route/audio probes park the player in a trigger or on
