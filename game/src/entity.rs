@@ -3758,6 +3758,8 @@ impl EntityScene {
                     continue;
                 }
             } else if trigger.cooldown != 0
+                // A dead player is `SOLID_NOT`: `SV_LinkEdict` never touches.
+                || !player_alive
                 || !aabb_overlaps(player_mins, player_maxs, trigger.mins, trigger.maxs)
             {
                 continue;
