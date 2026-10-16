@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Inventory pass 2 (parts 04 and 05 of the 2026-10-15 inventory, triaged row by
+  row): the three E1M1 sixteen-unit rises with leaning risers no longer stall a
+  standing start (routesim `ramps` at 1 to 4 ticks a step: 0 blocked on all nine
+  maps); Chthon's lava balls fly from their spawn point at the player and lead
+  him on Hard and Nightmare, smoke and glow like rockets; light style 2 is
+  id's 51-step pulse (E1M5, E1M6); the `+0` texture chains animate (the E1M1
+  slipgate and window, every switch) and a pressed button shows its `+a`
+  textures; sound pans against the listener's right; the end-of-level panel
+  waits for a button; named lifts cycle again after their first ride; a secret
+  door's message prints; trains voice `train2` only at waiting corners; a dead
+  player touches no trigger; monsters flash the room when they fire; Start's skill
+  portals set the Options row; the classic status bar's ammo counts sit at id's x.
+
 - The 2026-10-15 playtest: a lift car or door sorts four ordering-table slots
   closer than the world faces around it, so a wall piece with a nearer average
   depth no longer overdraws half the car; a tall brush model (the E1M1 lift) is
