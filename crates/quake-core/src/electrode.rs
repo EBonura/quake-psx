@@ -55,7 +55,11 @@ pub fn beam_endpoints(bounds: [[Vec3I32; 2]; 2]) -> [Vec3I32; 2] {
     if length != 0 {
         // `mul_div_i32` is `(v * 100 << 12 / length) as i32` through the wide
         // product, with no 64-bit divide helper in the image.
-        let shorten = |v| psx_math::int32::mul_div_i32(v, 100 << 12, length as i32);
+        // The scale goes through `black_box` so the call reuses the one
+        // `mul_div_i32` already in the image instead of cloning a copy for the
+        // constant (a 1.1 KB clone otherwise).
+        let scale = core::hint::black_box(100 << 12);
+        let shorten = |v| psx_math::int32::mul_div_i32(v, scale, length as i32);
         p2.x -= shorten(delta[0]); p2.y -= shorten(delta[1]); p2.z -= shorten(delta[2]);
     }
     [p1, p2]
