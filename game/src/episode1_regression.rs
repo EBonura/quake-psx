@@ -799,7 +799,11 @@ pub fn observe(
             // frame his death first showed.
             write_volatile(addr_of_mut!((*probe).monster_pain), boss.shocks as u32);
             if boss.dead {
-                state |= BOSS_DEAD;
+                // A dead Chthon needs no more shocks, so the lap in progress
+                // is done once the route is back on the button. Standing on
+                // the button already shocks him every second the electrodes
+                // stay up, so he can die before the third lap.
+                state |= BOSS_DEAD | LAP_SHOCK;
                 if read_volatile(addr_of_mut!((*probe).monster_death)) == 0 {
                     write_volatile(
                         addr_of_mut!((*probe).monster_death),
