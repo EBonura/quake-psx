@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Inventory pass 3: the player's pain voice rolls over pain1, pain2, pain3 and pain6
+  (pain2 is a global effect now, 38 global sounds, 102 of 104 slots on the worst map); every
+  centerprint line is centred on its own and starts 35 percent down (or at 48 for
+  five lines or more); the pentagram shows 666 beside the disc; the pentagram and the quad
+  light the player; the intermission looks through one of the map's cameras; a
+  teleport blocks backward walking for 0.7 s; wizard spikes puff on walls and leave a
+  tracer; live one-shots follow the listener. `episode1-regress` now raises both
+  electrodes (three laps of north button, south button, lightning button) and
+  passes. `heap_free` is 9,320 (floor 8,192).
+
 - The music is in the repository, already encoded: `assets/music` holds
   `MUSIC1.XA` and `MUSIC2.XA` (53 MB) with their manifest, digests and credits,
   and every disc build presses them, so a fresh clone and the release workflow

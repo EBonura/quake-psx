@@ -167,7 +167,7 @@ cargo quake-build ambient-regress --psoxide ../PSoXide-quake
 | `systems-regress` | Targets, secrets, traps, movers and map-specific mechanisms |
 | `arsenal-regress` | Weapon pickups, inventory carry-over, projectiles and firing |
 | `survival-regress` | Hazards, drowning, death, respawn, artifacts and megahealth |
-| `episode1-regress` | The currently scripted multi-map episode route |
+| `episode1-regress` | E1M7 from the sigil to the exit and Start: the arena walk, the lift, then laps of the ring that press both electrode buttons (x=352) before the `event_lightning` button until Chthon dies, the lava bridge, the shaft and the rune hand-over |
 | `audio-regress` | Weapon playback, SPU activity and silence after completion |
 | `ambient-regress` | Continuous positional ambient playback |
 
