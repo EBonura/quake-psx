@@ -223,6 +223,11 @@ mod card {
     const SLOTS: [Slot; 2] = [Slot::One, Slot::Two];
 
     /// Write `bytes` to one card, formatting it first if it is blank.
+    ///
+    /// The tokenless constructor is the one the rest of the game's controller
+    /// code uses (`psx_pad::poll_port1`); nothing else touches SIO0 while a
+    /// menu action runs.
+    #[allow(deprecated)]
     #[inline(never)]
     #[optimize(size)]
     fn write_to(port: Slot, bytes: &[u8], file: &str) -> Outcome {
@@ -242,6 +247,7 @@ mod card {
     }
 
     /// Read the save from one card into `staging`.
+    #[allow(deprecated)]
     #[inline(never)]
     #[optimize(size)]
     fn read_from(port: Slot, staging: &mut [u8], file: &str) -> Result<usize, Outcome> {
