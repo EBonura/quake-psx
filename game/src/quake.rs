@@ -541,12 +541,17 @@ pub fn run() -> ! {
         #[cfg(feature = "e1m1-save-regression")]
         {
             if let Some(round) = crate::save_probe::take_perturb() {
+                // First round: stand at the first door, which starts to open.
                 let at = player.origin();
-                player.teleport(quake_formats::Vec3I32 {
-                    x: at.x + (192 << 12) * i32::from(round),
-                    y: at.y,
-                    z: at.z,
-                });
+                let spot = match entities.probe_door_spot() {
+                    Some(spot) if round == 1 => spot,
+                    _ => quake_formats::Vec3I32 {
+                        x: at.x + (192 << 12),
+                        y: at.y,
+                        z: at.z,
+                    },
+                };
+                player.teleport(spot);
                 weapon.impulse_nine();
                 weapon.take_damage(30 * i16::from(round));
             }

@@ -25,7 +25,9 @@ use crate::player::Player;
 /// card from an earlier boot restores them; a blank card answers that the slot
 /// is empty and the run goes on), a save to slot 1, a perturbation, a save to
 /// slot 2, a second perturbation, loads of slots 1, 2 and 3 (the last is
-/// empty), then one level start per map to log each map's save size.
+/// empty), then one level start per map to log each map's save size, with a
+/// save into slot 3 on E1M3 (the largest save) on the way, and a last load of
+/// that slot from E1M8: a save from another map, through a level change.
 const BOOT_LOAD_AT_TICK: u32 = 60;
 const BOOT_LOAD_FIRST_AT_TICK: u32 = 90;
 const SAVE_FIRST_AT_TICK: u32 = 300;
@@ -47,6 +49,7 @@ enum Stage {
     PerturbSecond,
     Load(u8),
     Survey(u8),
+    CrossLoad,
     Done,
 }
 
@@ -55,6 +58,9 @@ static mut STAGE: Stage = Stage::BootLoadSecond;
 /// The load in flight is a boot one: it logs under its own phase names.
 static mut BOOT_LOAD_ISSUED: bool = false;
 static mut PERTURB_DUE: u8 = 0;
+static mut THIRD_SAVED: bool = false;
+/// The load in flight is the last one, from another map.
+static mut CROSS_LOAD_ISSUED: bool = false;
 
 /// The menu press due this frame, if any.
 pub fn scripted(elapsed_ticks: u16) -> Option<MenuAction> {
@@ -101,12 +107,24 @@ pub fn scripted(elapsed_ticks: u16) -> Option<MenuAction> {
             Stage::Survey(map)
                 if TICK >= SURVEY_AT_TICK + SURVEY_STEP_TICKS * u32::from(map) =>
             {
+                // The map before E1M4 is E1M3: save its game first.
+                if map == 4 && !THIRD_SAVED {
+                    THIRD_SAVED = true;
+                    return Some(MenuAction::SaveGame(2));
+                }
                 STAGE = if map + 1 < SURVEY_MAPS {
                     Stage::Survey(map + 1)
                 } else {
-                    Stage::Done
+                    Stage::CrossLoad
                 };
                 Some(MenuAction::StartLevel(map))
+            }
+            Stage::CrossLoad
+                if TICK >= SURVEY_AT_TICK + SURVEY_STEP_TICKS * u32::from(SURVEY_MAPS) =>
+            {
+                STAGE = Stage::Done;
+                CROSS_LOAD_ISSUED = true;
+                Some(MenuAction::LoadGame(2))
             }
             _ => None,
         }
@@ -147,6 +165,8 @@ const BEFORE_SAVE: [&str; 3] = ["before-save-1", "before-save-2", "before-save-3
 const AFTER_SAVE: [&str; 3] = ["after-save-1", "after-save-2", "after-save-3"];
 const BEFORE_LOAD: [&str; 3] = ["before-load-1", "before-load-2", "before-load-3"];
 const AFTER_LOAD: [&str; 3] = ["after-load-1", "after-load-2", "after-load-3"];
+const BEFORE_CROSS_LOAD: &str = "before-cross-load-3";
+const AFTER_CROSS_LOAD: &str = "after-cross-load-3";
 const BEFORE_BOOT_LOAD: [&str; 3] = [
     "before-boot-load-1",
     "before-boot-load-2",
@@ -163,6 +183,10 @@ const AFTER_BOOT_LOAD: [&str; 3] = [
 pub fn phase_name(action: MenuAction, before: bool) -> &'static str {
     // SAFETY: single guest thread.
     let boot = unsafe { BOOT_LOAD_ISSUED };
+    // SAFETY: single guest thread.
+    if matches!(action, MenuAction::LoadGame(_)) && unsafe { CROSS_LOAD_ISSUED } {
+        return if before { BEFORE_CROSS_LOAD } else { AFTER_CROSS_LOAD };
+    }
     let table = |slot: u8, names: &[&'static str; 3]| names[usize::from(slot).min(2)];
     match (action, before, boot) {
         (MenuAction::SaveGame(slot), true, _) => table(slot, &BEFORE_SAVE),
@@ -210,7 +234,7 @@ pub fn fingerprint(
     let inventory = weapon.inventory();
     let line = format!(
         "SV {phase} t={} len={len} need={need} fp={hash:08x} pos={},{},{} hp={} armor={} keys={} wpn={:02x} \
-         ammo={},{},{},{} map={:?} outcome={outcome}",
+         ammo={},{},{},{} moved={} map={:?} outcome={outcome}",
         phase_tick(),
         origin.x,
         origin.y,
@@ -223,6 +247,7 @@ pub fn fingerprint(
         inventory.ammo(AmmoKind::Nails),
         inventory.ammo(AmmoKind::Rockets),
         inventory.ammo(AmmoKind::Cells),
+        entities.probe_moved_movers(),
         world.map(),
     );
     psx_telemetry::emit::debug_log(&line);

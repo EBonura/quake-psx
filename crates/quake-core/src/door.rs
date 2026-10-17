@@ -187,6 +187,11 @@ impl DoorField {
         self.group
     }
 
+    /// The box a toucher must overlap, for the save regression's probe.
+    pub const fn bounds(&self) -> (Vec3I32, Vec3I32) {
+        (self.mins, self.maxs)
+    }
+
     pub fn tick(&mut self, ticks: u16) {
         self.retry_ticks = self.retry_ticks.saturating_sub(ticks.min(255) as u8);
     }

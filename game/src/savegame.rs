@@ -40,6 +40,15 @@ const TITLE: &str = "QUAKE";
 /// LARGE rather than writing a short file.
 pub const STAGING_BYTES: usize = 5 * 1024;
 
+/// A slot number as an index into the three-entry tables.
+const fn slot_index(slot: u8) -> usize {
+    if slot as usize >= FILES.len() {
+        FILES.len() - 1
+    } else {
+        slot as usize
+    }
+}
+
 /// The answer shown under the pause menu.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Outcome {
@@ -60,10 +69,10 @@ impl Outcome {
     pub const fn notice(self, slot: u8) -> &'static str {
         match self {
             Self::Saved => ["GAME SAVED IN SLOT 1", "GAME SAVED IN SLOT 2", "GAME SAVED IN SLOT 3"]
-                [slot as usize % FILES.len()],
+                [slot_index(slot)],
             Self::NoCard => "NO MEMORY CARD",
             Self::NoSave => ["SLOT 1 IS EMPTY", "SLOT 2 IS EMPTY", "SLOT 3 IS EMPTY"]
-                [slot as usize % FILES.len()],
+                [slot_index(slot)],
             Self::Failed => "CARD ERROR",
             Self::Refused => "SAVE NOT USABLE",
             Self::TooLarge => "SAVE TOO LARGE",
@@ -208,7 +217,7 @@ pub fn quake_load_restore(
 
 #[cfg(target_arch = "mips")]
 mod card {
-    use super::{Outcome, FILES, TITLE};
+    use super::{slot_index, Outcome, FILES, TITLE};
     use psx_mc::{Card, HardwareCard, Slot};
 
     const SLOTS: [Slot; 2] = [Slot::One, Slot::Two];
@@ -253,7 +262,7 @@ mod card {
         link_section = ".overlay.quake_card.text"
     )]
     pub fn quake_card_write(bytes: &[u8], slot: u8) -> Outcome {
-        let file = FILES[slot as usize % FILES.len()];
+        let file = FILES[slot_index(slot)];
         let mut result = Outcome::NoCard;
         for port in SLOTS {
             match write_to(port, bytes, file) {
@@ -274,7 +283,7 @@ mod card {
         link_section = ".overlay.quake_card.text"
     )]
     pub fn quake_card_read(staging: &mut [u8], slot: u8) -> Result<usize, Outcome> {
-        let file = FILES[slot as usize % FILES.len()];
+        let file = FILES[slot_index(slot)];
         let mut result = Outcome::NoCard;
         for port in SLOTS {
             match read_from(port, staging, file) {

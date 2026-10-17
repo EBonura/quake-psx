@@ -7065,9 +7065,10 @@ const STAGING_BYTES: usize = 5 * 1024;
 ///   answer that slots 2 and 1 are empty), save to slot 1, move, hurt and arm
 ///   the player, save to slot 2, perturb again, then load slot 1 (must equal
 ///   the state saved there), slot 2 (likewise) and slot 3 (empty: the game
-///   must be left as it was), and finally start every map to log each map's
-///   save size. Both runs must agree on every figure and on every byte of the
-///   card.
+///   must be left as it was), start every map to log each map's save size,
+///   save the E1M3 game (the largest) into slot 3 on the way, and finally load
+///   slot 3 from E1M8: a save from another map must come back whole. Both runs
+///   must agree on every figure and on every byte of the card.
 /// * `run-c` boots with `run-a`'s card: the boot-time loads restore slot 2
 ///   then slot 1, and each fingerprint, position, health and inventory must
 ///   equal what `run-a` saved there.
@@ -7082,7 +7083,7 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
     let guest_frames = env::var("QUAKE_PSX_SAVE_REGRESSION_FRAMES")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(3_200u64);
+        .unwrap_or(4_800u64);
     let cue = regression.join("quake-psx.cue");
     let boot = |name: &str, card: &Path, frames: u64| -> Result<Vec<SaveLine>> {
         let dir = capture.join(name);
@@ -7137,6 +7138,8 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
             ("after-save-1", "GAME SAVED IN SLOT 1"),
             ("after-save-2", "GAME SAVED IN SLOT 2"),
             ("after-load-3", "SLOT 3 IS EMPTY"),
+            ("after-save-3", "GAME SAVED IN SLOT 3"),
+            ("after-cross-load-3", "loaded"),
         ] {
             let line = phase(run, lines, name)?;
             if line.outcome != expected {
@@ -7173,6 +7176,17 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
             "empty slot 3",
             phase(run, lines, "before-load-3")?,
             phase(run, lines, "after-load-3")?,
+        )?;
+        // The game saved on E1M3 comes back from E1M8 to the byte.
+        let saved_third = phase(run, lines, "before-save-3")?;
+        if !saved_third.state.ends_with("map=E1M3") || saved_third.len < 3_000 {
+            return Err(format!("run: the third save is not E1M3's: {saved_third:?}").replace("run:", run).into());
+        }
+        same_game(
+            run,
+            "cross-map load of slot 3",
+            saved_third,
+            phase(run, lines, "after-cross-load-3")?,
         )?;
         let card_bytes = fs::metadata(&card).map(|meta| meta.len()).unwrap_or(0);
         if card_bytes != 128 * 1024 {

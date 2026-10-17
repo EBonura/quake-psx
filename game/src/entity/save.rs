@@ -294,3 +294,35 @@ impl EntityScene {
         self.runes = runes;
     }
 }
+
+/// What the save regression's idle probe needs from the scene to put a
+/// mechanism in motion between its saves.
+#[cfg(feature = "e1m1-save-regression")]
+impl EntityScene {
+    /// A spot beside the first touch-opened door's thin face, inside its field.
+    pub fn probe_door_spot(&self) -> Option<Vec3I32> {
+        let (mins, maxs) = self.door_fields.first()?.bounds();
+        let width = |low: i32, high: i32| high - low;
+        let (centre_x, centre_y) = ((mins.x + maxs.x) / 2, (mins.y + maxs.y) / 2);
+        // The thin axis is the one the field extends least along; stand a
+        // quarter of its width off the middle, in the open beside the door.
+        let (x, y) = if width(mins.x, maxs.x) < width(mins.y, maxs.y) {
+            (centre_x + width(mins.x, maxs.x) / 4, centre_y)
+        } else {
+            (centre_x, centre_y + width(mins.y, maxs.y) / 4)
+        };
+        Some(Vec3I32 {
+            x,
+            y,
+            z: (mins.z + maxs.z) / 2,
+        })
+    }
+
+    /// Movers that are not at their bottom stop.
+    pub fn probe_moved_movers(&self) -> usize {
+        self.movers
+            .iter()
+            .filter(|mover| mover.policy.state() != QuakeMoverState::Bottom)
+            .count()
+    }
+}
