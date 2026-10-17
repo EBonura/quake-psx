@@ -2706,8 +2706,20 @@ impl Renderer {
     fn draw_centerprint(&mut self, text: &str) {
         let packets = &mut self.centerprint_packets[self.arena];
         packets.clear();
-        let x = quake_core::text::centered_first_line_x(text, SCREEN_WIDTH, 8, 40);
-        push_centerprint_text(packets, x, 96, text, (0x80, 0x80, 0x80));
+        // `SCR_DrawCenterString`: every line centred on its own, starting 35
+        // percent down for four lines or fewer and at y=48 for more.
+        let y = if text.bytes().filter(|&byte| byte == b'\n').count() < 4 {
+            SCREEN_HEIGHT * 35 / 100
+        } else {
+            48
+        };
+        push_centerprint_text(
+            packets,
+            quake_core::text::CENTRED,
+            y,
+            text,
+            (0x80, 0x80, 0x80),
+        );
         debug_assert!(packets.len() <= CENTERPRINT_PACKET_CAPACITY);
         unsafe {
             crate::platform::register_screen_packets(

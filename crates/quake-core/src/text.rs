@@ -23,10 +23,14 @@ pub struct TextGlyphs<'a> {
     glyph_height: i16,
 }
 
+/// Pass as `x` to [`TextGlyphs::new`] to centre every line on its own in the
+/// 320 pixel screen, at most 40 columns of it (`SCR_DrawCenterString`).
+pub const CENTRED: i16 = i16::MIN;
+
 impl<'a> TextGlyphs<'a> {
     #[optimize(size)]
     pub const fn new(text: &'a str, x: i16, y: i16, glyph_width: i16, glyph_height: i16) -> Self {
-        Self {
+        let mut glyphs = Self {
             bytes: text.as_bytes(),
             cursor: 0,
             origin_x: x,
@@ -34,7 +38,25 @@ impl<'a> TextGlyphs<'a> {
             y,
             glyph_width,
             glyph_height,
+        };
+        glyphs.x = glyphs.line_x();
+        glyphs
+    }
+
+    /// Where the line starting at the cursor begins.
+    #[optimize(size)]
+    const fn line_x(&self) -> i16 {
+        if self.origin_x != CENTRED {
+            return self.origin_x;
         }
+        let mut columns = 0;
+        while columns < 40
+            && self.cursor + columns < self.bytes.len()
+            && self.bytes[self.cursor + columns] != b'\n'
+        {
+            columns += 1;
+        }
+        (320 - columns as i16 * self.glyph_width) / 2
     }
 }
 
@@ -48,7 +70,7 @@ impl Iterator for TextGlyphs<'_> {
             match character {
                 b' ' => self.x += self.glyph_width,
                 b'\n' => {
-                    self.x = self.origin_x;
+                    self.x = self.line_x();
                     self.y += self.glyph_height;
                 }
                 _ => {
@@ -85,6 +107,18 @@ pub fn centered_first_line_x(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[optimize(size)]
+    #[test]
+    fn every_centred_line_sits_in_the_middle_of_its_own_width() {
+        let mut glyphs = TextGlyphs::new("Hi\n\nlonger line", CENTRED, 84, 8, 8);
+        let first = glyphs.next().unwrap();
+        assert_eq!((first.character, first.x, first.y), (b'H', 152, 84));
+        assert_eq!(glyphs.next().unwrap().x, 160);
+        let third = glyphs.next().unwrap();
+        // The blank line takes a row and draws nothing.
+        assert_eq!((third.character, third.x, third.y), (b'l', 116, 100));
+    }
 
     #[optimize(size)]
     #[test]
