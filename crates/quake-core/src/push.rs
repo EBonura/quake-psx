@@ -621,3 +621,13 @@ mod tests {
         assert!(penetrates(body(0, 0, 22), mins, maxs));
     }
 }
+
+impl BlockCrush {
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u16(self.cooldown_ticks);
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        self.cooldown_ticks = r.u16();
+    }
+}

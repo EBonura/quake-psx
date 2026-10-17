@@ -174,6 +174,16 @@ impl LevelPresentation {
         self.elapsed_ticks = self.elapsed_ticks.saturating_add(u32::from(ticks));
     }
 
+    /// The level clock in 60 Hz ticks, for a saved game.
+    pub const fn level_ticks(&self) -> u32 {
+        self.elapsed_ticks
+    }
+
+    /// Restore the level clock from a saved game, after the level reset.
+    pub fn set_level_ticks(&mut self, ticks: u32) {
+        self.elapsed_ticks = ticks;
+    }
+
     /// `cl.completed_time`: whole seconds of gameplay on this level.
     #[optimize(size)]
     pub const fn elapsed_seconds(&self) -> u16 {

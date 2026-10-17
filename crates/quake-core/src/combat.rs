@@ -1170,6 +1170,109 @@ impl WeaponAttack {
     }
 }
 
+impl Weapon {
+    const ALL: [Weapon; 8] = [
+        Self::Axe,
+        Self::Shotgun,
+        Self::SuperShotgun,
+        Self::Nailgun,
+        Self::SuperNailgun,
+        Self::GrenadeLauncher,
+        Self::RocketLauncher,
+        Self::Lightning,
+    ];
+}
+
+impl crate::save::Snapshot for Inventory {
+    fn save(&self, w: &mut crate::save::Writer) {
+        w.i16(self.health);
+        w.u16(self.armor);
+        w.u8(match self.armor_tier {
+            None => 0,
+            Some(ArmorTier::Green) => 1,
+            Some(ArmorTier::Yellow) => 2,
+            Some(ArmorTier::Red) => 3,
+        });
+        w.u8(self.keys);
+        w.bool(self.god_mode);
+        for ammo in self.ammo {
+            w.u16(ammo);
+        }
+        w.u8(self.owned_weapons);
+        w.u8(Weapon::ALL
+            .iter()
+            .position(|weapon| *weapon == self.active_weapon)
+            .unwrap_or(0) as u8);
+        self.powerups.save(w);
+        w.u16(self.megahealth_rot_ticks);
+    }
+
+    fn load(r: &mut crate::save::Reader) -> Self {
+        let mut inventory = Self::new();
+        inventory.health = r.i16();
+        inventory.armor = r.u16();
+        inventory.armor_tier = match r.below(4) {
+            1 => Some(ArmorTier::Green),
+            2 => Some(ArmorTier::Yellow),
+            3 => Some(ArmorTier::Red),
+            _ => None,
+        };
+        inventory.keys = r.u8();
+        inventory.god_mode = r.bool();
+        for ammo in inventory.ammo.iter_mut() {
+            *ammo = r.u16();
+        }
+        inventory.owned_weapons = r.u8();
+        inventory.active_weapon = Weapon::ALL[usize::from(r.below(8))];
+        inventory.powerups = <Powerups as crate::save::Snapshot>::load(r);
+        inventory.megahealth_rot_ticks = r.u16();
+        inventory
+    }
+}
+
+impl crate::save::Snapshot for WeaponState {
+    fn save(&self, w: &mut crate::save::Writer) {
+        self.inventory.save(w);
+        self.entry_inventory.save(w);
+        self.survival.save(w);
+        w.u16(self.refire_ticks);
+        w.u16(self.view_frame);
+        w.u16(self.view_frame_end);
+        w.u8(self.view_frame_ticks);
+        w.u32(self.random_state);
+        w.u32(self.shots_fired);
+        w.u8(match self.sustained_weapon {
+            None => 0,
+            Some(weapon) => {
+                1 + Weapon::ALL
+                    .iter()
+                    .position(|candidate| *candidate == weapon)
+                    .unwrap_or(0) as u8
+            }
+        });
+        w.bool(self.nail_next_positive);
+    }
+
+    fn load(r: &mut crate::save::Reader) -> Self {
+        let mut state = Self::new();
+        state.inventory = <Inventory as crate::save::Snapshot>::load(r);
+        state.entry_inventory = <Inventory as crate::save::Snapshot>::load(r);
+        state.survival = <Survival as crate::save::Snapshot>::load(r);
+        state.refire_ticks = r.u16();
+        state.view_frame = r.u16();
+        state.view_frame_end = r.u16();
+        state.view_frame_ticks = r.u8();
+        state.random_state = r.u32();
+        state.shots_fired = r.u32();
+        state.sustained_weapon = match r.below(9) {
+            0 => None,
+            index => Some(Weapon::ALL[usize::from(index - 1)]),
+        };
+        state.nail_next_positive = r.bool();
+        state
+    }
+}
+
 /// Persistent single-player weapon state. It intentionally lives outside a
 /// resident map so shells, cadence, and animation survive level transitions.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

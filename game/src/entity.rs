@@ -59,6 +59,7 @@ use crate::pusher::{push_pass, PushBlocker, Rider};
 
 #[cfg(feature = "spawn-probe")]
 mod spawn_probe_support;
+mod save;
 
 #[cfg(feature = "monster-code-overlay")]
 use crate::monster_code::quake_monster_call as advance_monster;

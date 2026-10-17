@@ -29,6 +29,7 @@ pub mod mover;
 pub mod pose;
 pub mod push;
 pub mod screenblend;
+pub mod save;
 pub mod secrets;
 pub mod sky;
 pub mod spatial;

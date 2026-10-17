@@ -1418,3 +1418,47 @@ mod tests {
         assert_eq!(hit(false, true), 0, "invisible_finished > time");
     }
 }
+
+impl crate::save::Snapshot for Powerups {
+    fn save(&self, w: &mut crate::save::Writer) {
+        for ticks in self.remaining_ticks {
+            w.u16(ticks);
+        }
+        w.u8(self.warned);
+    }
+
+    fn load(r: &mut crate::save::Reader) -> Self {
+        let mut powerups = Self::new();
+        for ticks in powerups.remaining_ticks.iter_mut() {
+            *ticks = r.u16();
+        }
+        powerups.warned = r.u8();
+        powerups
+    }
+}
+
+impl crate::save::Snapshot for Survival {
+    fn save(&self, w: &mut crate::save::Writer) {
+        w.u16(self.hazard_ticks);
+        w.u16(self.pain_ticks);
+        w.u16(self.air_ticks);
+        w.i16(self.drown_damage);
+        w.u8(self.last_water_level);
+        w.bool(self.in_liquid);
+        w.bool(self.alive);
+        w.u32(self.random_state);
+    }
+
+    fn load(r: &mut crate::save::Reader) -> Self {
+        let mut survival = Self::new();
+        survival.hazard_ticks = r.u16();
+        survival.pain_ticks = r.u16();
+        survival.air_ticks = r.u16();
+        survival.drown_damage = r.i16();
+        survival.last_water_level = r.below(4);
+        survival.in_liquid = r.bool();
+        survival.alive = r.bool();
+        survival.random_state = r.u32();
+        survival
+    }
+}

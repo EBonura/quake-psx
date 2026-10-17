@@ -344,3 +344,21 @@ mod tests {
         assert!(!doors_link(0, DOOR_DONT_LINK));
     }
 }
+
+impl DoorField {
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u8(self.retry_ticks);
+        match self.pending_monster {
+            None => w.bool(false),
+            Some(index) => {
+                w.bool(true);
+                w.u16(index);
+            }
+        }
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        self.retry_ticks = r.u8();
+        self.pending_monster = if r.bool() { Some(r.u16()) } else { None };
+    }
+}

@@ -916,7 +916,7 @@ unsafe fn entry_for(chunk_id: u32) -> Option<PackEntry> {
         if let Some(entry) = unsafe { ASSET_CACHE[index] } {
             return Some(entry);
         }
-    } else if !matches!(chunk_id, 4 | 5) || unsafe { STORAGE_STREAM_ACTIVE } {
+    } else if !matches!(chunk_id, 4..=8) || unsafe { STORAGE_STREAM_ACTIVE } {
         return None;
     }
     // Cold code uses the existing reader without reserving additional cache

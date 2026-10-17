@@ -422,3 +422,13 @@ mod tests {
         assert_eq!(maxs.z, 33 << 12);
     }
 }
+
+impl TeleportGate {
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u16(self.open_ticks);
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        self.open_ticks = r.u16();
+    }
+}

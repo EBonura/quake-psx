@@ -35,6 +35,8 @@ mod intro;
 mod monster_regression;
 #[cfg(feature = "spawn-probe")]
 mod spawn_probe;
+#[cfg(feature = "e1m1-save-regression")]
+mod save_probe;
 #[cfg(feature = "monsterjump-regression")]
 mod monsterjump_regression;
 mod music;
@@ -48,6 +50,7 @@ mod quake;
 mod regression;
 mod renderer;
 mod rumble;
+mod savegame;
 #[cfg(feature = "start-route-regression")]
 mod start_route_regression;
 #[cfg(feature = "survival-regression")]

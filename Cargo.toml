@@ -38,3 +38,8 @@ trim-paths    = "all"
 panic         = "abort"
 codegen-units = 1
 lto           = true
+
+# The memory-card driver runs for a second at a pause-menu press, never in a
+# frame. Every byte of it is code the heap does not get.
+[profile.release.package.psx-mc]
+opt-level = "z"

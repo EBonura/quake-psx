@@ -1028,6 +1028,79 @@ const fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
     }
 }
 
+impl QuakeMover {
+    /// Ticks of travel completed: the driver is read by closing a copy of it,
+    /// since the shared interpolator exposes only whether it is at an end.
+    fn driver_progress(&self) -> u16 {
+        let mut probe = self.driver;
+        probe.set_open(false);
+        let mut ticks = 0u16;
+        while probe.tick() {
+            ticks += 1;
+        }
+        ticks
+    }
+
+    /// Write the mover's moving parts: where it is, which way it is going and
+    /// what its state machine is waiting for. Everything else (travel, wait,
+    /// flags) is authored and comes back from the map.
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u8(match self.state {
+            QuakeMoverState::Bottom => 0,
+            QuakeMoverState::Top => 1,
+            QuakeMoverState::Up => 2,
+            QuakeMoverState::Down => 3,
+        });
+        w.u16(self.wait_remaining);
+        w.u16(self.driver_progress());
+        w.bool(self.driver.target_open());
+        w.u16(match self.extra {
+            MoverExtra::SecretForwardLeg { progress, .. } => progress,
+            _ => 0,
+        });
+    }
+
+    /// Put a freshly built mover back where [`Self::save_dynamic`] found it.
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        self.state = match r.below(4) {
+            0 => QuakeMoverState::Bottom,
+            1 => QuakeMoverState::Top,
+            2 => QuakeMoverState::Up,
+            _ => QuakeMoverState::Down,
+        };
+        self.wait_remaining = r.u16();
+        let progress = r.u16();
+        let target_open = r.bool();
+        let leg_progress = r.u16();
+        // Walk a closed driver forward `progress` ticks, then aim it.
+        let mut driver = self.driver;
+        driver.set_open(false);
+        while driver.tick() {}
+        driver.set_open(true);
+        for _ in 0..progress {
+            if !driver.tick() {
+                r.reject();
+                break;
+            }
+        }
+        driver.set_open(target_open);
+        self.driver = driver;
+        if let MoverExtra::SecretForwardLeg {
+            progress: ref mut leg,
+            travel_ticks,
+            ..
+        } = self.extra
+        {
+            if leg_progress > travel_ticks {
+                r.reject();
+            }
+            *leg = leg_progress;
+        } else if leg_progress != 0 {
+            r.reject();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,6 +1139,68 @@ mod tests {
     }
 
     /// The authored speed rules, and the class default only when it is absent.
+    /// A saved mover comes back bit for bit, whatever point of its cycle it
+    /// was saved at: rising, waiting at the top, closing, and a secret door's
+    /// two legs and its pause between them.
+    #[test]
+    fn a_mover_saved_at_any_tick_of_its_cycle_restores_exactly() {
+        use crate::save::{Reader, Writer};
+        for (class, speed, wait) in [
+            (CLASS_FUNC_DOOR, 100i16, 30 << 12),
+            (CLASS_FUNC_DOOR, 35, 0),
+            (CLASS_FUNC_BUTTON, 40, 20 << 12),
+            (CLASS_FUNC_PLAT, 150, 0),
+            (CLASS_FUNC_DOOR_SECRET, 50, 20 << 12),
+        ] {
+            let build = || {
+                let mut source = source(class);
+                source.speed = speed;
+                source.wait = wait;
+                QuakeMover::from_entity(source, model(Vec3I16 { x: 96, y: 8, z: 40 }))
+                    .unwrap()
+                    .unwrap()
+            };
+            let mut mover = build();
+            mover.activate();
+            let mut seen = [false; 4];
+            for tick in 0..2_400u32 {
+                if tick % 5 == 0 || tick < 8 {
+                    let mut buf = [0u8; 16];
+                    let mut w = Writer::new(&mut buf);
+                    mover.save_dynamic(&mut w);
+                    assert!(!w.overflowed());
+                    let len = w.len();
+                    let mut restored = build();
+                    let mut r = Reader::raw(&buf[..len]);
+                    restored.load_dynamic(&mut r);
+                    assert!(r.finish(), "class {class:#x} tick {tick}");
+                    assert_eq!(restored, mover, "class {class:#x} tick {tick}");
+                    seen[mover.state() as usize] = true;
+                }
+                mover.tick();
+            }
+            assert!(seen[QuakeMoverState::Top as usize], "class {class:#x} never reached its top");
+        }
+    }
+
+    #[test]
+    fn a_save_that_claims_more_travel_than_the_mover_has_is_refused() {
+        use crate::save::Reader;
+        let mut source = source(CLASS_FUNC_DOOR);
+        source.speed = 100;
+        let mut mover = QuakeMover::from_entity(source, model(Vec3I16 { x: 96, y: 8, z: 40 }))
+            .unwrap()
+            .unwrap();
+        // state Up, no wait, progress 60000, opening, no leg.
+        let mut bytes = [0u8; 8];
+        bytes[0] = 2;
+        bytes[3..5].copy_from_slice(&60_000u16.to_le_bytes());
+        bytes[5] = 1;
+        let mut r = Reader::raw(&bytes);
+        mover.load_dynamic(&mut r);
+        assert!(r.is_bad());
+    }
+
     #[test]
     fn a_slow_authored_speed_is_not_raised_to_the_default() {
         for class in [CLASS_FUNC_DOOR, CLASS_FUNC_BUTTON, CLASS_FUNC_PLAT] {

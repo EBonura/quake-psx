@@ -296,3 +296,19 @@ mod tests {
         assert_eq!(level_title(9), "");
     }
 }
+
+impl MonsterCounter {
+    /// The count killed so far; the total is authored.
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u16(self.killed);
+    }
+
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        let killed = r.u16();
+        if killed > self.total {
+            r.reject();
+            return;
+        }
+        self.killed = killed;
+    }
+}

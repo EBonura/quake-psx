@@ -48,6 +48,11 @@ monsterjump-regression = ["emulator-telemetry"]
 spawn-probe = ["emulator-telemetry"]
 # E1M1 with the player parked at its own spawn, no input, live monsters.
 e1m1-spawn-regression = ["spawn-probe"]
+# Idle E1M1 (as above) with a scripted pause-menu save then load through the
+# emulated memory card, logging a fingerprint of the saved state each side
+# (game/src/save_probe.rs). The spawn log itself is silenced: its lines leak
+# heap on the bump allocator and this run lasts twice as long.
+e1m1-save-regression = ["e1m1-spawn-regression"]
 # Park the idle player on the button side of the t2 bridge, facing it.
 spawn-script-bridge = []
 spawn-skill-1 = []
@@ -198,6 +203,7 @@ psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
 psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-192", "present-queue"] }
 psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
+psx-mc = { path = "../.psoxide/sdk/crates/psx-mc" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
 psx-font = { path = "../.psoxide/sdk/crates/psx-font" }

@@ -3092,12 +3092,13 @@ impl Renderer {
         push_centered_text(packets, 50, view.title(), (0x80, 0x80, 0x80));
         match view.page {
             MenuPage::Main => {
+                let pitch = main_row_pitch(view);
                 for index in 0..view.row_count() {
                     if let Some(row) = view.row(index) {
                         push_shadowed_text(
                             packets,
                             84,
-                            88 + i16::from(index) * 24,
+                            88 + i16::from(index) * pitch,
                             row.label,
                             menu_row_color(index, view.selected),
                         );
@@ -3179,8 +3180,12 @@ impl Renderer {
             }
         }
 
+        if let Some(text) = view.notice {
+            push_centered_text(packets, 212, text, (0x80, 0x62, 0x38));
+        }
+
         let row_y = match view.page {
-            MenuPage::Main => 80 + i16::from(view.selected) * 24,
+            MenuPage::Main => 80 + i16::from(view.selected) * main_row_pitch(view),
             MenuPage::Levels => 68 + i16::from(view.selected) * 16,
             MenuPage::Options => {
                 options_row_top(view) - 8 + i16::from(view.selected) * options_row_pitch(view)
@@ -5602,6 +5607,17 @@ unsafe fn audit_scoped_window_packets(start: *mut u32, end: *mut u32) -> ScopedW
         audit.failures = audit.failures.wrapping_add(1);
     }
     audit
+}
+
+/// The pause menu has eight rows, which at the title menu's 24-pixel pitch
+/// would run off the bottom of the screen.
+#[optimize(size)]
+fn main_row_pitch(view: MenuView) -> i16 {
+    if view.row_count() > 6 {
+        16
+    } else {
+        24
+    }
 }
 
 /// Top and pitch of the Options rows. A music-capable disc has fourteen rows,

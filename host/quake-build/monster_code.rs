@@ -41,6 +41,30 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "QUAKE_DOOR_DESCRIPTOR",
             "QUAKE_DOOR_CALLS",
         ),
+        (
+            "save",
+            "6",
+            "quake_save_encode",
+            "quake_save_call",
+            "QUAKE_SAVE_DESCRIPTOR",
+            "QUAKE_SAVE_CALLS",
+        ),
+        (
+            "load",
+            "7",
+            "quake_load_header",
+            "quake_load_header_call",
+            "QUAKE_LOAD_DESCRIPTOR",
+            "QUAKE_LOAD_CALLS",
+        ),
+        (
+            "card",
+            "8",
+            "quake_card_write",
+            "quake_card_write_call",
+            "QUAKE_CARD_DESCRIPTOR",
+            "QUAKE_CARD_CALLS",
+        ),
     ] {
         for arg in [
             "--image",
@@ -73,6 +97,18 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             args.extend([
                 "--call".into(),
                 "quake_mover_call:quake_mover_from_entity".into(),
+            ]);
+        }
+        if name == "load" {
+            args.extend([
+                "--call".into(),
+                "quake_load_restore_call:quake_load_restore".into(),
+            ]);
+        }
+        if name == "card" {
+            args.extend([
+                "--call".into(),
+                "quake_card_read_call:quake_card_read".into(),
             ]);
         }
         if name == "monsters" {
@@ -129,6 +165,11 @@ fn guards(root: &Path, generation: &Path, map: &Path, patch: bool) -> Result<()>
         "quake_missile_call",
         "quake_bubble_call",
         "quake_mover_call",
+        "quake_save_call",
+        "quake_load_header_call",
+        "quake_load_restore_call",
+        "quake_card_write_call",
+        "quake_card_read_call",
     ] {
         let mut callable = stack.clone();
         callable.extend([
@@ -167,7 +208,7 @@ pub(super) fn compose(root: &Path, elf: &Path, map: &Path) -> Result<()> {
     ]);
     tool(root, "overlay-compose", &final_args)?;
     guards(root, &final_dir, map, false)?;
-    for name in ["monsters", "doors"] {
+    for name in ["monsters", "doors", "save", "load", "card"] {
         let package = final_dir.join(format!("{name}.pak"));
         if fs::metadata(&package)?.len() > 15360 {
             return Err(format!("{name} package exceeds its existing transfer half").into());

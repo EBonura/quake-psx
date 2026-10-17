@@ -4,6 +4,7 @@
 
 use crate::asset::ResidentMap;
 use crate::entity::{EntityLoadError, EntityScene, MonsterFrameResult};
+use crate::savegame::{Header, Outcome};
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 use psx_residency::arena::{
@@ -22,11 +23,19 @@ const HALF_BYTES: usize = BUFFER_BYTES / 2;
 const MAX_CALLS: usize = 4;
 pub const PACKAGE_CHUNK: u32 = 4;
 pub const DOOR_PACKAGE_CHUNK: u32 = 5;
-
+pub const SAVE_PACKAGE_CHUNK: u32 = 6;
+pub const LOAD_PACKAGE_CHUNK: u32 = 7;
+pub const CARD_PACKAGE_CHUNK: u32 = 8;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Image {
     Doors,
     Monsters,
+    /// The save encoder.
+    Save,
+    /// The save decoder.
+    Load,
+    /// The memory-card driver.
+    Card,
 }
 
 #[used]
@@ -62,6 +71,63 @@ static mut QUAKE_MONSTER_DESCRIPTOR: PackedDescriptor = PackedDescriptor {
 #[no_mangle]
 #[cfg_attr(target_arch = "mips", link_section = ".data.quake_monster_calls")]
 static mut QUAKE_MONSTER_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
+    selector: 0,
+    site: 0,
+    offset: 0,
+}; MAX_CALLS];
+
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_save_descriptor")]
+static mut QUAKE_SAVE_DESCRIPTOR: PackedDescriptor = PackedDescriptor {
+    words: 0,
+    id: 0,
+    linked: 0,
+    checksum: 0,
+    calls: 0,
+};
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_save_calls")]
+static mut QUAKE_SAVE_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
+    selector: 0,
+    site: 0,
+    offset: 0,
+}; MAX_CALLS];
+
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_load_descriptor")]
+static mut QUAKE_LOAD_DESCRIPTOR: PackedDescriptor = PackedDescriptor {
+    words: 0,
+    id: 0,
+    linked: 0,
+    checksum: 0,
+    calls: 0,
+};
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_load_calls")]
+static mut QUAKE_LOAD_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
+    selector: 0,
+    site: 0,
+    offset: 0,
+}; MAX_CALLS];
+
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_card_descriptor")]
+static mut QUAKE_CARD_DESCRIPTOR: PackedDescriptor = PackedDescriptor {
+    words: 0,
+    id: 0,
+    linked: 0,
+    checksum: 0,
+    calls: 0,
+};
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_card_calls")]
+static mut QUAKE_CARD_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
     selector: 0,
     site: 0,
     offset: 0,
@@ -116,6 +182,24 @@ fn metadata(image: Image) -> Result<Metadata, Error> {
             core::ptr::addr_of!(QUAKE_MONSTER_CALLS).cast::<PackedCall>(),
             PACKAGE_CHUNK,
             0x80408000,
+        ),
+        Image::Save => (
+            core::ptr::addr_of!(QUAKE_SAVE_DESCRIPTOR),
+            core::ptr::addr_of!(QUAKE_SAVE_CALLS).cast::<PackedCall>(),
+            SAVE_PACKAGE_CHUNK,
+            0x80428000,
+        ),
+        Image::Load => (
+            core::ptr::addr_of!(QUAKE_LOAD_DESCRIPTOR),
+            core::ptr::addr_of!(QUAKE_LOAD_CALLS).cast::<PackedCall>(),
+            LOAD_PACKAGE_CHUNK,
+            0x80438000,
+        ),
+        Image::Card => (
+            core::ptr::addr_of!(QUAKE_CARD_DESCRIPTOR),
+            core::ptr::addr_of!(QUAKE_CARD_CALLS).cast::<PackedCall>(),
+            CARD_PACKAGE_CHUNK,
+            0x80448000,
         ),
     };
     let header = unsafe { core::ptr::read_volatile(header) };
@@ -244,6 +328,82 @@ pub fn quake_mover_call(
     core::hint::black_box(quake_core::mover::quake_mover_from_entity(source, model))
 }
 
+#[inline(never)]
+#[no_mangle]
+pub fn quake_save_call(
+    buf: &mut [u8],
+    world: &ResidentMap,
+    entities: &EntityScene,
+    player: &crate::player::Player,
+    weapon: &WeaponState,
+    presentation: &quake_core::level_session::LevelPresentation,
+) -> Result<usize, usize> {
+    core::hint::black_box(crate::savegame::quake_save_encode(
+        buf,
+        world,
+        entities,
+        player,
+        weapon,
+        presentation,
+    ))
+}
+
+#[inline(never)]
+#[no_mangle]
+pub fn quake_load_header_call(bytes: &[u8]) -> Option<Header> {
+    core::hint::black_box(crate::savegame::quake_load_header(bytes))
+}
+
+#[inline(never)]
+#[no_mangle]
+pub fn quake_load_restore_call(
+    bytes: &[u8],
+    world: &ResidentMap,
+    entities: &mut EntityScene,
+    player: &mut crate::player::Player,
+    weapon: &mut WeaponState,
+    presentation: &mut quake_core::level_session::LevelPresentation,
+) -> bool {
+    core::hint::black_box(crate::savegame::quake_load_restore(
+        bytes,
+        world,
+        entities,
+        player,
+        weapon,
+        presentation,
+    ))
+}
+
+#[inline(never)]
+#[no_mangle]
+pub fn quake_card_write_call(bytes: &[u8]) -> Outcome {
+    core::hint::black_box(crate::savegame::quake_card_write(bytes))
+}
+
+#[inline(never)]
+#[no_mangle]
+pub fn quake_card_read_call(staging: &mut [u8]) -> Result<usize, Outcome> {
+    core::hint::black_box(crate::savegame::quake_card_read(staging))
+}
+
+/// Name the step of a save or load that the overlay machinery refused. The
+/// notice shown to the player is the same either way; the emulator log is
+/// where the cause goes.
+#[cfg(feature = "emulator-telemetry")]
+fn trace(step: &str, result: Result<(), Error>) -> Result<(), Error> {
+    if let Err(error) = result {
+        let line = alloc::format!("quake-psx: save overlay: {step} failed: {error:?}");
+        psx_telemetry::emit::debug_log(&line);
+    }
+    result
+}
+
+#[cfg(not(feature = "emulator-telemetry"))]
+#[inline(always)]
+fn trace(_step: &str, result: Result<(), Error>) -> Result<(), Error> {
+    result
+}
+
 // A single concrete closure type keeps SDK admission/binding code shared.
 // All entries remain direct, statically typed calls; no function pointer is stored.
 enum Call<'a> {
@@ -270,6 +430,43 @@ enum Call<'a> {
         weapon: &'a mut WeaponState,
         elapsed: u16,
         result: &'a mut (Option<MonsterFrameResult>, Option<MonsterFrameResult>),
+    },
+    // The save calls carry the staging area as a raw pointer: it lies inside
+    // the buffer the admission itself borrows, in the half no package occupies.
+    Encode {
+        world: &'a ResidentMap,
+        entities: &'a EntityScene,
+        player: &'a crate::player::Player,
+        weapon: &'a WeaponState,
+        presentation: &'a quake_core::level_session::LevelPresentation,
+        staging: *mut u8,
+        len: usize,
+        result: &'a mut Result<usize, usize>,
+    },
+    Header {
+        staging: *mut u8,
+        len: usize,
+        result: &'a mut Option<Header>,
+    },
+    Restore {
+        world: &'a ResidentMap,
+        entities: &'a mut EntityScene,
+        player: &'a mut crate::player::Player,
+        weapon: &'a mut WeaponState,
+        presentation: &'a mut quake_core::level_session::LevelPresentation,
+        staging: *mut u8,
+        len: usize,
+        result: &'a mut bool,
+    },
+    CardWrite {
+        staging: *mut u8,
+        len: usize,
+        result: &'a mut Outcome,
+    },
+    CardRead {
+        staging: *mut u8,
+        len: usize,
+        result: &'a mut Result<usize, Outcome>,
     },
 }
 
@@ -319,7 +516,6 @@ impl MonsterCode {
         if self.handle.is_some() || self.buffer.capacity() != 0 {
             return Err(Error::NotReady);
         }
-        let meta = metadata(image)?;
         let scratch = world.take_stream_scratch();
         self.buffer = scratch;
         if self.buffer.capacity() != BUFFER_BYTES {
@@ -327,6 +523,38 @@ impl MonsterCode {
         }
         // Within the allocation already made at boot; this never grows it.
         self.buffer.resize(BUFFER_BYTES, 0);
+        self.admit_image(world, image)
+    }
+
+    /// Replace the installed package with another in the same buffer without
+    /// returning it to the loader. A save's payload lives in a caller buffer,
+    /// not in this one, so it survives the swap from the encoder to the card
+    /// driver.
+    pub fn swap_image(&mut self, world: &ResidentMap, image: Image) -> Result<(), Error> {
+        if self.buffer.len() != BUFFER_BYTES {
+            return Err(Error::NotReady);
+        }
+        self.registry.invalidate_all();
+        self.handle = None;
+        self.image = None;
+        self.admit_image(world, image)
+    }
+
+    fn admit_image(&mut self, world: &ResidentMap, image: Image) -> Result<(), Error> {
+        let meta = match metadata(image) {
+            Ok(meta) => meta,
+            Err(error) => {
+                trace("metadata", Err(error))?;
+                return Err(error);
+            }
+        };
+        #[cfg(feature = "emulator-telemetry")]
+        psx_telemetry::emit::debug_log(&alloc::format!(
+            "quake-psx: save overlay: image words={} id={} chunk={:?}",
+            meta.words,
+            meta.descriptor.id,
+            crate::platform::chunk_size(meta.descriptor.id).ok()
+        ));
         let address = self.buffer.as_ptr() as usize;
         if address & 3 != 0 {
             return Err(Error::Arena);
@@ -344,20 +572,224 @@ impl MonsterCode {
         if crate::platform::chunk_size(meta.descriptor.id).map_err(|_| Error::Integrity)?
             != payload_bytes.len() as u32
         {
-            return Err(Error::Integrity);
+            trace("chunk size", Err(Error::Integrity))?;
         }
-        crate::platform::read_chunk_exact(meta.descriptor.id, 0, payload_bytes)
-            .map_err(|_| Error::Integrity)?;
+        trace(
+            "chunk read",
+            crate::platform::read_chunk_exact(meta.descriptor.id, 0, payload_bytes)
+                .map_err(|_| Error::Integrity),
+        )?;
         let code_address = code.as_ptr() as usize as u32;
         let mut arena = CallerArena::new(code, code_address)?;
-        self.handle = Some(self.registry.install(
-            &mut arena,
-            &transport[..meta.words],
-            meta.descriptor,
-        )?);
+        let installed = self
+            .registry
+            .install(&mut arena, &transport[..meta.words], meta.descriptor);
+        if let Err(error) = installed {
+            trace("registry install", Err(error))?;
+        }
+        self.handle = Some(installed?);
         self.map_generation = world.generation();
         self.image = Some(image);
         Ok(())
+    }
+
+    /// `Host_Savegame_f`: encode the game into `staging` and write it to the
+    /// card. The buffer is returned to the loader before this returns.
+    pub fn save_game(
+        &mut self,
+        world: &mut ResidentMap,
+        entities: &EntityScene,
+        player: &crate::player::Player,
+        weapon: &WeaponState,
+        presentation: &quake_core::level_session::LevelPresentation,
+        staging: &mut [u8],
+    ) -> Outcome {
+        let outcome =
+            self.save_game_inner(world, entities, player, weapon, presentation, staging);
+        self.release(world);
+        outcome
+    }
+
+    fn save_game_inner(
+        &mut self,
+        world: &mut ResidentMap,
+        entities: &EntityScene,
+        player: &crate::player::Player,
+        weapon: &WeaponState,
+        presentation: &quake_core::level_session::LevelPresentation,
+        staging: &mut [u8],
+    ) -> Outcome {
+        let len = match self.encode(world, entities, player, weapon, presentation, staging) {
+            Ok(len) => len,
+            Err(0) => return Outcome::Failed,
+            Err(_) => return Outcome::TooLarge,
+        };
+        let staging = staging.as_mut_ptr();
+        if self.swap_image(world, Image::Card).is_err() {
+            return Outcome::Failed;
+        }
+        let mut outcome = Outcome::Failed;
+        let call = Call::CardWrite {
+            staging,
+            len,
+            result: &mut outcome,
+        };
+        let admitted = self.invoke(world.generation(), Image::Card, &mut { call });
+        if admitted.is_ok() {
+            outcome
+        } else {
+            Outcome::Failed
+        }
+    }
+
+    /// Serialise into `staging`: releases whatever is installed, then
+    /// leaves the encoder installed. The byte count, or the count the game
+    /// needed when it did not fit (`Err(0)`: the package could not be admitted).
+    pub fn encode(
+        &mut self,
+        world: &mut ResidentMap,
+        entities: &EntityScene,
+        player: &crate::player::Player,
+        weapon: &WeaponState,
+        presentation: &quake_core::level_session::LevelPresentation,
+        staging: &mut [u8],
+    ) -> Result<usize, usize> {
+        self.release(world);
+        trace("install save", self.install(world, Image::Save)).map_err(|_| 0usize)?;
+        let mut result = Err(0);
+        let call = Call::Encode {
+            world,
+            entities,
+            player,
+            weapon,
+            presentation,
+            staging: staging.as_mut_ptr(),
+            len: staging.len(),
+            result: &mut result,
+        };
+        let admitted = self.invoke(world.generation(), Image::Save, &mut { call });
+        trace("invoke save", admitted).map_err(|_| 0usize)?;
+        result
+    }
+
+    /// The length and checksum of the game as it would be saved, for the
+    /// save and load regression's before and after comparison.
+    #[cfg(feature = "e1m1-save-regression")]
+    pub fn encode_fingerprint(
+        &mut self,
+        world: &mut ResidentMap,
+        entities: &EntityScene,
+        player: &crate::player::Player,
+        weapon: &WeaponState,
+        presentation: &quake_core::level_session::LevelPresentation,
+        staging: &mut [u8],
+    ) -> (Result<usize, usize>, u32) {
+        let encoded = self.encode(world, entities, player, weapon, presentation, staging);
+        let hash = match encoded {
+            Ok(len) => quake_core::save::checksum(&staging[..len]),
+            Err(_) => 0,
+        };
+        self.release(world);
+        (encoded, hash)
+    }
+
+    /// Read the card into the staging area and, from the decoder, the header
+    /// of what it holds. Leaves the buffer with the loader.
+    pub fn card_header(
+        &mut self,
+        world: &mut ResidentMap,
+        staging: &mut [u8],
+    ) -> Result<Header, Outcome> {
+        let outcome = self.card_header_inner(world, staging);
+        self.release(world);
+        outcome
+    }
+
+    fn card_header_inner(
+        &mut self,
+        world: &mut ResidentMap,
+        staging: &mut [u8],
+    ) -> Result<Header, Outcome> {
+        let len = self.read_card(world, staging)?;
+        let staging = staging.as_mut_ptr();
+        self.swap_image(world, Image::Load).map_err(|_| Outcome::Failed)?;
+        let mut header = None;
+        let call = Call::Header {
+            staging,
+            len,
+            result: &mut header,
+        };
+        let admitted = self.invoke(world.generation(), Image::Load, &mut { call });
+        admitted.map_err(|_| Outcome::Failed)?;
+        header.ok_or(Outcome::Refused)
+    }
+
+    /// Install the card driver, read the save into the staging area and
+    /// return its length. Leaves the card driver installed.
+    fn read_card(
+        &mut self,
+        world: &mut ResidentMap,
+        staging: &mut [u8],
+    ) -> Result<usize, Outcome> {
+        self.release(world);
+        trace("install card", self.install(world, Image::Card)).map_err(|_| Outcome::Failed)?;
+        let mut result = Err(Outcome::Failed);
+        let call = Call::CardRead {
+            staging: staging.as_mut_ptr(),
+            len: staging.len(),
+            result: &mut result,
+        };
+        let admitted = self.invoke(world.generation(), Image::Card, &mut { call });
+        trace("invoke card read", admitted).map_err(|_| Outcome::Failed)?;
+        result
+    }
+
+    /// Read the card again and put what it holds into a level that the
+    /// header has just loaded. `false` means the save did not fit the level.
+    pub fn restore_game(
+        &mut self,
+        world: &mut ResidentMap,
+        entities: &mut EntityScene,
+        player: &mut crate::player::Player,
+        weapon: &mut WeaponState,
+        presentation: &mut quake_core::level_session::LevelPresentation,
+        staging: &mut [u8],
+    ) -> bool {
+        let restored =
+            self.restore_game_inner(world, entities, player, weapon, presentation, staging);
+        self.release(world);
+        restored
+    }
+
+    fn restore_game_inner(
+        &mut self,
+        world: &mut ResidentMap,
+        entities: &mut EntityScene,
+        player: &mut crate::player::Player,
+        weapon: &mut WeaponState,
+        presentation: &mut quake_core::level_session::LevelPresentation,
+        staging: &mut [u8],
+    ) -> bool {
+        let Ok(len) = self.read_card(world, staging) else {
+            return false;
+        };
+        let staging = staging.as_mut_ptr();
+        if self.swap_image(world, Image::Load).is_err() {
+            return false;
+        }
+        let mut restored = false;
+        let call = Call::Restore {
+            world,
+            entities,
+            player,
+            weapon,
+            presentation,
+            staging,
+            len,
+            result: &mut restored,
+        };
+        let admitted = self.invoke(world.generation(), Image::Load, &mut { call });
+        admitted.is_ok() && restored
     }
 
     pub fn load_entities(
@@ -507,6 +939,64 @@ impl MonsterCode {
                         result.1 = scene.update_monsters(
                             world, *origin, *velocity, *mins, *maxs, *hostile, weapon, *elapsed,
                         );
+                    }
+                    Call::Encode {
+                        world,
+                        entities,
+                        player,
+                        weapon,
+                        presentation,
+                        staging,
+                        len,
+                        result,
+                    } => {
+                        let buf = core::slice::from_raw_parts_mut(*staging, *len);
+                        **result =
+                            quake_save_call(buf, world, entities, player, weapon, presentation);
+                    }
+                    Call::Header {
+                        staging,
+                        len,
+                        result,
+                    } => {
+                        let bytes = core::slice::from_raw_parts(*staging, *len);
+                        **result = quake_load_header_call(bytes);
+                    }
+                    Call::Restore {
+                        world,
+                        entities,
+                        player,
+                        weapon,
+                        presentation,
+                        staging,
+                        len,
+                        result,
+                    } => {
+                        let bytes = core::slice::from_raw_parts(*staging, *len);
+                        **result = quake_load_restore_call(
+                            bytes,
+                            world,
+                            entities,
+                            player,
+                            weapon,
+                            presentation,
+                        );
+                    }
+                    Call::CardWrite {
+                        staging,
+                        len,
+                        result,
+                    } => {
+                        let bytes = core::slice::from_raw_parts(*staging, *len);
+                        **result = quake_card_write_call(bytes);
+                    }
+                    Call::CardRead {
+                        staging,
+                        len,
+                        result,
+                    } => {
+                        let buf = core::slice::from_raw_parts_mut(*staging, *len);
+                        **result = quake_card_read_call(buf);
                     }
                 },
             )

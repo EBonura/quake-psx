@@ -447,6 +447,98 @@ fn seconds_to_ticks(value: i32) -> u16 {
         .clamp(1, i32::from(u16::MAX)) as u16
 }
 
+impl QuakeTrain {
+    /// Write what moves: the state machine, the leg in progress and how far
+    /// along it is. Speed, damage and the model are authored.
+    pub fn save_dynamic(&self, w: &mut crate::save::Writer) {
+        w.u8(match self.state {
+            TrainState::Idle => 0,
+            TrainState::Moving => 1,
+            TrainState::Waiting => 2,
+            TrainState::Stopped => 3,
+        });
+        w.u16(self.next_corner);
+        w.i32(self.pending_wait);
+        w.u16(self.wait_ticks);
+        w.vec3(self.origin);
+        w.vec3(self.leg_end);
+        w.u16(self.corner_arrivals);
+        w.vec3(self.leg_offset);
+        w.i32(self.leg_distance);
+        w.i32(self.leg_probe_x);
+        w.u16(self.leg_ticks);
+        match self.driver {
+            None => w.bool(false),
+            Some(driver) => {
+                w.bool(true);
+                let mut probe = driver;
+                probe.set_open(false);
+                let mut progress = 0u16;
+                while probe.tick() {
+                    progress += 1;
+                }
+                w.u16(progress);
+                w.bool(driver.target_open());
+                w.vec3(psoxide_point_to_quake(probe.transform().origin));
+            }
+        }
+    }
+
+    /// Put a freshly built train back where [`Self::save_dynamic`] found it.
+    pub fn load_dynamic(&mut self, r: &mut crate::save::Reader) {
+        self.state = match r.below(4) {
+            0 => TrainState::Idle,
+            1 => TrainState::Moving,
+            2 => TrainState::Waiting,
+            _ => TrainState::Stopped,
+        };
+        self.next_corner = r.u16();
+        self.pending_wait = r.i32();
+        self.wait_ticks = r.u16();
+        self.origin = r.vec3();
+        self.leg_end = r.vec3();
+        self.corner_arrivals = r.u16();
+        self.leg_offset = r.vec3();
+        self.leg_distance = r.i32();
+        self.leg_probe_x = r.i32();
+        self.leg_ticks = r.u16();
+        self.driver = None;
+        if r.bool() {
+            let progress = r.u16();
+            let target_open = r.bool();
+            let start = r.vec3();
+            let offset = Vec3I32 {
+                x: self.leg_end.x.saturating_sub(start.x),
+                y: self.leg_end.y.saturating_sub(start.y),
+                z: self.leg_end.z.saturating_sub(start.z),
+            };
+            let built = BrushDoor::from_entity(
+                PxbspEntity {
+                    class_id: entity_class::BRUSH_DOOR,
+                    flags: entity_flags::ENABLED,
+                    model: self.model_index,
+                    origin: quake_point_to_psoxide(start),
+                    ..PxbspEntity::default()
+                },
+                PxbspBrushDoor::new(quake_point_to_psoxide(offset), self.leg_ticks),
+            );
+            let Ok(mut driver) = built else {
+                r.reject();
+                return;
+            };
+            driver.set_open(true);
+            for _ in 0..progress {
+                if !driver.tick() {
+                    r.reject();
+                    break;
+                }
+            }
+            driver.set_open(target_open);
+            self.driver = Some(driver);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +617,41 @@ mod tests {
         assert!(train.activate(&source[..]));
         assert_eq!(train.state(), TrainState::Moving);
         assert!(!train.activate(&source[..]));
+    }
+
+    /// A saved train resumes mid-leg, mid-wait and between legs with exactly
+    /// the state it was saved in, and then runs on identically.
+    #[test]
+    fn a_train_saved_at_any_tick_restores_and_runs_on_identically() {
+        use crate::save::{Reader, Writer};
+        let source = [
+            train_entity(1, 0, 60),
+            corner(1, 2, 100, 0),
+            corner(2, 3, 160, 2 << 12),
+            corner(3, 1, 130, 0),
+        ];
+        let build = || QuakeTrain::from_entity(source[0], model(), &source[..]).expect("train");
+        let mut train = build();
+        for tick in 0..900usize {
+            let mut buf = [0u8; 96];
+            let mut w = Writer::new(&mut buf);
+            train.save_dynamic(&mut w);
+            assert!(!w.overflowed());
+            let len = w.len();
+            let mut restored = build();
+            let mut r = Reader::raw(&buf[..len]);
+            restored.load_dynamic(&mut r);
+            assert!(r.finish(), "tick {tick}");
+            assert_eq!(restored, train, "tick {tick}");
+            if tick % 97 == 0 {
+                // And the two stay together afterwards.
+                let (mut a, mut b) = (train, restored);
+                run(&mut a, &source[..], 200);
+                run(&mut b, &source[..], 200);
+                assert_eq!(a, b, "tick {tick} diverged");
+            }
+            train.tick(&source[..]);
+        }
     }
 
     #[optimize(size)]
