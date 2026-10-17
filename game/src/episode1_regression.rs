@@ -79,6 +79,9 @@ const SHAFT_FALLEN: u32 = 1 << 15;
 const START_SPAWN: u32 = 1 << 16;
 /// E1M7's exit ran `SUB_UseTargets` into its authored finale relay.
 const CHANGELEVEL_TARGETS: u32 = 1 << 17;
+/// A shock landed since the current lap of the ring began. Route bookkeeping,
+/// not part of the proof: `BOSS_SHOCKED` is the proof, and it stays set.
+const LAP_SHOCK: u32 = 1 << 18;
 
 const REQUIRED: u32 = SIGIL_TAKEN
     | BOSS_AWAKE
@@ -252,15 +255,73 @@ const ARENA_ROUTE: &[Waypoint] = &[
         require: 0,
     },
 ];
-/// The button ring, walked west from the lift to the `func_button` whose
-/// authored target is `event_lightning`.
-const RING_ROUTE: &[Waypoint] = &[Waypoint {
-    x: 832,
-    y: 64,
-    radius: 16,
-    ceiling: ANY_HEIGHT,
-    require: BOSS_SHOCKED | BOSS_DEAD,
-}];
+/// The button ring, one lap of the `event_lightning` interlock. `lightning_use`
+/// only shocks Chthon while both electrode doors stand raised, and each door
+/// is raised by its own floor button on a pedestal at x=352 (Normal skill:
+/// y=-248 for the north electrode, y=376 for the south one). A shock lowers
+/// both again, so a lap is: north button, south button, then the
+/// `func_button` whose authored target is `event_lightning`, and Chthon's
+/// three lives take three laps. Every point is `tools/routesim` output over the
+/// cooked E1M7 hull (`route`, Normal skill, lift raised). The ring is a U of
+/// 100-unit-wide walkways with lava on both sides, so the corners are taken
+/// wide: the walker carries speed through a turn and a corner placed on the
+/// walkway's centre line throws it off the far edge.
+const RING_ROUTE: &[Waypoint] = &[
+    waypoint(1088, 64),
+    waypoint(1070, -168),
+    Waypoint {
+        radius: 32,
+        ..waypoint(800, -228)
+    },
+    // The north electrode's pedestal button, which is also the floor there.
+    Waypoint {
+        radius: 12,
+        ..waypoint(352, -248)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(800, -228)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(1060, -200)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(1060, 300)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(800, 358)
+    },
+    // The south electrode's pedestal button.
+    Waypoint {
+        radius: 12,
+        ..waypoint(352, 376)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(800, 358)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(1060, 300)
+    },
+    Waypoint {
+        radius: 32,
+        ..waypoint(1070, 100)
+    },
+    // The `event_lightning` button. The lap is only done once its shock
+    // landed; until then the route keeps nudging across it, which is also how
+    // it waits out an electrode door that is still on its way up.
+    Waypoint {
+        radius: 16,
+        require: LAP_SHOCK,
+        ..waypoint(832, 64)
+    },
+];
+/// Chthon's `health` in `monster_boss`: one shock each.
+const RING_LAPS: u8 = 3;
 /// The walk down to E1M7's own exit, every point off the cooked map.
 ///
 /// Chthon's death fires the `trigger_relay` his `target` names, which fires
@@ -331,6 +392,8 @@ static mut BOSS_FRAMES: u32 = 0;
 static mut LIFT_BASE_Z: i32 = i32::MIN;
 /// Player height in whole units on the previous control frame.
 static mut LAST_Z: i32 = i32::MAX;
+/// Laps of the ring finished so far.
+static mut LAPS_DONE: u8 = 0;
 
 pub const fn initial_map() -> EpisodeMap {
     EpisodeMap::E1M7
@@ -356,6 +419,7 @@ pub fn map_loaded(map: EpisodeMap, entities: &EntityScene, world: &ResidentMap, 
         DETOUR = 0;
         LIFT_BASE_Z = i32::MIN;
         LAST_Z = i32::MAX;
+        LAPS_DONE = 0;
         match map {
             EpisodeMap::E1M7 => {
                 // `load_level` built `player` through the shipping
@@ -647,13 +711,24 @@ pub fn controls(world: &ResidentMap, entities: &EntityScene, player: &Player) ->
                 write_volatile(addr_of_mut!((*probe).stage_frames), 0);
             }
             PHASE_RING => {
-                write_volatile(addr_of_mut!((*probe).phase), PHASE_DESCENT);
-                write_volatile(addr_of_mut!((*probe).stage_frames), 0);
-                ROUTE_INDEX = 0;
-                BEST_DISTANCE = i32::MAX;
-                STALL_FRAMES = 0;
-                DETOUR = 0;
-                LAST_Z = i32::MAX;
+                if state & BOSS_DEAD != 0 {
+                    write_volatile(addr_of_mut!((*probe).phase), PHASE_DESCENT);
+                    write_volatile(addr_of_mut!((*probe).stage_frames), 0);
+                    ROUTE_INDEX = 0;
+                    BEST_DISTANCE = i32::MAX;
+                    STALL_FRAMES = 0;
+                    DETOUR = 0;
+                    LAST_Z = i32::MAX;
+                } else if LAPS_DONE + 1 < RING_LAPS {
+                    // Another lap. After the last one the route stands on the
+                    // button until Chthon's death arrives.
+                    LAPS_DONE += 1;
+                    write_volatile(addr_of_mut!((*probe).player_state), state & !LAP_SHOCK);
+                    ROUTE_INDEX = 0;
+                    BEST_DISTANCE = i32::MAX;
+                    STALL_FRAMES = 0;
+                    DETOUR = 0;
+                }
             }
             PHASE_DESCENT => {
                 write_volatile(addr_of_mut!((*probe).phase), PHASE_EXIT);
@@ -730,7 +805,7 @@ pub fn observe(
             write_volatile(addr_of_mut!((*probe).weapon_fired), seen);
         }
         if gameplay.boss_shocks != 0 {
-            state |= BOSS_SHOCKED;
+            state |= BOSS_SHOCKED | LAP_SHOCK;
         }
         write_volatile(addr_of_mut!((*probe).player_state), state);
     }
