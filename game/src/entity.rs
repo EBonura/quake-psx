@@ -19,7 +19,7 @@ use quake_core::combat::{
     GRENADE_MODEL_ID, MAX_SHOTGUN_PELLETS, NAIL_MODEL_ID, NAIL_POOL_CAPACITY, ROCKET_MODEL_ID,
 };
 use quake_core::door;
-use quake_core::survival::QUAD_DAMAGE_MULTIPLIER;
+use quake_core::survival::{PAIN_VOICES, QUAD_DAMAGE_MULTIPLIER};
 use quake_core::effects::{ImpactParticles, ParticleKind};
 use quake_core::level::MonsterCounter;
 use quake_core::lightstyle::{self, sample_leaf as leaf_light};
@@ -5463,11 +5463,9 @@ impl EntityScene {
                     );
                     if taken > 0 {
                         result.player_damage = result.player_damage.saturating_add(taken as u16);
-                        result.push_sound(SoundEvent::player_voice(match self.frame % 3 {
-                            0 => 0xa0,
-                            1 => 0xa2,
-                            _ => 0xa5,
-                        }));
+                        result.push_sound(SoundEvent::player_voice(
+                            PAIN_VOICES[self.frame as usize % PAIN_VOICES.len()],
+                        ));
                     }
                     if before > 0 && weapon.inventory().health() <= 0 {
                         result.player_killed = true;
@@ -6371,11 +6369,9 @@ impl EntityScene {
         );
         if taken > 0 {
             result.player_damage = result.player_damage.saturating_add(taken as u16);
-            result.push_sound(SoundEvent::player_voice(match self.frame % 3 {
-                0 => 0xa0,
-                1 => 0xa2,
-                _ => 0xa5,
-            }));
+            result.push_sound(SoundEvent::player_voice(
+                PAIN_VOICES[self.frame as usize % PAIN_VOICES.len()],
+            ));
         }
         if before > 0 && weapon.inventory().health() <= 0 {
             result.player_killed = true;

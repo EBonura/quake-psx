@@ -56,11 +56,13 @@ pub const SOUND_DROWN: i16 = 0x94;
 pub const SOUND_GASP: i16 = 0x95;
 /// `player/pain1.wav`, the first entry of `PainSound`'s roll.
 pub const SOUND_PAIN: i16 = 0xa0;
-/// `PainSound` picks one of six pain voices uniformly; `reslist.txt` cooks
-/// three of them into worldspawn's always-resident set (pain1, pain3, pain6),
-/// so the roll runs over those and never asks the bank for a voice it does
-/// not hold.
-pub const PAIN_VOICES: [i16; 3] = [SOUND_PAIN, 0xa2, 0xa5];
+/// `player/pain2.wav`, the second entry of `PainSound`'s roll.
+pub const SOUND_PAIN_2: i16 = 0xa1;
+/// `PainSound` picks one of six pain voices uniformly; the port cooks four of
+/// them (pain1, pain2, pain3, pain6: `reslist.txt` puts them in worldspawn's
+/// always-resident set), so the roll runs over those and never asks the bank
+/// for a voice it does not hold. pain4 and pain5 stay out for SPU space.
+pub const PAIN_VOICES: [i16; 4] = [SOUND_PAIN, SOUND_PAIN_2, 0xa2, 0xa5];
 /// `player/death1.wav`. `DeathSound` rolls one of five, but death1 is the
 /// only one worldspawn precaches, so the roll has a single outcome.
 pub const SOUND_DEATH: i16 = 0x8e;

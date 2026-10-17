@@ -121,7 +121,7 @@ struct EncodedSound {
     looping: bool,
 }
 
-/// Cook the 37 non-variant `worldspawn` sounds once at stable SPU addresses.
+/// Cook the 38 non-variant `worldspawn` sounds once at stable SPU addresses.
 pub fn cook_global_sounds(
     pak: &PakArchive<'_>,
     sound_map: &str,

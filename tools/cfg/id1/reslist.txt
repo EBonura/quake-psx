@@ -48,6 +48,7 @@ ent worldspawn
   sfx sound/player/udeath.wav
   sfx sound/player/h2odeath.wav
   sfx sound/player/pain1.wav
+  sfx sound/player/pain2.wav
   sfx sound/player/pain3.wav
   sfx sound/player/pain6.wav
   sfx sound/player/drown2.wav

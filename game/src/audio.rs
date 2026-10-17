@@ -20,8 +20,8 @@ use crate::platform::{self, StorageError};
 const GLOBAL_SOUND_CHUNK: u32 = 3;
 const VIDEO_TICKS_HZ: u32 = 60;
 const SAMPLES_PER_ADPCM_BLOCK: u32 = 28;
-/// Resident sounds the bank table holds: the 37 global effects plus one map's
-/// own. Episode 1's worst map needs 101, so the table is sized to that rather
+/// Resident sounds the bank table holds: the 38 global effects plus one map's
+/// own. Episode 1's worst map needs 102, so the table is sized to that rather
 /// than the format's 255-record ceiling (12 bytes each from the bump heap); the
 /// host cooker mirrors this bound and refuses a map above it.
 const AUDIO_EFFECT_CAPACITY: usize = 104;
