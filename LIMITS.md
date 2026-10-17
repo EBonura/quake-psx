@@ -55,3 +55,13 @@ Added with `fix/quake-inventory-3-2026-10-17`; what stays different after the ro
 | A door chain's message is printed only from a member that carries it. In the original `door_touch` reads the chain master's text, which `LinkDoors` copies in from any member (E1M4 raw #135 and E1M6 #67 differ). | Not done: a per-mover message index costs about 150 bytes of image for two doors. | Lane notes. |
 | `multi_touch`'s facing test is not modelled (START hall triggers with an angle and the E1M1 exit trigger fire from any direction). | Needs the player's yaw in the trigger pass; message-only triggers. | Lane notes. |
 
+
+## Save and load (2026-10-17)
+
+| Difference | Reason | Evidence |
+| --- | --- | --- |
+| Three save slots, named SLOT 1 to 3, with no description line. The original lists twelve with the map name and kill count. | A card has fifteen blocks shared with every other game and a save takes one. The slot page is drawn from the pause menu's static rows, and reading a description would mean reading all three files each time the page opens. | `crates/quake-core/src/menu.rs` `SAVE_SLOTS`; `game/src/savegame.rs` `FILES`. |
+| Projectiles in flight, particles, decals, playing sounds, the weapon's swing and pickup-flash animation timers and the view-feel filter restart on load. The original saves its projectile entities. | They are a fraction of a second old and the fixed pools hold them as plain structs that would double the payload. The save gate compares everything else to the byte. | `game/src/entity/save.rs` module comment; `crates/quake-core/src/combat.rs` `Snapshot for WeaponState`. |
+| A save blocks the game for about four emulated seconds and a load for about two. | `psx_mc::Card::write` is a blocking transfer: each 128-byte frame is a SIO0 transaction and the card commits after every write. Spreading it over vblanks needs the SDK's `CardJob` and a way to keep the overlay installed across frames; not done. | `runs/save9` measurement: 130 million cycles from the pause press to the notice. |
+| A save is at most 5 KB; the largest Episode 1 map (E1M3) takes 4,257 bytes. | The payload waits in a buffer on the caller's stack frame (stack the rest of the game never reaches; `stack-guard` checks the path). A bigger scene reports SAVE TOO LARGE instead of writing a short file. | `savegame::STAGING_BYTES`; the gate logs the size of every map's save. |
+| The save and load code lives in three overlay images that borrow the map loader's transfer buffer, so the first seconds of a menu action read 6 to 11 KB from the disc. | Resident, the feature cost 29 KB of the heap; as overlays the resident cost is under 7 KB. | `ship-boot`: `heap_free` 24,120 to 17,192 bytes (floor 8,192). |

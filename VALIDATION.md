@@ -137,6 +137,7 @@ cargo quake-build visual-parity-regress --psoxide ../PSoXide-quake
 cargo quake-build e1m1-chain-regress --psoxide ../PSoXide-quake
 cargo quake-build e1m1-chain-bench --psoxide ../PSoXide-quake
 cargo quake-build e1m1-spawn-regress --psoxide ../PSoXide-quake
+cargo quake-build e1m1-save-regress --psoxide ../PSoXide-quake
 QUAKE_PSX_PC_LINE_LOG=1 cargo quake-build e1m1-chain-bench --psoxide ../PSoXide-quake
 cargo quake-build e1m2-e1m3-route-regress --psoxide ../PSoXide-quake
 cargo quake-build combat-regress --psoxide ../PSoXide-quake
@@ -158,6 +159,7 @@ cargo quake-build ambient-regress --psoxide ../PSoXide-quake
 | `visual-parity-regress` | Fixed E1M1 camera, display hashes and GPU state |
 | `e1m1-chain-regress` | A played E1M1 route with mechanisms, combat and exit |
 | `e1m1-spawn-regress` | Every E1M1 monster stands where `droptofloor` puts it (pinned table, also checked on the host by `crates/quake-core/tests/e1m1_monster_spawn.rs`), only patrollers move while the player stands at the spawn, and with the player at the t2 bridge the woken grunts never stand with their box hanging off the platform edge (`SV_CheckBottom`) |
+| `e1m1-save-regress` | Save and load through the real card code on the emulator's memory card, in four boots. Two scripted boots on a blank card: the boot-time loads answer SLOT 2 and SLOT 1 IS EMPTY; a save into slot 1; the player is moved, hurt and given every weapon and the first door starts opening; a save into slot 2; a second perturbation; loads of slots 1 and 2 give back the saved fingerprint, position, health, inventory and mover count; the empty slot 3 leaves the game alone; every map is started and its save size logged; the E1M3 game is saved into slot 3 and loaded back from E1M8. Both boots must agree on every figure and every byte of the card. A third boot on the saved card restores slots 2 and 1; a fourth, on a card with one flipped bit in slot 1, refuses it with SAVE NOT USABLE, still loads slot 2 and leaves the game alone. Host tests (`cargo test` in `crates/quake-core`) round-trip every snapshot type, with struct literals that stop compiling when a saved type gains a field |
 | `e1m1-chain-bench` | The same E1M1 route at a fixed simulation step for comparable performance measurements. Its fps and elapsed cycles are field-quantised wall numbers; with `QUAKE_PSX_PC_LINE_LOG=1` it also prints `full_level_work_instructions` (retired outside the vblank spin and CD reads), the number that ranks SDK and renderer work |
 | `e1m2-e1m3-route-regress` | Linked routes through E1M2 and E1M3 into E1M4 |
 | `combat-regress` | Shotgun firing, damage, pain, death and view-model animation |

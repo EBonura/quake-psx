@@ -34,7 +34,30 @@ Implemented:
 - DualShock analog input and digital-controller fallback;
 - configurable deadzone, brightness, HUD, water warp and translucent water.
 
-Save/load and multiplayer are not implemented.
+Saving and loading the game on the memory card is implemented (below).
+Multiplayer is not.
+
+## Save and load
+
+SAVE GAME is in the pause menu and LOAD GAME in both menus. Each opens a page
+of three slots; every slot is its own memory-card file
+(`BESLES-00000QPSX0001` to `0003`, card in port 1 first, then port 2), so the
+BIOS card manager lists three QUAKE saves. A save holds the map, the skill and
+the runes in hand, the player (position, velocity, view angles), the weapon
+state (health, armour, ammunition, owned weapons, powerups, the loadout the
+level was entered with, survival timers) and the scene's moving parts: every
+monster's place, state, cooldowns and pack/ambush flags, the health of
+everything damageable, which pickups and bodies are still there, how far each
+door, button, lift and train has travelled, which triggers and teleports have
+fired, the target graph, the secret and monster counters, the switchable light
+styles, the event lightning. It is framed by a magic number, a format version
+and an FNV-1a checksum; a card written by another build, or damaged, is refused
+with SAVE NOT USABLE and leaves the game alone. A save is refused while the
+player is dead (`Host_Savegame_f`). Loading from the title menu works, and
+loading a save from another map goes through an ordinary level change.
+
+Not saved (they restart with the map): projectiles in flight, particles and
+decals, the sounds playing, the intermission. See `LIMITS.md`.
 
 ## Weapons and effects
 
