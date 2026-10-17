@@ -81,6 +81,9 @@ pub enum ParticleKind {
     /// `TE_GUNSHOT` and `TE_SPIKE`: `R_RunParticleEffect` colour 0, the dark
     /// grey puff a shot throws up where it meets a wall.
     Puff,
+    /// `R_RocketTrail` type 3 (`EF_TRACER`): palette 52 and 60, the olive dots
+    /// behind a wizard's spike.
+    Tracer,
 }
 
 impl ParticleKind {
@@ -94,7 +97,7 @@ impl ParticleKind {
             Self::Smoke => 15,
             Self::Spark => 12,
             Self::Bubble => 120,
-            Self::Puff => 12,
+            Self::Puff | Self::Tracer => 12,
         }
     }
 
@@ -148,13 +151,14 @@ impl ImpactParticle {
     /// per drawn particle inside the frame loop, which is I-cache bound.
     pub const fn color(self) -> (u8, u8, u8) {
         /// Newest colour of each kind's ramp, faded to black by its age.
-        const RAMP: [(u8, u8, u8); 6] = [
+        const RAMP: [(u8, u8, u8); 7] = [
             (0x90, 0x12, 0x09),
             (0xf0, 0x96, 0x1e),
             (0x80, 0x80, 0x70),
             (0xb4, 0xb4, 0xf0),
             (0x80, 0x80, 0x80),
             (0x68, 0x68, 0x68),
+            (0x53, 0x53, 0x0b),
         ];
         let life = self.kind.life_ticks();
         let remaining = life.saturating_sub(self.age_ticks) as u16;

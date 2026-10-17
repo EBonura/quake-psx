@@ -1299,6 +1299,10 @@ pub fn run() -> ! {
                 if let Some(origin) = result.last_muzzle_flash {
                     dynamic_lights.spawn_muzzle_flash(origin);
                 }
+                // `spike_touch` against a wall: `TE_WIZSPIKE`'s puff.
+                if let Some(origin) = result.last_spike_puff {
+                    presentation.impact_particles_mut().spawn_puff(origin);
+                }
                 // A gibbed monster bursts where it stood.
                 if let Some(origin) = result.last_gib {
                     presentation.impact_particles_mut().spawn_blood(origin);

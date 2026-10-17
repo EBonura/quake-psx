@@ -752,6 +752,9 @@ pub struct MonsterFrameResult {
     pub last_explosion: Option<Vec3I32>,
     /// Where the last monster was gibbed this frame, for the blood burst.
     pub last_gib: Option<Vec3I32>,
+    /// Where a wizard's spike met the world this frame: `spike_touch`'s
+    /// `TE_WIZSPIKE` puff.
+    pub last_spike_puff: Option<Vec3I32>,
     /// A monster that set `EF_MUZZLEFLASH` this frame (soldier, ogre, wizard,
     /// shambler): the light goes 16 units above its origin.
     pub last_muzzle_flash: Option<Vec3I32>,
@@ -793,6 +796,7 @@ impl Default for MonsterFrameResult {
             player_impulse: Vec3I32::default(),
             last_explosion: None,
             last_gib: None,
+            last_spike_puff: None,
             last_muzzle_flash: None,
             backpack_pickup: None,
         }
@@ -7097,7 +7101,9 @@ impl EntityScene {
             // `lavaball.mdl` carries EF_ROCKET (flags 1 in PAK0), so Chthon's
             // balls smoke like a rocket.
             MonsterMissileKind::LavaBall => (ParticleKind::Fire, SMOKE_STEP_UNITS),
-            // The spit and the backpack carry no trail flag.
+            // `w_spike.mdl` carries EF_TRACER (flags 16 in PAK0).
+            MonsterMissileKind::Spit => (ParticleKind::Tracer, SMOKE_STEP_UNITS),
+            // The backpack carries no trail flag.
             _ => return None,
         };
         Some((missile.origin, kind, step_units))
@@ -7332,6 +7338,11 @@ impl EntityScene {
                 if world.fraction < 1 << 12 {
                     let stopped = interpolate_segment(missile.origin, end, world.fraction);
                     if !missile.kind.ballistic() {
+                        if matches!(missile.kind, MonsterMissileKind::Spit)
+                            && world_point_contents(map, stopped) != Some(CONTENTS_SKY)
+                        {
+                            result.last_spike_puff = Some(stopped);
+                        }
                         if matches!(missile.kind, MonsterMissileKind::LavaBall)
                             && world_point_contents(map, stopped) != Some(CONTENTS_SKY)
                         {
