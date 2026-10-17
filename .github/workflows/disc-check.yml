@@ -1,0 +1,95 @@
+name: Build the standalone disc
+
+# Builds the same provenance-grade disc the release workflow does, from the
+# music committed in assets/music, and publishes nothing. It runs on pull
+# requests and by hand, so a change to the builder, the music or the SDK pin is
+# checked before it reaches a release tag.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quake-psx-disc-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  disc:
+    name: Standalone PS1 disc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: quake
+    env:
+      OBJDUMP: mipsel-linux-gnu-objdump
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          path: quake
+          persist-credentials: false
+
+      - name: Install host build requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes 7zip unzip binutils-mipsel-linux-gnu
+          toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal \
+            --component rust-src \
+            --component llvm-tools \
+            --component rustfmt \
+            --component clippy
+          cargo --version
+
+      - name: Check the committed music against its digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd assets/music && sha256sum --check SHA256SUMS)
+
+      - name: Hydrate the pinned SDK path dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --manifest-path psoxide-pin/Cargo.toml
+
+      - name: Check the committed music against the song table
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --manifest-path host/quake-build/Cargo.toml \
+            --bin quake-psx-build committed_pack
+
+      - name: Build the provenance-grade standalone disc
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build
+
+      - name: Verify the disc carries the committed music
+        shell: bash
+        run: |
+          set -euo pipefail
+          provenance="dist/quake-psx.provenance.json"
+          jq --exit-status --arg revision "$(git rev-parse HEAD)" '
+            .schema == 1 and
+            .quake_source.revision == $revision and
+            .quake_source.tree_clean == true and
+            .artifacts.bin.file == "quake-psx.bin" and
+            (.music.files | length) == 2
+          ' "$provenance" >/dev/null
+          for file in MUSIC1.XA MUSIC2.XA; do
+            expected="$(awk -v f="$file" '$2 == f { print $1 }' assets/music/SHA256SUMS)"
+            jq --exit-status --arg f "$file" --arg d "$expected" \
+              '.music.files[] | select(.file == $f) | .sha256 == $d' "$provenance" >/dev/null
+          done
+          test "$(grep -c '^[[:space:]]*TRACK ' dist/quake-psx.cue)" -eq 1
+          git diff --exit-code
