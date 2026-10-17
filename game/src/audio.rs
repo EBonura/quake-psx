@@ -173,6 +173,12 @@ pub struct AudioBank {
     /// runs out on, which is all `SND_PickChannel` needs. One word each:
     /// the `sound_key` in the low half, the cutoff tick in the high half.
     channels: [u32; DYNAMIC_VOICES.len()],
+    /// Where each dynamic voice's positional one-shot sits, which is all
+    /// `S_Update`'s `SND_Spatialize` pass over the live channels needs.
+    spots: [ChannelSpot; DYNAMIC_VOICES.len()],
+    /// The tick `tick` last saw, to tell a live `channels[]` entry from a
+    /// finished one.
+    now: u16,
     ambients: Vec<AmbientChannel>,
     ambient_sources: [MaybeUninit<AmbientSource>; MAX_AMBIENT_SOURCES],
     ambient_source_count: u8,
@@ -185,6 +191,26 @@ pub struct AudioBank {
     listener_yaw: i16,
     /// Original `volume`, in the Options menu's `0..=10` slider steps.
     sfx_volume: u8,
+}
+
+/// A positional one-shot's emitter, in whole units. `attenuation_q20` is
+/// [`Attenuation::q20`] (it fits a halfword), and zero for a voice with no
+/// emitter (a listener-relative sound, or a free voice).
+#[derive(Copy, Clone)]
+struct ChannelSpot {
+    x: i16,
+    y: i16,
+    z: i16,
+    attenuation_q20: i16,
+}
+
+impl ChannelSpot {
+    const NONE: Self = Self {
+        x: 0,
+        y: 0,
+        z: 0,
+        attenuation_q20: 0,
+    };
 }
 
 #[derive(Copy, Clone)]
@@ -212,6 +238,8 @@ impl AudioBank {
             local_identity: None,
             player: Player::new(DYNAMIC_VOICES, VIDEO_TICKS_HZ),
             channels: [0; DYNAMIC_VOICES.len()],
+            spots: [ChannelSpot::NONE; DYNAMIC_VOICES.len()],
+            now: 0,
             ambients: Vec::with_capacity(MAX_AMBIENT_VOICES),
             ambient_sources: [MaybeUninit::uninit(); MAX_AMBIENT_SOURCES],
             ambient_source_count: 0,
@@ -369,6 +397,7 @@ impl AudioBank {
         self.player.silence_all();
         self.player = Player::new(DYNAMIC_VOICES, VIDEO_TICKS_HZ);
         self.channels = [0; DYNAMIC_VOICES.len()];
+        self.spots = [ChannelSpot::NONE; DYNAMIC_VOICES.len()];
         self.ambients.clear();
         self.ambient_source_count = 0;
         self.teleporter_hum_count = 0;
@@ -482,6 +511,7 @@ impl AudioBank {
 
     /// Retire completed voices using the SDK's silicon-safe cutoff policy.
     pub fn tick(&mut self, video_tick: u32) {
+        self.now = video_tick as u16;
         self.player.tick(video_tick);
     }
 
@@ -512,6 +542,28 @@ impl AudioBank {
             )
             .unwrap_or((Volume::SILENCE, Volume::SILENCE));
             ambient.voice.set_volume(left, right);
+        }
+        // `S_Update`: every live positional channel is respatialized against
+        // the moved listener, not only the ambients.
+        for slot in 0..self.spots.len() {
+            let spot = self.spots[slot];
+            let remaining = ((self.channels[slot] >> 16) as u16).wrapping_sub(self.now) as i16;
+            if spot.attenuation_q20 == 0 || remaining <= 0 {
+                continue;
+            }
+            let (left, right) = spatial_volumes(
+                Vec3I32 {
+                    x: i32::from(spot.x) << 12,
+                    y: i32::from(spot.y) << 12,
+                    z: i32::from(spot.z) << 12,
+                },
+                self.scaled_sfx_volume(ONE_SHOT_MAX_VOLUME),
+                i32::from(spot.attenuation_q20),
+                listener,
+                yaw,
+            )
+            .unwrap_or((Volume::SILENCE, Volume::SILENCE));
+            self.player.voice(slot).set_volume(left, right);
         }
     }
 
@@ -621,6 +673,7 @@ impl AudioBank {
             Volume::linear(volume, 256),
             key,
             video_tick,
+            ChannelSpot::NONE,
         )
     }
 
@@ -635,6 +688,7 @@ impl AudioBank {
             Volume::linear(volume, 256),
             key,
             video_tick,
+            ChannelSpot::NONE,
         )
     }
 
@@ -657,7 +711,13 @@ impl AudioBank {
             self.listener,
             self.listener_yaw,
         )?;
-        self.play_one_shot_volumes(id, left, right, key, video_tick)
+        let spot = ChannelSpot {
+            x: (origin.x >> 12) as i16,
+            y: (origin.y >> 12) as i16,
+            z: (origin.z >> 12) as i16,
+            attenuation_q20: attenuation.q20() as i16,
+        };
+        self.play_one_shot_volumes(id, left, right, key, video_tick, spot)
     }
 
     fn play_one_shot_volumes(
@@ -667,6 +727,7 @@ impl AudioBank {
         right: Volume,
         key: u16,
         video_tick: u32,
+        spot: ChannelSpot,
     ) -> Option<u32> {
         let Some(effect) = self.effects.iter().find(|effect| effect.id == id).copied() else {
             return None;
@@ -687,6 +748,7 @@ impl AudioBank {
         self.player.play_on(slot, &shot, video_tick);
         let end = (video_tick as u16).wrapping_add(shot.ticks(VIDEO_TICKS_HZ).unwrap_or(0) as u16);
         self.channels[slot] = (u32::from(end) << 16) | u32::from(key);
+        self.spots[slot] = spot;
         let voice = self.player.voice(slot);
         if right != left {
             // `OneShot` keys on with one level for both ears; the pan lands
