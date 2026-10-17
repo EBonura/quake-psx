@@ -1580,7 +1580,15 @@ fn begin_intermission(
 ) -> Intermission {
     let (kills, total_kills) = entities.kills();
     let (secrets, total_secrets) = entities.secrets();
-    let camera = match entities.intermission_spot(usize::from(seconds) + usize::from(kills)) {
+    // Gate builds keep the first camera, like the bounded dwell: the panel's
+    // frames are inside the bench window, and which camera is picked decides
+    // how much of the level they draw.
+    let pick = if WAIT_FOR_BUTTON {
+        usize::from(seconds) + usize::from(kills)
+    } else {
+        0
+    };
+    let camera = match entities.intermission_spot(pick) {
         Some(spot) => crate::renderer::Camera {
             origin: spot.origin,
             angles: spot.angles,
