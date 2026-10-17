@@ -503,7 +503,9 @@ fn validate_episode_state(entities: &EntityScene, world: &ResidentMap, player: &
             let here = player.origin();
             if (here.x - origin.x).abs() < (1 << 12)
                 && (here.y - origin.y).abs() < (1 << 12)
-                && (here.z - origin.z).abs() < (1 << 12)
+                // `SelectSpawnPoint` raises the player one unit above the
+                // spot (`spot.origin + '0 0 1'`).
+                && (here.z - origin.z).abs() <= (1 << 12)
             {
                 state |= START2_SPAWN;
             }
