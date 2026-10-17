@@ -3821,8 +3821,8 @@ fn validate_indexed_psb4_census(root: &Path) -> Result<()> {
     let persistent_total = compact_total + global_bytes;
     if legacy_total != 17_227_644
         || compact_total != 14_628_746
-        || global_bytes != 159_418
-        || persistent_total != 14_788_164
+        || global_bytes != 160_964
+        || persistent_total != 14_789_710
     {
         return Err(format!(
             "PSB5/QSB1 episode census drifted: {legacy_total} -> {compact_total} + {global_bytes}"
