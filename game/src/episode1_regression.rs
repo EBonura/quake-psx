@@ -723,6 +723,7 @@ pub fn controls(world: &ResidentMap, entities: &EntityScene, player: &Player) ->
                     // Another lap. After the last one the route stands on the
                     // button until Chthon's death arrives.
                     LAPS_DONE += 1;
+                    write_volatile(addr_of_mut!((*probe).weapon_animated), u32::from(LAPS_DONE));
                     write_volatile(addr_of_mut!((*probe).player_state), state & !LAP_SHOCK);
                     ROUTE_INDEX = 0;
                     BEST_DISTANCE = i32::MAX;
@@ -794,8 +795,17 @@ pub fn observe(
                 write_volatile(addr_of_mut!((*probe).shock_count), seen);
                 state |= BOSS_THREW;
             }
+            // Telemetry for the ring laps: shocks Chthon has left, and the
+            // frame his death first showed.
+            write_volatile(addr_of_mut!((*probe).monster_pain), boss.shocks as u32);
             if boss.dead {
                 state |= BOSS_DEAD;
+                if read_volatile(addr_of_mut!((*probe).monster_death)) == 0 {
+                    write_volatile(
+                        addr_of_mut!((*probe).monster_death),
+                        read_volatile(addr_of_mut!((*probe).total_frames)),
+                    );
+                }
             }
         }
         let activations = gameplay.player_activated_movers.iter().flatten().count() as u32;
@@ -806,6 +816,11 @@ pub fn observe(
         }
         if gameplay.boss_shocks != 0 {
             state |= BOSS_SHOCKED | LAP_SHOCK;
+            write_volatile(
+                addr_of_mut!((*probe).monster_attack),
+                read_volatile(addr_of_mut!((*probe).monster_attack))
+                    .saturating_add(u32::from(gameplay.boss_shocks)),
+            );
         }
         write_volatile(addr_of_mut!((*probe).player_state), state);
     }
