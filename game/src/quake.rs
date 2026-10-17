@@ -1374,6 +1374,14 @@ pub fn run() -> ! {
         let armor_after = weapon.inventory().armor().max(0) as u16;
         let blood = health_before.saturating_sub(health_after);
         let armor = armor_before.saturating_sub(armor_after);
+        // `CheckPowerups` sets `EF_DIMLIGHT` on the player while the
+        // pentagram or the quad runs: the same 200 unit light a rocket has.
+        let powerups = weapon.inventory().powerups();
+        if powerups.active(quake_core::survival::PowerupKind::Pentagram)
+            || powerups.active(quake_core::survival::PowerupKind::Quad)
+        {
+            dynamic_lights.spawn_rocket_glow(camera.origin);
+        }
         presentation.screen_blend_mut().take_damage(blood, armor);
         rumble.hurt(blood.saturating_add(armor));
         if weapon.take_protect_sound() && audio.contains(0x60) {
