@@ -2590,10 +2590,11 @@ impl MonsterKind {
 }
 
 impl MonsterState {
-    const ALL: [MonsterState; 17] = [
+    const ALL: [MonsterState; 18] = [
         Self::Stand,
         Self::Walk,
         Self::Run,
+        Self::Side,
         Self::Missile,
         Self::Melee,
         Self::MeleeB,
@@ -2635,7 +2636,7 @@ impl crate::save::Snapshot for MonsterRuntime {
     fn load(r: &mut crate::save::Reader) -> Self {
         let kind = MonsterKind::ALL[usize::from(r.below(9))];
         let mut monster = Self::new(kind, 0);
-        monster.state = MonsterState::ALL[usize::from(r.below(17))];
+        monster.state = MonsterState::ALL[usize::from(r.below(MonsterState::ALL.len() as u8))];
         monster.frame = r.u16();
         if monster.frame > highest_frame(kind) {
             r.reject();
@@ -2662,6 +2663,68 @@ impl crate::save::Snapshot for MonsterRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every field set to something other than its default survives a save,
+    /// and every state a monster can be in has a code. The struct literal
+    /// and the exhaustive match fail to compile when a field or a state is
+    /// added without this snapshot (and `crate::save::VERSION`) following.
+    #[test]
+    fn a_monster_with_every_field_set_restores_exactly() {
+        use crate::save::{Reader, Snapshot, Writer};
+        for state in MonsterState::ALL {
+            // New states must be added to `MonsterState::ALL`.
+            match state {
+                MonsterState::Stand
+                | MonsterState::Walk
+                | MonsterState::Run
+                | MonsterState::Side
+                | MonsterState::Missile
+                | MonsterState::Melee
+                | MonsterState::MeleeB
+                | MonsterState::MeleeC
+                | MonsterState::PainA
+                | MonsterState::PainB
+                | MonsterState::PainC
+                | MonsterState::PainD
+                | MonsterState::PainE
+                | MonsterState::DeathA
+                | MonsterState::DeathB
+                | MonsterState::Gib
+                | MonsterState::Rise
+                | MonsterState::Crucified => {}
+            }
+        }
+        for kind in MonsterKind::ALL {
+            for state in MonsterState::ALL {
+                let monster = MonsterRuntime {
+                    kind,
+                    state,
+                    frame: 1,
+                    think_ticks: 3,
+                    attack_cooldown: 7,
+                    pain_cooldown: 9,
+                    hold_ticks: 11,
+                    random_state: 0xdead_beef,
+                    boss_shocks: -2,
+                    leap_ticks: 4,
+                    pause_ticks: 13,
+                    enemy_index: 17,
+                    active: true,
+                    corpse_finished: true,
+                    flags: 0b11_1111,
+                };
+                let mut buf = [0u8; 64];
+                let mut w = Writer::new(&mut buf);
+                monster.save(&mut w);
+                assert!(!w.overflowed());
+                let len = w.len();
+                let mut r = Reader::raw(&buf[..len]);
+                let restored = MonsterRuntime::load(&mut r);
+                assert!(r.finish(), "{kind:?} {state:?}");
+                assert_eq!(restored, monster, "{kind:?} {state:?}");
+            }
+        }
+    }
 
     /// The ball flies from its own spawn point to the player, so a stationary
     /// player is struck: after the flight time the ball is on the player's

@@ -663,6 +663,36 @@ const fn liquid_pain_sound(water_level: u8, water_type: i16) -> Option<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_survival_timers_and_the_powerups_restore_every_saved_field() {
+        use crate::save::{Reader, Snapshot, Writer};
+        let survival = Survival {
+            hazard_ticks: 5,
+            pain_ticks: 6,
+            pain_muted: false,
+            air_ticks: 7,
+            drown_damage: 8,
+            last_water_level: 3,
+            in_liquid: true,
+            alive: false,
+            random_state: 0x1234_5678,
+        };
+        let powerups = Powerups {
+            remaining_ticks: [100, 200, 300, 400],
+            warned: 0b101,
+        };
+        let mut buf = [0u8; 64];
+        let mut w = Writer::new(&mut buf);
+        survival.save(&mut w);
+        powerups.save(&mut w);
+        assert!(!w.overflowed());
+        let len = w.len();
+        let mut r = Reader::raw(&buf[..len]);
+        assert_eq!(Survival::load(&mut r), survival);
+        assert_eq!(Powerups::load(&mut r), powerups);
+        assert!(r.finish());
+    }
     use crate::combat::Pickup;
 
     #[optimize(size)]

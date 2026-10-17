@@ -1447,6 +1447,32 @@ fn trace<C: MovementTrace + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_movement_state_restores_every_field() {
+        use crate::save::{Reader, Snapshot, Writer};
+        let state = MovementState {
+            origin: Vec3I32 { x: 1 << 12, y: -2 << 12, z: 3 << 12 },
+            old_origin: Vec3I32 { x: 4, y: -5, z: 6 },
+            velocity: Vec3I32 { x: 7, y: 8, z: -9 },
+            grounded: true,
+            water_level: 2,
+            water_type: -3,
+            jump_latched: true,
+            steep_seam_recovered: true,
+            water_jump_ticks: 12,
+            water_jump_push: Vec3I32 { x: -10, y: 11, z: 0 },
+        };
+        let mut buf = [0u8; 96];
+        let mut w = Writer::new(&mut buf);
+        state.save(&mut w);
+        assert!(!w.overflowed());
+        let len = w.len();
+        let mut r = Reader::raw(&buf[..len]);
+        let restored = MovementState::load(&mut r);
+        assert!(r.finish());
+        assert_eq!(restored, state);
+    }
     use quake_formats::{ClipNode, Plane, RecordSlice};
 
     struct Floor;

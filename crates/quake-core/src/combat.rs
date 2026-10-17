@@ -2334,6 +2334,47 @@ pub fn view_basis(angles: [i16; 3]) -> (Vec3I32, Vec3I32, Vec3I32) {
 mod tests {
     use super::*;
 
+    fn full_inventory() -> Inventory {
+        // A literal, so that a new field fails to compile until it is saved.
+        Inventory {
+            health: -3,
+            armor: 150,
+            armor_tier: Some(ArmorTier::Red),
+            keys: 3,
+            god_mode: true,
+            ammo: [11, 22, 33, 44],
+            owned_weapons: 0b1010_1101,
+            active_weapon: Weapon::Lightning,
+            powerups: Powerups::new(),
+            megahealth_rot_ticks: 77,
+        }
+    }
+
+    #[test]
+    fn the_inventory_and_the_weapon_state_restore_every_saved_field() {
+        use crate::save::{Reader, Snapshot, Writer};
+        let mut state = WeaponState::new();
+        state.inventory = full_inventory();
+        state.entry_inventory = Inventory::new();
+        state.refire_ticks = 9;
+        state.view_frame = 10;
+        state.view_frame_end = 11;
+        state.view_frame_ticks = 12;
+        state.random_state = 0xcafe_f00d;
+        state.shots_fired = 99_999;
+        state.sustained_weapon = Some(Weapon::SuperNailgun);
+        state.nail_next_positive = true;
+        let mut buf = [0u8; 160];
+        let mut w = Writer::new(&mut buf);
+        state.save(&mut w);
+        assert!(!w.overflowed());
+        let len = w.len();
+        let mut r = Reader::raw(&buf[..len]);
+        let restored = WeaponState::load(&mut r);
+        assert!(r.finish());
+        assert_eq!(restored, state);
+    }
+
     const ORIGIN: Vec3I32 = Vec3I32 { x: 0, y: 0, z: 0 };
 
     const fn add_combat_vec(a: Vec3I32, b: Vec3I32) -> Vec3I32 {
