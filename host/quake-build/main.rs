@@ -242,6 +242,8 @@ enum Action {
     Check,
     ShipBoot,
     MusicDisc,
+    MusicCheck,
+    MusicRefresh,
     MapRegress,
     StartRouteRegress,
     E1m1ChainRegress,
@@ -304,10 +306,14 @@ struct Cli {
     quake_dir: Option<PathBuf>,
     psoxide: Option<PathBuf>,
     allow_psoxide_drift: bool,
-    /// Directory holding the eight ambient WAV loops (`music::LOOPS`).
+    /// Directory holding the eight ambient WAV loops (`music::LOOPS`); only
+    /// `music-check` and `music-refresh` read it.
     music_dir: Option<PathBuf>,
     /// Build a silent disc: no music files, no music rows in Options.
     no_music: bool,
+    /// Put the committed music on a regression or benchmark disc too (the
+    /// shipping builds always carry it).
+    with_music: bool,
     /// A PSoXide checkout at the xa-pack revision, instead of fetching one.
     xa_pack: Option<PathBuf>,
     /// `ram --map PATH`: report an existing link map without building.
@@ -426,6 +432,21 @@ fn real_main() -> Result<()> {
         return Ok(());
     }
     let root = repository_root();
+    if matches!(cli.action, Action::MusicCheck | Action::MusicRefresh) {
+        let dir = cli.music_dir.as_deref().ok_or(
+            "music-check and music-refresh need --music-dir PATH (or QUAKE_PSX_MUSIC_DIR) \
+             with the eight loops",
+        )?;
+        let build = root.join("build-psoxide");
+        fs::create_dir_all(&build)?;
+        return music::cook_committed(
+            &root,
+            &build,
+            dir,
+            cli.xa_pack.as_deref(),
+            cli.action == Action::MusicRefresh,
+        );
+    }
     audit_sources(&root)?;
     let sdk = hydrate_psoxide(&root, cli.psoxide.as_deref(), cli.allow_psoxide_drift)?;
     println!("PSoXide SDK: {}", sdk.describe());
@@ -1228,6 +1249,8 @@ fn real_main() -> Result<()> {
                     .into(),
             );
         }
+        // Handled before the SDK is hydrated: they only cook and compare.
+        Action::MusicCheck | Action::MusicRefresh => unreachable!(),
     }
     Ok(())
 }
@@ -2779,6 +2802,7 @@ fn parse_cli() -> Result<Cli> {
     let mut allow_psoxide_drift = false;
     let mut music_dir = env::var_os("QUAKE_PSX_MUSIC_DIR").map(PathBuf::from);
     let mut no_music = false;
+    let mut with_music = false;
     let mut xa_pack = env::var_os("QUAKE_PSX_XA_PACK").map(PathBuf::from);
     let mut ram_map = None;
     let mut ram_items = false;
@@ -2793,6 +2817,8 @@ fn parse_cli() -> Result<Cli> {
             | "ship-boot"
             | "ram"
             | "music-disc"
+            | "music-check"
+            | "music-refresh"
             | "map-regress"
             | "start-route-regress"
             | "visual-parity-regress"
@@ -2853,6 +2879,8 @@ fn parse_cli() -> Result<Cli> {
                     "check" => Action::Check,
                     "ship-boot" | "ram" => Action::ShipBoot,
                     "music-disc" => Action::MusicDisc,
+                    "music-check" => Action::MusicCheck,
+                    "music-refresh" => Action::MusicRefresh,
                     "map-regress" => Action::MapRegress,
                     "start-route-regress" => Action::StartRouteRegress,
                     "visual-parity-regress" => Action::VisualParityRegress,
@@ -2922,6 +2950,7 @@ fn parse_cli() -> Result<Cli> {
             "--music-dir" => music_dir = Some(next_path(&mut args, "--music-dir")?),
             "--xa-pack" => xa_pack = Some(next_path(&mut args, "--xa-pack")?),
             "--no-music" => no_music = true,
+            "--with-music" => with_music = true,
             "--map" => ram_map = Some(next_path(&mut args, "--map")?),
             "--items" => ram_items = true,
             "-h" | "--help" => {
@@ -2938,6 +2967,7 @@ fn parse_cli() -> Result<Cli> {
         allow_psoxide_drift,
         music_dir,
         no_music,
+        with_music,
         xa_pack,
         ram_map,
         ram_items,
@@ -2959,6 +2989,8 @@ fn print_help() {
          Actions:\n  \
            build     Download/cook shareware, build the PSoXide disc, package dist (default)\n  \
            music-disc  Build a disc whose music module logs each schedule step (gate image)\n  \
+           music-check  Cook the music from --music-dir; fail unless byte-identical to assets/music\n  \
+           music-refresh  Cook the music from --music-dir and replace assets/music and game/src/music_map.rs\n  \
            assets    Force a complete Episode 1 recook\n  \
            compile   Rebuild only the PSoXide PS1 executable\n  \
            disc      Build and package the disc from current assets\n  \
@@ -3012,10 +3044,12 @@ fn print_help() {
            --psoxide PATH    Override the pinned SDK with a PSoXide checkout\n  \
            --allow-psoxide-drift  Accept a --psoxide checkout whose revision or\n                    \
            dirty state does not match the pinned expectation\n  \
-           --music-dir PATH  Directory with the eight ambient loops (Akulak.wav ...);\n                    \
-           the disc, ship-boot and music-disc builds pack them. Or QUAKE_PSX_MUSIC_DIR\n  \
+           --music-dir PATH  Directory with the eight ambient loops (Akulak.wav ...), for\n                    \
+           music-check and music-refresh only. Or QUAKE_PSX_MUSIC_DIR\n  \
            --xa-pack PATH    PSoXide checkout at the pinned xa-pack revision (default:\n                    \
            fetched into .quakepsx/xa-pack). Or QUAKE_PSX_XA_PACK\n  \
+           --with-music      Press the committed music on a regression or benchmark disc\n                    \
+           (build, disc, ship-boot and music-disc always carry it)\n  \
            --no-music        Build a silent disc"
     );
 }
@@ -4733,31 +4767,22 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
     Ok(stage)
 }
 
-/// Pack the ambient music for the actions that build a disc carrying it.
-/// Shipping builds (`build`, `disc`, `ship-boot`) need `--music-dir` or an
-/// explicit `--no-music`; the regression and benchmark discs stay silent.
+/// Load the committed ambient music for the actions that build a disc carrying
+/// it. Shipping builds (`build`, `disc`, `ship-boot`, `music-disc`) always
+/// carry it unless `--no-music`; the regression and benchmark discs stay
+/// silent unless `--with-music`. No WAV and no packer is involved: the cooked
+/// files are in `assets/music` (see `music::committed`).
 fn prepare_music(root: &Path, cli: &Cli) -> Result<()> {
     let shipping = matches!(
         cli.action,
         Action::Build | Action::Disc | Action::ShipBoot | Action::MusicDisc
     );
-    // Regression and benchmark discs stay silent unless a music directory is
-    // named, which is how the gate runs put the music under a scripted route.
     let builds_disc = !matches!(cli.action, Action::Assets | Action::Check | Action::Compile);
-    if cli.no_music || !builds_disc || (!shipping && cli.music_dir.is_none()) {
+    if cli.no_music || !builds_disc || (!shipping && !cli.with_music) {
         return Ok(());
     }
-    let Some(dir) = cli.music_dir.as_deref() else {
-        return Err(
-            "this disc carries the ambient music: pass --music-dir PATH (or QUAKE_PSX_MUSIC_DIR) \
-             with the eight loops, or --no-music for a silent disc"
-                .into(),
-        );
-    };
-    let build = root.join("build-psoxide");
-    fs::create_dir_all(&build)?;
-    let pack = music::prepare(root, &build, dir, cli.xa_pack.as_deref())?;
-    println!("ambient music: {} XA files packed", pack.files.len());
+    let pack = music::committed(root)?;
+    println!("ambient music: {} XA files from {}", pack.files.len(), music::COMMITTED_DIR);
     MUSIC_PACK
         .set(pack)
         .map_err(|_| "the music pack was prepared twice")?;

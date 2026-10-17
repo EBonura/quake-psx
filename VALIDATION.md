@@ -174,12 +174,12 @@ cargo quake-build ambient-regress --psoxide ../PSoXide-quake
 ### Music
 
 The ambient music is checked headlessly rather than by a pass/fail runner.
-`cargo quake-build music-disc --music-dir PATH` builds the shipping stack with
+`cargo quake-build music-disc` builds the shipping stack with
 `music-trace`, which logs every schedule step as
 `quake-music <step> tick=<vblank> song=<n> level=<0..256>` on the guest debug
 log (`frontend launch --guest-debug-log --cd-command-log`). Adding
 `QUAKE_PSX_EXTRA_FEATURES=music-trace-fast` to a regression run
-(`e1m1-chain-regress --music-dir PATH`) cuts the silences to seconds so a loop
+(`e1m1-chain-regress --with-music`) cuts the silences to seconds so a loop
 is playing when the route crosses a map load; the log must then show `stop`
 before the load and `restart` after it, and the CD command log must hold no
 error. The schedule itself is unit-tested in `crates/quake-core` (`cargo test

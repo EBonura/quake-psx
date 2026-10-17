@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! The ambient music pack: eight WAV loops into two XA-ADPCM files for the disc
+//! The ambient music pack: eight WAV loops as two XA-ADPCM files for the disc
 //! and the song table the guest compiles in.
 //!
-//! The loops are not stored in Git (they are CC BY 4.0 music, "Eerie Ambiences
-//! Vol 1" by Mulula VGM Loops, cut and loudness-matched into 37.8 kHz WAVs).
-//! The builder takes them from `--music-dir`, refuses any file whose digest is
-//! not the one below, and packs them with `psx-audio-cook xa-pack` from the
-//! pinned PSoXide revision.
+//! The cooked files are committed in `assets/music` (`MUSIC1.XA`, `MUSIC2.XA`,
+//! the pack manifest `music.json` and their digests in `SHA256SUMS`), so a fresh
+//! clone and CI build the disc without any WAV: [`committed`] checks the files
+//! against the digests and the guest's song table and hands them to
+//! `mkisopsx --xa-file`.
 //!
-//! `game/src/music_map.rs` is generated output that is committed so the guest
-//! compiles on a checkout without the WAVs. The builder rewrites it from the
-//! pack; a changed file shows up in `git status`, and the shipping build's
-//! clean-tree check then refuses to proceed until it is committed.
+//! The loops themselves are not stored in Git (they are CC BY 4.0 music,
+//! "Eerie Ambiences Vol 1" by Mulula VGM Loops, cut and loudness-matched into
+//! 37.8 kHz WAVs). A maintainer who changes them runs `music-check` (cook from
+//! `--music-dir`, fail unless the result is byte for byte the committed files)
+//! or `music-refresh` (cook, then replace the committed files and
+//! `game/src/music_map.rs`). Both refuse any WAV whose digest is not the one
+//! below and cook with `psx-audio-cook xa-pack` from the pinned PSoXide revision.
 
 use super::{git_capture, require_tool, run, sha256_path, Result};
 use std::fs;
@@ -110,6 +113,116 @@ pub struct MusicPack {
     pub receipt: serde_json::Value,
 }
 
+/// Where the cooked music is committed, relative to the repository root.
+pub const COMMITTED_DIR: &str = "assets/music";
+/// The committed files, in the order of `SHA256SUMS`.
+const COMMITTED_FILES: [&str; 3] = ["MUSIC1.XA", "MUSIC2.XA", "music.json"];
+/// Bytes of one XA sector as `xa-pack` writes it (mode 2 form 2 without sync).
+const XA_SECTOR_BYTES: u64 = 2336;
+const CREDIT: &str =
+    "Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/";
+
+/// The sector counts in the guest's `XA_FILE_SECTORS` line.
+fn guest_sectors(root: &Path) -> Result<Vec<u64>> {
+    let map = fs::read_to_string(root.join("game/src/music_map.rs"))?;
+    let line = map
+        .lines()
+        .find(|line| line.starts_with("pub const XA_FILE_SECTORS"))
+        .ok_or("game/src/music_map.rs has no XA_FILE_SECTORS")?;
+    let list = line
+        .split('[')
+        .nth(2)
+        .and_then(|rest| rest.split(']').next())
+        .ok_or("XA_FILE_SECTORS is not a list")?;
+    list.split(',')
+        .map(|value| Ok(value.trim().parse::<u64>()?))
+        .collect()
+}
+
+/// The committed music, verified: every file against `SHA256SUMS`, the sector
+/// counts against the manifest and the guest's song table. This is what every
+/// disc build presses; no WAV and no packer is involved.
+pub fn committed(root: &Path) -> Result<MusicPack> {
+    let dir = root.join(COMMITTED_DIR);
+    let sums = fs::read_to_string(dir.join("SHA256SUMS"))
+        .map_err(|error| format!("{}/SHA256SUMS: {error}", COMMITTED_DIR))?;
+    let mut digests = Vec::new();
+    for name in COMMITTED_FILES {
+        let expected = sums
+            .lines()
+            .filter_map(|line| line.split_once("  "))
+            .find(|(_, file)| *file == name)
+            .map(|(digest, _)| digest.to_string())
+            .ok_or_else(|| format!("{COMMITTED_DIR}/SHA256SUMS has no entry for {name}"))?;
+        let path = dir.join(name);
+        if !path.is_file() {
+            return Err(format!("committed music {} is missing", path.display()).into());
+        }
+        let actual = sha256_path(&path)?;
+        if actual != expected {
+            return Err(format!(
+                "committed music {} has digest {actual}, SHA256SUMS says {expected}",
+                path.display()
+            )
+            .into());
+        }
+        digests.push(expected);
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("music.json"))?)?;
+    let empty = manifest["empty_slots"].as_u64().unwrap_or(u64::MAX);
+    if empty != 0 {
+        return Err(format!("the music pack leaves {empty} interleave slots empty").into());
+    }
+    let manifest_files = manifest["files"]
+        .as_array()
+        .ok_or("music.json has no files")?;
+    let sectors: Vec<u64> = manifest_files
+        .iter()
+        .map(|entry| entry["sectors"].as_u64().unwrap_or(0))
+        .collect();
+    if sectors != guest_sectors(root)? {
+        return Err(format!(
+            "game/src/music_map.rs says {:?} sectors per file, {COMMITTED_DIR}/music.json says              {sectors:?}; run `music-refresh` or restore the matching table",
+            guest_sectors(root)?
+        )
+        .into());
+    }
+    let mut files = Vec::new();
+    let mut artifacts = Vec::new();
+    for (index, entry) in manifest_files.iter().enumerate() {
+        let name = entry["name"].as_str().ok_or("pack file has no name")?;
+        let path = dir.join(name);
+        let bytes = fs::metadata(&path)?.len();
+        if bytes != sectors[index] * XA_SECTOR_BYTES {
+            return Err(format!(
+                "{} is {bytes} bytes, not {} sectors",
+                path.display(),
+                sectors[index]
+            )
+            .into());
+        }
+        artifacts.push(serde_json::json!({
+            "file": name,
+            "sha256": digests[index],
+            "bytes": bytes,
+        }));
+        files.push(path);
+    }
+    let sources: Vec<_> = LOOPS
+        .iter()
+        .map(|(name, digest)| serde_json::json!({"loop": name, "sha256": digest}))
+        .collect();
+    let receipt = serde_json::json!({
+        "credit": CREDIT,
+        "packer": {"repository": "EBonura/PSoXide", "revision": XA_PACK_REVISION},
+        "sources": sources,
+        "files": artifacts,
+        "repeats": REPEATS,
+        "total_sectors": manifest["total_sectors"],
+    });
+    Ok(MusicPack { files, receipt })
+}
+
 /// The PSoXide checkout whose `psx-audio-cook` packs the music: `requested`
 /// (it must be at the pinned revision), or a shallow fetch of the revision
 /// into `.quakepsx/xa-pack`.
@@ -173,15 +286,16 @@ fn tool_checkout(root: &Path, requested: Option<&Path>) -> Result<PathBuf> {
     Ok(checkout)
 }
 
-/// Check the WAVs, pack them into `build/music`, refresh `game/src/music_map.rs`.
-pub fn prepare(
-    root: &Path,
-    build: &Path,
-    music_dir: &Path,
-    tool: Option<&Path>,
-) -> Result<MusicPack> {
+/// What a cook from the WAVs produced, in `<build>/music`.
+struct Cooked {
+    out: PathBuf,
+    /// The text `game/src/music_map.rs` must hold for this pack.
+    guest_map: String,
+}
+
+/// Check the WAVs and pack them into `<build>/music` with the pinned `xa-pack`.
+fn cook(root: &Path, build: &Path, music_dir: &Path, tool: Option<&Path>) -> Result<Cooked> {
     let mut wavs = Vec::new();
-    let mut sources = Vec::new();
     for (name, digest) in LOOPS {
         let path = music_dir.join(format!("{name}.wav"));
         if !path.is_file() {
@@ -196,7 +310,6 @@ pub fn prepare(
             )
             .into());
         }
-        sources.push(serde_json::json!({"loop": name, "sha256": digest}));
         wavs.push((name, path));
     }
     let checkout = tool_checkout(root, tool)?;
@@ -230,47 +343,71 @@ pub fn prepare(
         .arg("--rust")
         .arg(&map);
     run(&mut command)?;
-
-    let manifest_json: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
-    let empty = manifest_json["empty_slots"].as_u64().unwrap_or(u64::MAX);
-    if empty != 0 {
-        return Err(format!("the music pack leaves {empty} interleave slots empty").into());
-    }
-    let mut files = Vec::new();
-    let mut artifacts = Vec::new();
-    for entry in manifest_json["files"]
-        .as_array()
-        .ok_or("pack manifest has no files")?
-    {
-        let name = entry["name"].as_str().ok_or("pack file has no name")?;
-        let path = out.join(name);
-        artifacts.push(serde_json::json!({
-            "file": name,
-            "sha256": sha256_path(&path)?,
-            "bytes": fs::metadata(&path)?.len(),
-        }));
-        files.push(path);
-    }
-
-    let generated = fs::read_to_string(&map)?
+    fs::remove_dir_all(&repeated_dir)?;
+    let guest_map = fs::read_to_string(&map)?
         + &format!(
             "/// Copies of each loop laid end to end in its XA channel: XA_SONGS holds the\n\
          /// milliseconds of all of them, so one pass is that divided by this.\n\
          pub const XA_REPEATS: u32 = {REPEATS};\n"
         );
-    let guest_map = root.join("game/src/music_map.rs");
-    if fs::read_to_string(&guest_map).ok().as_deref() != Some(generated.as_str()) {
-        fs::write(&guest_map, generated)?;
-        println!("quake-psx-build: refreshed {}", guest_map.display());
-    }
+    Ok(Cooked { out, guest_map })
+}
 
-    let receipt = serde_json::json!({
-        "credit": "Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/",
-        "packer": {"repository": "EBonura/PSoXide", "revision": XA_PACK_REVISION},
-        "sources": sources,
-        "files": artifacts,
-        "repeats": REPEATS,
-        "total_sectors": manifest_json["total_sectors"],
-    });
-    Ok(MusicPack { files, receipt })
+/// `music-check` (`write` false): cook from the WAVs and fail unless the files
+/// and the guest's song table are byte for byte the committed ones.
+/// `music-refresh` (`write` true): cook, then replace them.
+pub fn cook_committed(
+    root: &Path,
+    build: &Path,
+    music_dir: &Path,
+    tool: Option<&Path>,
+    write: bool,
+) -> Result<()> {
+    let cooked = cook(root, build, music_dir, tool)?;
+    let dir = root.join(COMMITTED_DIR);
+    let guest_map = root.join("game/src/music_map.rs");
+    if write {
+        fs::create_dir_all(&dir)?;
+        let mut sums = String::new();
+        for name in COMMITTED_FILES {
+            fs::copy(cooked.out.join(name), dir.join(name))?;
+            sums.push_str(&format!("{}  {name}\n", sha256_path(&dir.join(name))?));
+        }
+        fs::write(dir.join("SHA256SUMS"), sums)?;
+        fs::write(&guest_map, &cooked.guest_map)?;
+        println!("music-refresh: wrote {COMMITTED_DIR} and game/src/music_map.rs; commit them");
+        return Ok(());
+    }
+    for name in COMMITTED_FILES {
+        if fs::read(cooked.out.join(name))? != fs::read(dir.join(name))? {
+            return Err(format!("music-check: {name} differs from {COMMITTED_DIR}/{name}").into());
+        }
+    }
+    if fs::read_to_string(&guest_map)? != cooked.guest_map {
+        return Err("music-check: game/src/music_map.rs differs from the cooked table".into());
+    }
+    println!("music-check: the cook is byte-identical to the committed music");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed pack is the one the guest's song table describes, and the
+    /// files match their digests.
+    #[test]
+    fn committed_pack_is_consistent() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap();
+        let pack = committed(root).expect("assets/music matches SHA256SUMS and music_map.rs");
+        assert_eq!(pack.files.len(), 2);
+        assert_eq!(pack.receipt["repeats"], REPEATS);
+        assert_eq!(
+            pack.receipt["sources"].as_array().unwrap().len(),
+            LOOPS.len()
+        );
+    }
 }

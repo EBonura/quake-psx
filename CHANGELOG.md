@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- The music is in the repository, already encoded: `assets/music` holds
+  `MUSIC1.XA` and `MUSIC2.XA` (53 MB) with their manifest, digests and credits,
+  and every disc build presses them, so a fresh clone and the release workflow
+  need no WAVs and no xa-pack checkout (the release build used to stop at
+  "pass --music-dir"). `cargo quake-build music-check --music-dir PATH` cooks
+  the loops again and fails unless the result is byte for byte the committed
+  files; `music-refresh` replaces them. `--music-dir` no longer applies to disc
+  builds; regression and benchmark discs that want the music take `--with-music`.
+  Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0,
+  https://mululavgmloops.itch.io/ (changes listed in `assets/music/README.md`).
+
 - Inventory pass 2 (parts 04 and 05 of the 2026-10-15 inventory, triaged row by
   row): the three E1M1 sixteen-unit rises with leaning risers no longer stall a
   standing start (routesim `ramps` at 1 to 4 ticks a step: 0 blocked on all nine

@@ -127,7 +127,7 @@ in `.cargo/config.toml`) is short for
 cargo quake-build check       # check tools, source data and SDK revision
 cargo quake-build assets      # recook Episode 1 assets
 cargo quake-build compile     # rebuild the PS1 executable
-cargo quake-build disc --music-dir PATH   # rebuild the standalone disc
+cargo quake-build disc        # rebuild the standalone disc (the music is committed)
 cargo quake-build --help      # list regression commands
 ```
 
@@ -201,14 +201,20 @@ on/off row and a MUSIC VOLUME slider.
 
 Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/
 
-The loops are not stored in Git. The builder takes the eight 37.8 kHz WAVs
-(`Akulak`, `Joik`, `Laska`, `Mioto`, `Notus`, `Opax`, `Sirtroin`, `Skinox`)
-from `--music-dir` (or `QUAKE_PSX_MUSIC_DIR`), checks each against the digest
-in `host/quake-build/music.rs`, and packs them with `psx-audio-cook xa-pack`
-from the PSoXide revision named there, fetched into `.quakepsx/xa-pack` or
-taken from `--xa-pack PATH`. That revision is a host build tool only; the game
-links the SDK pinned in `components.lock.json`. `--no-music` builds a silent
-disc. `game/src/music_map.rs` is the generated song table and is committed.
+The encoded files are committed in [`assets/music`](assets/music/README.md)
+(`MUSIC1.XA`, `MUSIC2.XA`, 53 MB, with their credits and digests), so a fresh
+clone and CI build the disc with no WAV and no packer; the builder checks them
+against `assets/music/SHA256SUMS` and the song table `game/src/music_map.rs`.
+`--no-music` builds a silent disc. The eight source loops (37.8 kHz WAVs:
+`Akulak`, `Joik`, `Laska`, `Mioto`, `Notus`, `Opax`, `Sirtroin`, `Skinox`) are
+not in Git. A maintainer who changes them runs
+`cargo quake-build music-check --music-dir PATH` (cook, fail unless the result
+is byte for byte the committed files) or `music-refresh --music-dir PATH`
+(cook and replace them and `game/src/music_map.rs`); each loop is checked against
+the digest in `host/quake-build/music.rs` and packed with `psx-audio-cook
+xa-pack` from the PSoXide revision named there, fetched into `.quakepsx/xa-pack`
+or taken from `--xa-pack PATH`. That revision is a host build tool only; the game
+links the SDK pinned in `components.lock.json`.
 
 A CD drive cannot loop an XA file without a seek, and the seek is an audible
 gap. So each loop is laid three times end to end in the XA file (the most

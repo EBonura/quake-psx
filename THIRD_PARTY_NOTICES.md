@@ -47,4 +47,6 @@ uses PSoXide's Rust WAV and SPU ADPCM facilities.
 Music: Mulula VGM Loops, Eerie Ambiences Vol 1, CC BY 4.0, https://mululavgmloops.itch.io/. The disc carries eight loops from the
 pack, cut and loudness-matched, encoded as XA-ADPCM. The music is licensed
 under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/);
-it is not covered by this repository's GPL licence and is not stored in it.
+it is not covered by this repository's GPL licence. The encoded files are stored
+in `assets/music` with the credit and the changes made (resampling, loudness
+matching, XA-ADPCM compression), and are redistributed under the same licence.
