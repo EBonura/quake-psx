@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- RAM: the guest builds with `-Cpanic=immediate-abort`, so a panic is a BREAK at the
+  faulting instruction instead of a formatted message. `core::fmt` (integer and
+  str Display, `pad_integral`, `Arguments`), every call site's `Location` and file name,
+  `psx_rt::report_panic` and `from_utf8` leave the image: `heap_free` goes from 10,136 to
+  24,792 (`core::str::from_utf8` and `<[u16]>::contains` were trimmed too). psx-rt's
+  exception handler records Cause, EPC and BadVAddr and halts; `ship-boot` reads them from
+  the RAM dump and fails on any CPU exception (`QUAKE_PSX_PANIC_MESSAGES=1` restores
+  the formatted panic for a chase). With the room back, live one-shots follow the
+  listener again (`S_Update` respatialization, 05.1.3). `heap_free` is 24,120 with it
+  (floor 8,192); the E1M2/E1M3 route regression disc boots with 11,000 bytes of extra
+  padding (it stopped at about 700 before).
+
 - Inventory pass 3: the player's pain voice rolls over pain1, pain2, pain3 and pain6
   (pain2 is a global effect now, 38 global sounds, 102 of 104 slots on the worst map); every
   centerprint line is centred on its own and starts 35 percent down (or at 48 for

@@ -66,6 +66,14 @@ tables and the 4,692 byte boot logo.
 | death bubbles in Q16 integers | ce9e35e | 15,720 | +3,392 | the f32 walk linked the soft-float helpers (`__addsf3`, `__mulsf3`, compares, conversions) |
 | pools at the cooked maxima | 15cdf03 | 27,444 | +11,724 | `check` census: 310 render entities, 57 movers, 28 triggers, 15 teleports, 4 trains, 15 spouts, 2,948 planes, 81 textures; arena margin 1,878 |
 | loading error line without `alloc::format!` | a89f582 | 29,540 | +2,096 | `alloc::fmt::format`, the String writer and `UpperHex` leave the image |
+| panic = immediate-abort (2026-10-17) | c60bc7c | 22,984 | +12,848 | .data -9,760 (Locations, file names, fmt tables), .text -3,088; was 10,136 before |
+| `from_utf8` and `<[u16]>::contains` out | bc62189 | 24,792 | +1,808 | centerprint text and the loading error line check ASCII; water portal leaves use a loop |
+| respatialization back (05.1.3) | 8dbc716 | 24,120 | -672 | per-voice emitter and the S_Update pass |
+
+A panic is a BREAK: `psx_rt`'s exception handler stores Cause, EPC and BadVAddr in
+`__psx_rt_fault_*` and halts. `ship-boot` prints `cpu_exceptions` and fails when it is
+not zero; resolve EPC against the link map. Build with `QUAKE_PSX_PANIC_MESSAGES=1` to get
+the formatted message and location back.
 
 No code path got slower: `e1m1-chain-bench` 31.305 fps before and after, work
 instructions 2,102,584,876 -> 2,100,539,490 (-0.10 percent), the hardware frame
