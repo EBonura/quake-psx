@@ -318,6 +318,10 @@ pub struct EntityScene {
     /// Slots this map actually needs, two per authored spout.
     fireball_slots: usize,
     fireball_render_start: Option<u16>,
+    /// `SelectIntermissionPoint`: the map's `info_intermission` cameras (the
+    /// first four), one of which the end-of-level panel looks through.
+    intermission_spots: [IntermissionSpot; 4],
+    intermission_count: u8,
     lightning_beam: Option<LightningBeam>,
     lightning_beam_frames: u8,
     event_lightning: quake_core::electrode::LightningEvent,
@@ -325,8 +329,6 @@ pub struct EntityScene {
     event_lightning_beam: Option<LightningBeam>,
     secrets: SecretCounter,
     monsters: MonsterCounter,
-    /// `SelectIntermissionPoint`: the camera the end-of-level panel uses.
-    intermission: Option<IntermissionSpot>,
     /// `d_lightstylevalue`. Predefined styles animate at 10 Hz; switchable
     /// ones are owned by `light_use` through the target graph.
     light_styles: [u16; lightstyle::DUMMY_STYLE + 1],
@@ -402,6 +404,13 @@ pub struct BossSnapshot {
 pub struct IntermissionSpot {
     pub origin: Vec3I32,
     pub angles: [i16; 3],
+}
+
+impl IntermissionSpot {
+    const NONE: Self = Self {
+        origin: Vec3I32 { x: 0, y: 0, z: 0 },
+        angles: [0; 3],
+    };
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -971,6 +980,8 @@ impl EntityScene {
             fireballs: [None; MAX_FIREBALLS],
             fireball_slots: 0,
             fireball_render_start: None,
+            intermission_spots: [IntermissionSpot::NONE; 4],
+            intermission_count: 0,
             lightning_beam: None,
             lightning_beam_frames: 0,
             event_lightning: Default::default(),
@@ -978,7 +989,6 @@ impl EntityScene {
             event_lightning_beam: None,
             secrets: SecretCounter::new(),
             monsters: MonsterCounter::new(),
-            intermission: None,
             light_styles: lightstyle::initial_values(),
             light_style_tick: u32::MAX,
             light_styles_next: lightstyle::initial_values(),
@@ -1194,15 +1204,15 @@ impl EntityScene {
             .map_err(EntityLoadError::BadTarget)?;
         self.secrets.load(&map.entities(), self.skill);
         self.monsters.load(&map.entities(), self.skill);
-        self.intermission = map
-            .entities()
-            .iter()
-            .find(|entity| entity.class_name == CLASS_INFO_INTERMISSION)
-            .map(|entity| IntermissionSpot {
-                origin: entity.origin,
-                angles: [entity.angles.x, entity.angles.y, entity.angles.z],
-            });
+        self.intermission_count = 0;
         for (source_index, source) in map.entities().iter().enumerate() {
+            if source.class_name == CLASS_INFO_INTERMISSION && self.intermission_count < 4 {
+                self.intermission_spots[usize::from(self.intermission_count)] = IntermissionSpot {
+                    origin: source.origin,
+                    angles: [source.angles.x, source.angles.y, source.angles.z],
+                };
+                self.intermission_count += 1;
+            }
             if excluded_for_skill(source.spawn_flags, self.skill) {
                 self.targets
                     .disable_entity(source_index as u16)
@@ -7729,9 +7739,14 @@ impl EntityScene {
         (self.monsters.killed(), self.monsters.total())
     }
 
-    /// The authored intermission camera, if this map places one.
-    pub const fn intermission_spot(&self) -> Option<IntermissionSpot> {
-        self.intermission
+    /// `FindIntermission`: one of the map's `info_intermission` cameras. The
+    /// original's `random() * 4` walks 0 to 3 steps (wrapping) down the list
+    /// from the first; `pick` stands in for the random draw.
+    pub fn intermission_spot(&self, pick: usize) -> Option<IntermissionSpot> {
+        let count = usize::from(self.intermission_count);
+        self.intermission_spots
+            .get((pick & 3).checked_rem(count)?)
+            .copied()
     }
 
     pub fn entities(&self) -> &[RenderEntity] {

@@ -1561,8 +1561,8 @@ fn set_frame_styles(
 /// Build the end-of-level panel for the map that was just finished.
 ///
 /// `SelectIntermissionPoint` picks a random `info_intermission`; this port
-/// takes the first authored one so the panel is deterministic, and falls back
-/// to the player's own eye when a map authors none.
+/// walks the list by the level's time and kill count, and falls back to the
+/// player's own eye when a map authors none.
 /// Keep this out of line. Inlining changes MIPS register allocation and frame
 /// timing enough to alter the input-driven E1M1 route.
 #[optimize(size)]
@@ -1576,7 +1576,7 @@ fn begin_intermission(
 ) -> Intermission {
     let (kills, total_kills) = entities.kills();
     let (secrets, total_secrets) = entities.secrets();
-    let camera = match entities.intermission_spot() {
+    let camera = match entities.intermission_spot(usize::from(seconds) + usize::from(kills)) {
         Some(spot) => crate::renderer::Camera {
             origin: spot.origin,
             angles: spot.angles,
