@@ -10,7 +10,13 @@ pub enum MenuPage {
     Options,
     Controls,
     Cheats,
+    /// `M_Menu_Save` / `M_Menu_Load`: the memory-card slots.
+    Slots,
 }
+
+/// Memory-card slots the game saves into. The original's menu offers twelve;
+/// every save takes a block of a fifteen-block card shared with other games.
+pub const SAVE_SLOTS: u8 = 3;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuAction {
@@ -19,12 +25,12 @@ pub enum MenuAction {
     /// [`crate::level::LEVEL_NAMES`].
     StartLevel(u8),
     Resume,
-    /// `M_Menu_Save`: write the game to the memory card. The menu stays open
-    /// to show the result.
-    SaveGame,
-    /// `M_Menu_Load`: read the game back from the memory card. The game closes
+    /// `Host_Savegame_f`: write the game to this memory-card slot. The menu
+    /// stays open to show the result.
+    SaveGame(u8),
+    /// `Host_Loadgame_f`: read the game back from this slot. The game closes
     /// the menu itself once the load has succeeded.
-    LoadGame,
+    LoadGame(u8),
     /// Original Quake's developer `impulse 9`: fill every weapon and ammo
     /// bit without choosing a different active weapon.
     Impulse9,
@@ -228,6 +234,8 @@ pub struct MenuView {
     /// The memory card's answer to the last SAVE GAME or LOAD GAME press, drawn
     /// under the rows until the next press.
     pub notice: Option<&'static str>,
+    /// The slot page saves rather than loads.
+    pub saving: bool,
 }
 
 /// Brightness steps the Options page offers (the cooker's palette rows).
@@ -284,6 +292,8 @@ impl MenuView {
             MenuPage::Options => "OPTIONS",
             MenuPage::Controls => "CONTROLS",
             MenuPage::Cheats => "CHEATS",
+            MenuPage::Slots if self.saving => "SAVE GAME",
+            MenuPage::Slots => "LOAD GAME",
         }
     }
 
@@ -295,6 +305,7 @@ impl MenuView {
             MenuPage::Options => self.options_back_row() + 1,
             MenuPage::Controls => 1,
             MenuPage::Cheats => 4,
+            MenuPage::Slots => SAVE_SLOTS + 1,
         }
     }
 
@@ -405,6 +416,13 @@ impl MenuView {
                 0 => Some(MenuRow::plain("BACK")),
                 _ => None,
             },
+            MenuPage::Slots => match index {
+                0 => Some(MenuRow::plain("SLOT 1")),
+                1 => Some(MenuRow::plain("SLOT 2")),
+                2 => Some(MenuRow::plain("SLOT 3")),
+                3 => Some(MenuRow::plain("BACK")),
+                _ => None,
+            },
             MenuPage::Cheats => match index {
                 0 => Some(MenuRow::valued(
                     "GOD MODE",
@@ -451,6 +469,7 @@ pub struct Menu {
     noclip: bool,
     pending_sound: Option<MenuSound>,
     notice: Option<&'static str>,
+    saving: bool,
 }
 
 impl Default for Menu {
@@ -491,6 +510,7 @@ impl Menu {
             // the global bank is resident.
             pending_sound: Some(MenuSound::Enter),
             notice: None,
+            saving: false,
         }
     }
 
@@ -524,6 +544,7 @@ impl Menu {
             god_mode: self.god_mode,
             noclip: self.noclip,
             notice: self.notice,
+            saving: self.saving,
         }
     }
 
@@ -656,8 +677,12 @@ impl Menu {
                         self.selected = 0;
                         None
                     }
-                    3 => Some(MenuAction::SaveGame),
-                    4 => Some(MenuAction::LoadGame),
+                    3 | 4 => {
+                        self.page = MenuPage::Slots;
+                        self.saving = row == 3;
+                        self.selected = 0;
+                        None
+                    }
                     5 => {
                         self.page = MenuPage::Options;
                         self.selected = 0;
@@ -795,6 +820,28 @@ impl Menu {
                     self.pending_sound = Some(MenuSound::Enter);
                     self.page = MenuPage::Main;
                     self.selected = 0;
+                }
+                None
+            }
+            MenuPage::Slots => {
+                if input.back || (input.accept && self.selected == SAVE_SLOTS) {
+                    self.pending_sound = Some(MenuSound::Enter);
+                    self.page = MenuPage::Main;
+                    // Back to the row that opened this page.
+                    self.selected = match (self.saving, self.can_resume) {
+                        (true, _) => 3,
+                        (false, true) => 4,
+                        (false, false) => 2,
+                    };
+                    return None;
+                }
+                if input.accept {
+                    self.pending_sound = Some(MenuSound::Enter);
+                    return Some(if self.saving {
+                        MenuAction::SaveGame(self.selected)
+                    } else {
+                        MenuAction::LoadGame(self.selected)
+                    });
                 }
                 None
             }
@@ -1321,27 +1368,6 @@ mod tests {
         assert_eq!(menu.view().row(7), Some(MenuRow::plain("CHEATS")));
     }
 
-    #[test]
-    fn save_and_load_rows_raise_their_actions_and_keep_the_menu_open() {
-        let mut menu = Menu::new();
-        // Title menu: NEW GAME, LEVELS, LOAD GAME.
-        menu.update(down());
-        menu.update(down());
-        assert_eq!(menu.update(accept()), Some(MenuAction::LoadGame));
-        assert!(menu.active(), "the game closes the menu once the load worked");
-        // Pause menu: SAVE GAME and LOAD GAME are rows 3 and 4.
-        let mut menu = Menu::new();
-        menu.open_pause();
-        for _ in 0..3 {
-            menu.update(down());
-        }
-        assert_eq!(menu.update(accept()), Some(MenuAction::SaveGame));
-        assert!(menu.active());
-        menu.update(down());
-        assert_eq!(menu.update(accept()), Some(MenuAction::LoadGame));
-        assert!(menu.active());
-    }
-
     #[optimize(size)]
     #[test]
     fn pause_cheats_toggle_and_emit_impulse_nine() {
@@ -1364,5 +1390,58 @@ mod tests {
         menu.update(down());
         menu.update(accept());
         assert_eq!(menu.view().page, MenuPage::Main);
+    }
+
+    #[test]
+    fn save_and_load_pick_a_card_slot_and_back_returns_to_the_row_that_opened_them() {
+        // Paused: RESUME, NEW GAME, LEVELS, SAVE GAME, LOAD GAME, ...
+        let mut menu = Menu::new();
+        menu.open_pause();
+        for _ in 0..3 {
+            menu.update(down());
+        }
+        assert_eq!(menu.update(accept()), None);
+        assert_eq!(menu.view().page, MenuPage::Slots);
+        assert_eq!(menu.view().title(), "SAVE GAME");
+        assert_eq!(menu.view().row_count(), SAVE_SLOTS + 1);
+        menu.update(down());
+        assert_eq!(menu.update(accept()), Some(MenuAction::SaveGame(1)));
+        // The page stays open to show the card's answer.
+        assert_eq!(menu.view().page, MenuPage::Slots);
+        menu.update(MenuInput {
+            back: true,
+            ..MenuInput::default()
+        });
+        assert_eq!(menu.view().page, MenuPage::Main);
+        assert_eq!(menu.view().selected, 3);
+        menu.update(down());
+        menu.update(accept());
+        assert_eq!(menu.view().title(), "LOAD GAME");
+        menu.update(down());
+        menu.update(down());
+        assert_eq!(menu.update(accept()), Some(MenuAction::LoadGame(2)));
+        for _ in 0..1 {
+            menu.update(down());
+        }
+        assert_eq!(menu.update(accept()), None);
+        assert_eq!(menu.view().page, MenuPage::Main);
+        assert_eq!(menu.view().selected, 4);
+    }
+
+    #[test]
+    fn the_title_menu_offers_load_but_not_save() {
+        let mut menu = Menu::new();
+        menu.update(down());
+        menu.update(down());
+        assert_eq!(menu.view().row(2).map(|row| row.label), Some("LOAD GAME"));
+        assert_eq!(menu.update(accept()), None);
+        assert_eq!(menu.view().title(), "LOAD GAME");
+        menu.update(accept());
+        assert_eq!(menu.update(accept()), Some(MenuAction::LoadGame(0)));
+        menu.update(MenuInput {
+            back: true,
+            ..MenuInput::default()
+        });
+        assert_eq!(menu.view().selected, 2);
     }
 }

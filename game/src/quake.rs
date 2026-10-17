@@ -71,17 +71,18 @@ fn save_game(
     player: &crate::player::Player,
     weapon: &quake_core::combat::WeaponState,
     presentation: &quake_core::level_session::LevelPresentation,
+    slot: u8,
 ) -> &'static str {
     if weapon.inventory().health() <= 0 {
-        return crate::savegame::Outcome::Dead.notice();
+        return crate::savegame::Outcome::Dead.notice(slot);
     }
     music.suspend_for_load();
     let mut staging = [0u8; crate::savegame::STAGING_BYTES];
-    let outcome =
-        monster_code.save_game(world, entities, player, weapon, presentation, &mut staging);
+    let outcome = monster_code
+        .save_game(world, entities, player, weapon, presentation, &mut staging, slot);
     reinstall_monster_code(world, monster_code);
     music.resume_after_load(psx_rt::interrupts::vblank_count());
-    outcome.notice()
+    outcome.notice(slot)
 }
 
 /// The first of the two card reads of a load: which level the save is in.
@@ -91,9 +92,10 @@ fn save_game(
 fn read_save_header(
     world: &mut crate::asset::ResidentMap,
     monster_code: &mut crate::monster_code::MonsterCode,
+    slot: u8,
 ) -> Result<crate::savegame::Header, crate::savegame::Outcome> {
     let mut staging = [0u8; crate::savegame::STAGING_BYTES];
-    monster_code.card_header(world, &mut staging)
+    monster_code.card_header(world, &mut staging, slot)
 }
 
 /// The second read: the game itself, into the level the header named.
@@ -107,9 +109,10 @@ fn restore_saved_game(
     player: &mut crate::player::Player,
     weapon: &mut quake_core::combat::WeaponState,
     presentation: &mut LevelPresentation,
+    slot: u8,
 ) -> bool {
     let mut staging = [0u8; crate::savegame::STAGING_BYTES];
-    monster_code.restore_game(world, entities, player, weapon, presentation, &mut staging)
+    monster_code.restore_game(world, entities, player, weapon, presentation, &mut staging, slot)
 }
 
 /// `Host_Loadgame_f`: read the memory card, load the level it names and put
@@ -127,9 +130,10 @@ fn load_game(
     presentation: &mut LevelPresentation,
     monster_code: &mut crate::monster_code::MonsterCode,
     weapon: &mut quake_core::combat::WeaponState,
+    slot: u8,
 ) -> Result<crate::player::Player, crate::savegame::Outcome> {
     music.suspend_for_load();
-    let header = match read_save_header(world, monster_code) {
+    let header = match read_save_header(world, monster_code, slot) {
         Ok(header) => header,
         Err(outcome) => {
             reinstall_monster_code(world, monster_code);
@@ -153,7 +157,7 @@ fn load_game(
     };
     music.suspend_for_load();
     let restored =
-        restore_saved_game(world, monster_code, entities, &mut player, weapon, presentation);
+        restore_saved_game(world, monster_code, entities, &mut player, weapon, presentation, slot);
     reinstall_monster_code(world, monster_code);
     music.resume_after_load(psx_rt::interrupts::vblank_count());
     if restored {
@@ -536,24 +540,26 @@ pub fn run() -> ! {
         let menu_action = crate::save_probe::scripted(elapsed_ticks).or(menu_action);
         #[cfg(feature = "e1m1-save-regression")]
         {
-            if crate::save_probe::take_perturb() {
+            if let Some(round) = crate::save_probe::take_perturb() {
                 let at = player.origin();
                 player.teleport(quake_formats::Vec3I32 {
-                    x: at.x + (192 << 12),
+                    x: at.x + (192 << 12) * i32::from(round),
                     y: at.y,
                     z: at.z,
                 });
                 weapon.impulse_nine();
-                weapon.take_damage(30);
+                weapon.take_damage(30 * i16::from(round));
             }
         }
         #[cfg(feature = "e1m1-save-regression")]
         {
-            if let Some(action @ (quake_core::menu::MenuAction::SaveGame
-                | quake_core::menu::MenuAction::LoadGame)) = menu_action
+            if let Some(
+                action @ (quake_core::menu::MenuAction::SaveGame(_)
+                | quake_core::menu::MenuAction::LoadGame(_)),
+            ) = menu_action
             {
                 crate::save_probe::fingerprint(
-                    crate::save_probe::phase_name(action, "before"), &mut world, &mut music, &mut monster_code,
+                    crate::save_probe::phase_name(action, true), &mut world, &mut music, &mut monster_code,
                     &entities, &player, &weapon, &presentation, "-",
                 );
             }
@@ -595,7 +601,7 @@ pub fn run() -> ! {
             }
             Some(quake_core::menu::MenuAction::Impulse9) => weapon.impulse_nine(),
             #[cfg(feature = "monster-code-overlay")]
-            Some(quake_core::menu::MenuAction::SaveGame) => {
+            Some(quake_core::menu::MenuAction::SaveGame(slot)) => {
                 menu.set_notice(save_game(
                     &mut world,
                     &mut music,
@@ -604,10 +610,11 @@ pub fn run() -> ! {
                     &player,
                     &weapon,
                     &presentation,
+                    slot,
                 ));
             }
             #[cfg(feature = "monster-code-overlay")]
-            Some(quake_core::menu::MenuAction::LoadGame) => {
+            Some(quake_core::menu::MenuAction::LoadGame(slot)) => {
                 match load_game(
                     &mut world,
                     &mut entities,
@@ -617,19 +624,21 @@ pub fn run() -> ! {
                     &mut presentation,
                     &mut monster_code,
                     &mut weapon,
+                    slot,
                 ) {
                     Ok(next_player) => {
                         player = next_player;
                         menu.close_for_game();
                         game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
                     }
-                    Err(outcome) => menu.set_notice(outcome.notice()),
+                    Err(outcome) => menu.set_notice(outcome.notice(slot)),
                 }
             }
             #[cfg(not(feature = "monster-code-overlay"))]
             Some(
-                quake_core::menu::MenuAction::SaveGame | quake_core::menu::MenuAction::LoadGame,
-            ) => menu.set_notice(crate::savegame::Outcome::NoCard.notice()),
+                quake_core::menu::MenuAction::SaveGame(_)
+                | quake_core::menu::MenuAction::LoadGame(_),
+            ) => menu.set_notice(crate::savegame::Outcome::NoCard.notice(0)),
             Some(quake_core::menu::MenuAction::Resume) | None => {}
         }
         weapon.set_god_mode(menu_view.god_mode);
@@ -641,13 +650,13 @@ pub fn run() -> ! {
         #[cfg(feature = "e1m1-save-regression")]
         {
             if let Some(
-                action @ (quake_core::menu::MenuAction::SaveGame
-                | quake_core::menu::MenuAction::LoadGame
+                action @ (quake_core::menu::MenuAction::SaveGame(_)
+                | quake_core::menu::MenuAction::LoadGame(_)
                 | quake_core::menu::MenuAction::StartLevel(_)),
             ) = menu_action
             {
                 crate::save_probe::fingerprint(
-                    crate::save_probe::phase_name(action, "after"), &mut world, &mut music, &mut monster_code,
+                    crate::save_probe::phase_name(action, false), &mut world, &mut music, &mut monster_code,
                     &entities, &player, &weapon, &presentation, menu.view().notice.unwrap_or("loaded"),
                 );
             }

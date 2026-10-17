@@ -7055,22 +7055,24 @@ fn parse_save_lines(log: &[u8]) -> Vec<SaveLine> {
     lines
 }
 
-/// The pause-menu save and load on E1M1 through the real card code on the
-/// emulator's memory card, in four boots:
-///
-/// * `run-a` and `run-b` start on a blank card (the boot-time load must answer
-///   NO SAVED GAME), save at tick 300, load at tick 900, then start every map
-///   to log each map's save size. The state fingerprinted before the save must
-///   come back exactly after the load, the world must have moved in between,
-///   and the two runs must agree on every figure and on every byte of the card.
-/// * `run-c` boots with `run-a`'s card: the boot-time load restores the saved
-///   game and its fingerprint, position, health and inventory must equal what
-///   `run-a` saved.
-/// * `run-d` boots with a card whose save has one flipped bit: the load must
-///   be refused and the boot must carry on.
 /// `game/src/savegame.rs` `STAGING_BYTES`.
 const STAGING_BYTES: usize = 5 * 1024;
 
+/// The pause-menu save and load on E1M1 through the real card code on the
+/// emulator's memory card, in four boots:
+///
+/// * `run-a` and `run-b` start on a blank card (the boot-time loads must
+///   answer that slots 2 and 1 are empty), save to slot 1, move, hurt and arm
+///   the player, save to slot 2, perturb again, then load slot 1 (must equal
+///   the state saved there), slot 2 (likewise) and slot 3 (empty: the game
+///   must be left as it was), and finally start every map to log each map's
+///   save size. Both runs must agree on every figure and on every byte of the
+///   card.
+/// * `run-c` boots with `run-a`'s card: the boot-time loads restore slot 2
+///   then slot 1, and each fingerprint, position, health and inventory must
+///   equal what `run-a` saved there.
+/// * `run-d` boots with a card whose slot 1 has one flipped bit: slot 2 still
+///   loads, slot 1 is refused and leaves the loaded game alone.
 fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> Result<()> {
     let capture = root.join("captures/e1m1-save-regression");
     let steps = env::var("QUAKE_PSX_SAVE_REGRESSION_STEPS")
@@ -7080,7 +7082,7 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
     let guest_frames = env::var("QUAKE_PSX_SAVE_REGRESSION_FRAMES")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(3_000u64);
+        .unwrap_or(3_200u64);
     let cue = regression.join("quake-psx.cue");
     let boot = |name: &str, card: &Path, frames: u64| -> Result<Vec<SaveLine>> {
         let dir = capture.join(name);
@@ -7104,54 +7106,74 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
         fs::write(dir.join("console.log"), &log)?;
         Ok(parse_save_lines(&log))
     };
+    fn phase<'a>(run: &str, lines: &'a [SaveLine], name: &str) -> Result<&'a SaveLine> {
+        lines
+            .iter()
+            .find(|line| line.phase == name)
+            .ok_or_else(|| format!("{run}: no `SV {name}` line in the guest log").into())
+    }
+    // The same game, to the byte: fingerprint of everything saved, plus the
+    // position, health and inventory in the clear.
+    fn same_game(run: &str, what: &str, saved: &SaveLine, loaded: &SaveLine) -> Result<()> {
+        if loaded.fingerprint != saved.fingerprint || loaded.state != saved.state {
+            return Err(format!(
+                "{run}: {what}: saved {} [{}] but the game is {} [{}]",
+                saved.fingerprint, saved.state, loaded.fingerprint, loaded.state
+            )
+            .into());
+        }
+        Ok(())
+    }
     fs::create_dir_all(&capture)?;
     let mut full = Vec::new();
     for run in ["run-a", "run-b"] {
         let card = capture.join(format!("{run}.mcd"));
         let _ = fs::remove_file(&card);
         let lines = boot(run, &card, guest_frames)?;
-        let phase = |name: &str| -> Result<&SaveLine> {
-            lines
-                .iter()
-                .find(|line| line.phase == name)
-                .ok_or_else(|| format!("{run}: no `SV {name}` line in the guest log").into())
-        };
-        let boot_load = phase("after-boot-load")?;
-        if boot_load.outcome != "NO SAVED GAME" {
-            return Err(format!("{run}: a blank card loaded as {:?}", boot_load.outcome).into());
+        let lines = lines.as_slice();
+        for (name, expected) in [
+            ("after-boot-load-2", "SLOT 2 IS EMPTY"),
+            ("after-boot-load-1", "SLOT 1 IS EMPTY"),
+            ("after-save-1", "GAME SAVED IN SLOT 1"),
+            ("after-save-2", "GAME SAVED IN SLOT 2"),
+            ("after-load-3", "SLOT 3 IS EMPTY"),
+        ] {
+            let line = phase(run, lines, name)?;
+            if line.outcome != expected {
+                return Err(format!("{run}: {name} said {:?}, not {expected:?}", line.outcome).into());
+            }
         }
-        let before_save = phase("before-save")?;
-        let after_save = phase("after-save")?;
-        let before_load = phase("before-load")?;
-        let after_load = phase("after-load")?;
-        if after_save.outcome != "GAME SAVED" {
-            return Err(format!("{run}: the save said {:?}", after_save.outcome).into());
+        let saved_first = phase(run, lines, "before-save-1")?;
+        let saved_second = phase(run, lines, "before-save-2")?;
+        let before_load = phase(run, lines, "before-load-1")?;
+        for save in [saved_first, saved_second] {
+            if save.len == 0 || save.len > STAGING_BYTES {
+                return Err(format!("{run}: save of {} bytes", save.len).into());
+            }
         }
-        if before_save.len == 0 || before_save.len > STAGING_BYTES {
-            return Err(format!("{run}: save of {} bytes", before_save.len).into());
+        // The three states are three different games.
+        for (one, other) in [
+            (saved_first, saved_second),
+            (saved_second, before_load),
+            (saved_first, before_load),
+        ] {
+            if one.fingerprint == other.fingerprint || one.state == other.state {
+                return Err(format!(
+                    "{run}: the script did not move the game: [{}] and [{}]",
+                    one.state, other.state
+                )
+                .into());
+            }
         }
-        if before_save.fingerprint == before_load.fingerprint {
-            return Err(format!(
-                "{run}: the world did not move between the save and the load ({})",
-                before_save.fingerprint
-            )
-            .into());
-        }
-        if before_save.state == before_load.state {
-            return Err(format!("{run}: the player was not perturbed ({})", before_save.state).into());
-        }
-        if before_save.fingerprint != after_load.fingerprint
-            || before_save.state != after_load.state
-        {
-            return Err(format!(
-                "{run}: the load did not restore the saved state: saved {} [{}] loaded {} [{}]",
-                before_save.fingerprint,
-                before_save.state,
-                after_load.fingerprint,
-                after_load.state
-            )
-            .into());
-        }
+        same_game(run, "slot 1 load", saved_first, phase(run, lines, "after-load-1")?)?;
+        same_game(run, "slot 2 load", saved_second, phase(run, lines, "after-load-2")?)?;
+        // An empty slot leaves the game as it was.
+        same_game(
+            run,
+            "empty slot 3",
+            phase(run, lines, "before-load-3")?,
+            phase(run, lines, "after-load-3")?,
+        )?;
         let card_bytes = fs::metadata(&card).map(|meta| meta.len()).unwrap_or(0);
         if card_bytes != 128 * 1024 {
             return Err(format!("{run}: memory card image is {card_bytes} bytes").into());
@@ -7159,15 +7181,25 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
         let sizes: Vec<(String, usize)> = lines
             .iter()
             .filter(|line| line.phase == "survey")
-            .map(|line| (line.state.rsplit("map=").next().unwrap_or("").to_string(), line.len.max(line.need)))
+            .map(|line| {
+                (
+                    line.state.rsplit("map=").next().unwrap_or("").to_string(),
+                    line.len.max(line.need),
+                )
+            })
             .collect();
         if sizes.len() != 9 || sizes.iter().any(|(_, len)| *len == 0 || *len > STAGING_BYTES) {
             return Err(format!("{run}: map save sizes {sizes:?}").into());
         }
         full.push((
-            before_save.fingerprint.clone(),
-            before_save.state.clone(),
-            before_save.len,
+            (
+                saved_first.fingerprint.clone(),
+                saved_first.state.clone(),
+                saved_second.fingerprint.clone(),
+                saved_second.state.clone(),
+            ),
+            saved_first.len,
+            saved_second.len,
             sizes,
             fs::read(&card)?,
         ));
@@ -7175,53 +7207,68 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
     if full[0] != full[1] {
         return Err("save regression is nondeterministic (figures or card bytes differ)".into());
     }
-    let (fingerprint, state, save_len, sizes, card_image) = full.remove(0);
+    let ((fp_first, state_first, fp_second, state_second), len_first, len_second, sizes, image) =
+        full.remove(0);
+    let expect = |fingerprint: &str, state: &str| SaveLine {
+        phase: String::new(),
+        fingerprint: fingerprint.to_string(),
+        outcome: String::new(),
+        len: 0,
+        need: 0,
+        state: state.to_string(),
+    };
+    let expect_first = expect(&fp_first, &state_first);
+    let expect_second = expect(&fp_second, &state_second);
 
-    // A fresh boot restores the card.
+    // A fresh boot restores both slots.
     let card_c = capture.join("run-c.mcd");
-    fs::write(&card_c, &card_image)?;
+    fs::write(&card_c, &image)?;
     let lines = boot("run-c", &card_c, 400)?;
-    let restored = lines
-        .iter()
-        .find(|line| line.phase == "after-boot-load")
-        .ok_or("run-c: no `SV after-boot-load` line")?;
-    if restored.outcome != "loaded"
-        || restored.fingerprint != fingerprint
-        || restored.state != state
-    {
-        return Err(format!(
-            "run-c: the reboot load gave {:?} {} [{}], expected {} [{}]",
-            restored.outcome, restored.fingerprint, restored.state, fingerprint, state
-        )
-        .into());
+    for (name, expected) in [
+        ("after-boot-load-2", &expect_second),
+        ("after-boot-load-1", &expect_first),
+    ] {
+        let line = phase("run-c", &lines, name)?;
+        if line.outcome != "loaded" {
+            return Err(format!("run-c: {name} said {:?}", line.outcome).into());
+        }
+        same_game("run-c", name, expected, line)?;
     }
-    if fs::read(&card_c)? != card_image {
+    if fs::read(&card_c)? != image {
         return Err("run-c: loading changed the card".into());
     }
 
-    // A damaged save is refused. Flip a bit in the middle of the saved file's
-    // first block of data (the card holds the save from block 1 on).
-    let mut damaged = card_image.clone();
-    let at = 8192 + 512 + save_len.min(2048) / 2;
-    damaged[at] ^= 0x10;
+    // A damaged save is refused. Slot 1 is the first file on the card: flip a
+    // bit in the middle of its payload (block 1, past the 512-byte title and
+    // icon frames).
+    let mut damaged = image.clone();
+    damaged[8192 + 512 + len_first.min(2048) / 2] ^= 0x10;
     let card_d = capture.join("run-d.mcd");
     fs::write(&card_d, &damaged)?;
     let lines = boot("run-d", &card_d, 400)?;
-    let refused = lines
-        .iter()
-        .find(|line| line.phase == "after-boot-load")
-        .ok_or("run-d: no `SV after-boot-load` line")?;
-    if refused.outcome == "loaded" {
-        return Err("run-d: a damaged save was accepted".into());
+    let second = phase("run-d", &lines, "after-boot-load-2")?;
+    same_game("run-d", "slot 2 beside a damaged slot 1", &expect_second, second)?;
+    let refused = phase("run-d", &lines, "after-boot-load-1")?;
+    if refused.outcome != "SAVE NOT USABLE" {
+        return Err(format!("run-d: a damaged save said {:?}", refused.outcome).into());
+    }
+    // The world runs on between the two boot loads, so only the player is
+    // compared: a refused load must not touch the game in progress.
+    if refused.state != second.state {
+        return Err(format!(
+            "run-d: the refused load changed the game: [{}] became [{}]",
+            second.state, refused.state
+        )
+        .into());
     }
 
     let summary = format!(
         "quake-psx E1M1 save and load regression: PASS\n\
          deterministic_runs=2 (figures and card bytes equal)\n\
-         save_bytes={save_len}\n\
-         saved_state_fingerprint={fingerprint}\n\
-         saved_state={state}\n\
-         reboot_load=restored\n\
+         save_bytes=slot1:{len_first} slot2:{len_second}\n\
+         slot1_fingerprint={fp_first} state={state_first}\n\
+         slot2_fingerprint={fp_second} state={state_second}\n\
+         reboot_load=restored (slots 2 and 1)\n\
          damaged_save={:?}\n\
          map_save_bytes={:?}\n",
         refused.outcome,

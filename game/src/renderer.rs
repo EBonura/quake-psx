@@ -3160,7 +3160,7 @@ impl Renderer {
                     push_shadowed_text(packets, 84, 204, row.label, (0x80, 0x80, 0x80));
                 }
             }
-            MenuPage::Cheats => {
+            MenuPage::Cheats | MenuPage::Slots => {
                 for index in 0..view.row_count() {
                     let Some(row) = view.row(index) else {
                         continue;
@@ -3191,7 +3191,7 @@ impl Renderer {
                 options_row_top(view) - 8 + i16::from(view.selected) * options_row_pitch(view)
             }
             MenuPage::Controls => 196,
-            MenuPage::Cheats => 84 + i16::from(view.selected) * 24,
+            MenuPage::Cheats | MenuPage::Slots => 84 + i16::from(view.selected) * 24,
         };
         const DOT_OFFSETS: [(i16, i16); 6] = [(0, 3), (2, 3), (4, 3), (6, 3), (4, 3), (3, 3)];
         let dot_frame = ((self.frame / 3) % 6) as usize;

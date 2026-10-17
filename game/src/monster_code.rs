@@ -376,14 +376,14 @@ pub fn quake_load_restore_call(
 
 #[inline(never)]
 #[no_mangle]
-pub fn quake_card_write_call(bytes: &[u8]) -> Outcome {
-    core::hint::black_box(crate::savegame::quake_card_write(bytes))
+pub fn quake_card_write_call(bytes: &[u8], slot: u8) -> Outcome {
+    core::hint::black_box(crate::savegame::quake_card_write(bytes, slot))
 }
 
 #[inline(never)]
 #[no_mangle]
-pub fn quake_card_read_call(staging: &mut [u8]) -> Result<usize, Outcome> {
-    core::hint::black_box(crate::savegame::quake_card_read(staging))
+pub fn quake_card_read_call(staging: &mut [u8], slot: u8) -> Result<usize, Outcome> {
+    core::hint::black_box(crate::savegame::quake_card_read(staging, slot))
 }
 
 /// Name the step of a save or load that the overlay machinery refused. The
@@ -461,11 +461,13 @@ enum Call<'a> {
     CardWrite {
         staging: *mut u8,
         len: usize,
+        slot: u8,
         result: &'a mut Outcome,
     },
     CardRead {
         staging: *mut u8,
         len: usize,
+        slot: u8,
         result: &'a mut Result<usize, Outcome>,
     },
 }
@@ -603,9 +605,10 @@ impl MonsterCode {
         weapon: &WeaponState,
         presentation: &quake_core::level_session::LevelPresentation,
         staging: &mut [u8],
+        slot: u8,
     ) -> Outcome {
         let outcome =
-            self.save_game_inner(world, entities, player, weapon, presentation, staging);
+            self.save_game_inner(world, entities, player, weapon, presentation, staging, slot);
         self.release(world);
         outcome
     }
@@ -618,6 +621,7 @@ impl MonsterCode {
         weapon: &WeaponState,
         presentation: &quake_core::level_session::LevelPresentation,
         staging: &mut [u8],
+        slot: u8,
     ) -> Outcome {
         let len = match self.encode(world, entities, player, weapon, presentation, staging) {
             Ok(len) => len,
@@ -632,6 +636,7 @@ impl MonsterCode {
         let call = Call::CardWrite {
             staging,
             len,
+            slot,
             result: &mut outcome,
         };
         let admitted = self.invoke(world.generation(), Image::Card, &mut { call });
@@ -699,8 +704,9 @@ impl MonsterCode {
         &mut self,
         world: &mut ResidentMap,
         staging: &mut [u8],
+        slot: u8,
     ) -> Result<Header, Outcome> {
-        let outcome = self.card_header_inner(world, staging);
+        let outcome = self.card_header_inner(world, staging, slot);
         self.release(world);
         outcome
     }
@@ -709,8 +715,9 @@ impl MonsterCode {
         &mut self,
         world: &mut ResidentMap,
         staging: &mut [u8],
+        slot: u8,
     ) -> Result<Header, Outcome> {
-        let len = self.read_card(world, staging)?;
+        let len = self.read_card(world, staging, slot)?;
         let staging = staging.as_mut_ptr();
         self.swap_image(world, Image::Load).map_err(|_| Outcome::Failed)?;
         let mut header = None;
@@ -730,6 +737,7 @@ impl MonsterCode {
         &mut self,
         world: &mut ResidentMap,
         staging: &mut [u8],
+        slot: u8,
     ) -> Result<usize, Outcome> {
         self.release(world);
         trace("install card", self.install(world, Image::Card)).map_err(|_| Outcome::Failed)?;
@@ -737,6 +745,7 @@ impl MonsterCode {
         let call = Call::CardRead {
             staging: staging.as_mut_ptr(),
             len: staging.len(),
+            slot,
             result: &mut result,
         };
         let admitted = self.invoke(world.generation(), Image::Card, &mut { call });
@@ -754,9 +763,10 @@ impl MonsterCode {
         weapon: &mut WeaponState,
         presentation: &mut quake_core::level_session::LevelPresentation,
         staging: &mut [u8],
+        slot: u8,
     ) -> bool {
-        let restored =
-            self.restore_game_inner(world, entities, player, weapon, presentation, staging);
+        let restored = self
+            .restore_game_inner(world, entities, player, weapon, presentation, staging, slot);
         self.release(world);
         restored
     }
@@ -769,8 +779,9 @@ impl MonsterCode {
         weapon: &mut WeaponState,
         presentation: &mut quake_core::level_session::LevelPresentation,
         staging: &mut [u8],
+        slot: u8,
     ) -> bool {
-        let Ok(len) = self.read_card(world, staging) else {
+        let Ok(len) = self.read_card(world, staging, slot) else {
             return false;
         };
         let staging = staging.as_mut_ptr();
@@ -985,18 +996,20 @@ impl MonsterCode {
                     Call::CardWrite {
                         staging,
                         len,
+                        slot,
                         result,
                     } => {
                         let bytes = core::slice::from_raw_parts(*staging, *len);
-                        **result = quake_card_write_call(bytes);
+                        **result = quake_card_write_call(bytes, *slot);
                     }
                     Call::CardRead {
                         staging,
                         len,
+                        slot,
                         result,
                     } => {
                         let buf = core::slice::from_raw_parts_mut(*staging, *len);
-                        **result = quake_card_read_call(buf);
+                        **result = quake_card_read_call(buf, *slot);
                     }
                 },
             )

@@ -1,4 +1,4 @@
-//! Memory-card save and load: one manual slot per card.
+//! Memory-card save and load: three manual slots, one card file each.
 //!
 //! Saving is only ever the player's own action from the pause menu; nothing
 //! here writes on its own. The save is the map, the skill and the runes in
@@ -24,9 +24,13 @@ use crate::asset::{EpisodeMap, ResidentMap};
 use crate::entity::EntityScene;
 use crate::player::Player;
 
-/// Directory name on the card, in the retail `BExxx-xxxxx<id>` shape so a real
-/// console lists it beside commercial saves.
-const FILE: &str = "BESLES-00000QPSX0001";
+/// Directory names on the card, one per slot, in the retail `BExxx-xxxxx<id>`
+/// shape so a real console lists them beside commercial saves.
+const FILES: [&str; quake_core::menu::SAVE_SLOTS as usize] = [
+    "BESLES-00000QPSX0001",
+    "BESLES-00000QPSX0002",
+    "BESLES-00000QPSX0003",
+];
 /// What the BIOS card manager shows.
 const TITLE: &str = "QUAKE";
 /// Largest payload a save may have: the buffer the caller keeps on its own
@@ -52,11 +56,14 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    pub const fn notice(self) -> &'static str {
+    /// What the pause menu says about the card's answer for `slot`.
+    pub const fn notice(self, slot: u8) -> &'static str {
         match self {
-            Self::Saved => "GAME SAVED",
+            Self::Saved => ["GAME SAVED IN SLOT 1", "GAME SAVED IN SLOT 2", "GAME SAVED IN SLOT 3"]
+                [slot as usize % FILES.len()],
             Self::NoCard => "NO MEMORY CARD",
-            Self::NoSave => "NO SAVED GAME",
+            Self::NoSave => ["SLOT 1 IS EMPTY", "SLOT 2 IS EMPTY", "SLOT 3 IS EMPTY"]
+                [slot as usize % FILES.len()],
             Self::Failed => "CARD ERROR",
             Self::Refused => "SAVE NOT USABLE",
             Self::TooLarge => "SAVE TOO LARGE",
@@ -201,7 +208,7 @@ pub fn quake_load_restore(
 
 #[cfg(target_arch = "mips")]
 mod card {
-    use super::{Outcome, FILE, TITLE};
+    use super::{Outcome, FILES, TITLE};
     use psx_mc::{Card, HardwareCard, Slot};
 
     const SLOTS: [Slot; 2] = [Slot::One, Slot::Two];
@@ -209,15 +216,15 @@ mod card {
     /// Write `bytes` to one card, formatting it first if it is blank.
     #[inline(never)]
     #[optimize(size)]
-    fn write_to(slot: Slot, bytes: &[u8]) -> Outcome {
-        let mut card = Card::new(HardwareCard::new(slot));
+    fn write_to(port: Slot, bytes: &[u8], file: &str) -> Outcome {
+        let mut card = Card::new(HardwareCard::new(port));
         match card.is_formatted() {
             Err(_) => Outcome::NoCard,
             Ok(formatted) => {
                 if !formatted && card.format().is_err() {
                     return Outcome::Failed;
                 }
-                match card.write(FILE, TITLE, bytes) {
+                match card.write(file, TITLE, bytes) {
                     Ok(()) => Outcome::Saved,
                     Err(_) => Outcome::Failed,
                 }
@@ -228,12 +235,12 @@ mod card {
     /// Read the save from one card into `staging`.
     #[inline(never)]
     #[optimize(size)]
-    fn read_from(slot: Slot, staging: &mut [u8]) -> Result<usize, Outcome> {
-        let mut card = Card::new(HardwareCard::new(slot));
+    fn read_from(port: Slot, staging: &mut [u8], file: &str) -> Result<usize, Outcome> {
+        let mut card = Card::new(HardwareCard::new(port));
         match card.is_formatted() {
             Err(_) => Err(Outcome::NoCard),
             Ok(false) => Err(Outcome::NoSave),
-            Ok(true) => card.read(FILE, staging).map_err(|_| Outcome::NoSave),
+            Ok(true) => card.read(file, staging).map_err(|_| Outcome::NoSave),
         }
     }
 
@@ -245,10 +252,11 @@ mod card {
         all(feature = "monster-code-overlay", target_arch = "mips"),
         link_section = ".overlay.quake_card.text"
     )]
-    pub fn quake_card_write(bytes: &[u8]) -> Outcome {
+    pub fn quake_card_write(bytes: &[u8], slot: u8) -> Outcome {
+        let file = FILES[slot as usize % FILES.len()];
         let mut result = Outcome::NoCard;
-        for slot in SLOTS {
-            match write_to(slot, bytes) {
+        for port in SLOTS {
+            match write_to(port, bytes, file) {
                 Outcome::Saved => return Outcome::Saved,
                 Outcome::NoCard => {}
                 other => result = other,
@@ -265,10 +273,11 @@ mod card {
         all(feature = "monster-code-overlay", target_arch = "mips"),
         link_section = ".overlay.quake_card.text"
     )]
-    pub fn quake_card_read(staging: &mut [u8]) -> Result<usize, Outcome> {
+    pub fn quake_card_read(staging: &mut [u8], slot: u8) -> Result<usize, Outcome> {
+        let file = FILES[slot as usize % FILES.len()];
         let mut result = Outcome::NoCard;
-        for slot in SLOTS {
-            match read_from(slot, staging) {
+        for port in SLOTS {
+            match read_from(port, staging, file) {
                 Ok(len) => return Ok(len),
                 Err(Outcome::NoCard) => {}
                 Err(other) => result = other,
@@ -282,11 +291,11 @@ mod card {
 mod card {
     use super::Outcome;
 
-    pub fn quake_card_write(_bytes: &[u8]) -> Outcome {
+    pub fn quake_card_write(_bytes: &[u8], _slot: u8) -> Outcome {
         Outcome::NoCard
     }
 
-    pub fn quake_card_read(_staging: &mut [u8]) -> Result<usize, Outcome> {
+    pub fn quake_card_read(_staging: &mut [u8], _slot: u8) -> Result<usize, Outcome> {
         Err(Outcome::NoCard)
     }
 }

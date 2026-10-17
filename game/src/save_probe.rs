@@ -21,32 +21,40 @@ use crate::asset::ResidentMap;
 use crate::entity::EntityScene;
 use crate::player::Player;
 
-/// The scripted run, in order: a load right after boot (a card from an earlier
-/// boot restores it; an empty card answers NO SAVED GAME and the run goes on),
-/// a save, a load, then one level start per map to log each map's save size.
+/// The scripted run, in order: loads of slots 2 then 1 right after boot (a
+/// card from an earlier boot restores them; a blank card answers that the slot
+/// is empty and the run goes on), a save to slot 1, a perturbation, a save to
+/// slot 2, a second perturbation, loads of slots 1, 2 and 3 (the last is
+/// empty), then one level start per map to log each map's save size.
 const BOOT_LOAD_AT_TICK: u32 = 60;
-const SAVE_AT_TICK: u32 = 300;
-const PERTURB_AT_TICK: u32 = 600;
+const BOOT_LOAD_FIRST_AT_TICK: u32 = 90;
+const SAVE_FIRST_AT_TICK: u32 = 300;
+const PERTURB_FIRST_AT_TICK: u32 = 450;
+const SAVE_SECOND_AT_TICK: u32 = 600;
+const PERTURB_SECOND_AT_TICK: u32 = 750;
 const LOAD_AT_TICK: u32 = 900;
-const SURVEY_AT_TICK: u32 = 1200;
+const SURVEY_AT_TICK: u32 = 1300;
 const SURVEY_STEP_TICKS: u32 = 150;
 const SURVEY_MAPS: u8 = 9;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Stage {
-    BootLoad,
-    Save,
-    Perturb,
-    Load,
+    BootLoadSecond,
+    BootLoadFirst,
+    SaveFirst,
+    PerturbFirst,
+    SaveSecond,
+    PerturbSecond,
+    Load(u8),
     Survey(u8),
     Done,
 }
 
 static mut TICK: u32 = 0;
-static mut STAGE: Stage = Stage::BootLoad;
-/// The load in flight is the boot one: it logs under its own phase names.
+static mut STAGE: Stage = Stage::BootLoadSecond;
+/// The load in flight is a boot one: it logs under its own phase names.
 static mut BOOT_LOAD_ISSUED: bool = false;
-static mut PERTURB_DUE: bool = false;
+static mut PERTURB_DUE: u8 = 0;
 
 /// The menu press due this frame, if any.
 pub fn scripted(elapsed_ticks: u16) -> Option<MenuAction> {
@@ -54,23 +62,41 @@ pub fn scripted(elapsed_ticks: u16) -> Option<MenuAction> {
     unsafe {
         TICK = TICK.wrapping_add(u32::from(elapsed_ticks));
         match STAGE {
-            Stage::BootLoad if TICK >= BOOT_LOAD_AT_TICK => {
+            Stage::BootLoadSecond if TICK >= BOOT_LOAD_AT_TICK => {
                 BOOT_LOAD_ISSUED = true;
-                STAGE = Stage::Save;
-                Some(MenuAction::LoadGame)
+                STAGE = Stage::BootLoadFirst;
+                Some(MenuAction::LoadGame(1))
             }
-            Stage::Save if TICK >= SAVE_AT_TICK => {
-                STAGE = Stage::Perturb;
-                Some(MenuAction::SaveGame)
+            Stage::BootLoadFirst if TICK >= BOOT_LOAD_FIRST_AT_TICK => {
+                BOOT_LOAD_ISSUED = true;
+                STAGE = Stage::SaveFirst;
+                Some(MenuAction::LoadGame(0))
             }
-            Stage::Perturb if TICK >= PERTURB_AT_TICK => {
-                STAGE = Stage::Load;
-                PERTURB_DUE = true;
+            Stage::SaveFirst if TICK >= SAVE_FIRST_AT_TICK => {
+                STAGE = Stage::PerturbFirst;
+                Some(MenuAction::SaveGame(0))
+            }
+            Stage::PerturbFirst if TICK >= PERTURB_FIRST_AT_TICK => {
+                STAGE = Stage::SaveSecond;
+                PERTURB_DUE = 1;
                 None
             }
-            Stage::Load if TICK >= LOAD_AT_TICK => {
-                STAGE = Stage::Survey(0);
-                Some(MenuAction::LoadGame)
+            Stage::SaveSecond if TICK >= SAVE_SECOND_AT_TICK => {
+                STAGE = Stage::PerturbSecond;
+                Some(MenuAction::SaveGame(1))
+            }
+            Stage::PerturbSecond if TICK >= PERTURB_SECOND_AT_TICK => {
+                STAGE = Stage::Load(0);
+                PERTURB_DUE = 2;
+                None
+            }
+            Stage::Load(slot) if TICK >= LOAD_AT_TICK + 100 * u32::from(slot) => {
+                STAGE = if slot < 2 {
+                    Stage::Load(slot + 1)
+                } else {
+                    Stage::Survey(0)
+                };
+                Some(MenuAction::LoadGame(slot))
             }
             Stage::Survey(map)
                 if TICK >= SURVEY_AT_TICK + SURVEY_STEP_TICKS * u32::from(map) =>
@@ -87,12 +113,16 @@ pub fn scripted(elapsed_ticks: u16) -> Option<MenuAction> {
     }
 }
 
-/// Between the save and the load the player is moved, hurt and handed every
-/// weapon, so that the load has a position, a health and an inventory to put
-/// back (the idle probe otherwise stands still). True once, on the due frame.
-pub fn take_perturb() -> bool {
+/// Between the saves the player is moved, hurt and handed every weapon, so
+/// that each load has a position, a health and an inventory to put back (the
+/// idle probe otherwise stands still). The perturbation's number, once, on the
+/// due frame.
+pub fn take_perturb() -> Option<u8> {
     // SAFETY: single guest thread.
-    unsafe { core::mem::take(&mut PERTURB_DUE) }
+    match unsafe { core::mem::take(&mut PERTURB_DUE) } {
+        0 => None,
+        n => Some(n),
+    }
 }
 
 /// The tick the script has reached.
@@ -101,32 +131,46 @@ pub fn phase_tick() -> u32 {
     unsafe { TICK }
 }
 
-/// A load that restored a saved game ends the script: the run was only there
-/// to show what a fresh boot gets back from a card.
-fn note_load_outcome(restored: bool) {
+/// A boot-time load of slot 1 that restored a saved game ends the script: the
+/// run was only there to show what a fresh boot gets back from a card.
+fn note_load_outcome(slot: u8, restored: bool) {
     // SAFETY: single guest thread.
     unsafe {
-        if BOOT_LOAD_ISSUED {
-            BOOT_LOAD_ISSUED = false;
-            if restored {
-                STAGE = Stage::Done;
-            }
+        BOOT_LOAD_ISSUED = false;
+        if slot == 0 && restored {
+            STAGE = Stage::Done;
         }
     }
 }
 
-/// Phase name for a menu press: the boot load logs as `boot-load`, a level
-/// start as `survey`.
-pub fn phase_name(action: MenuAction, side: &'static str) -> &'static str {
+const BEFORE_SAVE: [&str; 3] = ["before-save-1", "before-save-2", "before-save-3"];
+const AFTER_SAVE: [&str; 3] = ["after-save-1", "after-save-2", "after-save-3"];
+const BEFORE_LOAD: [&str; 3] = ["before-load-1", "before-load-2", "before-load-3"];
+const AFTER_LOAD: [&str; 3] = ["after-load-1", "after-load-2", "after-load-3"];
+const BEFORE_BOOT_LOAD: [&str; 3] = [
+    "before-boot-load-1",
+    "before-boot-load-2",
+    "before-boot-load-3",
+];
+const AFTER_BOOT_LOAD: [&str; 3] = [
+    "after-boot-load-1",
+    "after-boot-load-2",
+    "after-boot-load-3",
+];
+
+/// Phase name for a menu press, numbered by the slot the player sees: a boot
+/// load logs as `boot-load`, a level start as `survey`.
+pub fn phase_name(action: MenuAction, before: bool) -> &'static str {
     // SAFETY: single guest thread.
     let boot = unsafe { BOOT_LOAD_ISSUED };
-    match (action, side, boot) {
-        (MenuAction::SaveGame, "before", _) => "before-save",
-        (MenuAction::SaveGame, _, _) => "after-save",
-        (MenuAction::LoadGame, "before", true) => "before-boot-load",
-        (MenuAction::LoadGame, _, true) => "after-boot-load",
-        (MenuAction::LoadGame, "before", false) => "before-load",
-        (MenuAction::LoadGame, _, false) => "after-load",
+    let table = |slot: u8, names: &[&'static str; 3]| names[usize::from(slot).min(2)];
+    match (action, before, boot) {
+        (MenuAction::SaveGame(slot), true, _) => table(slot, &BEFORE_SAVE),
+        (MenuAction::SaveGame(slot), false, _) => table(slot, &AFTER_SAVE),
+        (MenuAction::LoadGame(slot), true, true) => table(slot, &BEFORE_BOOT_LOAD),
+        (MenuAction::LoadGame(slot), false, true) => table(slot, &AFTER_BOOT_LOAD),
+        (MenuAction::LoadGame(slot), true, false) => table(slot, &BEFORE_LOAD),
+        (MenuAction::LoadGame(slot), false, false) => table(slot, &AFTER_LOAD),
         _ => "survey",
     }
 }
@@ -182,7 +226,7 @@ pub fn fingerprint(
         world.map(),
     );
     psx_telemetry::emit::debug_log(&line);
-    if phase == "after-boot-load" {
-        note_load_outcome(outcome == "loaded");
+    if let Some(slot) = AFTER_BOOT_LOAD.iter().position(|name| *name == phase) {
+        note_load_outcome(slot as u8, outcome == "loaded");
     }
 }
