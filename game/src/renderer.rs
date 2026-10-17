@@ -4572,7 +4572,7 @@ impl Renderer {
             *count = 0;
         }
         let leaf = opposite.0 as u16;
-        if *count == MAX_WATER_PORTAL_LEAVES || self.water_portal_leaves[..*count].contains(&leaf) {
+        if *count == MAX_WATER_PORTAL_LEAVES || self.water_portal_leaves[..*count].iter().any(|&listed| listed == leaf) {
             return;
         }
         self.water_portal_leaves[*count] = leaf;

@@ -1365,7 +1365,7 @@ pub fn run() -> ! {
         let centerprint_text = presentation.centerprint().and_then(|active| match active {
             CenterprintText::Cooked(offset) => world
                 .string_at(offset)
-                .and_then(|bytes| core::str::from_utf8(bytes).ok()),
+                .and_then(ascii_str),
             CenterprintText::Fixed(text) => Some(text),
         });
         presentation.screen_blend_mut().tick(elapsed_ticks);
@@ -1890,7 +1890,21 @@ fn status_line<'a>(prefix: &[u8], code: u32, out: &'a mut [u8; STATUS_LINE_BYTES
         out[at] = if digit < 10 { b'0' + digit } else { b'A' + digit - 10 };
         at += 1;
     }
-    core::str::from_utf8(&out[..at]).unwrap_or("ERROR")
+    ascii_str(&out[..at]).unwrap_or("ERROR")
+}
+
+/// `bytes` as text when every byte is ASCII. The shipping text (the cooked
+/// `message` strings of Start and E1M1-E1M8, the loading error line) is ASCII,
+/// so this takes the place of `core::str::from_utf8` without linking its
+/// multi-byte validator (about 1 KB of the image); a byte above 0x7f is
+/// refused, as an invalid sequence was.
+fn ascii_str(bytes: &[u8]) -> Option<&str> {
+    if bytes.is_ascii() {
+        // SAFETY: every byte is below 0x80, which is valid UTF-8 by itself.
+        Some(unsafe { core::str::from_utf8_unchecked(bytes) })
+    } else {
+        None
+    }
 }
 
 #[optimize(size)]
