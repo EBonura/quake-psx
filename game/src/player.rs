@@ -61,6 +61,10 @@ pub struct Player {
     pub view_angles: [i16; 3],
     /// `oldz` of `V_CalcRefdef`: the stair-smoothed height of the origin.
     view_z: i32,
+    /// `teleport_time`: ticks left of the 0.7 s after a teleport in which
+    /// `SV_AirMove` throws away backward walking, so the arrival cannot be
+    /// walked straight back out of.
+    teleport_ticks: u16,
 }
 
 impl Player {
@@ -105,6 +109,7 @@ impl Player {
             view: ViewFeel::new(),
             view_angles: [entity.angles.x, entity.angles.y, entity.angles.z],
             view_z: origin.z,
+            teleport_ticks: 0,
         })
     }
 
@@ -266,6 +271,7 @@ impl Player {
     pub fn apply_teleport(&mut self, destination: TeleportDestination) {
         self.movement
             .teleport_with_velocity(destination.origin, destination.exit_velocity);
+        self.teleport_ticks = 42;
         self.view_angles = [
             destination.angles.x,
             destination.angles.y,
@@ -313,11 +319,13 @@ impl Player {
         } else {
             quake_core::movement::DEFAULT_GRAVITY
         };
+        let backing_out = self.teleport_ticks != 0 && input.movement[0] < 0;
+        self.teleport_ticks = self.teleport_ticks.saturating_sub(elapsed_ticks);
         let frame = self.movement.update_ticks_with_gravity(
             &collision,
             &mut self.movement_scratch,
             MovementInput {
-                forward: input.movement[0],
+                forward: if backing_out { 0 } else { input.movement[0] },
                 strafe: input.movement[1],
                 yaw: self.view_angles[1] as u16 & 0x0fff,
                 pitch: self.view_angles[0] as u16 & 0x0fff,
