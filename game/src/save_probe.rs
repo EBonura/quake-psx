@@ -49,6 +49,7 @@ enum Stage {
     PerturbSecond,
     Load(u8),
     Survey(u8),
+    EasyStart,
     CrossLoad,
     Done,
 }
@@ -59,6 +60,7 @@ static mut STAGE: Stage = Stage::BootLoadSecond;
 static mut BOOT_LOAD_ISSUED: bool = false;
 static mut PERTURB_DUE: u8 = 0;
 static mut THIRD_SAVED: bool = false;
+static mut EASY_START: bool = false;
 /// The load in flight is the last one, from another map.
 static mut CROSS_LOAD_ISSUED: bool = false;
 
@@ -115,12 +117,21 @@ pub fn scripted(elapsed_ticks: u16) -> Option<MenuAction> {
                 STAGE = if map + 1 < SURVEY_MAPS {
                     Stage::Survey(map + 1)
                 } else {
-                    Stage::CrossLoad
+                    Stage::EasyStart
                 };
                 Some(MenuAction::StartLevel(map))
             }
-            Stage::CrossLoad
+            // E1M1 on Easy, so that the cross-map load below changes both the
+            // map and the skill: the save's header must win on both.
+            Stage::EasyStart
                 if TICK >= SURVEY_AT_TICK + SURVEY_STEP_TICKS * u32::from(SURVEY_MAPS) =>
+            {
+                STAGE = Stage::CrossLoad;
+                EASY_START = true;
+                Some(MenuAction::StartLevel(1))
+            }
+            Stage::CrossLoad
+                if TICK >= SURVEY_AT_TICK + SURVEY_STEP_TICKS * u32::from(SURVEY_MAPS + 1) =>
             {
                 STAGE = Stage::Done;
                 CROSS_LOAD_ISSUED = true;
@@ -140,6 +151,17 @@ pub fn take_perturb() -> Option<u8> {
     match unsafe { core::mem::take(&mut PERTURB_DUE) } {
         0 => None,
         n => Some(n),
+    }
+}
+
+/// The skill the next level start runs on: Hard for the survey of save sizes,
+/// Easy for the last start before the cross-map load.
+pub fn start_skill() -> u8 {
+    // SAFETY: single guest thread.
+    if unsafe { EASY_START } {
+        0
+    } else {
+        2
     }
 }
 
@@ -195,6 +217,7 @@ pub fn phase_name(action: MenuAction, before: bool) -> &'static str {
         (MenuAction::LoadGame(slot), false, true) => table(slot, &AFTER_BOOT_LOAD),
         (MenuAction::LoadGame(slot), true, false) => table(slot, &BEFORE_LOAD),
         (MenuAction::LoadGame(slot), false, false) => table(slot, &AFTER_LOAD),
+        (MenuAction::StartLevel(_), _, _) if unsafe { EASY_START } => "easy-start",
         _ => "survey",
     }
 }

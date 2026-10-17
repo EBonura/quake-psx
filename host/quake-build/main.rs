@@ -7056,7 +7056,7 @@ fn parse_save_lines(log: &[u8]) -> Vec<SaveLine> {
 }
 
 /// `game/src/savegame.rs` `STAGING_BYTES`.
-const STAGING_BYTES: usize = 5 * 1024;
+const STAGING_BYTES: usize = 6 * 1024;
 
 /// The pause-menu save and load on E1M1 through the real card code on the
 /// emulator's memory card, in four boots:
@@ -7066,8 +7066,9 @@ const STAGING_BYTES: usize = 5 * 1024;
 ///   the player, save to slot 2, perturb again, then load slot 1 (must equal
 ///   the state saved there), slot 2 (likewise) and slot 3 (empty: the game
 ///   must be left as it was), start every map to log each map's save size,
-///   save the E1M3 game (the largest) into slot 3 on the way, and finally load
-///   slot 3 from E1M8: a save from another map must come back whole. Both runs
+///   save the E1M3 game (the largest) into slot 3 on the way, start E1M1 on
+///   Easy, and finally load slot 3 from there: a save from another map and
+///   another skill must come back whole. Both runs
 ///   must agree on every figure and on every byte of the card.
 /// * `run-c` boots with `run-a`'s card: the boot-time loads restore slot 2
 ///   then slot 1, and each fingerprint, position, health and inventory must
@@ -7177,7 +7178,11 @@ fn run_e1m1_save_regression(root: &Path, frontend: &Path, regression: &Path) -> 
             phase(run, lines, "before-load-3")?,
             phase(run, lines, "after-load-3")?,
         )?;
-        // The game saved on E1M3 comes back from E1M8 to the byte.
+        // The game saved on E1M3 (Hard) comes back to the byte from E1M1 on Easy.
+        let easy = phase(run, lines, "easy-start")?;
+        if !easy.state.ends_with("map=E1M1") {
+            return Err(format!("{run}: the last start before the cross-map load is {easy:?}").into());
+        }
         let saved_third = phase(run, lines, "before-save-3")?;
         if !saved_third.state.ends_with("map=E1M3") || saved_third.len < 3_000 {
             return Err(format!("run: the third save is not E1M3's: {saved_third:?}").replace("run:", run).into());

@@ -35,10 +35,11 @@ const FILES: [&str; quake_core::menu::SAVE_SLOTS as usize] = [
 const TITLE: &str = "QUAKE";
 /// Largest payload a save may have: the buffer the caller keeps on its own
 /// stack frame for the encoder and the card driver to share. The biggest
-/// Episode 1 map needs about 4.3 KB (the regression logs every map's size); a
-/// memory card block holds 7.6 KB. A save that does not fit reports SAVE TOO
+/// Episode 1 save (E1M3 on Hard) needs 5.2 KB (the regression logs every map's
+/// size on Hard, the skill that spawns the most monsters); a memory card block
+/// holds 7.6 KB. A save that does not fit reports SAVE TOO
 /// LARGE rather than writing a short file.
-pub const STAGING_BYTES: usize = 5 * 1024;
+pub const STAGING_BYTES: usize = 6 * 1024;
 
 /// A slot number as an index into the three-entry tables.
 const fn slot_index(slot: u8) -> usize {

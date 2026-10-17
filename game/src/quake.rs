@@ -540,11 +540,11 @@ pub fn run() -> ! {
         let menu_action = crate::save_probe::scripted(elapsed_ticks).or(menu_action);
         // The survey of save sizes starts every map on Hard, which spawns the
         // most monsters of the three skills (the probe's scripted run stands on
-        // whatever skill the idle scene boots with).
+        // whatever skill the idle scene boots with); one last start is on Easy.
         #[cfg(feature = "e1m1-save-regression")]
         {
             if let Some(quake_core::menu::MenuAction::StartLevel(_)) = menu_action {
-                menu.set_skill(2);
+                menu.set_skill(crate::save_probe::start_skill());
             }
         }
         #[cfg(feature = "e1m1-save-regression")]

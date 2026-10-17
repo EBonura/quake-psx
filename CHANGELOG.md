@@ -8,7 +8,7 @@
   triggers, targets, secrets, lights) behind a magic number, a format version and a
   checksum; a card from another build or a damaged one is refused. The encoder, the
   decoder and the card driver are three overlay images in the loader's transfer buffer
-  and the payload (4,257 bytes on E1M3, the largest) waits on the caller's stack
+  and the payload (5,163 bytes on E1M3 on Hard, the largest) waits on the caller's stack
   frame, so the resident cost is 6.9 KB (`heap_free` 24,120 to 17,192, floor 8,192).
   `e1m1-save-regress` covers save, load, reboot, damage and a cross-map load; the
   composition fixes (linker patterns with the wrong mangling length, a generic card
