@@ -652,7 +652,11 @@ impl MonsterCode {
         staging: &mut [u8],
     ) -> Result<usize, usize> {
         self.release(world);
-        trace("quake-psx: save overlay: install save failed", self.install(world, Image::Save)).map_err(|_| 0usize)?;
+        trace(
+            "quake-psx: save overlay: install save failed",
+            self.install(world, Image::Save),
+        )
+        .map_err(|_| 0usize)?;
         let mut result = Err(0);
         let call = Call::Encode {
             world,
@@ -665,7 +669,8 @@ impl MonsterCode {
             result: &mut result,
         };
         let admitted = self.invoke(world.generation(), Image::Save, &mut { call });
-        trace("quake-psx: save overlay: invoke save failed", admitted).map_err(|_| 0usize)?;
+        trace("quake-psx: save overlay: invoke save failed", admitted)
+            .map_err(|_| 0usize)?;
         result
     }
 
@@ -738,7 +743,11 @@ impl MonsterCode {
         slot: u8,
     ) -> Result<usize, Outcome> {
         self.release(world);
-        trace("quake-psx: save overlay: install card failed", self.install(world, Image::Card)).map_err(|_| Outcome::Failed)?;
+        trace(
+            "quake-psx: save overlay: install card failed",
+            self.install(world, Image::Card),
+        )
+        .map_err(|_| Outcome::Failed)?;
         let mut result = Err(Outcome::Failed);
         let call = Call::CardRead {
             staging: staging.as_mut_ptr(),
@@ -747,7 +756,8 @@ impl MonsterCode {
             result: &mut result,
         };
         let admitted = self.invoke(world.generation(), Image::Card, &mut { call });
-        trace("quake-psx: save overlay: invoke card read failed", admitted).map_err(|_| Outcome::Failed)?;
+        trace("quake-psx: save overlay: invoke card read failed", admitted)
+            .map_err(|_| Outcome::Failed)?;
         result
     }
 
