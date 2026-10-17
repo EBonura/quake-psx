@@ -534,6 +534,8 @@ impl MonsterCode {
     /// returning it to the loader. A save's payload lives in a caller buffer,
     /// not in this one, so it survives the swap from the encoder to the card
     /// driver.
+    #[optimize(size)]
+    #[inline(never)]
     pub fn swap_image(&mut self, world: &ResidentMap, image: Image) -> Result<(), Error> {
         if self.buffer.len() != BUFFER_BYTES {
             return Err(Error::NotReady);
@@ -581,6 +583,8 @@ impl MonsterCode {
 
     /// `Host_Savegame_f`: encode the game into `staging` and write it to the
     /// card. The buffer is returned to the loader before this returns.
+    #[optimize(size)]
+    #[inline(never)]
     pub fn save_game(
         &mut self,
         world: &mut ResidentMap,
@@ -597,6 +601,8 @@ impl MonsterCode {
         outcome
     }
 
+    #[optimize(size)]
+    #[inline(never)]
     fn save_game_inner(
         &mut self,
         world: &mut ResidentMap,
@@ -634,6 +640,8 @@ impl MonsterCode {
     /// Serialise into `staging`: releases whatever is installed, then
     /// leaves the encoder installed. The byte count, or the count the game
     /// needed when it did not fit (`Err(0)`: the package could not be admitted).
+    #[optimize(size)]
+    #[inline(never)]
     pub fn encode(
         &mut self,
         world: &mut ResidentMap,
@@ -684,6 +692,8 @@ impl MonsterCode {
 
     /// Read the card into the staging area and, from the decoder, the header
     /// of what it holds. Leaves the buffer with the loader.
+    #[optimize(size)]
+    #[inline(never)]
     pub fn card_header(
         &mut self,
         world: &mut ResidentMap,
@@ -695,6 +705,8 @@ impl MonsterCode {
         outcome
     }
 
+    #[optimize(size)]
+    #[inline(never)]
     fn card_header_inner(
         &mut self,
         world: &mut ResidentMap,
@@ -717,6 +729,8 @@ impl MonsterCode {
 
     /// Install the card driver, read the save into the staging area and
     /// return its length. Leaves the card driver installed.
+    #[optimize(size)]
+    #[inline(never)]
     fn read_card(
         &mut self,
         world: &mut ResidentMap,
@@ -739,6 +753,8 @@ impl MonsterCode {
 
     /// Read the card again and put what it holds into a level that the
     /// header has just loaded. `false` means the save did not fit the level.
+    #[optimize(size)]
+    #[inline(never)]
     pub fn restore_game(
         &mut self,
         world: &mut ResidentMap,
@@ -755,6 +771,8 @@ impl MonsterCode {
         restored
     }
 
+    #[optimize(size)]
+    #[inline(never)]
     fn restore_game_inner(
         &mut self,
         world: &mut ResidentMap,

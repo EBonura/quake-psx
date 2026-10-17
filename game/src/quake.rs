@@ -633,6 +633,8 @@ pub fn run() -> ! {
                 ) {
                     Ok(next_player) => {
                         player = next_player;
+                        // The Options row follows the skill the save was made on.
+                        menu.set_skill(entities.skill());
                         menu.close_for_game();
                         game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
                     }
