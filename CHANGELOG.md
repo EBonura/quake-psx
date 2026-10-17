@@ -8,9 +8,10 @@
   five lines or more); the pentagram shows 666 beside the disc; the pentagram and the quad
   light the player; the intermission looks through one of the map's cameras; a
   teleport blocks backward walking for 0.7 s; wizard spikes puff on walls and leave a
-  tracer; live one-shots follow the listener. `episode1-regress` now raises both
-  electrodes (three laps of north button, south button, lightning button) and
-  passes. `heap_free` is 9,320 (floor 8,192).
+  tracer. `episode1-regress` now raises both
+  electrodes (laps of north button, south button, lightning button) and
+  passes. `heap_free` is 10,136 (floor 8,192; the E1M2/E1M3 route regression
+  disc stops booting between 9,694 and 10,044).
 
 - The music is in the repository, already encoded: `assets/music` holds
   `MUSIC1.XA` and `MUSIC2.XA` (53 MB) with their manifest, digests and credits,
