@@ -4666,6 +4666,21 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     } else {
         rustflags.extend(sdk_delay_slot_flags(root)?);
     }
+    // Panics abort at the faulting instruction (a BREAK) instead of formatting
+    // a message: core's bounds-check, unwrap and overflow paths otherwise keep
+    // `core::fmt` (integer and str Display, `pad_integral`, `Arguments`), every
+    // call site's `Location` and file name, and `psx_rt::report_panic` resident,
+    // about 12.8 KB of the image and so of `heap_free`. psx-rt's exception
+    // handler records Cause, EPC and BadVAddr (`__psx_rt_fault_*`) and halts on a
+    // BREAK, so a fault is still located: `ship-boot` reads them from the RAM
+    // dump, and the map names the function around EPC. The nightly shared by
+    // every PSoXide guest builds `core` with the same strategy (build-std).
+    // QUAKE_PSX_PANIC_MESSAGES=1 restores the formatted panic for an A/B or to
+    // read a message while chasing a fault.
+    if env::var_os("QUAKE_PSX_PANIC_MESSAGES").is_none() {
+        rustflags.push("-Zunstable-options".to_string());
+        rustflags.push("-Cpanic=immediate-abort".to_string());
+    }
     // Every link writes a map: the hazard patcher proves jump tables from it
     // and the stack guard needs it. It lives in the stage's target, so the
     // flag (and with it every crate's fingerprint) is fixed per stage.
@@ -5058,6 +5073,7 @@ fn shipping_environment_variable_is_unsafe(name: &str) -> bool {
             | "CARGO_INCREMENTAL"
             | "PSOXIDE"
             | "QUAKE_PSX_RUST_DEBUG"
+            | "QUAKE_PSX_PANIC_MESSAGES"
     ) || name.starts_with("CARGO_BUILD_")
         || name.starts_with("CARGO_PROFILE_")
         || name.starts_with("CARGO_TARGET_")
@@ -5628,7 +5644,23 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
     let stack_reserve = ram_report::parse(&map_text).stack_reserve.unwrap_or(0);
 
     let halted = (halt.address..halt.address.saturating_add(halt.size)).contains(&pc);
+    // A panic compiles to BREAK (see build_game), which psx-rt's exception handler
+    // records and then halts on, so a fault is read from the dump, not a message.
+    let ram_dump = fs::read(&ram)?;
+    let fault_word = |name: &str| -> Result<u32> {
+        ram_word(&ram_dump, link_map_symbol(&map_text, name)?.address)
+    };
+    let fault_count = fault_word("__psx_rt_fault_count")?;
     let mut failures = Vec::new();
+    if fault_count != 0 {
+        failures.push(format!(
+            "the guest took {fault_count} CPU exceptions (a panic is a BREAK): Cause 0x{:08x}, \
+             EPC 0x{:08x}, BadVAddr 0x{:08x}; the map names the function around EPC",
+            fault_word("__psx_rt_fault_cause")?,
+            fault_word("__psx_rt_fault_epc")?,
+            fault_word("__psx_rt_fault_badvaddr")?,
+        ));
+    }
     if halted {
         failures.push(format!(
             "the image halted: final pc 0x{pc:08x} is inside psx_rt::halt \
@@ -5667,6 +5699,7 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
          heap_used={heap_used} of {heap_total} bytes\n\
          heap_free={heap_free} bytes (floor {SHIP_BOOT_MIN_HEAP_FREE})\n\
          stack_depth={stack_depth} bytes of {stack_reserve} reserved\n\
+         cpu_exceptions={fault_count}\n\
          link_map={}\n",
         if failures.is_empty() { "PASS" } else { "FAIL" },
         if halted { "halted" } else { "running" },
