@@ -23,9 +23,11 @@ const HALF_BYTES: usize = BUFFER_BYTES / 2;
 const MAX_CALLS: usize = 4;
 pub const PACKAGE_CHUNK: u32 = 4;
 pub const DOOR_PACKAGE_CHUNK: u32 = 5;
-pub const SAVE_PACKAGE_CHUNK: u32 = 6;
-pub const LOAD_PACKAGE_CHUNK: u32 = 7;
-pub const CARD_PACKAGE_CHUNK: u32 = 8;
+/// The save and load packages follow the maps on the disc (ids 109 to 111), so
+/// they never sit between the chunks the first map load reads.
+pub const SAVE_PACKAGE_CHUNK: u32 = 109;
+pub const LOAD_PACKAGE_CHUNK: u32 = 110;
+pub const CARD_PACKAGE_CHUNK: u32 = 111;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Image {
     Doors,
@@ -388,19 +390,19 @@ pub fn quake_card_read_call(staging: &mut [u8], slot: u8) -> Result<usize, Outco
 
 /// Name the step of a save or load that the overlay machinery refused. The
 /// notice shown to the player is the same either way; the emulator log is
-/// where the cause goes.
+/// where the cause goes. Static text only: formatting the error would pull
+/// `core::fmt` back into every telemetry image.
 #[cfg(feature = "emulator-telemetry")]
-fn trace(step: &str, result: Result<(), Error>) -> Result<(), Error> {
-    if let Err(error) = result {
-        let line = alloc::format!("quake-psx: save overlay: {step} failed: {error:?}");
-        psx_telemetry::emit::debug_log(&line);
+fn trace(step: &'static str, result: Result<(), Error>) -> Result<(), Error> {
+    if result.is_err() {
+        psx_telemetry::emit::debug_log(step);
     }
     result
 }
 
 #[cfg(not(feature = "emulator-telemetry"))]
 #[inline(always)]
-fn trace(_step: &str, result: Result<(), Error>) -> Result<(), Error> {
+fn trace(_step: &'static str, result: Result<(), Error>) -> Result<(), Error> {
     result
 }
 
@@ -543,20 +545,7 @@ impl MonsterCode {
     }
 
     fn admit_image(&mut self, world: &ResidentMap, image: Image) -> Result<(), Error> {
-        let meta = match metadata(image) {
-            Ok(meta) => meta,
-            Err(error) => {
-                trace("metadata", Err(error))?;
-                return Err(error);
-            }
-        };
-        #[cfg(feature = "emulator-telemetry")]
-        psx_telemetry::emit::debug_log(&alloc::format!(
-            "quake-psx: save overlay: image words={} id={} chunk={:?}",
-            meta.words,
-            meta.descriptor.id,
-            crate::platform::chunk_size(meta.descriptor.id).ok()
-        ));
+        let meta = metadata(image)?;
         let address = self.buffer.as_ptr() as usize;
         if address & 3 != 0 {
             return Err(Error::Arena);
@@ -574,22 +563,17 @@ impl MonsterCode {
         if crate::platform::chunk_size(meta.descriptor.id).map_err(|_| Error::Integrity)?
             != payload_bytes.len() as u32
         {
-            trace("chunk size", Err(Error::Integrity))?;
+            return Err(Error::Integrity);
         }
-        trace(
-            "chunk read",
-            crate::platform::read_chunk_exact(meta.descriptor.id, 0, payload_bytes)
-                .map_err(|_| Error::Integrity),
-        )?;
+        crate::platform::read_chunk_exact(meta.descriptor.id, 0, payload_bytes)
+            .map_err(|_| Error::Integrity)?;
         let code_address = code.as_ptr() as usize as u32;
         let mut arena = CallerArena::new(code, code_address)?;
-        let installed = self
-            .registry
-            .install(&mut arena, &transport[..meta.words], meta.descriptor);
-        if let Err(error) = installed {
-            trace("registry install", Err(error))?;
-        }
-        self.handle = Some(installed?);
+        self.handle = Some(self.registry.install(
+            &mut arena,
+            &transport[..meta.words],
+            meta.descriptor,
+        )?);
         self.map_generation = world.generation();
         self.image = Some(image);
         Ok(())
@@ -660,7 +644,7 @@ impl MonsterCode {
         staging: &mut [u8],
     ) -> Result<usize, usize> {
         self.release(world);
-        trace("install save", self.install(world, Image::Save)).map_err(|_| 0usize)?;
+        trace("quake-psx: save overlay: install save failed", self.install(world, Image::Save)).map_err(|_| 0usize)?;
         let mut result = Err(0);
         let call = Call::Encode {
             world,
@@ -673,7 +657,7 @@ impl MonsterCode {
             result: &mut result,
         };
         let admitted = self.invoke(world.generation(), Image::Save, &mut { call });
-        trace("invoke save", admitted).map_err(|_| 0usize)?;
+        trace("quake-psx: save overlay: invoke save failed", admitted).map_err(|_| 0usize)?;
         result
     }
 
@@ -740,7 +724,7 @@ impl MonsterCode {
         slot: u8,
     ) -> Result<usize, Outcome> {
         self.release(world);
-        trace("install card", self.install(world, Image::Card)).map_err(|_| Outcome::Failed)?;
+        trace("quake-psx: save overlay: install card failed", self.install(world, Image::Card)).map_err(|_| Outcome::Failed)?;
         let mut result = Err(Outcome::Failed);
         let call = Call::CardRead {
             staging: staging.as_mut_ptr(),
@@ -749,7 +733,7 @@ impl MonsterCode {
             result: &mut result,
         };
         let admitted = self.invoke(world.generation(), Image::Card, &mut { call });
-        trace("invoke card read", admitted).map_err(|_| Outcome::Failed)?;
+        trace("quake-psx: save overlay: invoke card read failed", admitted).map_err(|_| Outcome::Failed)?;
         result
     }
 

@@ -4775,7 +4775,7 @@ fn stage_world_chunks(root: &Path, build: &Path) -> Result<PathBuf> {
     }
     fs::create_dir_all(&stage)?;
     fs::copy(root.join("id1psx/gfx.dat"), stage.join("chunk_1.dat"))?;
-    for (name, id) in [("monsters", 4), ("doors", 5), ("save", 6), ("load", 7), ("card", 8)] {
+    for (name, id) in [("monsters", 4), ("doors", 5), ("save", 109), ("load", 110), ("card", 111)] {
         fs::copy(root.join(format!("game/target/overlay-{name}.pak")),
             stage.join(format!("chunk_{id}.dat")))?;
     }

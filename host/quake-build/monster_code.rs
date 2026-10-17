@@ -43,7 +43,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
         ),
         (
             "save",
-            "6",
+            "109",
             "quake_save_encode",
             "quake_save_call",
             "QUAKE_SAVE_DESCRIPTOR",
@@ -51,7 +51,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
         ),
         (
             "load",
-            "7",
+            "110",
             "quake_load_header",
             "quake_load_header_call",
             "QUAKE_LOAD_DESCRIPTOR",
@@ -59,7 +59,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
         ),
         (
             "card",
-            "8",
+            "111",
             "quake_card_write",
             "quake_card_write_call",
             "QUAKE_CARD_DESCRIPTOR",
