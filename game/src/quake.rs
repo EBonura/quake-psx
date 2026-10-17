@@ -1371,16 +1371,14 @@ pub fn run() -> ! {
         presentation.screen_blend_mut().tick(elapsed_ticks);
         // `V_CalcPowerupCshift`, which folds into the same sustained quad the
         // contents shift above drives rather than adding one of its own.
-        presentation
-            .screen_blend_mut()
-            .set_powerups(weapon.inventory().powerups());
+        let powerups = weapon.inventory().powerups();
+        presentation.screen_blend_mut().set_powerups(powerups);
         let health_after = weapon.inventory().health().max(0) as u16;
         let armor_after = weapon.inventory().armor().max(0) as u16;
         let blood = health_before.saturating_sub(health_after);
         let armor = armor_before.saturating_sub(armor_after);
         // `CheckPowerups` sets `EF_DIMLIGHT` on the player while the
         // pentagram or the quad runs: the same 200 unit light a rocket has.
-        let powerups = weapon.inventory().powerups();
         if powerups.active(quake_core::survival::PowerupKind::Pentagram)
             || powerups.active(quake_core::survival::PowerupKind::Quad)
         {

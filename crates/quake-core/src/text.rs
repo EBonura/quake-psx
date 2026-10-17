@@ -24,7 +24,8 @@ pub struct TextGlyphs<'a> {
 }
 
 /// Pass as `x` to [`TextGlyphs::new`] to centre every line on its own in the
-/// 320 pixel screen, at most 40 columns of it (`SCR_DrawCenterString`).
+/// 320 pixel screen (`SCR_DrawCenterString`; authored lines are 40 columns at
+/// most, so the original's cut-off is not repeated).
 pub const CENTRED: i16 = i16::MIN;
 
 impl<'a> TextGlyphs<'a> {
@@ -49,14 +50,11 @@ impl<'a> TextGlyphs<'a> {
         if self.origin_x != CENTRED {
             return self.origin_x;
         }
-        let mut columns = 0;
-        while columns < 40
-            && self.cursor + columns < self.bytes.len()
-            && self.bytes[self.cursor + columns] != b'\n'
-        {
-            columns += 1;
+        let mut end = self.cursor;
+        while end < self.bytes.len() && self.bytes[end] != b'\n' {
+            end += 1;
         }
-        (320 - columns as i16 * self.glyph_width) / 2
+        (320 - (end - self.cursor) as i16 * self.glyph_width) / 2
     }
 }
 
