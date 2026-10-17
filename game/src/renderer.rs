@@ -5029,7 +5029,7 @@ fn push_classic_hud(
         return false;
     }
 
-    if view.armor_tier.is_some() {
+    if view.armor_tier.is_some() || view.invulnerable() {
         let Some(armor) = map.picture(view.armor_picture()) else {
             return false;
         };

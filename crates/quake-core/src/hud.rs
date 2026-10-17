@@ -111,7 +111,12 @@ impl HudView {
             } else {
                 0
             },
-            armor: inventory.armor(),
+            // `Sbar_Draw`: under the pentagram the armor cell reads 666.
+            armor: if powerups.active(PowerupKind::Pentagram) {
+                666
+            } else {
+                inventory.armor()
+            },
             armor_tier: inventory.armor_tier(),
             owned_weapons: inventory.owned_weapons(),
             active_weapon: inventory.active_weapon(),
@@ -252,8 +257,18 @@ impl HudView {
         }
     }
 
+    /// `Sbar_Draw` swaps the armor picture for `draw_disc` under the pentagram
+    /// (the armor value is 666 then; no tier reaches it).
+    #[optimize(size)]
+    pub const fn invulnerable(self) -> bool {
+        self.armor == 666
+    }
+
     #[optimize(size)]
     pub const fn armor_picture(self) -> GraphicsPictureId {
+        if self.invulnerable() {
+            return GraphicsPictureId::Disc;
+        }
         match self.armor_tier {
             Some(ArmorTier::Yellow) => GraphicsPictureId::Armor2,
             Some(ArmorTier::Red) => GraphicsPictureId::Armor3,
@@ -338,6 +353,20 @@ mod tests {
         let mut inventory = Inventory::new();
         inventory.take_damage(32000);
         assert_eq!(HudView::from_inventory(inventory).health, 0);
+    }
+
+    #[optimize(size)]
+    #[test]
+    fn the_pentagram_reads_666_beside_the_disc() {
+        let mut inventory = Inventory::new();
+        assert!(!HudView::from_inventory(inventory).invulnerable());
+        inventory.apply_pickup(Pickup::Powerup {
+            kind: PowerupKind::Pentagram,
+        });
+        let view = HudView::from_inventory(inventory);
+        assert!(view.invulnerable());
+        assert_eq!(view.armor, 666);
+        assert_eq!(view.armor_picture(), GraphicsPictureId::Disc);
     }
 
     #[optimize(size)]
