@@ -2311,6 +2311,7 @@ fn load_level(
             renderer.draw_loading_status(disc, map, status);
         }
     }
+    crate::platform::settle_after_load();
     #[cfg(feature = "console-diag")]
     crate::diag::step(0x64, "LOAD RESUME");
     music.resume_after_load(psx_rt::interrupts::vblank_count());
