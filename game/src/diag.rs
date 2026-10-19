@@ -56,12 +56,32 @@ pub fn status(held: u16, movement: [i16; 2], look: [i16; 2], analog: bool) -> &'
 /// spins with interrupts on (stall panel after four seconds) or CROSS takes a
 /// BREAK (fault panel at once).
 pub fn selftest(held: u16) {
-    use psx_pad::button::{CROSS, L1, L2, R1, R2, SELECT, START, TRIANGLE};
+    use psx_pad::button::{CROSS, L1, L2, R1, R2, SELECT, SQUARE, START, TRIANGLE};
     let chord = L1 | R1 | L2 | R2;
     if held & chord == chord {
         if held & START != 0 {
-            psx_rt::diag::boot_report();
-            return;
+            // Test: interrupts off, a loop that calls the heartbeat.
+            step(0x73, "TEST IRQ OFF ALIVE");
+            // SAFETY: deliberate; never returns.
+            psx_io::diag::flush_now();
+            unsafe { psx_io::irq::disable_cpu_interrupts() };
+            psx_io::diag::led(psx_io::diag::leds::TEST_ALIVE, true);
+            psx_io::diag::flush_now();
+            loop {
+                psx_io::diag::spin();
+            }
+        }
+        if held & SQUARE != 0 {
+            // Test: interrupts off, a dead loop with no heartbeat calls.
+            step(0x74, "TEST IRQ OFF DEAD");
+            // SAFETY: deliberate; never returns.
+            psx_io::diag::flush_now();
+            unsafe { psx_io::irq::disable_cpu_interrupts() };
+            psx_io::diag::led(psx_io::diag::leds::TEST_DEAD, true);
+            psx_io::diag::flush_now();
+            loop {
+                core::hint::spin_loop();
+            }
         }
         if held & SELECT != 0 {
             step(0x72, "MANUAL PANEL");

@@ -196,14 +196,12 @@ pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
 
 #[optimize(size)]
 pub fn run() -> ! {
-    // DIAG disc: show the breadcrumbs the previous run left in RAM (after a reset),
-    // then start a fresh ring.
-    psx_rt::diag::boot_report();
     // Match VoXide's hardware-proven ordering exactly: initialise the GPU,
     // complete the DualShock 0x43/0x44 exchange, and only then enable VBlank
     // interrupts. An interrupt in the middle of that exchange can leave a
     // capable pad reporting digital mode for the rest of the session.
     crate::platform::gpu_init_before_interrupts();
+    psx_io::diag::strip_reset();
     #[cfg(not(any(feature = "episode1-regression", feature = "hardware-regression")))]
     {
         let _ = psx_pad::enable_analog_port1();
@@ -396,11 +394,15 @@ pub fn run() -> ! {
             let mut ticks = 0u16;
             #[cfg(feature = "console-diag")]
             let mut spins = 0u32;
+            #[cfg(feature = "console-diag")]
+            psx_io::diag::led(psx_io::diag::leds::TICK_WAIT, true);
             loop {
                 // DIAG: a healthy wait ends within one VBlank (about 60,000
                 // reads); a million means the counter has stopped moving
                 // (VBlank interrupts lost), which the VBlank-driven stall
                 // watchdog cannot see. BREAK takes the fault panel.
+                #[cfg(feature = "console-diag")]
+                psx_io::diag::spin();
                 #[cfg(feature = "console-diag")]
                 {
                     spins += 1;
@@ -415,6 +417,8 @@ pub fn run() -> ! {
                 }
                 if ticks != 0 {
                     game_clock.end_frame();
+                    #[cfg(feature = "console-diag")]
+                    psx_io::diag::led(psx_io::diag::leds::TICK_WAIT, false);
                     break (now, ticks);
                 }
             }

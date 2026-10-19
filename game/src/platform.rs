@@ -11,6 +11,9 @@ use psx_vram::VramRect;
 const WIDTH: u16 = 320;
 const HEIGHT: u16 = 240;
 const BACK_BUFFER_Y: u16 = 256;
+/// DIAG disc: the bottom lines of both frame buffers belong to the marker strip
+/// (psx_io::diag), so the frame neither clears nor draws there.
+const DIAG_STRIP: u16 = 48;
 
 const OT_DEPTH: usize = 2048;
 
@@ -606,7 +609,7 @@ unsafe fn queue_frame() {
     let preamble = unsafe { &mut *addr_of_mut!(PREAMBLES).cast::<Preamble>().add(BUILD_BUFFER) };
     preamble.draw_area_top_left = 0xE300_0000 | (target_y << 10);
     preamble.draw_area_bottom_right =
-        0xE400_0000 | u32::from(WIDTH - 1) | ((target_y + u32::from(HEIGHT) - 1) << 10);
+        0xE400_0000 | u32::from(WIDTH - 1) | ((target_y + u32::from(HEIGHT - DIAG_STRIP) - 1) << 10);
     preamble.draw_offset = 0xE500_0000 | ((target_y & 0x7FF) << 11);
     preamble.draw_mode = material.draw_mode_word();
     preamble.texture_window = material.texture_window_word();
@@ -621,7 +624,7 @@ unsafe fn queue_frame() {
         preamble.fill = 0x0200_0000;
     }
     preamble.fill_xy = target_y << 16;
-    preamble.fill_wh = (u32::from(HEIGHT) << 16) | u32::from(WIDTH);
+    preamble.fill_wh = (u32::from(HEIGHT - DIAG_STRIP) << 16) | u32::from(WIDTH);
     preamble.clear_tag = (5 << 24) | (ot_head & 0x00FF_FFFF);
     preamble.target_tag = (3 << 24) | (addr_of!(preamble.clear_tag) as u32 & 0x00FF_FFFF);
 
