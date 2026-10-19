@@ -20,6 +20,7 @@ tools/tmp/
 *.pak
 *.zip
 *.psb
+*.pxbsp
 *.bsp
 *.dat
 *.bin

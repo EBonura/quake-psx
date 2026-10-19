@@ -57,6 +57,29 @@ pub struct GeometryLumps {
     pub nodes: Vec<u8>,
     pub clip_nodes: Vec<u8>,
     pub models: Vec<u8>,
+    /// The records only the PXBSP v6 container needs; everything else it
+    /// shares with the PSB lumps above.
+    pub pxbsp: PxbspLumps,
+}
+
+/// PXBSP v6 forms of the lumps that differ from the PSB5 ones.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PxbspLumps {
+    /// Expanded 12-byte vertices (the PSB5 lump shares positions).
+    pub vertices: Vec<u8>,
+    /// 12-byte planes with an authored class byte and cached sign bits.
+    pub planes: Vec<u8>,
+    /// One 16-byte material per BSP texture, in texture order.
+    pub materials: Vec<u8>,
+    /// 16-byte nodes with quantised bounds and exact node-owned face ranges.
+    pub nodes: Vec<u8>,
+    /// The 14-byte per-texture records (see `quake_formats::quake_pxbsp`).
+    pub texture_table: Vec<u8>,
+    /// Widest cooked face, in vertices. The shared renderer draws at most
+    /// `PXBSP_MAX_FACE_VERTICES` and skips anything wider.
+    pub max_face_vertices: usize,
+    /// Cooked faces wider than the shared renderer's limit.
+    pub oversize_faces: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -237,8 +260,18 @@ pub(crate) fn cook_geometry_staged(
     bake_vertices(&textures, &mut faces, &mut vertices);
     mark_stacked_floors(bsp, &textures, &planes, &face_offsets, &mut faces, &vertices)?;
 
+    let pxbsp = cook_pxbsp_lumps(
+        bsp,
+        sky,
+        &textures,
+        &vertices,
+        &faces,
+        &face_offsets,
+        &planes,
+    )?;
     let geometry = GeometryLumps {
         texture_data: Vec::new(),
+        pxbsp,
         vertices: serialize_vertices(&vertices),
         planes,
         texture_info: serialize_textures(&textures),
@@ -1580,6 +1613,111 @@ fn cook_models(bsp: &Bsp<'_>, face_offsets: &[usize]) -> Result<Vec<u8>, CookErr
         );
     }
     Ok(output)
+}
+
+/// Re-express the cooked tables as the PXBSP v6 records the shared world
+/// renderer reads. Nothing is recomputed: every value is derived from the
+/// final PSB5 intermediates, so the two containers describe one map.
+fn cook_pxbsp_lumps(
+    bsp: &Bsp<'_>,
+    sky: SkyEncoding,
+    textures: &[CookTexture],
+    vertices: &[CookVertex],
+    faces: &[CookFace],
+    face_offsets: &[usize],
+    planes: &[u8],
+) -> Result<PxbspLumps, CookError> {
+    let mut lumps = PxbspLumps::default();
+
+    lumps.vertices.reserve(vertices.len() * 12);
+    for vertex in vertices {
+        for value in vertex.position {
+            lumps.vertices.extend_from_slice(&value.to_le_bytes());
+        }
+        lumps.vertices.extend_from_slice(&vertex.uv);
+        lumps.vertices.extend_from_slice(&vertex.light);
+    }
+
+    for plane in planes.chunks_exact(14) {
+        let kind = i32_at(plane, 10)?;
+        let kind = u8::try_from(kind)
+            .map_err(|_| CookError::new(format!("plane class {kind} does not fit a byte")))?;
+        let mut sign_bits = 0u8;
+        for axis in 0..3 {
+            if i16_at(plane, axis * 2)? < 0 {
+                sign_bits |= 1 << axis;
+            }
+        }
+        lumps.planes.extend_from_slice(&plane[0..6]);
+        lumps.planes.push(kind);
+        lumps.planes.push(sign_bits);
+        lumps.planes.extend_from_slice(&plane[6..10]);
+    }
+
+    for (index, texture) in textures.iter().enumerate() {
+        let asset = u16::try_from(index)
+            .map_err(|_| CookError::new("texture index does not fit a material asset"))?;
+        // Sidedness stays "front"; Quake's own per-face flags carry the
+        // back-side bit. Only a layered sky is an aperture into the scene sky.
+        let flags: u16 = if sky == SkyEncoding::Layered && texture.flags & TEXTURE_LAYERED_SKY != 0
+        {
+            quake_formats::pxbsp::material_flags::SKY_APERTURE
+        } else {
+            0
+        };
+        lumps.materials.extend_from_slice(&asset.to_le_bytes());
+        lumps.materials.extend_from_slice(&flags.to_le_bytes());
+        // Neutral tint, opaque blend, static animation: Quake's blends and
+        // texture chains are runtime policy over the texture table.
+        lumps.materials.extend_from_slice(&[128, 128, 128, 0, 0]);
+        lumps.materials.extend_from_slice(&[0; 7]);
+    }
+    lumps.texture_table = serialize_textures(textures);
+
+    for source in bsp.lump(BspLump::Nodes).chunks_exact(24) {
+        let plane = u16::try_from(i32_at(source, 0)?)
+            .map_err(|_| CookError::new("BSP node plane exceeds u16"))?;
+        let source_first = u16_at(source, 20)? as usize;
+        let source_count = u16_at(source, 22)? as usize;
+        let first = *face_offsets
+            .get(source_first)
+            .ok_or_else(|| CookError::new("node first face is out of bounds"))?;
+        let end = *face_offsets
+            .get(source_first + source_count)
+            .ok_or_else(|| CookError::new("node face end is out of bounds"))?;
+        lumps.nodes.extend_from_slice(&plane.to_le_bytes());
+        lumps.nodes.extend_from_slice(&i16_at(source, 4)?.to_le_bytes());
+        lumps.nodes.extend_from_slice(&i16_at(source, 6)?.to_le_bytes());
+        for axis in 0..3 {
+            lumps
+                .nodes
+                .push(quake_formats::encode_node_bound_min(i16_at(source, 8 + axis * 2)?) as u8);
+        }
+        for axis in 0..3 {
+            lumps
+                .nodes
+                .push(quake_formats::encode_node_bound_max(i16_at(source, 14 + axis * 2)?) as u8);
+        }
+        lumps.nodes.extend_from_slice(
+            &u16::try_from(first)
+                .map_err(|_| CookError::new("node first cooked face exceeds u16"))?
+                .to_le_bytes(),
+        );
+        lumps.nodes.extend_from_slice(
+            &u16::try_from(end - first)
+                .map_err(|_| CookError::new("node cooked face count exceeds u16"))?
+                .to_le_bytes(),
+        );
+    }
+
+    for face in faces {
+        let count = face.vertex_count as usize;
+        lumps.max_face_vertices = lumps.max_face_vertices.max(count);
+        if count > quake_formats::render::PXBSP_MAX_FACE_VERTICES {
+            lumps.oversize_faces += 1;
+        }
+    }
+    Ok(lumps)
 }
 
 fn serialize_textures(textures: &[CookTexture]) -> Vec<u8> {

@@ -20,6 +20,8 @@ pub struct MapCookConfig<'a> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CookedMap {
     pub psb: Vec<u8>,
+    /// The same map as a PXBSP v6 file (see `assemble_pxbsp`).
+    pub pxbsp: Vec<u8>,
     pub model_count: usize,
     pub sound_stats: SoundCookStats,
     pub entity_count: usize,
@@ -66,8 +68,10 @@ pub fn cook_map(
         ));
     }
     let psb = assemble_psb(&geometry, &models, &entities, &sounds.data)?;
+    let pxbsp = super::assemble_pxbsp(&geometry, &models, &entities, &sounds.data)?;
     Ok(CookedMap {
         psb,
+        pxbsp,
         model_count: models.stats.model_count,
         sound_stats: sounds.stats,
         entity_count: entities.entities.len() / 50,
