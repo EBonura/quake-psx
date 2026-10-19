@@ -32,6 +32,10 @@ path = "../../tools/portal-census.rs"
 name = "face-merge-census"
 path = "../../tools/face-merge-census.rs"
 
+[[bin]]
+name = "pxbsp-report"
+path = "../../tools/pxbsp-report.rs"
+
 # Host tests of guest modules, compiled from game/src through #[path].
 [[test]]
 name = "forward_chunk_reader"

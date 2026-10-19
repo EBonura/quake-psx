@@ -3454,6 +3454,11 @@ fn cook_episode_maps(root: &Path, pak_path: &Path) -> Result<Vec<String>> {
         let temporary = destination.join(format!(".{map}.psb.tmp"));
         fs::write(&temporary, &cooked.psb)?;
         fs::rename(&temporary, &output_path)?;
+        // The same map as a PXBSP v6 file, for the shared world renderer.
+        let pxbsp_path = destination.join(format!("{map}.pxbsp"));
+        let pxbsp_temporary = destination.join(format!(".{map}.pxbsp.tmp"));
+        fs::write(&pxbsp_temporary, &cooked.pxbsp)?;
+        fs::rename(&pxbsp_temporary, &pxbsp_path)?;
         let old_bank_bytes = 4
             + cooked.sound_stats.combined_sound_count * SoundEffect::SIZE
             + cooked.sound_stats.combined_payload_bytes;
