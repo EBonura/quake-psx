@@ -24,6 +24,16 @@ const _: () = {
     assert!(crate::input_policy::button::SQUARE == button::SQUARE);
 };
 
+#[cfg(feature = "auto-e1m1")]
+static mut AUTO_PLAY: bool = false;
+
+/// DIAG v6: switch the scripted walk, turn and fire loop on or off.
+#[cfg(feature = "auto-e1m1")]
+pub fn set_auto_play(on: bool) {
+    // SAFETY: the game loop is single threaded.
+    unsafe { AUTO_PLAY = on };
+}
+
 pub struct Input {
     edges: EdgeTracker,
     last_pad: PadState,
@@ -149,7 +159,7 @@ impl Input {
     #[optimize(size)]
     pub fn poll(&mut self, deadzone: i16) -> InputFrame {
         let pad = self.poll_clean_pad();
-        let held = pad.buttons.bits();
+        let mut held = pad.buttons.bits();
 
         let (mut strafe, mut forward, mut yaw, mut pitch) = (0, 0, 0, 0);
         let (mut left_x, mut left_y) = (0, 0);
@@ -187,6 +197,25 @@ impl Input {
         }
         if dpad_moves && pad.buttons.is_held(button::LEFT) {
             strafe = quake_horizontal_axis(-127);
+        }
+        // DIAG v6: with the pad untouched, walk, turn and fire on a fixed script (the pad wins
+        // the moment anything is pressed or a stick moves).
+        #[cfg(feature = "auto-e1m1")]
+        {
+            // SAFETY: the game loop is single threaded.
+            if unsafe { AUTO_PLAY } && held == 0 && forward == 0 && strafe == 0 && yaw == 0 && pitch == 0 {
+            let vbl = psx_rt::interrupts::vblank_count();
+            let phase = (vbl / 60) % 8;
+            forward = 127;
+            if phase == 3 {
+                yaw = 60;
+            } else if phase == 7 {
+                yaw = -60;
+            }
+            if vbl % 60 < 12 {
+                held |= button::R2;
+            }
+            }
         }
         let edges = self.edges.update(held, left_x, left_y);
 

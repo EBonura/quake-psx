@@ -49,6 +49,10 @@ monsterjump-regression = ["emulator-telemetry"]
 spawn-probe = ["emulator-telemetry"]
 # E1M1 with the player parked at its own spawn, no input, live monsters.
 e1m1-spawn-regression = ["spawn-probe"]
+# Boot straight into E1M1 with the menu closed and nothing else changed (emulator-fidelity lane).
+e1m1-boot = []
+# Title menu starts E1M1 by itself after a short wait (emulator-fidelity lane; no pad needed).
+auto-e1m1 = []
 # Idle E1M1 (as above) with a scripted pause-menu save then load through the
 # emulated memory card, logging a fingerprint of the saved state each side
 # (game/src/save_probe.rs). The spawn log itself is silenced: its lines leak

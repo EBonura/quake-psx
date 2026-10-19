@@ -197,6 +197,8 @@ pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
 #[optimize(size)]
 pub fn run() -> ! {
     psx_io::diag::set_stall_hook(psx_rt::diag::wedge_panel);
+    // DIAG v6: breadcrumbs from here on (the ring was never started in v5).
+    psx_io::diag::ring_init();
     // Match VoXide's hardware-proven ordering exactly: initialise the GPU,
     // complete the DualShock 0x43/0x44 exchange, and only then enable VBlank
     // interrupts. An interrupt in the middle of that exchange can leave a
@@ -208,6 +210,9 @@ pub fn run() -> ! {
         let _ = psx_pad::enable_analog_port1();
     }
     crate::platform::start_vblank_counter();
+    // DIAG v6: fallback watchdog on Timer 2, independent of VBlank.
+    #[cfg(feature = "console-diag")]
+    psx_rt::diag::timer_watchdog_start();
     psx_spu::init();
     // Route the CD's own audio into the mix, for the XA ambient music in
     // `music.rs`; `psx_spu::init` leaves the CD input muted. The input stays at
@@ -350,6 +355,7 @@ pub fn run() -> ! {
         feature = "bestiary-regression",
         feature = "start-route-regression",
         feature = "e1m1-chain-regression",
+        feature = "e1m1-boot",
         feature = "e1m1-spawn-regression",
         feature = "e1m2-e1m3-route-regression",
         feature = "survival-regression",
@@ -582,6 +588,26 @@ pub fn run() -> ! {
             menu.update(menu_input(raw_controls))
         } else {
             None
+        };
+        #[cfg(feature = "auto-e1m1")]
+        let menu_action = {
+            static mut AUTO_WAIT: u32 = 0;
+            if menu.active() {
+                // SAFETY: the game loop is single threaded.
+                let n = unsafe {
+                    AUTO_WAIT += 1;
+                    AUTO_WAIT
+                };
+                if n == 240 {
+                    menu.close_for_game();
+                    crate::input::set_auto_play(true);
+                    Some(quake_core::menu::MenuAction::StartLevel(1))
+                } else {
+                    menu_action
+                }
+            } else {
+                menu_action
+            }
         };
         #[cfg(feature = "e1m1-save-regression")]
         let menu_action = crate::save_probe::scripted(elapsed_ticks).or(menu_action);
@@ -1946,6 +1972,10 @@ fn initial_map() -> crate::asset::EpisodeMap {
     {
         return crate::asset::EpisodeMap::E1M1;
     }
+    #[cfg(feature = "e1m1-boot")]
+    {
+        return crate::asset::EpisodeMap::E1M1;
+    }
     #[cfg(feature = "e1m1-spawn-regression")]
     {
         return crate::asset::EpisodeMap::E1M1;
@@ -1989,6 +2019,7 @@ fn initial_map() -> crate::asset::EpisodeMap {
         feature = "monsterjump-regression",
         feature = "bestiary-regression",
         feature = "e1m1-chain-regression",
+        feature = "e1m1-boot",
         feature = "e1m1-spawn-regression",
         feature = "e1m2-e1m3-route-regression",
         feature = "survival-regression",

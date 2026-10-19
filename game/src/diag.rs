@@ -56,7 +56,7 @@ pub fn status(held: u16, movement: [i16; 2], look: [i16; 2], analog: bool) -> &'
 /// spins with interrupts on (stall panel after four seconds) or CROSS takes a
 /// BREAK (fault panel at once).
 pub fn selftest(held: u16) {
-    use psx_pad::button::{CIRCLE, CROSS, L1, L2, R1, R2, SELECT, SQUARE, START, TRIANGLE};
+    use psx_pad::button::{CIRCLE, CROSS, L1, L2, LEFT, R1, R2, RIGHT, SELECT, SQUARE, START, TRIANGLE};
     let chord = L1 | R1 | L2 | R2;
     if held & chord == chord {
         if held & CIRCLE != 0 {
@@ -96,6 +96,23 @@ pub fn selftest(held: u16) {
                 core::hint::spin_loop();
             }
         }
+        if held & LEFT != 0 {
+            // Test (trigger C): VBlank leaves I_MASK, then spin with interrupts on and no heartbeat
+            // calls; only the Timer 2 watchdog can fire.
+            step(0x76, "TEST VBLANK MASKED");
+            psx_io::diag::flush_now();
+            psx_io::irq::set_mask(psx_io::irq::mask() & !1);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        if held & RIGHT != 0 {
+            // Test (trigger D, address error): jump to a misaligned address.
+            step(0x77, "TEST ADDRESS ERROR");
+            psx_io::diag::flush_now();
+            // SAFETY: deliberate; the fetch faults and the handler halts.
+            unsafe { core::arch::asm!("li $8, 0x80010003", "jr $8", "nop", out("$8") _) };
+        }
         if held & SELECT != 0 {
             step(0x72, "MANUAL PANEL");
             // SAFETY: deliberate BREAK into the fault panel.
@@ -128,7 +145,7 @@ pub fn halt(line: u32) -> ! {
 /// eight VBlank edges by hand and counts it: the first such recovery takes the
 /// fault panel, so its GPU, DMA and present rows are on screen.
 pub fn check_present() {
-    if psx_rt::present::stats().recovery_count >= 3 {
+    if psx_rt::present::stats().recovery_count >= 6 {
         step(0x5E, "PRESENT RECOVERED");
         // SAFETY: deliberate BREAK into the fault panel.
         unsafe { core::arch::asm!("break") };
