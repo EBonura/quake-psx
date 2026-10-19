@@ -7,11 +7,11 @@
 //! container (map entities, the per-texture table) is described in
 //! `quake_formats::quake_pxbsp`.
 
+use quake_formats::pxbsp::PxbspLumpKind;
 use quake_formats::pxbsp::{
     PxbspEntity, PXBSP_DIRECTORY_ENTRY_BYTES, PXBSP_ENTITY_TABLE_HEADER_BYTES, PXBSP_HEADER_BYTES,
     PXBSP_LUMP_COUNT, PXBSP_MAGIC, PXBSP_VERSION,
 };
-use quake_formats::pxbsp::PxbspLumpKind;
 use quake_formats::quake_pxbsp::{
     ENTITY_CLASS, TEXTURE_TABLE_RECORD_BYTES, TEXTURE_TABLE_TRAILER_MAGIC,
 };
@@ -71,8 +71,8 @@ fn write_pxbsp(lumps: &[Vec<u8>; PXBSP_LUMP_COUNT]) -> Result<Vec<u8>, CookError
     output[6..8].copy_from_slice(&(PXBSP_LUMP_COUNT as u16).to_le_bytes());
     for (index, kind) in PxbspLumpKind::ALL.into_iter().enumerate() {
         output.resize(align_up_4(output.len()), 0);
-        let offset = u32::try_from(output.len())
-            .map_err(|_| CookError::new("PXBSP offset exceeds u32"))?;
+        let offset =
+            u32::try_from(output.len()).map_err(|_| CookError::new("PXBSP offset exceeds u32"))?;
         let bytes = &lumps[index];
         let len = u32::try_from(bytes.len())
             .map_err(|_| CookError::new(format!("{kind:?} lump exceeds u32")))?;
@@ -92,7 +92,9 @@ fn pack_entities(geometry: &GeometryLumps, quake: &[u8]) -> Result<Vec<u8>, Cook
     let entity_bytes = MapEntity::SIZE;
     let count = quake.len() / entity_bytes;
     if quake.len() % entity_bytes != 0 {
-        return Err(CookError::new("entity lump is not a whole number of records"));
+        return Err(CookError::new(
+            "entity lump is not a whole number of records",
+        ));
     }
     let count_u16 = u16::try_from(count).map_err(|_| CookError::new("entity count exceeds u16"))?;
     let records_end = PXBSP_ENTITY_TABLE_HEADER_BYTES + count * PxbspEntity::SIZE;
@@ -192,13 +194,19 @@ mod tests {
         for (x, y) in [(0i16, 0i16), (64, 0), (64, 64), (0, 64)] {
             geometry.pxbsp.vertices.extend_from_slice(&x.to_le_bytes());
             geometry.pxbsp.vertices.extend_from_slice(&y.to_le_bytes());
-            geometry.pxbsp.vertices.extend_from_slice(&0i16.to_le_bytes());
+            geometry
+                .pxbsp
+                .vertices
+                .extend_from_slice(&0i16.to_le_bytes());
             geometry.pxbsp.vertices.extend_from_slice(&[0, 0]);
             geometry.pxbsp.vertices.extend_from_slice(&[0, 0, 0, 0]);
         }
         // Plane z = 0, normal +z (Q3.12), axial class 2.
         for value in [0i16, 0, 4096] {
-            geometry.pxbsp.planes.extend_from_slice(&value.to_le_bytes());
+            geometry
+                .pxbsp
+                .planes
+                .extend_from_slice(&value.to_le_bytes());
         }
         geometry.pxbsp.planes.extend_from_slice(&[2, 0]);
         geometry.pxbsp.planes.extend_from_slice(&0i32.to_le_bytes());
@@ -207,9 +215,18 @@ mod tests {
         geometry.pxbsp.texture_table = vec![0; TEXTURE_TABLE_RECORD_BYTES];
         // Node 0: plane 0, front = leaf 1 (-2), back = leaf 0 (-1), face 0.
         geometry.pxbsp.nodes.extend_from_slice(&0u16.to_le_bytes());
-        geometry.pxbsp.nodes.extend_from_slice(&(-2i16).to_le_bytes());
-        geometry.pxbsp.nodes.extend_from_slice(&(-1i16).to_le_bytes());
-        geometry.pxbsp.nodes.extend_from_slice(&[0xff, 0xff, 0xff, 2, 2, 2]);
+        geometry
+            .pxbsp
+            .nodes
+            .extend_from_slice(&(-2i16).to_le_bytes());
+        geometry
+            .pxbsp
+            .nodes
+            .extend_from_slice(&(-1i16).to_le_bytes());
+        geometry
+            .pxbsp
+            .nodes
+            .extend_from_slice(&[0xff, 0xff, 0xff, 2, 2, 2]);
         geometry.pxbsp.nodes.extend_from_slice(&0u16.to_le_bytes());
         geometry.pxbsp.nodes.extend_from_slice(&1u16.to_le_bytes());
         // Face: plane 0, first vertex 0, material 0, flags 0, 4 corners.
@@ -271,7 +288,10 @@ mod tests {
         assert_eq!(map.entities().len(), 1);
         let entity = map.entities().get(0).unwrap();
         assert_eq!(entity.class_id, ENTITY_CLASS);
-        assert_eq!(entity.leaf, 1, "an entity above the floor is in the empty leaf");
+        assert_eq!(
+            entity.leaf, 1,
+            "an entity above the floor is in the empty leaf"
+        );
         assert_eq!(map.entities().payload(0), Some(&quake[..]));
         assert_eq!(map.string_at(0), Some(&b"hello"[..]));
         assert_eq!(

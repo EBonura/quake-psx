@@ -98,7 +98,9 @@ fn main() -> Result<()> {
         check(planes.len() == shared.planes().len(), map, "plane count")?;
         for (index, (old, new)) in planes.iter().zip(shared.planes()).enumerate() {
             check(
-                old.normal == new.normal && old.distance == new.distance && old.kind == new.kind as i32,
+                old.normal == new.normal
+                    && old.distance == new.distance
+                    && old.kind == new.kind as i32,
                 map,
                 &format!("plane {index} differs"),
             )?;
@@ -113,7 +115,12 @@ fn main() -> Result<()> {
             map,
             "corner count",
         )?;
-        for (index, (old, new)) in corners.corners.iter().zip(shared.vertices().iter()).enumerate() {
+        for (index, (old, new)) in corners
+            .corners
+            .iter()
+            .zip(shared.vertices().iter())
+            .enumerate()
+        {
             let position = corners.positions[old.position_index as usize].position;
             check(
                 position == [new.position.x, new.position.y, new.position.z]
@@ -125,7 +132,11 @@ fn main() -> Result<()> {
         }
 
         // Nodes: the old node is the new node's plane and children.
-        check(xbsp.nodes().len() == shared.nodes().len(), map, "node count")?;
+        check(
+            xbsp.nodes().len() == shared.nodes().len(),
+            map,
+            "node count",
+        )?;
         let mut covered_faces = 0usize;
         for (index, (old, new)) in xbsp.nodes().iter().zip(shared.nodes().iter()).enumerate() {
             check(
@@ -147,7 +158,11 @@ fn main() -> Result<()> {
 
         // Materials and the texture table are one-per-texture.
         let texture_count = xbsp.textures().len();
-        check(shared.materials().len() == texture_count, map, "material count")?;
+        check(
+            shared.materials().len() == texture_count,
+            map,
+            "material count",
+        )?;
         let table = texture_table_records(shared.strings())
             .ok_or_else(|| format!("{map}: missing texture table sidecar"))?;
         check(
@@ -167,7 +182,9 @@ fn main() -> Result<()> {
         for index in 0..entities.len() {
             check(
                 entities.payload(index)
-                    == Some(&quake_entities[index * MapEntity::SIZE..(index + 1) * MapEntity::SIZE]),
+                    == Some(
+                        &quake_entities[index * MapEntity::SIZE..(index + 1) * MapEntity::SIZE],
+                    ),
                 map,
                 &format!("entity {index} payload"),
             )?;
@@ -186,10 +203,22 @@ fn main() -> Result<()> {
                 ("model data", LumpKind::ModelData, PxbspLumpKind::ModelData),
                 ("vertices", LumpKind::Vertices, PxbspLumpKind::Vertices),
                 ("planes", LumpKind::Planes, PxbspLumpKind::Planes),
-                ("texture info | materials", LumpKind::TextureInfo, PxbspLumpKind::Materials),
+                (
+                    "texture info | materials",
+                    LumpKind::TextureInfo,
+                    PxbspLumpKind::Materials,
+                ),
                 ("faces", LumpKind::Faces, PxbspLumpKind::Faces),
-                ("mark surfaces", LumpKind::MarkSurfaces, PxbspLumpKind::MarkSurfaces),
-                ("visibility", LumpKind::Visibility, PxbspLumpKind::Visibility),
+                (
+                    "mark surfaces",
+                    LumpKind::MarkSurfaces,
+                    PxbspLumpKind::MarkSurfaces,
+                ),
+                (
+                    "visibility",
+                    LumpKind::Visibility,
+                    PxbspLumpKind::Visibility,
+                ),
                 ("leaves", LumpKind::Leaves, PxbspLumpKind::Leaves),
                 ("nodes", LumpKind::Nodes, PxbspLumpKind::Nodes),
                 ("clip nodes", LumpKind::ClipNodes, PxbspLumpKind::ClipNodes),

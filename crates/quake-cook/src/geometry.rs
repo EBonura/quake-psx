@@ -1686,8 +1686,12 @@ fn cook_pxbsp_lumps(
             .get(source_first + source_count)
             .ok_or_else(|| CookError::new("node face end is out of bounds"))?;
         lumps.nodes.extend_from_slice(&plane.to_le_bytes());
-        lumps.nodes.extend_from_slice(&i16_at(source, 4)?.to_le_bytes());
-        lumps.nodes.extend_from_slice(&i16_at(source, 6)?.to_le_bytes());
+        lumps
+            .nodes
+            .extend_from_slice(&i16_at(source, 4)?.to_le_bytes());
+        lumps
+            .nodes
+            .extend_from_slice(&i16_at(source, 6)?.to_le_bytes());
         for axis in 0..3 {
             lumps
                 .nodes
