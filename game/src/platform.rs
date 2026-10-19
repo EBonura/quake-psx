@@ -510,6 +510,7 @@ pub fn gpu_begin_frame() {
         BUILD_BUFFER ^= 1;
         #[cfg(not(feature = "blocking-present"))]
         psx_rt::present::wait_arena_free();
+        crate::diag::step(0x5A, "ARENA FREE");
         build_ot().clear();
         // Every queued chain ends on the shared GP0(1Fh) node, which raises
         // the draw-done flag the VBlank handler flips on.
@@ -585,8 +586,10 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
 unsafe fn queue_frame() {
     use psx_gpu::material::TextureMaterial;
 
+    crate::diag::step(0x56, "Q WAIT SLOT");
     psx_rt::present::wait_slot_empty();
     let swap = unsafe { GPU_SUBMISSION_PENDING };
+    crate::diag::step(0x57, "Q SLOT EMPTY");
     let fb = unsafe { framebuffer() };
     // The flip exposes the previous frame, whose buffer is the current draw
     // target; this frame then draws into the other one.
@@ -629,6 +632,7 @@ unsafe fn queue_frame() {
         head = addr_of!(preamble.clear_tag);
     }
     if unsafe { DEFERRED_UPLOAD_COUNT } != 0 {
+        crate::diag::step(0x58, "Q UPLOAD");
         // Image loads go through the GP0 FIFO, so the previous frame must be
         // off the GPU first. The slot is empty, so the handler cannot kick
         // anything while the CPU owns GP0. Moving the draw target here keeps
@@ -642,6 +646,7 @@ unsafe fn queue_frame() {
             head = addr_of!(preamble.clear_tag);
         }
         unsafe { flush_deferred_vram_uploads() };
+        crate::diag::step(0x59, "Q UPLOAD DONE");
     }
     #[cfg(feature = "emulator-telemetry")]
     psx_telemetry::emit::counter(psx_telemetry::counter::VISUAL_FRAMES, 1);
@@ -657,6 +662,7 @@ unsafe fn queue_frame() {
     // arena's preamble, ordering table and packets, ending on the shared
     // GP0(1Fh) node; none of it is rebuilt before wait_arena_free says its
     // walk has ended.
+    crate::diag::step(0x5B, "Q PUBLISH");
     unsafe { psx_rt::present::publish_raw(head, display) };
     unsafe {
         GPU_SUBMISSION_PENDING = true;
