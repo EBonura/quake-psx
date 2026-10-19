@@ -51,10 +51,10 @@ fn main() -> Result<()> {
     let requested: Vec<String> = env::args().skip(1).collect();
 
     println!(
-        "| map | psb file | pxbsp file | XBSP resident | PXBSP resident | delta | vs arena {} | faces | corners | positions | nodes | max face verts | oversize faces |",
+        "| map | psb file | pxbsp file | XBSP resident | PXBSP resident | delta | vs arena {} | projected vs arena | faces | corners | positions | nodes | max face verts | oversize faces |",
         RESIDENT_MAP_ARENA_BYTES
     );
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for map in MAPS {
         if !requested.is_empty() && !requested.iter().any(|name| name == map) {
             continue;
@@ -235,12 +235,21 @@ fn main() -> Result<()> {
         }
         let old_resident = xbsp.resident_bytes_len();
         let new_resident = shared.resident_bytes();
+        // Estimate, not a built file: what the PXBSP resident size would be
+        // with the PSB5 indexed vertex lump (the shared position array) and
+        // without the QLB1 leaf-bounds sidecar, which the shared renderer's
+        // node bounds make redundant.
+        let vertex_saving = index.lump(PxbspLumpKind::Vertices).len as i64
+            - psb_index.lump(LumpKind::Vertices).len as i64;
+        let sidecar = (shared.leaves().len() * 6 + 8) as i64;
+        let projected = new_resident as i64 - vertex_saving - sidecar;
         println!(
-            "| {map} | {} | {} | {old_resident} | {new_resident} | {:+} | {:+} | {face_count} | {} | {} | {} | {max_vertices} | {oversize} |",
+            "| {map} | {} | {} | {old_resident} | {new_resident} | {:+} | {:+} | {:+} | {face_count} | {} | {} | {} | {max_vertices} | {oversize} |",
             psb.len(),
             pxbsp.len(),
             new_resident as i64 - old_resident as i64,
             new_resident as i64 - RESIDENT_MAP_ARENA_BYTES as i64,
+            projected - RESIDENT_MAP_ARENA_BYTES as i64,
             corners.corners.len(),
             corners.positions.len(),
             shared.nodes().len(),
