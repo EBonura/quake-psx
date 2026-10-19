@@ -56,9 +56,13 @@ pub fn status(held: u16, movement: [i16; 2], look: [i16; 2], analog: bool) -> &'
 /// spins with interrupts on (stall panel after four seconds) or CROSS takes a
 /// BREAK (fault panel at once).
 pub fn selftest(held: u16) {
-    use psx_pad::button::{CROSS, L1, L2, R1, R2, SELECT, TRIANGLE};
+    use psx_pad::button::{CROSS, L1, L2, R1, R2, SELECT, START, TRIANGLE};
     let chord = L1 | R1 | L2 | R2;
     if held & chord == chord {
+        if held & START != 0 {
+            psx_rt::diag::boot_report();
+            return;
+        }
         if held & SELECT != 0 {
             step(0x72, "MANUAL PANEL");
             // SAFETY: deliberate BREAK into the fault panel.

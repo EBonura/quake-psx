@@ -196,6 +196,9 @@ pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
 
 #[optimize(size)]
 pub fn run() -> ! {
+    // DIAG disc: show the breadcrumbs the previous run left in RAM (after a reset),
+    // then start a fresh ring.
+    psx_rt::diag::boot_report();
     // Match VoXide's hardware-proven ordering exactly: initialise the GPU,
     // complete the DualShock 0x43/0x44 exchange, and only then enable VBlank
     // interrupts. An interrupt in the middle of that exchange can leave a
@@ -447,10 +450,12 @@ pub fn run() -> ! {
         // also the one place a level load puts the last map's lights out.
         dynamic_lights.enter_map(presentation.generation());
         dynamic_lights.tick(elapsed_ticks);
+        crate::diag::step(0x66, "AUDIO TICK");
         audio.tick(audio_tick);
         // The music module is the authority on whether there is music: the
         // Options rows are restated from it here and only read back after the
         // player has had a turn.
+        crate::diag::step(0x67, "MUSIC UPDATE");
         music.update(audio_tick);
         menu.sync_music(music.available(), music.enabled());
         // Motors: aged by this frame's ticks, silenced in menus and when dead,
@@ -801,6 +806,7 @@ pub fn run() -> ! {
             } else {
                 // A corpse runs the same motor with no input, so a body killed
                 // in the air or on a slope settles on the floor.
+        crate::diag::step(0x68, "PLAYER UPDATE");
                 let frame = player.update(
                     &world,
                     &entities,
@@ -853,6 +859,7 @@ pub fn run() -> ! {
         }
         play_movement_audio(&mut audio, player_frame, audio_tick);
         let survival = weapon.tick_survival(survival_input(player_frame, elapsed_ticks));
+        crate::diag::step(0x69, "BUBBLES OVERLAY");
         #[cfg(feature = "monster-code-overlay")]
         monster_code.tick_bubbles(&world, presentation.impact_particles_mut(), elapsed_ticks,
             player.origin(), player.water_level()).unwrap_or_else(|_| {
@@ -992,6 +999,7 @@ pub fn run() -> ! {
             }
         }
         let mut rider = player.rider();
+        crate::diag::step(0x6A, "UPDATE GAMEPLAY");
         let mut gameplay = entities.update_gameplay(
             &world,
             &mut rider,
@@ -1226,6 +1234,7 @@ pub fn run() -> ! {
             continue;
         }
 
+        crate::diag::step(0x6B, "WEAPON TICK");
         weapon.tick(elapsed_ticks);
         // `PlayerPreThink` returns above `W_WeaponFrame` once the player is
         // dead, so a corpse neither switches nor fires.
@@ -1258,6 +1267,7 @@ pub fn run() -> ! {
         // Advance only projectiles which existed at the start of this frame.
         // A newly fired rocket is submitted once at its authored spawn before
         // its first physics segment, matching Quake's entity-frame ordering.
+        crate::diag::step(0x6C, "WEAPON FRAME");
         entities.begin_weapon_frame();
         let player_damage_origin = player.damage_origin();
         let rocket_result =
@@ -1538,6 +1548,7 @@ pub fn run() -> ! {
                 &mut weapon,
                 elapsed_ticks,
             );
+            crate::diag::step(0x6D, "MONSTER OVERLAY");
             #[cfg(feature = "monster-code-overlay")]
             let (missiles, monsters) = monster_code.update_monsters(
                 &world, &mut entities, player.origin(), player.velocity(),
@@ -1632,6 +1643,7 @@ pub fn run() -> ! {
             nail_result.unwrap_or_default(),
             grenade_result.unwrap_or_default(),
         );
+        crate::diag::step(0x6E, "ENTITIES UPDATE");
         entities.update();
         // `CL_RelinkEntities` leaves the model-flag trails once every
         // projectile has moved, so this reads the settled origins.
@@ -1713,6 +1725,7 @@ pub fn run() -> ! {
         let render_light_tick = audio_tick;
         #[cfg(feature = "visual-parity-regression")]
         let render_light_tick = 0;
+        crate::diag::step(0x6F, "ANIMATE LIGHTS");
         entities.animate_lights(&world, render_light_tick);
         set_frame_styles(&mut renderer, &mut entities, render_light_tick, &menu_view);
         renderer.set_dynamic_lights(&dynamic_lights);
