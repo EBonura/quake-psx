@@ -224,7 +224,8 @@ pub fn run() -> ! {
         feature = "emulator-telemetry",
         feature = "ambient-regression",
         feature = "hardware-regression",
-        feature = "perf-fixed-ticks"
+        feature = "perf-fixed-ticks",
+        feature = "console-diag"
     )))]
     crate::intro::show(crate::platform::boot_framebuffer());
 
@@ -375,6 +376,11 @@ pub fn run() -> ! {
     let mut death_released = false;
 
     loop {
+        #[cfg(feature = "console-diag")]
+        {
+            crate::diag::next_frame();
+            crate::diag::step(0x51, "WAIT TICK");
+        }
         #[cfg(not(feature = "perf-fixed-ticks"))]
         let (audio_tick, clock_ticks) = {
             if presentation.generation() != clock_generation {
@@ -384,7 +390,21 @@ pub fn run() -> ! {
             // Wait for a tick rather than invent one: a frame shorter than a
             // VBlank must not advance game time.
             let mut ticks = 0u16;
+            #[cfg(feature = "console-diag")]
+            let mut spins = 0u32;
             loop {
+                // DIAG: a healthy wait ends within one VBlank (about 60,000
+                // reads); a million means the counter has stopped moving
+                // (VBlank interrupts lost), which the VBlank-driven stall
+                // watchdog cannot see. BREAK takes the fault panel.
+                #[cfg(feature = "console-diag")]
+                {
+                    spins += 1;
+                    if spins > 1_000_000 {
+                        crate::diag::step(0x5F, "TICK WAIT STUCK");
+                        unsafe { core::arch::asm!("break") };
+                    }
+                }
                 let now = psx_rt::interrupts::vblank_count();
                 while game_clock.due(now) {
                     ticks += 1;
@@ -439,7 +459,23 @@ pub fn run() -> ! {
         }
         rumble.tick(elapsed_ticks);
         input.set_rumble(rumble.request());
+        #[cfg(feature = "console-diag")]
+        crate::diag::step(0x52, "POLL PAD");
         let raw_controls = input.poll(menu.deadzone_radius());
+        #[cfg(feature = "console-diag")]
+        {
+            crate::diag::step(0x53, "SIMULATE");
+            crate::diag::selftest(raw_controls.held);
+            let line = crate::diag::status(
+                raw_controls.held,
+                raw_controls.movement,
+                raw_controls.look,
+                input.diag_analog(),
+            );
+            if crate::diag::frame() % 90 == 2 {
+                presentation.push_notify(line);
+            }
+        }
         if let Some(active) = intermission.as_mut() {
             active.elapsed = active.elapsed.saturating_add(elapsed_ticks);
             if !WAIT_FOR_BUTTON {
@@ -1703,6 +1739,8 @@ pub fn run() -> ! {
         let view_contents = renderer.view_contents(&world, render_camera);
         presentation.screen_blend_mut().set_contents(view_contents);
         renderer.set_notify(presentation.notify_lines());
+        #[cfg(feature = "console-diag")]
+        crate::diag::step(0x54, "DRAW FRAME");
         let _render_stats = renderer.draw_frame(
             &world,
             render_camera,
@@ -1742,6 +1780,8 @@ pub fn run() -> ! {
             None,
             presentation.screen_blend(),
         );
+        #[cfg(feature = "console-diag")]
+        crate::diag::step(0x55, "FRAME QUEUED");
         #[cfg(feature = "combat-regression")]
         crate::combat_regression::observe_render(_render_stats, weapon.view());
         #[cfg(feature = "arsenal-regression")]
@@ -2164,9 +2204,13 @@ fn load_level(
     // Every disc read in the running game happens below this line, so this is
     // the one place the drive changes hands. Even a residency hit reloads the
     // map's sound bank, so the handoff is unconditional.
+    #[cfg(feature = "console-diag")]
+    crate::diag::step(0x61, "LOAD SUSPEND");
     music.suspend_for_load();
     #[cfg(feature = "monster-code-overlay")]
     monster_code.release(world);
+    #[cfg(feature = "console-diag")]
+    crate::diag::step(0x62, "LOAD MAP DATA");
 
     let loaded = if world.is_resident(map) {
         #[cfg(feature = "emulator-telemetry")]
@@ -2196,6 +2240,8 @@ fn load_level(
         )
     };
 
+    #[cfg(feature = "console-diag")]
+    crate::diag::step(0x63, "LOAD CODE INSTALL");
     #[cfg(feature = "monster-code-overlay")]
     let loaded = loaded.and_then(|player| {
         // All world texture and sound transfers have returned synchronously.
@@ -2215,6 +2261,8 @@ fn load_level(
             renderer.draw_loading_status(disc, map, status);
         }
     }
+    #[cfg(feature = "console-diag")]
+    crate::diag::step(0x64, "LOAD RESUME");
     music.resume_after_load(psx_rt::interrupts::vblank_count());
 
     #[cfg(feature = "hardware-performance")]

@@ -128,6 +128,12 @@ impl Input {
         sampled
     }
 
+    /// DIAG disc: did the last accepted poll answer in analog mode?
+    #[cfg(feature = "console-diag")]
+    pub fn diag_analog(&self) -> bool {
+        self.last_pad.is_analog()
+    }
+
     /// The motor request sent with every poll from now on.
     #[inline(always)]
     pub fn set_rumble(&mut self, #[allow(unused)] rumble: crate::rumble::Request) {

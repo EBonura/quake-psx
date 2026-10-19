@@ -33,6 +33,7 @@ default = [
     "renderer-scratchpad-alias-projection",
     "renderer-error-bounded-tessellation",
     "smooth-poses",
+    "console-diag",
 ]
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
@@ -98,6 +99,8 @@ smooth-poses = ["quake-core/smooth-poses"]
 # dropped triangles read as magenta. Never part of a shipping image.
 probe-clear-magenta = []
 rumble = []
+# DIAG disc only: step markers, a live status line and a bounded tick wait for the SDK stop panel.
+console-diag = []
 emulator-telemetry = ["psx-telemetry/emit"]
 # Log every music schedule transition (tick, loop, fade level) to the emulator
 # debug log, for the headless music gate. Not part of the shipping image.

@@ -28,6 +28,8 @@ mod entity;
 #[cfg(feature = "episode1-route-regression")]
 mod episode1_regression;
 mod forward_chunk_reader;
+#[cfg(feature = "console-diag")]
+mod diag;
 mod input;
 mod input_policy;
 mod intro;
