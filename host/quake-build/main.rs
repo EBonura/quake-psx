@@ -266,6 +266,7 @@ enum Action {
     GpuPolygonCellPolicyDisc,
     GpuPolygonLeaderDisc,
     ProbeDisc,
+    BisectDisc,
     GpuPolygonScratchLiquidDisc,
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLeaderBench,
@@ -754,6 +755,80 @@ fn real_main() -> Result<()> {
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(&root, &build, Some(&features), false)?;
+        }
+        Action::BisectDisc => {
+            // BISECT diagnostic disc: a small menu program (BISECT_MENU_EXE, the boot EXE)
+            // chain-loads one of seven complete builds of the game. Each build is a world-pack
+            // chunk (ids 200 to 206 in the order A D F G B C E) with the chain-load blob at 207
+            // (BISECT_LOADER_BLOB) and a table of the payload checksums at 208. Every overlay
+            // build keeps its packages under its own chunk ids (QUAKE_OVERLAY_CHUNK_BASE).
+            // A is built last so its packages, link map and the shared data chunks are the
+            // default ones.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-bisect");
+            fs::create_dir_all(&build)?;
+            let need = |name: &str| -> Result<String> {
+                env::var(name).map_err(|_| format!("bisect-disc needs {name}").into())
+            };
+            let menu = PathBuf::from(need("BISECT_MENU_EXE")?);
+            let blob = PathBuf::from(need("BISECT_LOADER_BLOB")?);
+            let boot_features = need("BISECT_BOOT_FEATURES")?;
+            let d_features = need("BISECT_D_FEATURES")?;
+            let extra = build.join("extra-chunks");
+            if extra.exists() {
+                fs::remove_dir_all(&extra)?;
+            }
+            fs::create_dir_all(&extra)?;
+            // (letter, chunk index in A D F G B C E order, overlay chunk base, features)
+            let order = ["A", "D", "F", "G", "B", "C", "E"];
+            let plan: [(&str, u32, Option<String>); 7] = [
+                ("E", 5000, Some(format!("{boot_features},bisect-e"))),
+                ("C", 4000, None),
+                ("B", 3000, Some(format!("{boot_features},blocking-present"))),
+                ("G", 2000, Some(format!("{boot_features},bisect-g"))),
+                ("F", 1000, Some(format!("{boot_features},bisect-f"))),
+                ("D", 0, Some(d_features.clone())),
+                ("A", 0, None),
+            ];
+            let mut checksums = [0u32; 7];
+            for (letter, base, features) in plan {
+                let index = order.iter().position(|l| *l == letter).expect("letter");
+                let features = features.unwrap_or_else(|| boot_features.clone());
+                println!("== bisect build {letter} ({features})");
+                env::set_var("BISECT_SUB", letter);
+                env::set_var("QUAKE_OVERLAY_CHUNK_BASE", base.to_string());
+                if letter == "D" {
+                    env::set_var("QUAKE_PSX_NO_DEFAULT_FEATURES", "1");
+                }
+                if letter == "A" {
+                    request_guest_link_map(build.join("quake-psx.map"))?;
+                }
+                build_game(&root, Some(&features), false)?;
+                env::remove_var("BISECT_SUB");
+                env::remove_var("QUAKE_OVERLAY_CHUNK_BASE");
+                env::remove_var("QUAKE_PSX_NO_DEFAULT_FEATURES");
+                let exe = fs::read(game_exe(&root))?;
+                checksums[index] = bisect_payload_fnv(&exe)?;
+                println!("bisect {letter}: {} bytes, payload FNV-1a {}", exe.len(), checksums[index]);
+                fs::write(build.join(format!("variant-{}.exe", letter.to_lowercase())), &exe)?;
+                fs::write(extra.join(format!("chunk_{}.exe", 200 + index)), &exe)?;
+                if letter != "D" && letter != "A" {
+                    for (name, id) in [("monsters", 4), ("doors", 5), ("save", 109), ("load", 110), ("card", 111)] {
+                        fs::copy(
+                            root.join(format!("game/target/overlay-{name}.pak")),
+                            extra.join(format!("chunk_{}.dat", base + id)),
+                        )?;
+                    }
+                }
+            }
+            fs::copy(&blob, extra.join("chunk_207.blob"))?;
+            let table: Vec<u8> = checksums.iter().flat_map(|sum| sum.to_le_bytes()).collect();
+            fs::write(extra.join("chunk_208.bin"), table)?;
+            env::set_var("QUAKE_PSX_EXTRA_CHUNKS_DIR", &extra);
+            env::set_var("QUAKE_PSX_SKIP_GAME_BUILD", "1");
+            env::set_var("QUAKE_PSX_BOOT_EXE", &menu);
+            build_disc(&root, &build, None, false)?;
         }
         Action::GpuPolygonLeaderDisc => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2853,6 +2928,7 @@ fn parse_cli() -> Result<Cli> {
             | "gpu-polygon-cell-policy-disc"
             | "gpu-polygon-leader-disc"
             | "probe-disc"
+            | "bisect-disc"
             | "gpu-polygon-scratch-liquid-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-leader-bench"
@@ -2921,6 +2997,7 @@ fn parse_cli() -> Result<Cli> {
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
                     "gpu-polygon-leader-disc" => Action::GpuPolygonLeaderDisc,
                     "probe-disc" => Action::ProbeDisc,
+                    "bisect-disc" => Action::BisectDisc,
                     "gpu-polygon-scratch-liquid-disc" => Action::GpuPolygonScratchLiquidDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
                     "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
@@ -4657,6 +4734,10 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         reset_shipping_registry_sources(&cargo_home)?;
         command.env("CARGO_HOME", cargo_home);
     }
+    // BISECT disc: a build with an explicit feature list (QUAKE_PSX_NO_DEFAULT_FEATURES=1).
+    if env::var_os("QUAKE_PSX_NO_DEFAULT_FEATURES").is_some() {
+        command.arg("--no-default-features");
+    }
     if let Some(feature) = feature {
         // QUAKE_PSX_EXTRA_FEATURES adds guest features to every test or bench
         // build (never the featureless shipping build), so any gate can run
@@ -4751,6 +4832,12 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     if let Some(requested) = GUEST_LINK_MAP.get() {
         fs::copy(&map, requested)?;
     }
+    // BISECT disc: every variant's link map, to read each one's heap headroom.
+    if let Ok(letter) = env::var("BISECT_SUB") {
+        let maps = root.join("build-psoxide-bisect");
+        fs::create_dir_all(&maps)?;
+        fs::copy(&map, maps.join(format!("variant-{}.map", letter.to_lowercase())))?;
+    }
     audit_console_image(&staged_exe)?;
     let destination = game_exe(root);
     fs::create_dir_all(
@@ -4839,10 +4926,25 @@ fn build_disc(
     }
     validate_cooked_episode(root)?;
     fs::create_dir_all(build)?;
-    build_game(root, feature, fresh_guest_target)?;
+    // BISECT disc: the builds were made already and the boot EXE is the menu program.
+    if env::var_os("QUAKE_PSX_SKIP_GAME_BUILD").is_none() {
+        build_game(root, feature, fresh_guest_target)?;
+    }
     let exe = build.join("quake-psx.exe");
-    fs::copy(game_exe(root), &exe)?;
+    let boot_exe = env::var_os("QUAKE_PSX_BOOT_EXE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| game_exe(root));
+    fs::copy(boot_exe, &exe)?;
     let chunks = stage_world_chunks(root, build)?;
+    // BISECT disc: extra world-pack chunks (sub-variant EXEs, the loader blob).
+    if let Some(extra) = env::var_os("QUAKE_PSX_EXTRA_CHUNKS_DIR") {
+        for entry in fs::read_dir(&extra)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with("chunk_") {
+                fs::copy(entry.path(), chunks.join(entry.file_name()))?;
+            }
+        }
+    }
     let image = build.join("quake-psx.bin");
     if image.exists() {
         fs::remove_file(&image)?;
@@ -12023,4 +12125,23 @@ mod provenance_tests {
             .to_string();
         assert!(tamper_error.contains("failed integrity"), "{tamper_error}");
     }
+}
+
+
+/// FNV-1a over the payload of a PSX-EXE (the bytes after its 2048-byte header, as
+/// many as the header's size field says): what the chain loader verifies in RAM.
+fn bisect_payload_fnv(exe: &[u8]) -> Result<u32> {
+    if exe.len() < 2048 || !exe.starts_with(b"PS-X EXE") {
+        return Err("bisect: not a PSX-EXE".into());
+    }
+    let t_size = u32::from_le_bytes([exe[0x1C], exe[0x1D], exe[0x1E], exe[0x1F]]) as usize;
+    let payload = exe
+        .get(2048..2048 + t_size)
+        .ok_or("bisect: EXE shorter than its header says")?;
+    let mut hash: u32 = 0x811C_9DC5;
+    for &byte in payload {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    Ok(hash)
 }

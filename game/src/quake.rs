@@ -209,6 +209,9 @@ pub fn run() -> ! {
     {
         let _ = psx_pad::enable_analog_port1();
     }
+    // BISECT disc: name this build's variant for the panel and status line.
+    #[cfg(feature = "bisect")]
+    crate::bisect::boot();
     crate::platform::start_vblank_counter();
     // DIAG v6: fallback watchdog on Timer 2, independent of VBlank.
     #[cfg(feature = "console-diag")]

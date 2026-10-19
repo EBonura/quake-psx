@@ -24,6 +24,11 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
     ] {
         args.push(arg.into());
     }
+    // BISECT disc: the packages of this build sit at shifted chunk ids.
+    let base: u32 = std::env::var("QUAKE_OVERLAY_CHUNK_BASE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
     for (name, id, entry, wrapper, descriptor, sites) in [
         (
             "monsters",
@@ -70,7 +75,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "--image",
             name,
             "--id",
-            id,
+            &(id.parse::<u32>().expect("chunk id") + base).to_string(),
             "--code",
             &format!(".overlay.quake_{name}.text"),
             "--descriptor",
@@ -156,7 +161,11 @@ fn guards(root: &Path, generation: &Path, map: &Path, patch: bool) -> Result<()>
     // Admission 2,304 + update_monsters 3,344. Round upward to 40 KiB.
     // BIOS/cache-flush and GPU callback full-tree limits are recorded
     // separately; these callable closures must never reach cache flush.
-    const CALLABLE_BUDGET: usize = 53_248 - 40_960;
+    let reserve = std::env::var("QUAKE_PSX_STACK_RESERVE")
+        .ok()
+        .and_then(|value| usize::from_str_radix(&value, 16).ok())
+        .unwrap_or(53_248);
+    let callable_budget: usize = reserve - 40_960;
     // Original scratchpad roots are checked with the complete composed closure.
     tool(root, "stack-guard", &stack)?;
     for wrapper in [
@@ -176,7 +185,7 @@ fn guards(root: &Path, generation: &Path, map: &Path, patch: bool) -> Result<()>
             "--root".into(),
             wrapper.into(),
             "--budget".into(),
-            CALLABLE_BUDGET.to_string().into(),
+            callable_budget.to_string().into(),
             "--forbid".into(),
             "__psx_rt_flush_i_cache".into(),
         ]);

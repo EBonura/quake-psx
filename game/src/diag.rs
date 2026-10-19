@@ -8,7 +8,7 @@
 use core::ptr::addr_of_mut;
 
 static mut FRAME: u32 = 0;
-static mut LINE: [u8; 36] = *b"F000000 V0000 B0000 M0 L00 00 R00 00";
+static mut LINE: [u8; 39] = *b"F000000 V0000 B0000 M0 L00 00 R00 00 X?";
 
 pub fn next_frame() {
     // SAFETY: the game loop is the only writer.
@@ -48,6 +48,7 @@ pub fn status(held: u16, movement: [i16; 2], look: [i16; 2], analog: bool) -> &'
         hex(&mut line[27..29], movement[1] as u8 as u32);
         hex(&mut line[31..33], look[0] as u8 as u32);
         hex(&mut line[34..36], look[1] as u8 as u32);
+        line[38] = psx_rt::bisect::variant();
         core::str::from_utf8_unchecked(&*addr_of_mut!(LINE))
     }
 }

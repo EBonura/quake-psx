@@ -143,6 +143,10 @@ fn main() {
     // without changing every PSoXide program.
     let linker_source = fs::read_to_string(&linker)
         .unwrap_or_else(|error| panic!("read {}: {error}", linker.display()));
+    // BISECT disc: QUAKE_PSX_STACK_RESERVE (hex) moves the heap ceiling; the default is the
+    // shipping reserve.
+    println!("cargo:rerun-if-env-changed=QUAKE_PSX_STACK_RESERVE");
+    let stack_reserve = env::var("QUAKE_PSX_STACK_RESERVE").unwrap_or_else(|_| "D000".to_string());
     let stack_marker = "STACK_RESERVE = 0x8000;";
     assert!(
         linker_source.contains(stack_marker),
@@ -166,7 +170,7 @@ fn main() {
     fs::write(
         &quake_linker,
         linker_source
-            .replacen(stack_marker, "STACK_RESERVE = 0xD000;", 1)
+            .replacen(stack_marker, &format!("STACK_RESERVE = 0x{stack_reserve};"), 1)
             .replacen(text_marker, &world_pass, 1),
     )
     .unwrap_or_else(|error| panic!("write {}: {error}", quake_linker.display()));

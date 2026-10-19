@@ -53,6 +53,11 @@ e1m1-spawn-regression = ["spawn-probe"]
 e1m1-boot = []
 # Title menu starts E1M1 by itself after a short wait (emulator-fidelity lane; no pad needed).
 auto-e1m1 = []
+# BISECT diagnostic disc: boot menu and variant switches (game/src/bisect.rs).
+bisect = ["console-diag"]
+bisect-f = ["bisect", "psx-rt/bisect-flush-bios"]
+bisect-g = ["bisect", "psx-rt/bisect-flush-idle"]
+bisect-e = ["bisect", "psx-rt/bisect-no-scratch-stack"]
 # Idle E1M1 (as above) with a scripted pause-menu save then load through the
 # emulated memory card, logging a fingerprint of the saved state each side
 # (game/src/save_probe.rs). The spawn log itself is silenced: its lines leak

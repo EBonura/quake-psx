@@ -793,7 +793,13 @@ pub fn upload_vram(rect: VramRect, bytes: &[u8]) -> Result<(), VramUploadError> 
         return Err(VramUploadError::SizeMismatch);
     }
     unsafe { wait_for_pending_submission() };
+    #[cfg(feature = "bisect")]
+    let irq = if crate::bisect::strict_uploads() { Some(unsafe { strict_uploads_begin() }) } else { None };
     psx_vram::upload_bytes(rect, bytes);
+    #[cfg(feature = "bisect")]
+    if let Some(was_enabled) = irq {
+        unsafe { strict_uploads_end(was_enabled) };
+    }
     psx_gpu::wait_idle();
     Ok(())
 }
@@ -888,6 +894,11 @@ unsafe fn flush_deferred_vram_uploads() {
     if count == 0 {
         return;
     }
+    // BISECT variant C: the strictest direct-access protocol. The GPU and
+    // DMA2 are provably idle before the first word and again after the last,
+    // and the VBlank handler cannot run in between.
+    #[cfg(feature = "bisect")]
+    let irq = if crate::bisect::strict_uploads() { Some(unsafe { strict_uploads_begin() }) } else { None };
     for upload in unsafe { &DEFERRED_UPLOADS[..count] } {
         let range_bytes = unsafe { core::slice::from_raw_parts(upload.source, upload.len) };
         if range_bytes.as_ptr().is_aligned() && range_bytes.len().is_multiple_of(4) {
@@ -902,9 +913,29 @@ unsafe fn flush_deferred_vram_uploads() {
             psx_vram::upload_bytes(upload.rect, range_bytes);
         }
     }
+    #[cfg(feature = "bisect")]
+    if let Some(was_enabled) = irq {
+        unsafe { strict_uploads_end(was_enabled) };
+    }
     unsafe {
         DEFERRED_UPLOAD_COUNT = 0;
     }
+}
+
+/// BISECT variant C: wait for a fully idle GPU, then mask interrupts.
+#[cfg(feature = "bisect")]
+#[inline(never)]
+unsafe fn strict_uploads_begin() -> bool {
+    psx_rt::present::wait_idle();
+    unsafe { psx_io::irq::disable_cpu_interrupts() }
+}
+
+/// BISECT variant C: unmask, then wait for the uploads to finish.
+#[cfg(feature = "bisect")]
+#[inline(never)]
+unsafe fn strict_uploads_end(was_enabled: bool) {
+    unsafe { psx_io::irq::restore_cpu_interrupts(was_enabled) };
+    psx_rt::present::wait_idle();
 }
 
 #[optimize(size)]
@@ -919,13 +950,31 @@ fn cache_index(chunk_id: u32) -> Option<usize> {
     }
 }
 
+/// Shift of the overlay package chunk ids (4, 5, 109 to 111): zero in every
+/// ordinary build; the BISECT disc carries several builds' packages in one pack.
+pub const OVERLAY_CHUNK_BASE: u32 = {
+    let text = match option_env!("QUAKE_OVERLAY_CHUNK_BASE") {
+        Some(text) => text.as_bytes(),
+        None => b"0",
+    };
+    let mut value = 0u32;
+    let mut i = 0;
+    while i < text.len() {
+        value = value * 10 + (text[i] - b'0') as u32;
+        i += 1;
+    }
+    value
+};
+
 unsafe fn entry_for(chunk_id: u32) -> Option<PackEntry> {
     let index = cache_index(chunk_id);
     if let Some(index) = index {
         if let Some(entry) = unsafe { ASSET_CACHE[index] } {
             return Some(entry);
         }
-    } else if !matches!(chunk_id, 4 | 5 | 109..=111) || unsafe { STORAGE_STREAM_ACTIVE } {
+    } else if !matches!(chunk_id.wrapping_sub(OVERLAY_CHUNK_BASE), 4 | 5 | 109..=111)
+        || unsafe { STORAGE_STREAM_ACTIVE }
+    {
         return None;
     }
     // Cold code uses the existing reader without reserving additional cache
