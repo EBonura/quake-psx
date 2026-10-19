@@ -478,7 +478,7 @@ enum Call<'a> {
 #[no_mangle]
 fn quake_monster_unloaded() -> ! {
     psx_rt::tty::println("quake-psx: monster call outside code admission");
-    psx_rt::halt()
+    crate::diag::halt(line!())
 }
 
 pub struct MonsterCode {

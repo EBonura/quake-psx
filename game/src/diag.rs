@@ -56,9 +56,14 @@ pub fn status(held: u16, movement: [i16; 2], look: [i16; 2], analog: bool) -> &'
 /// spins with interrupts on (stall panel after four seconds) or CROSS takes a
 /// BREAK (fault panel at once).
 pub fn selftest(held: u16) {
-    use psx_pad::button::{CROSS, L1, L2, R1, R2, TRIANGLE};
+    use psx_pad::button::{CROSS, L1, L2, R1, R2, SELECT, TRIANGLE};
     let chord = L1 | R1 | L2 | R2;
     if held & chord == chord {
+        if held & SELECT != 0 {
+            step(0x72, "MANUAL PANEL");
+            // SAFETY: deliberate BREAK into the fault panel.
+            unsafe { core::arch::asm!("break") };
+        }
         if held & TRIANGLE != 0 {
             step(0x70, "SELFTEST SPIN");
             loop {
@@ -70,5 +75,25 @@ pub fn selftest(held: u16) {
             // SAFETY: deliberate BREAK into the fault panel.
             unsafe { core::arch::asm!("break") };
         }
+    }
+}
+
+/// The game gave up (a failed load or admission): name the source line in the
+/// panel's STEP id (0x80 in the top byte) and spin with interrupts on, so the
+/// stall watchdog draws the panel.
+pub fn halt(line: u32) -> ! {
+    psx_io::diag::step(0x8000_0000 | line, "GAME HALT AT LINE");
+    psx_rt::halt()
+}
+
+/// A wedged GPU leaves the loop running and the picture still, which the
+/// stall watchdog cannot see. The present queue stops a chain that waited
+/// eight VBlank edges by hand and counts it: the first such recovery takes the
+/// fault panel, so its GPU, DMA and present rows are on screen.
+pub fn check_present() {
+    if psx_rt::present::stats().recovery_count != 0 {
+        step(0x5E, "PRESENT RECOVERED");
+        // SAFETY: deliberate BREAK into the fault panel.
+        unsafe { core::arch::asm!("break") };
     }
 }
