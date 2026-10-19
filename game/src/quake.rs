@@ -196,6 +196,7 @@ pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
 
 #[optimize(size)]
 pub fn run() -> ! {
+    psx_io::diag::set_stall_hook(psx_rt::diag::wedge_panel);
     // Match VoXide's hardware-proven ordering exactly: initialise the GPU,
     // complete the DualShock 0x43/0x44 exchange, and only then enable VBlank
     // interrupts. An interrupt in the middle of that exchange can leave a

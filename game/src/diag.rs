@@ -56,9 +56,22 @@ pub fn status(held: u16, movement: [i16; 2], look: [i16; 2], analog: bool) -> &'
 /// spins with interrupts on (stall panel after four seconds) or CROSS takes a
 /// BREAK (fault panel at once).
 pub fn selftest(held: u16) {
-    use psx_pad::button::{CROSS, L1, L2, R1, R2, SELECT, SQUARE, START, TRIANGLE};
+    use psx_pad::button::{CIRCLE, CROSS, L1, L2, R1, R2, SELECT, SQUARE, START, TRIANGLE};
     let chord = L1 | R1 | L2 | R2;
     if held & chord == chord {
+        if held & CIRCLE != 0 {
+            // Test: wedge the GPU in an endless polyline (GP0 48h never gets its
+            // 5555_5555 terminator), so the next frame's chain is swallowed as
+            // vertices and its draw-done word never runs. The game goes on; the
+            // present queue wedges. Every frame while held.
+            {
+                step(0x75, "TEST GPU WEDGE");
+                psx_io::gpu::write_command_unguarded(0x4800_00FF);
+                psx_io::gpu::write_command_unguarded(0x0000_0000);
+                psx_io::gpu::write_command_unguarded(0x0010_0010);
+            }
+            return;
+        }
         if held & START != 0 {
             // Test: interrupts off, a loop that calls the heartbeat.
             step(0x73, "TEST IRQ OFF ALIVE");
@@ -115,7 +128,7 @@ pub fn halt(line: u32) -> ! {
 /// eight VBlank edges by hand and counts it: the first such recovery takes the
 /// fault panel, so its GPU, DMA and present rows are on screen.
 pub fn check_present() {
-    if psx_rt::present::stats().recovery_count != 0 {
+    if psx_rt::present::stats().recovery_count >= 3 {
         step(0x5E, "PRESENT RECOVERED");
         // SAFETY: deliberate BREAK into the fault panel.
         unsafe { core::arch::asm!("break") };
