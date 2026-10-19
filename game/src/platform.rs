@@ -976,7 +976,7 @@ impl ChunkStream {
         let first_sector = offset as usize / SECTOR_BYTES;
         let absolute_lba = WORLD_PACK_DEFAULT_LBA + entry.sector_offset + first_sector as u32;
         let reader = unsafe { &mut *addr_of_mut!(READER) };
-        let started = unsafe { reader.prepare() && reader.start_read(absolute_lba) };
+        let started = unsafe { begin_session(reader, absolute_lba) };
         if !started {
             unsafe { reader.stop() };
             return Err(StorageError::ReadFailed);
@@ -1082,13 +1082,74 @@ impl Drop for ChunkStream {
     }
 }
 
+
+/// GetStat bit 5: the drive is reading.
+const DRIVE_STAT_READING: u8 = 0x20;
+/// Attempts at one read session before the caller sees a failure.
+const SESSION_ATTEMPTS: u32 = 3;
+/// GetStat polls (about a quarter of a second on silicon) that wait for a
+/// Pause to finish.
+const SETTLE_POLLS: u32 = 400;
+
+/// Wait until the drive reports it is no longer reading. The reader's own
+/// `stop` gives up on the Pause completion after 16,384 polls, but on silicon
+/// that completion arrives 1.2 to 3.9 million cycles after the acknowledge
+/// (hardware-tests v2.7), so the next command can find the drive still
+/// stopping. The emulator completes a Pause in about 26,000 cycles and never
+/// shows it. Only the retry path pays for this wait.
+#[optimize(size)]
+#[inline(never)]
+unsafe fn settle_drive(reader: &mut SectorReader) {
+    let cd = reader.cd_mut();
+    for _ in 0..SETTLE_POLLS {
+        let Some(saved) = cd.dispatch_command(0x01, &[], 16_384) else {
+            continue;
+        };
+        let mut spins = 0u32;
+        while cd.irq_flag_value() != 3 && spins < 16_384 {
+            spins += 1;
+        }
+        let answered = spins < 16_384;
+        let status = cd.read_response_byte();
+        cd.restore_irq_output(saved);
+        if answered && status & DRIVE_STAT_READING == 0 {
+            return;
+        }
+    }
+}
+
+/// Open a read session at `lba`, retrying after the drive has settled.
+#[optimize(size)]
+#[inline(never)]
+unsafe fn begin_session(reader: &mut SectorReader, lba: u32) -> bool {
+    for _ in 0..SESSION_ATTEMPTS {
+        if reader.prepare() && reader.start_read(lba) {
+            return true;
+        }
+        reader.stop();
+        settle_drive(reader);
+    }
+    false
+}
+
+#[optimize(size)]
 unsafe fn read_storage_burst(entry: PackEntry, offset: u32, output: &mut [u8]) -> bool {
+    for _ in 0..SESSION_ATTEMPTS {
+        if unsafe { read_storage_burst_once(entry, offset, output) } {
+            return true;
+        }
+        settle_drive(unsafe { &mut *addr_of_mut!(READER) });
+    }
+    false
+}
+
+unsafe fn read_storage_burst_once(entry: PackEntry, offset: u32, output: &mut [u8]) -> bool {
     let reader = unsafe { &mut *addr_of_mut!(READER) };
     let sector = unsafe { &mut *addr_of_mut!(SECTOR) };
     let first_sector = offset as usize / SECTOR_BYTES;
     let mut skip = offset as usize % SECTOR_BYTES;
     let absolute_lba = WORLD_PACK_DEFAULT_LBA + entry.sector_offset + first_sector as u32;
-    if !reader.prepare() || !reader.start_read(absolute_lba) {
+    if !begin_session(reader, absolute_lba) {
         reader.stop();
         return false;
     }
@@ -1109,14 +1170,25 @@ unsafe fn read_storage_burst(entry: PackEntry, offset: u32, output: &mut [u8]) -
     true
 }
 
+#[optimize(size)]
 unsafe fn fill_storage_cache(chunk_id: u32, entry: PackEntry, offset: u32) -> bool {
+    for _ in 0..SESSION_ATTEMPTS {
+        if unsafe { fill_storage_cache_once(chunk_id, entry, offset) } {
+            return true;
+        }
+        settle_drive(unsafe { &mut *addr_of_mut!(READER) });
+    }
+    false
+}
+
+unsafe fn fill_storage_cache_once(chunk_id: u32, entry: PackEntry, offset: u32) -> bool {
     let aligned = offset / SECTOR_BYTES as u32 * SECTOR_BYTES as u32;
     let remaining = (entry.byte_size - aligned) as usize;
     let sectors = remaining.div_ceil(SECTOR_BYTES).min(STORAGE_CACHE_SECTORS);
     let reader = unsafe { &mut *addr_of_mut!(READER) };
     let cache = unsafe { &mut *addr_of_mut!(STORAGE_CACHE) };
     let absolute_lba = WORLD_PACK_DEFAULT_LBA + entry.sector_offset + aligned / SECTOR_BYTES as u32;
-    if !reader.prepare() || !reader.start_read(absolute_lba) {
+    if !begin_session(reader, absolute_lba) {
         reader.stop();
         return false;
     }
@@ -1193,4 +1265,14 @@ pub fn read_chunk_exact(chunk_id: u32, offset: u32, output: &mut [u8]) -> Result
     } else {
         Err(StorageError::ReadFailed)
     }
+}
+
+/// Let the last Pause of a load finish before the game runs: a Pause that is
+/// still completing when the drive is next commanded (the music, a save) is
+/// the silicon behaviour the emulator never shows.
+#[optimize(size)]
+#[inline(never)]
+pub fn settle_after_load() {
+    // SAFETY: called at a level boundary with no stream open.
+    unsafe { settle_drive(&mut *addr_of_mut!(READER)) };
 }

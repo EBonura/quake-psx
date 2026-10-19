@@ -2215,6 +2215,7 @@ fn load_level(
             renderer.draw_loading_status(disc, map, status);
         }
     }
+    crate::platform::settle_after_load();
     music.resume_after_load(psx_rt::interrupts::vblank_count());
 
     #[cfg(feature = "hardware-performance")]
