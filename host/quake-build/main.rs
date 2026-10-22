@@ -266,6 +266,8 @@ enum Action {
     GpuPolygonCellPolicyDisc,
     GpuPolygonLeaderDisc,
     ProbeDisc,
+    ConfirmVariant,
+    ConfirmDisc,
     GpuPolygonScratchLiquidDisc,
     E1m1GpuPolygonQuakeKernelBench,
     E1m1GpuPolygonLeaderBench,
@@ -754,6 +756,71 @@ fn real_main() -> Result<()> {
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
             build_disc(&root, &build, Some(&features), false)?;
+        }
+        Action::ConfirmVariant => {
+            // Confirmation disc, one build: the complete game (the title menu starts E1M1 by
+            // itself) as a world-pack chunk for the boot menu to chain-load. Needs
+            // CONFIRM_OUT (a directory shared by every build of the disc), CONFIRM_INDEX
+            // (this build's menu slot) and the same QUAKE_OVERLAY_CHUNK_BASE the build is
+            // compiled with; the overlay packages follow it at that base.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let need = |name: &str| -> Result<String> {
+                env::var(name).map_err(|_| format!("confirm-variant needs {name}").into())
+            };
+            let out = PathBuf::from(need("CONFIRM_OUT")?);
+            let index: u32 = need("CONFIRM_INDEX")?.parse()?;
+            let base: u32 = env::var("QUAKE_OVERLAY_CHUNK_BASE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            fs::create_dir_all(&out)?;
+            build_game(&root, Some("auto-e1m1"), false)?;
+            let exe = fs::read(game_exe(&root))?;
+            let fnv = confirm_payload_fnv(&exe)?;
+            println!("confirm build {index}: {} bytes, payload FNV-1a {fnv}", exe.len());
+            fs::write(out.join(format!("chunk_{}.exe", 200 + index)), &exe)?;
+            fs::write(out.join(format!("fnv_{index}.txt")), fnv.to_string())?;
+            for (name, id) in [("monsters", 4), ("doors", 5), ("save", 109), ("load", 110), ("card", 111)] {
+                fs::copy(
+                    root.join(format!("game/target/overlay-{name}.pak")),
+                    out.join(format!("chunk_{}.dat", base + id)),
+                )?;
+            }
+        }
+        Action::ConfirmDisc => {
+            // Confirmation disc: a boot menu (CONFIRM_MENU_EXE) chain-loads one of the builds
+            // that confirm-variant left in CONFIRM_OUT (chunks 200 + index), through the
+            // chain-load blob (CONFIRM_LOADER_BLOB, chunk 207); chunk 208 is the table of the
+            // builds' payload checksums.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-confirm");
+            fs::create_dir_all(&build)?;
+            let need = |name: &str| -> Result<String> {
+                env::var(name).map_err(|_| format!("confirm-disc needs {name}").into())
+            };
+            let out = PathBuf::from(need("CONFIRM_OUT")?);
+            let menu = PathBuf::from(need("CONFIRM_MENU_EXE")?);
+            let blob = PathBuf::from(need("CONFIRM_LOADER_BLOB")?);
+            let mut table = Vec::new();
+            for index in 0.. {
+                let path = out.join(format!("fnv_{index}.txt"));
+                if !path.exists() {
+                    break;
+                }
+                let fnv: u32 = fs::read_to_string(path)?.trim().parse()?;
+                table.extend(fnv.to_le_bytes());
+            }
+            if table.is_empty() {
+                return Err("confirm-disc: no builds in CONFIRM_OUT".into());
+            }
+            fs::copy(&blob, out.join("chunk_207.blob"))?;
+            fs::write(out.join("chunk_208.bin"), table)?;
+            env::set_var("QUAKE_PSX_EXTRA_CHUNKS_DIR", &out);
+            env::set_var("QUAKE_PSX_SKIP_GAME_BUILD", "1");
+            env::set_var("QUAKE_PSX_BOOT_EXE", &menu);
+            build_disc(&root, &build, None, false)?;
         }
         Action::GpuPolygonLeaderDisc => {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
@@ -2853,6 +2920,8 @@ fn parse_cli() -> Result<Cli> {
             | "gpu-polygon-cell-policy-disc"
             | "gpu-polygon-leader-disc"
             | "probe-disc"
+            | "confirm-variant"
+            | "confirm-disc"
             | "gpu-polygon-scratch-liquid-disc"
             | "e1m1-gpu-polygon-quake-kernel-bench"
             | "e1m1-gpu-polygon-leader-bench"
@@ -2921,6 +2990,8 @@ fn parse_cli() -> Result<Cli> {
                     "gpu-polygon-cell-policy-disc" => Action::GpuPolygonCellPolicyDisc,
                     "gpu-polygon-leader-disc" => Action::GpuPolygonLeaderDisc,
                     "probe-disc" => Action::ProbeDisc,
+                    "confirm-variant" => Action::ConfirmVariant,
+                    "confirm-disc" => Action::ConfirmDisc,
                     "gpu-polygon-scratch-liquid-disc" => Action::GpuPolygonScratchLiquidDisc,
                     "e1m1-gpu-polygon-quake-kernel-bench" => Action::E1m1GpuPolygonQuakeKernelBench,
                     "e1m1-gpu-polygon-leader-bench" => Action::E1m1GpuPolygonLeaderBench,
@@ -4844,10 +4915,25 @@ fn build_disc(
     }
     validate_cooked_episode(root)?;
     fs::create_dir_all(build)?;
-    build_game(root, feature, fresh_guest_target)?;
+    // Confirmation disc: the builds were made already and the boot EXE is the menu program.
+    if env::var_os("QUAKE_PSX_SKIP_GAME_BUILD").is_none() {
+        build_game(root, feature, fresh_guest_target)?;
+    }
     let exe = build.join("quake-psx.exe");
-    fs::copy(game_exe(root), &exe)?;
+    let boot_exe = env::var_os("QUAKE_PSX_BOOT_EXE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| game_exe(root));
+    fs::copy(boot_exe, &exe)?;
     let chunks = stage_world_chunks(root, build)?;
+    // Confirmation disc: extra world-pack chunks (build EXEs, packages, the loader blob).
+    if let Some(extra) = env::var_os("QUAKE_PSX_EXTRA_CHUNKS_DIR") {
+        for entry in fs::read_dir(&extra)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with("chunk_") {
+                fs::copy(entry.path(), chunks.join(entry.file_name()))?;
+            }
+        }
+    }
     let image = build.join("quake-psx.bin");
     if image.exists() {
         fs::remove_file(&image)?;
@@ -12028,4 +12114,22 @@ mod provenance_tests {
             .to_string();
         assert!(tamper_error.contains("failed integrity"), "{tamper_error}");
     }
+}
+
+/// FNV-1a over the payload of a PSX-EXE (the bytes after its 2048-byte header, as many as the
+/// header's size field says): what the chain loader verifies in RAM.
+fn confirm_payload_fnv(exe: &[u8]) -> Result<u32> {
+    if exe.len() < 2048 || !exe.starts_with(b"PS-X EXE") {
+        return Err("confirm: not a PSX-EXE".into());
+    }
+    let t_size = u32::from_le_bytes([exe[0x1C], exe[0x1D], exe[0x1E], exe[0x1F]]) as usize;
+    let payload = exe
+        .get(2048..2048 + t_size)
+        .ok_or("confirm: EXE shorter than its header says")?;
+    let mut hash: u32 = 0x811C_9DC5;
+    for &byte in payload {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    Ok(hash)
 }

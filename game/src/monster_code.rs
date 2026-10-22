@@ -22,13 +22,13 @@ use quake_formats::{BrushModel, MapEntity};
 const BUFFER_BYTES: usize = 30_720;
 const HALF_BYTES: usize = BUFFER_BYTES / 2;
 const MAX_CALLS: usize = 4;
-pub const PACKAGE_CHUNK: u32 = 4;
-pub const DOOR_PACKAGE_CHUNK: u32 = 5;
+pub const PACKAGE_CHUNK: u32 = crate::platform::OVERLAY_CHUNK_BASE + 4;
+pub const DOOR_PACKAGE_CHUNK: u32 = crate::platform::OVERLAY_CHUNK_BASE + 5;
 /// The save and load packages follow the maps on the disc (ids 109 to 111), so
 /// they never sit between the chunks the first map load reads.
-pub const SAVE_PACKAGE_CHUNK: u32 = 109;
-pub const LOAD_PACKAGE_CHUNK: u32 = 110;
-pub const CARD_PACKAGE_CHUNK: u32 = 111;
+pub const SAVE_PACKAGE_CHUNK: u32 = crate::platform::OVERLAY_CHUNK_BASE + 109;
+pub const LOAD_PACKAGE_CHUNK: u32 = crate::platform::OVERLAY_CHUNK_BASE + 110;
+pub const CARD_PACKAGE_CHUNK: u32 = crate::platform::OVERLAY_CHUNK_BASE + 111;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Image {
     Doors,
