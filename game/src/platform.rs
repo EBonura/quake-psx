@@ -910,13 +910,31 @@ fn cache_index(chunk_id: u32) -> Option<usize> {
     }
 }
 
+/// Shift of the overlay package chunk ids (4, 5, 109 to 111): zero in every ordinary build;
+/// the confirmation disc carries several builds' packages in one world pack.
+pub const OVERLAY_CHUNK_BASE: u32 = {
+    let text = match option_env!("QUAKE_OVERLAY_CHUNK_BASE") {
+        Some(text) => text.as_bytes(),
+        None => b"0",
+    };
+    let mut value = 0u32;
+    let mut i = 0;
+    while i < text.len() {
+        value = value * 10 + (text[i] - b'0') as u32;
+        i += 1;
+    }
+    value
+};
+
 unsafe fn entry_for(chunk_id: u32) -> Option<PackEntry> {
     let index = cache_index(chunk_id);
     if let Some(index) = index {
         if let Some(entry) = unsafe { ASSET_CACHE[index] } {
             return Some(entry);
         }
-    } else if !matches!(chunk_id, 4 | 5 | 109..=111) || unsafe { STORAGE_STREAM_ACTIVE } {
+    } else if !matches!(chunk_id.wrapping_sub(OVERLAY_CHUNK_BASE), 4 | 5 | 109..=111)
+        || unsafe { STORAGE_STREAM_ACTIVE }
+    {
         return None;
     }
     // Cold code uses the existing reader without reserving additional cache

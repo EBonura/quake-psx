@@ -536,6 +536,26 @@ pub fn run() -> ! {
         } else {
             None
         };
+        #[cfg(feature = "auto-e1m1")]
+        let menu_action = {
+            static mut AUTO_WAIT: u32 = 0;
+            if menu.active() {
+                // SAFETY: the game loop is single threaded.
+                let n = unsafe {
+                    AUTO_WAIT += 1;
+                    AUTO_WAIT
+                };
+                if n == 240 {
+                    menu.close_for_game();
+                    crate::input::set_auto_play(true);
+                    Some(quake_core::menu::MenuAction::StartLevel(1))
+                } else {
+                    menu_action
+                }
+            } else {
+                menu_action
+            }
+        };
         #[cfg(feature = "e1m1-save-regression")]
         let menu_action = crate::save_probe::scripted(elapsed_ticks).or(menu_action);
         // The survey of save sizes starts every map on Hard, which spawns the

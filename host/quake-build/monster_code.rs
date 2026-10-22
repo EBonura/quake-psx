@@ -24,6 +24,11 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
     ] {
         args.push(arg.into());
     }
+    // Confirmation disc: this build's packages sit at shifted chunk ids.
+    let base: u32 = std::env::var("QUAKE_OVERLAY_CHUNK_BASE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
     for (name, id, entry, wrapper, descriptor, sites, veneers) in [
         (
             "monsters",
@@ -75,7 +80,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "--image",
             name,
             "--id",
-            id,
+            &(id.parse::<u32>().expect("chunk id") + base).to_string(),
             "--code",
             &format!(".overlay.quake_{name}.text"),
             "--descriptor",
