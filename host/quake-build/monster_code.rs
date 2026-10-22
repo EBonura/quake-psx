@@ -24,7 +24,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
     ] {
         args.push(arg.into());
     }
-    for (name, id, entry, wrapper, descriptor, sites) in [
+    for (name, id, entry, wrapper, descriptor, sites, veneers) in [
         (
             "monsters",
             "4",
@@ -32,6 +32,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "quake_monster_call",
             "QUAKE_MONSTER_DESCRIPTOR",
             "QUAKE_MONSTER_CALLS",
+            "QUAKE_MONSTER_VENEERS",
         ),
         (
             "doors",
@@ -40,6 +41,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "quake_door_call",
             "QUAKE_DOOR_DESCRIPTOR",
             "QUAKE_DOOR_CALLS",
+            "QUAKE_DOOR_VENEERS",
         ),
         (
             "save",
@@ -48,6 +50,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "quake_save_call",
             "QUAKE_SAVE_DESCRIPTOR",
             "QUAKE_SAVE_CALLS",
+            "QUAKE_SAVE_VENEERS",
         ),
         (
             "load",
@@ -56,6 +59,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "quake_load_header_call",
             "QUAKE_LOAD_DESCRIPTOR",
             "QUAKE_LOAD_CALLS",
+            "QUAKE_LOAD_VENEERS",
         ),
         (
             "card",
@@ -64,6 +68,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             "quake_card_write_call",
             "QUAKE_CARD_DESCRIPTOR",
             "QUAKE_CARD_CALLS",
+            "QUAKE_CARD_VENEERS",
         ),
     ] {
         for arg in [
@@ -77,6 +82,12 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
             descriptor,
             "--sites",
             sites,
+            "--veneers",
+            veneers,
+            // The images ship in a 15,360-byte transfer half; their module hazards fit the
+            // 32-word reservation the format first carried (the SDK default grew to 96).
+            "--trampoline-words",
+            "32",
             "--trap",
             "quake_monster_unloaded",
             "--call",
