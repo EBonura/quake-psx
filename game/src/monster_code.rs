@@ -8,7 +8,8 @@ use crate::savegame::{Header, Outcome};
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 use psx_residency::arena::{
-    CallerArena, Descriptor, Error, PackedCall, PackedDescriptor, Registry, StaticImport,
+    CallerArena, Descriptor, Error, PackedCall, PackedDescriptor, PackedVeneer, Registry,
+    VeneerImport,
 };
 use psx_residency::Handle;
 use quake_core::combat::WeaponState;
@@ -58,6 +59,12 @@ static mut QUAKE_DOOR_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
     site: 0,
     offset: 0,
 }; MAX_CALLS];
+/// One jump veneer per typed call site (the final-link packer fills them and routes the
+/// sites through them); a lease stores the overlay entry into the veneer, never patching code.
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_door_veneers")]
+static mut QUAKE_DOOR_VENEERS: [PackedVeneer; 2] = [PackedVeneer::PLACEHOLDER; 2];
 
 #[used]
 #[no_mangle]
@@ -77,6 +84,12 @@ static mut QUAKE_MONSTER_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
     site: 0,
     offset: 0,
 }; MAX_CALLS];
+/// One jump veneer per typed call site (the final-link packer fills them and routes the
+/// sites through them); a lease stores the overlay entry into the veneer, never patching code.
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_monster_veneers")]
+static mut QUAKE_MONSTER_VENEERS: [PackedVeneer; 3] = [PackedVeneer::PLACEHOLDER; 3];
 
 #[used]
 #[no_mangle]
@@ -96,6 +109,12 @@ static mut QUAKE_SAVE_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
     site: 0,
     offset: 0,
 }; MAX_CALLS];
+/// One jump veneer per typed call site (the final-link packer fills them and routes the
+/// sites through them); a lease stores the overlay entry into the veneer, never patching code.
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_save_veneers")]
+static mut QUAKE_SAVE_VENEERS: [PackedVeneer; 1] = [PackedVeneer::PLACEHOLDER; 1];
 
 #[used]
 #[no_mangle]
@@ -115,6 +134,12 @@ static mut QUAKE_LOAD_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
     site: 0,
     offset: 0,
 }; MAX_CALLS];
+/// One jump veneer per typed call site (the final-link packer fills them and routes the
+/// sites through them); a lease stores the overlay entry into the veneer, never patching code.
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_load_veneers")]
+static mut QUAKE_LOAD_VENEERS: [PackedVeneer; 2] = [PackedVeneer::PLACEHOLDER; 2];
 
 #[used]
 #[no_mangle]
@@ -134,6 +159,12 @@ static mut QUAKE_CARD_CALLS: [PackedCall; MAX_CALLS] = [PackedCall {
     site: 0,
     offset: 0,
 }; MAX_CALLS];
+/// One jump veneer per typed call site (the final-link packer fills them and routes the
+/// sites through them); a lease stores the overlay entry into the veneer, never patching code.
+#[used]
+#[no_mangle]
+#[cfg_attr(target_arch = "mips", link_section = ".data.quake_card_veneers")]
+static mut QUAKE_CARD_VENEERS: [PackedVeneer; 2] = [PackedVeneer::PLACEHOLDER; 2];
 
 /// Select one complete signed-low code window within the existing allocation.
 /// Installation and every later admission use this identical address decision.
@@ -163,6 +194,8 @@ fn code_half(first: u32, second: u32) -> Result<bool, Error> {
 }
 
 struct Metadata {
+    /// The image's veneer table; record `i` belongs to call `i`.
+    veneers: *mut PackedVeneer,
     words: usize,
     descriptor: Descriptor,
     calls: [(u32, u32); MAX_CALLS],
@@ -172,34 +205,39 @@ struct Metadata {
 fn metadata(image: Image) -> Result<Metadata, Error> {
     // The shared SDK finalizer patches initialized writable data in this same
     // linked image. Volatile reads prohibit folding the unpatched placeholders.
-    let (header, records, id, linked) = match image {
+    let (header, records, (veneers, capacity), id, linked) = match image {
         Image::Doors => (
             core::ptr::addr_of!(QUAKE_DOOR_DESCRIPTOR),
             core::ptr::addr_of!(QUAKE_DOOR_CALLS).cast::<PackedCall>(),
+            (core::ptr::addr_of_mut!(QUAKE_DOOR_VENEERS).cast::<PackedVeneer>(), 2),
             DOOR_PACKAGE_CHUNK,
             0x80418000,
         ),
         Image::Monsters => (
             core::ptr::addr_of!(QUAKE_MONSTER_DESCRIPTOR),
             core::ptr::addr_of!(QUAKE_MONSTER_CALLS).cast::<PackedCall>(),
+            (core::ptr::addr_of_mut!(QUAKE_MONSTER_VENEERS).cast::<PackedVeneer>(), 3),
             PACKAGE_CHUNK,
             0x80408000,
         ),
         Image::Save => (
             core::ptr::addr_of!(QUAKE_SAVE_DESCRIPTOR),
             core::ptr::addr_of!(QUAKE_SAVE_CALLS).cast::<PackedCall>(),
+            (core::ptr::addr_of_mut!(QUAKE_SAVE_VENEERS).cast::<PackedVeneer>(), 1),
             SAVE_PACKAGE_CHUNK,
             0x80428000,
         ),
         Image::Load => (
             core::ptr::addr_of!(QUAKE_LOAD_DESCRIPTOR),
             core::ptr::addr_of!(QUAKE_LOAD_CALLS).cast::<PackedCall>(),
+            (core::ptr::addr_of_mut!(QUAKE_LOAD_VENEERS).cast::<PackedVeneer>(), 2),
             LOAD_PACKAGE_CHUNK,
             0x80438000,
         ),
         Image::Card => (
             core::ptr::addr_of!(QUAKE_CARD_DESCRIPTOR),
             core::ptr::addr_of!(QUAKE_CARD_CALLS).cast::<PackedCall>(),
+            (core::ptr::addr_of_mut!(QUAKE_CARD_VENEERS).cast::<PackedVeneer>(), 2),
             CARD_PACKAGE_CHUNK,
             0x80448000,
         ),
@@ -212,6 +250,7 @@ fn metadata(image: Image) -> Result<Metadata, Error> {
         || header.words as usize > HALF_BYTES / 4
         || count == 0
         || count > MAX_CALLS
+        || count > capacity
     {
         return Err(Error::Integrity);
     }
@@ -230,6 +269,7 @@ fn metadata(image: Image) -> Result<Metadata, Error> {
         calls[i] = (record.site, record.offset);
     }
     Ok(Metadata {
+        veneers,
         words: header.words as usize,
         count,
         calls,
@@ -913,16 +953,24 @@ impl MonsterCode {
         let mut arena = CallerArena::new(code, address)?;
         let dependencies = [handle];
         let admission = self.registry.admit(&mut arena, &dependencies)?;
-        let mut imports: [MaybeUninit<StaticImport<'_>>; MAX_CALLS] =
+        // Call `i` jumps through veneer `i`: the lease stores the module entry into the
+        // veneer's target word and the trap back at its end. No instruction is patched, so
+        // no instruction-cache flush happens per tick (only `install` flushes).
+        let mut imports: [MaybeUninit<VeneerImport<'_>>; MAX_CALLS] =
             core::array::from_fn(|_| MaybeUninit::uninit());
-        for (slot, &(site, offset)) in imports.iter_mut().zip(&meta.calls[..meta.count]) {
+        for (index, (slot, &(_, offset))) in imports
+            .iter_mut()
+            .zip(&meta.calls[..meta.count])
+            .enumerate()
+        {
+            let veneer = unsafe { meta.veneers.add(index) };
             slot.write(unsafe {
-                StaticImport::new(&mut *(site as *mut u32), site, handle, offset)
+                VeneerImport::new(&mut *veneer, veneer as usize as u32, handle, offset)
             });
         }
         let imports = unsafe {
             core::slice::from_raw_parts_mut(
-                imports.as_mut_ptr().cast::<StaticImport<'_>>(),
+                imports.as_mut_ptr().cast::<VeneerImport<'_>>(),
                 meta.count,
             )
         };
@@ -930,7 +978,7 @@ impl MonsterCode {
         // parameter/return types compiled into this package. Actions return by
         // value; neither pointers nor asynchronous work outlive the admission.
         unsafe {
-            admission.invoke(
+            admission.invoke_veneered(
                 imports,
                 quake_monster_unloaded as *const () as usize as u32,
                 || match call {
