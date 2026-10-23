@@ -571,19 +571,24 @@ impl Inventory {
     }
 
     /// One tick of `item_megahealth_rot`: five seconds after the pickup, one
-    /// point per second until health is back down to `max_health`.
-    pub(crate) fn tick_megahealth_rot(&mut self) {
+    /// point per second until health is back down to `max_health`. Returns
+    /// whether this tick took a point: the rot is a plain `health - 1` in the
+    /// item's think, not a `T_Damage`, so the caller must not treat the drop
+    /// as damage.
+    pub(crate) fn tick_megahealth_rot(&mut self) -> bool {
         if self.megahealth_rot_ticks == 0 {
-            return;
+            return false;
         }
         self.megahealth_rot_ticks -= 1;
         if self.megahealth_rot_ticks != 0 {
-            return;
+            return false;
         }
         if self.health > PLAYER_MAX_HEALTH {
             self.health -= 1;
             self.megahealth_rot_ticks = MEGAHEALTH_ROT_INTERVAL_TICKS;
+            return true;
         }
+        false
     }
 
     pub const fn health(self) -> i16 {

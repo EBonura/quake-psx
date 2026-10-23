@@ -1614,7 +1614,7 @@ pub fn run() -> ! {
         presentation.screen_blend_mut().set_powerups(powerups);
         let health_after = weapon.inventory().health().max(0) as u16;
         let armor_after = weapon.inventory().armor().max(0) as u16;
-        let blood = health_before.saturating_sub(health_after);
+        let blood = survival.health_damage(health_before, health_after);
         let armor = armor_before.saturating_sub(armor_after);
         // `CheckPowerups` sets `EF_DIMLIGHT` on the player while the
         // pentagram or the quad runs: the same 200 unit light a rocket has.
