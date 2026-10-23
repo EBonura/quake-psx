@@ -1,0 +1,21 @@
+[package]
+name = "quake-parity"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Host tool: per-map parity report between the original shareware maps and the PS1 port"
+publish = false
+
+# Its own workspace, like tools/routesim: a developer aid, not part of the
+# shipping builder's package, lockfile or guest recipe.
+[workspace]
+
+[[bin]]
+name = "quake-parity"
+path = "src/main.rs"
+
+[dependencies]
+psx-bsp = { path = "../../.psoxide/engine/crates/psx-bsp" }
+psx-math = { path = "../../.psoxide/sdk/crates/psx-math" }
+quake-core = { path = "../../crates/quake-core" }
+quake-formats = { path = "../../crates/quake-formats" }
