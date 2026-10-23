@@ -114,7 +114,9 @@ The library copy is named `Quake (quake-psx)` (`.bin`, `.cue`, `.provenance.json
 and `.SLICNSE.TXT`; library names are `Game Name (repo)`). It replaces the
 previous install in place, and a leftover `quake-psx.bin`/`.cue` set from before
 the rename is removed if it is identical to or older than the new disc;
-a newer, different one stops the install.
+a newer, different one stops the install. The `.provenance.json` is written by the
+install itself (shared `psx-library` crate): bin and cue digests, the source commit,
+the install time and the digest of the bin it replaced, over the packaged build record.
 
 To build from an existing Quake installation, pass its directory explicitly:
 

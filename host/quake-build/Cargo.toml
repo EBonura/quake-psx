@@ -57,6 +57,9 @@ psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "65263055
 quake-cook = { path = "../../crates/quake-cook" }
 quake-core = { path = "../../crates/quake-core" }
 quake-formats = { path = "../../crates/quake-formats" }
+# The games-library install, shared by every game. A host-only crate, so it is pinned
+# on its own revision and does not move the guest SDK (psoxide-link above).
+psx-library = { git = "https://github.com/EBonura/PSoXide.git", rev = "7528f3e36e5f4ba21cb126302977d24834179e5d" }
 sha2 = "0.10"
 
 serde_json = "1"

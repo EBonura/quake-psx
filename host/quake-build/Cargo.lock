@@ -245,6 +245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-library"
+version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=7528f3e36e5f4ba21cb126302977d24834179e5d#7528f3e36e5f4ba21cb126302977d24834179e5d"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "psx-math"
 version = "0.1.0"
 
@@ -357,6 +366,7 @@ name = "quake-psx-build"
 version = "0.1.0"
 dependencies = [
  "psoxide-link",
+ "psx-library",
  "quake-cook",
  "quake-core",
  "quake-formats",
