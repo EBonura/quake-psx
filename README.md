@@ -104,6 +104,18 @@ Open `quake-psx.cue` in PSoXide, DuckStation or another compatible PlayStation
 emulator. On original hardware, burn the BIN/CUE pair with software that
 understands CUE sheets.
 
+To copy the packaged disc into a PSoXide games library without rebuilding it:
+
+```sh
+cargo quake-build install --games-dir "DESTINATION_FOLDER"
+```
+
+The library copy is named `Quake (quake-psx)` (`.bin`, `.cue`, `.provenance.json`
+and `.SLICNSE.TXT`; library names are `Game Name (repo)`). It replaces the
+previous install in place, and a leftover `quake-psx.bin`/`.cue` set from before
+the rename is removed if it is identical to or older than the new disc;
+a newer, different one stops the install.
+
 To build from an existing Quake installation, pass its directory explicitly:
 
 ```sh

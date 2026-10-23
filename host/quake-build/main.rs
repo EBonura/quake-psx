@@ -39,6 +39,7 @@ const SHIPPING_GUEST_PROFILE: &str = "release";
 const SHIPPING_CARGO_HOME: &str = "/tmp/quake-psx-cargo-home-v1";
 const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
 const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
+mod library;
 mod monster_code;
 mod music;
 mod ram_report;
@@ -238,6 +239,7 @@ const SHIP_BOOT_MIN_HEAP_FREE: u32 = 8_192;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Action {
     Build,
+    Install,
     Assets,
     Compile,
     Disc,
@@ -323,6 +325,8 @@ struct Cli {
     ram_map: Option<PathBuf>,
     /// `ram --items`: list every placed input section instead of the summary.
     ram_items: bool,
+    /// `install`: the games library directory the packaged disc is copied into.
+    games_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -435,6 +439,15 @@ fn real_main() -> Result<()> {
         return Ok(());
     }
     let root = repository_root();
+    if cli.action == Action::Install {
+        let games_dir = cli
+            .games_dir
+            .as_deref()
+            .ok_or("install needs --games-dir PATH (or GAMES_DIR): the games library directory")?;
+        let cue = library::install_dist(&root, games_dir)?;
+        println!("INSTALLED -> {}", cue.display());
+        return Ok(());
+    }
     if matches!(cli.action, Action::MusicCheck | Action::MusicRefresh) {
         let dir = cli.music_dir.as_deref().ok_or(
             "music-check and music-refresh need --music-dir PATH (or QUAKE_PSX_MUSIC_DIR) \
@@ -1266,7 +1279,7 @@ fn real_main() -> Result<()> {
             );
         }
         // Handled before the SDK is hydrated: they only cook and compare.
-        Action::MusicCheck | Action::MusicRefresh => unreachable!(),
+        Action::Install | Action::MusicCheck | Action::MusicRefresh => unreachable!(),
     }
     Ok(())
 }
@@ -2822,10 +2835,12 @@ fn parse_cli() -> Result<Cli> {
     let mut xa_pack = env::var_os("QUAKE_PSX_XA_PACK").map(PathBuf::from);
     let mut ram_map = None;
     let mut ram_items = false;
+    let mut games_dir = env::var_os("GAMES_DIR").map(PathBuf::from);
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy();
         match text.as_ref() {
             "build"
+            | "install"
             | "assets"
             | "compile"
             | "disc"
@@ -2890,6 +2905,7 @@ fn parse_cli() -> Result<Cli> {
                 action_seen = true;
                 action = match text.as_ref() {
                     "build" => Action::Build,
+                    "install" => Action::Install,
                     "assets" => Action::Assets,
                     "compile" => Action::Compile,
                     "disc" => Action::Disc,
@@ -2971,6 +2987,7 @@ fn parse_cli() -> Result<Cli> {
             "--with-music" => with_music = true,
             "--map" => ram_map = Some(next_path(&mut args, "--map")?),
             "--items" => ram_items = true,
+            "--games-dir" => games_dir = Some(next_path(&mut args, "--games-dir")?),
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -2989,6 +3006,7 @@ fn parse_cli() -> Result<Cli> {
         xa_pack,
         ram_map,
         ram_items,
+        games_dir,
     })
 }
 
@@ -3006,6 +3024,7 @@ fn print_help() {
            cargo run --release --manifest-path host/quake-build/Cargo.toml --\n\n\
          Actions:\n  \
            build     Download/cook shareware, build the PSoXide disc, package dist (default)\n  \
+           install   Copy the packaged dist disc into --games-dir as 'Quake (quake-psx)', replacing in place (no rebuild)\n  \
            music-disc  Build a disc whose music module logs each schedule step (gate image)\n  \
            music-check  Cook the music from --music-dir; fail unless byte-identical to assets/music\n  \
            music-refresh  Cook the music from --music-dir and replace assets/music and game/src/music_map.rs\n  \
@@ -3060,6 +3079,7 @@ fn print_help() {
            hardware  Reserved for the complete Rust on-console acceptance image\n\n\
          Options:\n  \
            --quake-dir PATH  Use a local Quake/id1 directory\n  \
+           --games-dir PATH  install: the games library directory (default: GAMES_DIR)\n  \
            --psoxide PATH    Override the pinned SDK with a PSoXide checkout\n  \
            --allow-psoxide-drift  Accept a --psoxide checkout whose revision or\n                    \
            dirty state does not match the pinned expectation\n  \
