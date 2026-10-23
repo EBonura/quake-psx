@@ -320,23 +320,11 @@ pub struct SurvivalFrame {
     /// unless the player was moving up slower than 10 when killed (the caller
     /// checks that, since the motor owns the velocity).
     pub death_hop: i16,
-    /// Points `item_megahealth_rot` took this frame. They lower health but are
-    /// not damage: no `V_ParseDamage` tint, pain voice, face or kick.
-    pub rot_loss: u16,
     sounds: [i16; MAX_SURVIVAL_SOUNDS],
     sound_count: u8,
 }
 
 impl SurvivalFrame {
-    /// Health the player actually lost to damage over a frame that began at
-    /// `before` and ended at `after`. The port has no damage message, so the
-    /// caller infers damage from the inventory either side of the frame; the
-    /// megahealth rot is the one health change that is not damage, so it is
-    /// taken back out.
-    pub fn health_damage(&self, before: u16, after: u16) -> u16 {
-        before.saturating_sub(after).saturating_sub(self.rot_loss)
-    }
-
     #[optimize(size)]
     pub fn sounds(&self) -> &[i16] {
         &self.sounds[..self.sound_count as usize]
@@ -483,9 +471,7 @@ impl Survival {
         self.pain_ticks = self.pain_ticks.saturating_sub(1);
         // `item_megahealth_rot` is an independent entity think, so it runs
         // beside the player's own frame rather than inside WaterMove.
-        if inventory.tick_megahealth_rot() {
-            frame.rot_loss = frame.rot_loss.saturating_add(1);
-        }
+        inventory.tick_megahealth_rot();
         // `WaterMove` returns immediately for a dead player.
         if inventory.health() <= 0 {
             return;

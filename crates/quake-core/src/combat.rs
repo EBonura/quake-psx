@@ -500,6 +500,20 @@ pub struct Inventory {
     active_weapon: Weapon,
     powerups: Powerups,
     megahealth_rot_ticks: u16,
+    /// Damage dealt to the player since the last `take_damage_report`. Not
+    /// saved: it is drained every frame.
+    damage_report: DamageReport,
+}
+
+/// What `T_Damage` would have sent in the original's damage message: health
+/// actually lost (`blood`) and armor absorbed (`save`), summed over every hit
+/// since the report was last taken. The presentation (screen tint, pain face,
+/// view kick, rumble) runs off this alone, so a health change that is not a
+/// hit (the megahealth rot, a pickup) can never be mistaken for one.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct DamageReport {
+    pub blood: u16,
+    pub armor: u16,
 }
 
 impl Inventory {
@@ -515,7 +529,13 @@ impl Inventory {
             active_weapon: Weapon::Shotgun,
             powerups: Powerups::new(),
             megahealth_rot_ticks: 0,
+            damage_report: DamageReport { blood: 0, armor: 0 },
         }
+    }
+
+    /// Drain the damage dealt to the player since the last call.
+    pub fn take_damage_report(&mut self) -> DamageReport {
+        core::mem::take(&mut self.damage_report)
     }
 
     pub const fn powerups(self) -> Powerups {
@@ -547,6 +567,8 @@ impl Inventory {
     pub fn apply_change_parms(&mut self) {
         self.powerups.clear();
         self.megahealth_rot_ticks = 0;
+        // A hit reported against the old level is not a hit on the next one.
+        self.damage_report = DamageReport::default();
         self.keys = 0;
         self.health = self
             .health
@@ -571,24 +593,21 @@ impl Inventory {
     }
 
     /// One tick of `item_megahealth_rot`: five seconds after the pickup, one
-    /// point per second until health is back down to `max_health`. Returns
-    /// whether this tick took a point: the rot is a plain `health - 1` in the
-    /// item's think, not a `T_Damage`, so the caller must not treat the drop
-    /// as damage.
-    pub(crate) fn tick_megahealth_rot(&mut self) -> bool {
+    /// point per second until health is back down to `max_health`. This is a
+    /// plain `health - 1` in the item's think, not a `T_Damage`, so it never
+    /// reaches the damage report below.
+    pub(crate) fn tick_megahealth_rot(&mut self) {
         if self.megahealth_rot_ticks == 0 {
-            return false;
+            return;
         }
         self.megahealth_rot_ticks -= 1;
         if self.megahealth_rot_ticks != 0 {
-            return false;
+            return;
         }
         if self.health > PLAYER_MAX_HEALTH {
             self.health -= 1;
             self.megahealth_rot_ticks = MEGAHEALTH_ROT_INTERVAL_TICKS;
-            return true;
         }
-        false
     }
 
     pub const fn health(self) -> i16 {
@@ -875,6 +894,7 @@ impl Inventory {
             .unwrap_or(0)
             .clamp(0, i32::from(self.armor)) as u16;
         self.armor -= saved;
+        self.damage_report.armor = self.damage_report.armor.saturating_add(saved);
         if self.armor == 0 {
             self.armor_tier = None;
         }
@@ -885,6 +905,10 @@ impl Inventory {
             return 0;
         }
         let taken = damage.saturating_sub(saved as i16);
+        // A hit on a corpse, or one that overkills, is reported as the health
+        // the player actually had, as the frame loop has always read it.
+        let felt = taken.min(self.health.max(0));
+        self.damage_report.blood = self.damage_report.blood.saturating_add(felt as u16);
         self.health = self.health.saturating_sub(taken);
         taken
     }
@@ -1526,6 +1550,11 @@ impl WeaponState {
             self.protect_sound_ticks = PROTECT_SOUND_TICKS;
         }
         self.inventory.take_damage(damage)
+    }
+
+    /// Damage dealt to the player since the last call, from every source.
+    pub fn take_damage_report(&mut self) -> DamageReport {
+        self.inventory.take_damage_report()
     }
 
     /// Whether `T_Damage`'s `items/protect3.wav` is due since the last call.
@@ -2352,6 +2381,9 @@ mod tests {
             active_weapon: Weapon::Lightning,
             powerups: Powerups::new(),
             megahealth_rot_ticks: 77,
+            // Transient, drained every frame and never written to a save, so
+            // the round trip must give back the empty report.
+            damage_report: DamageReport { blood: 0, armor: 0 },
         }
     }
 

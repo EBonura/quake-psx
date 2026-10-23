@@ -2,13 +2,15 @@
 
 ## Unreleased
 
-- Megahealth: the slow rot from 200 back to 100 no longer flashes the screen. The
-  frame loop reads damage as health before minus health after the survival tick, and
-  `item_megahealth_rot`'s point per second landed in that difference, so each point
-  fired the red damage tint, the pain face, the view kick and the rumble. The rot is
-  a plain `health - 1` in the original, not a `T_Damage`; `SurvivalFrame::rot_loss`
-  now counts it and `SurvivalFrame::health_damage` takes it back out. A hit in the same
-  frame is still felt in full. Covered by `tests/megahealth_rot_no_damage_feedback.rs`.
+- Damage report: the screen tint, the pain face, the view kick and the rumble now run
+  off the damage `Inventory::take_damage` actually dealt (health lost, armor absorbed,
+  summed per frame and drained by `take_damage_report`), not off health before minus
+  health after the frame. That difference counted anything that moved health: the
+  megahealth rot's point per second flashed the screen every second, and a health or
+  armor pickup in the frame of a hit hid it, in whole or in part. The rot is a plain
+  `health - 1` in the original, not a `T_Damage`, so it shows nothing now.
+  `tests/megahealth_rot_no_damage_feedback.rs` replays the 200 to 100 drain, a hit in
+  the frame the rot lands, and pickups in the frame of a hit.
 
 - Save and load: SAVE GAME and LOAD GAME in the pause menu (LOAD GAME on the title
   menu too), three slots, each a memory-card file. A save holds the map, skill, player,

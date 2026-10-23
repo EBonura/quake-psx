@@ -802,11 +802,11 @@ pub fn run() -> ! {
         crate::spawn_probe::prepare(&mut player);
         player.set_dead(weapon.inventory().health() <= 0);
         // `V_ParseDamage` runs off the damage message the server sends. This
-        // port has no message layer, so the same signal is taken from the
-        // inventory either side of every damage source in the frame: contents,
-        // crush, monsters, projectiles and falls all land in one place.
-        let health_before = weapon.inventory().health().max(0) as u16;
-        let armor_before = weapon.inventory().armor().max(0) as u16;
+        // port has no message layer, so `Inventory::take_damage` keeps the
+        // same figures (health lost, armor absorbed) for whoever hurt the
+        // player this frame: contents, crush, monsters, projectiles and falls
+        // all land there, and nothing else does. A health change that is not
+        // a hit (the megahealth rot, a pickup) is never read as one.
         #[cfg(not(feature = "visual-parity-regression"))]
         let camera = player.camera();
         #[cfg(feature = "visual-parity-regression")]
@@ -1612,10 +1612,8 @@ pub fn run() -> ! {
         // contents shift above drives rather than adding one of its own.
         let powerups = weapon.inventory().powerups();
         presentation.screen_blend_mut().set_powerups(powerups);
-        let health_after = weapon.inventory().health().max(0) as u16;
-        let armor_after = weapon.inventory().armor().max(0) as u16;
-        let blood = survival.health_damage(health_before, health_after);
-        let armor = armor_before.saturating_sub(armor_after);
+        let damage = weapon.take_damage_report();
+        let (blood, armor) = (damage.blood, damage.armor);
         // `CheckPowerups` sets `EF_DIMLIGHT` on the player while the
         // pentagram or the quad runs: the same 200 unit light a rocket has.
         if powerups.active(quake_core::survival::PowerupKind::Pentagram)
