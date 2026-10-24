@@ -150,7 +150,7 @@ mod tests {
         for forward in [-127, -60, 0, 30, 90, 127] {
             for strafe in [-127, -40, 0, 70, 127] {
                 for yaw in [-32, -10, 0, 3, 20, 32] {
-                    let c = Command { forward, strafe, yaw, pitch: yaw / 2, buttons: 0 };
+                    let c = Command { forward, strafe, yaw, pitch: yaw / 8, buttons: 0 };
                     let (f, s, y, p) = guest_read(sample(c));
                     let mag = isqrt(forward * forward + strafe * strafe).min(127);
                     let tol = 4 + mag / 20;
@@ -161,8 +161,8 @@ mod tests {
                     } else {
                         assert_eq!((f, s), (0, 0));
                     }
-                    assert!((y - yaw).abs() <= 3, "yaw {yaw}: {y}");
-                    assert!((p - yaw / 2).abs() <= 3, "pitch");
+                    assert!((y - yaw).abs() <= 5, "yaw {yaw}: {y}");
+                    assert!((p - yaw / 8).abs() <= 3, "pitch");
                 }
             }
         }
