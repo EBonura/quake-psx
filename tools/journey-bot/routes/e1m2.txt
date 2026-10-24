@@ -1,0 +1,67 @@
+# E1M2 spawn to the exit (port of the e1m2-e1m3 route gate's stages).
+1416 1480
+1416 1120
+1416 1000
+1496 960
+1432 720
+1240 608
+1144 496
+1144 240
+1176 208
+1192 192
+1272 144
+1272 36 r=8                      # board the lift on its centre line
+@wait until=mover:192:top        # the deck is up
+1360 96 r=4
+1360 240 r=4
+1440 352
+1672 352
+1712 312
+1904 -120
+1984 -200
+1984 -312
+1504 -456 z=313 r=24
+@shoot 1546 -552 328 weapon=1 until=mover:243:top    # the shootable button
+1488 -456
+1344 -424
+1248 -440
+1152 -536 r=8
+1120 -560 r=12
+1120 -656 r=12
+1240 -688
+1320 -688
+1640 -752
+1640 -872
+1488 -904 z=441 r=40
+1248 -1160 z=441 r=8             # bridge button
+@push 1248 -1211 until=mover:70:top
+960 -802
+928 -450
+928 -338 z=433 r=24
+880 -300 r=12 jump               # the key island
+@wait until=key:1
+880 -337 z=433 r=10 jump
+880 -370
+880 -670
+848 -720
+832 -1164
+640 -1164
+624 -1036
+608 -572
+336 -274 z=321 r=32
+@push 288 -208 until=nokey:1     # key door takes the key
+288 -220
+288 -192 z=321 r=20
+112 94
+-64 270
+-96 288 z=323 r=10               # floor plate
+@wait until=frames:45
+-96 -320
+-192 -480
+-352 -480
+-592 -480
+-636 -480 z=481 r=12             # exit door trigger
+@wait until=frames:150
+-624 -472
+-684 -472
+-684 -484 r=10

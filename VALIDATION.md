@@ -220,6 +220,13 @@ the emulator saw stays within four fifths of the reserved stack. `cargo
 quake-build ram` runs the same boot and prints the link-map breakdown of
 `.text`, `.data`, `.bss` and the overlay images (`docs/RAM.md`).
 
+## Journeys
+
+`cargo quake-build journey-build` makes the journey image (shipping game plus the
+read-only state block). `tools/journey-bot` plays it with a host controller and records pad
+tapes; `psoxide-gate run tests/journeys/e1-chain/chain.toml` replays them and checks the
+exact state at every map change. See `tests/journeys/README.md`.
+
 ## Visual checks
 
 The automated camera checks command counts, display dimensions, world and HUD

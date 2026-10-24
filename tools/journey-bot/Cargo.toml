@@ -1,0 +1,26 @@
+[package]
+name = "quake-journey-bot"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Host driver that plays the Quake journey image through the emulator and records a poll-bound pad tape"
+publish = false
+
+# Its own workspace, like tools/routesim: a developer tool, not part of the
+# shipping builder's package, lockfile or guest recipe.
+[workspace]
+
+[[bin]]
+name = "quake-journey-bot"
+path = "src/main.rs"
+
+[dependencies]
+emulator-core = { path = "../../.psoxide/emu/crates/emulator-core" }
+psoxide-settings = { path = "../../.psoxide/emu/crates/psoxide-settings" }
+psoxide-jit = { path = "../../.psoxide/emu/crates/psoxide-jit" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+quake-core = { path = "../../crates/quake-core" }
+quake-formats = { path = "../../crates/quake-formats" }
+
+[profile.release]
+opt-level = 2

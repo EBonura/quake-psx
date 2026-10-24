@@ -1149,7 +1149,14 @@ fn find_path(scene: &Scene, args: &[String]) {
                 index += 4;
             }
             "--to" => {
-                goals.push([number(1), number(2), number(3)]);
+                // `any` as the height accepts a floor at any level (a goal whose
+                // authored height is not known).
+                let height = if args.get(index + 3).map(String::as_str) == Some("any") {
+                    i32::MIN
+                } else {
+                    number(3)
+                };
+                goals.push([number(1), number(2), height]);
                 index += 4;
             }
             "--step" => {
@@ -1427,7 +1434,7 @@ fn walk_to(
     while let Some(current) = queue.pop_front() {
         if (current[0] - goal[0]).abs() <= radius
             && (current[1] - goal[1]).abs() <= radius
-            && (current[2] - goal[2]).abs() <= 56
+            && (goal[2] == i32::MIN || (current[2] - goal[2]).abs() <= 56)
         {
             best = Some(current);
             break;
