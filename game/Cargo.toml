@@ -99,6 +99,9 @@ smooth-poses = ["quake-core/smooth-poses"]
 probe-clear-magenta = []
 rumble = []
 emulator-telemetry = ["psx-telemetry/emit"]
+# Read-only per-frame state block (game/src/journey.rs) for the host journey driver.
+# No behaviour change; used by the journey image only.
+journey-telemetry = []
 # Log every music schedule transition (tick, loop, fade level) to the emulator
 # debug log, for the headless music gate. Not part of the shipping image.
 music-trace = ["emulator-telemetry"]

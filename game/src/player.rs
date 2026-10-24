@@ -227,6 +227,12 @@ impl Player {
         }
     }
 
+    /// Whether the motor has the player on the ground (journey telemetry).
+    #[cfg(feature = "journey-telemetry")]
+    pub fn journey_grounded(&self) -> bool {
+        self.movement.grounded()
+    }
+
     /// Current liquid submersion (0 dry .. 3 eyes under).
     pub const fn water_level(&self) -> u8 {
         self.movement.water_level()

@@ -7661,6 +7661,78 @@ impl EntityScene {
         Some(hits.saturating_mul(4))
     }
 
+    /// Fill the journey telemetry rows: live monsters, visible pickups, movers.
+    /// Returns the three counts. Read-only.
+    #[cfg(feature = "journey-telemetry")]
+    pub fn journey_fill(
+        &self,
+        monsters: &mut [[i32; 6]],
+        pickups: &mut [[i32; 5]],
+        movers: &mut [[i32; 6]],
+        props: &mut [[i32; 5]],
+    ) -> (u32, u32, u32, u32) {
+        let (mut mc, mut pc, mut vc, mut rc) = (0usize, 0usize, 0usize, 0usize);
+        for entity in &self.entities {
+            if let Some(runtime) = entity.monster {
+                if mc < monsters.len() {
+                    let flags = u32::from(runtime.active()) | (u32::from(runtime.dead()) << 1) | (u32::from(entity.visible) << 2);
+                    monsters[mc] = [
+                        i32::from(entity.source_index),
+                        ((runtime.kind() as i32) << 16) | ((runtime.state() as i32) << 8) | flags as i32,
+                        i32::from(entity.health),
+                        entity.origin.x,
+                        entity.origin.y,
+                        entity.origin.z,
+                    ];
+                    mc += 1;
+                }
+            } else if entity.damageable
+                && !entity.projectile
+                && entity.pickup.is_none()
+                && entity.health > 0
+                && entity.visible
+            {
+                if rc < props.len() {
+                    props[rc] = [
+                        i32::from(entity.source_index),
+                        i32::from(entity.health),
+                        entity.origin.x,
+                        entity.origin.y,
+                        entity.origin.z,
+                    ];
+                    rc += 1;
+                }
+            } else if entity.pickup.is_some() && entity.visible && pc < pickups.len() {
+                pickups[pc] = [
+                    i32::from(entity.source_index),
+                    journey_pickup_code(entity.pickup),
+                    entity.origin.x,
+                    entity.origin.y,
+                    entity.origin.z,
+                ];
+                pc += 1;
+            }
+        }
+        for mover in &self.movers {
+            if vc >= movers.len() {
+                break;
+            }
+            let Some(entity) = self.entities.get(mover.render_index as usize) else {
+                continue;
+            };
+            movers[vc] = [
+                i32::from(entity.source_index),
+                mover.policy.state() as i32,
+                i32::from(mover.source.class_name),
+                entity.origin.x,
+                entity.origin.y,
+                entity.origin.z,
+            ];
+            vc += 1;
+        }
+        (mc as u32, pc as u32, vc as u32, rc as u32)
+    }
+
     /// Current skill, carried across map loads like the original cvar.
     pub const fn skill(&self) -> u8 {
         self.skill
@@ -10635,4 +10707,19 @@ fn model_clip_radius(header: AliasModelHeader) -> i16 {
 #[no_mangle]
 pub fn quake_door_link(scene: &mut EntityScene, world: &ResidentMap) -> Result<(), EntityLoadError> {
     scene.link_doors(world)
+}
+
+/// Journey telemetry: `tag << 16 | sub << 8 | amount`-style code for a pickup.
+#[cfg(feature = "journey-telemetry")]
+fn journey_pickup_code(pickup: Option<Pickup>) -> i32 {
+    use quake_core::combat::Pickup as P;
+    match pickup {
+        None => 0,
+        Some(P::Health { amount, .. }) => (1 << 16) | i32::from(amount),
+        Some(P::Armor { tier, amount }) => (2 << 16) | ((tier as i32) << 8) | i32::from(amount),
+        Some(P::Ammo { kind, amount }) => (3 << 16) | ((kind.index() as i32) << 8) | i32::from(amount),
+        Some(P::Weapon { weapon, .. }) => (4 << 16) | ((weapon as i32) << 8),
+        Some(P::Key { bit }) => (5 << 16) | i32::from(bit),
+        Some(P::Powerup { kind }) => (6 << 16) | ((kind as i32) << 8),
+    }
 }

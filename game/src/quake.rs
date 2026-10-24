@@ -374,7 +374,25 @@ pub fn run() -> ! {
     let mut death_wait = 0u16;
     let mut death_released = false;
 
+    #[cfg(feature = "journey-telemetry")]
+    let mut journey_frame = 0u32;
+
     loop {
+        #[cfg(feature = "journey-telemetry")]
+        {
+            journey_frame = journey_frame.wrapping_add(1);
+            crate::journey::publish(&crate::journey::Frame {
+                frame: journey_frame,
+                map: u32::from(map_index(world.map())),
+                mode: u32::from(menu.active()) * crate::journey::MODE_MENU
+                    | u32::from(intermission.is_some()) * crate::journey::MODE_INTERMISSION
+                    | u32::from(weapon.inventory().health() <= 0) * crate::journey::MODE_DEAD,
+                intermission_elapsed: intermission.as_ref().map_or(0, |i| u32::from(i.elapsed)),
+                player: &player,
+                weapon: &weapon,
+                entities: &entities,
+            });
+        }
         #[cfg(not(feature = "perf-fixed-ticks"))]
         let (audio_tick, clock_ticks) = {
             if presentation.generation() != clock_generation {

@@ -31,6 +31,8 @@ mod forward_chunk_reader;
 mod input;
 mod input_policy;
 mod intro;
+#[cfg(feature = "journey-telemetry")]
+mod journey;
 #[cfg(feature = "monster-regression")]
 mod monster_regression;
 #[cfg(feature = "spawn-probe")]

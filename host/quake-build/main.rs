@@ -252,6 +252,7 @@ enum Action {
     StartRouteRegress,
     E1m1ChainRegress,
     E1m1ChainBench,
+    JourneyBuild,
     E1m1SpawnRegress,
     E1m1SaveRegress,
     E1m1MonsterRouteBench,
@@ -582,6 +583,16 @@ fn real_main() -> Result<()> {
             )?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_monster_route_bench(&root, &frontend, &build, "e1m1-monster-route-bench")?;
+        }
+        Action::JourneyBuild => {
+            // The image the journey tapes are recorded and replayed on: the
+            // shipping game plus the read-only state block, nothing else.
+            let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
+            cook_assets(&root, &pak, false)?;
+            let build = root.join("build-psoxide-journey");
+            fs::create_dir_all(&build)?;
+            request_guest_link_map(build.join("quake-psx.map"))?;
+            build_disc(&root, &build, Some("journey-telemetry"), false)?;
         }
         Action::E1m1ChainBench => {
             // Step the route by three ticks per frame so renderer changes do
@@ -2855,6 +2866,7 @@ fn parse_cli() -> Result<Cli> {
             | "visual-parity-regress"
             | "e1m1-chain-regress"
             | "e1m1-chain-bench"
+            | "journey-build"
             | "e1m1-spawn-regress"
             | "e1m1-save-regress"
             | "e1m1-monster-route-bench"
@@ -2919,6 +2931,7 @@ fn parse_cli() -> Result<Cli> {
                     "visual-parity-regress" => Action::VisualParityRegress,
                     "e1m1-chain-regress" => Action::E1m1ChainRegress,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
+                    "journey-build" => Action::JourneyBuild,
                     "e1m1-spawn-regress" => Action::E1m1SpawnRegress,
                     "e1m1-save-regress" => Action::E1m1SaveRegress,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
@@ -9728,6 +9741,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-map-regression"
             | "build-psoxide-start-route-regression"
             | "build-psoxide-e1m1-chain-regression"
+            | "build-psoxide-journey"
             | "build-psoxide-e1m1-selection-cache-bench"
             | "build-psoxide-e1m1-topology-cache-bench"
             | "build-psoxide-e1m1-indexed-projection-bench"
