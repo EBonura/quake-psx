@@ -350,7 +350,7 @@ unsafe fn hardware_perf_record_present(now: u32) {
 /// ordering already proven by VoXide on an original console.
 #[optimize(size)]
 pub fn gpu_init_before_interrupts() {
-    psx_gpu::init(psx_gpu::VideoMode::Ntsc, psx_gpu::Resolution::R320X240);
+    psx_gpu::init(psx_gpu::display::VideoMode::Ntsc, psx_gpu::display::Resolution::R320X240);
     unsafe {
         BUILD_BUFFER = 0;
         GPU_SUBMISSION_PENDING = false;
