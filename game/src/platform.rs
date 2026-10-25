@@ -704,7 +704,7 @@ unsafe fn present_blocking() {
         // SAFETY: the build buffer's table and the screen commands it links
         // stay untouched until wait_for_pending_submission has waited this
         // walk out; GPU_SUBMISSION_PENDING records that it is in flight.
-        psx_gpu::submit_linked_list_async_raw(ot.submit_head());
+        psx_gpu::submit_linked_list_raw_async(ot.submit_head());
     }
     unsafe {
         GPU_SUBMISSION_PENDING = true;

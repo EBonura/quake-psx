@@ -6907,7 +6907,7 @@ fn select_frame_faces(
             texture.flags & TEXTURE_LIQUID != 0 && visible.face.plane as i16 == water_plane;
         if texture.flags & (TEXTURE_INVISIBLE | TEXTURE_NULL) == 0
             && front_facing_compact_plane(visible.plane, u16::from(visible.face.flags), origin)
-            && !scene::aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f)
+            && !scene::is_aabb_outside_clip4(visible.bounds.mins, visible.bounds.maxs, frustum, 0x0f)
         {
             let entry = visible_index as u16 | if water_blend { WATER_BLEND_FACE_BIT } else { 0 };
             unsafe { ptr::write(out.add(count), entry) };
