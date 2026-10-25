@@ -28,9 +28,9 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // Editor revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "9ae15ba7d2e63a94f9e5e92128ddd41a98a56f99";
+const PSOXIDE_REV: &str = "981dcd5d0b3172b00b63028e3cb666ea767006ef";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "652630557148acd11c4500cb87e05fd91b9ade68";
+const PSOXIDE_SDK_REV: &str = "b04008f628c7b62d5402ed6eba668eab126e77c9";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -211,7 +211,13 @@ const VISUAL_HUD_REGION: ImageRegion = ImageRegion::new(0, 184, 320, 56);
 // at the player's full angle resolution moved the picture by the 11 units the
 // old 256-step rotation rounded away (about three pixels up). The scene is
 // otherwise the same; the previous world hash was 0x39f7_8f03_ce49_82ef.
-const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0xd213_f42f_66cd_645e;
+//
+// Re-blessed to 0x52a8_fd14_afff_f202 at the 2026-10-25 repin (SDK b04008f6, editor 981dcd5d).
+// 0xd213_f42f_66cd_645e was blessed on 2026-10-09 and the gate was already red on main
+// (same value, df15593 at SDK 65263055 / editor 9ae15ba7). A control build at those old pins
+// and this repin render the whole 320x240 frame byte for byte alike (SHA-256 ba79c39b...), so
+// the repin changed no pixel; the older stored value came from the 152 commits in between.
+const EXPECTED_VISUAL_WORLD_FNV1A64: u64 = 0x52a8_fd14_afff_f202;
 // The HUD strip also holds the world's bottom rows behind the icons, which
 // moved with the view above; the icons and weapon are pixel for pixel the
 // same. The previous HUD hash was 0x2517_2c84_d9bb_9f60.
@@ -4605,12 +4611,49 @@ fn prepare_shipping_cargo_home() -> Result<PathBuf> {
     prepare_shipping_cargo_home_at(Path::new(SHIPPING_CARGO_HOME))
 }
 
+/// Cargo tables that cannot change what a guest build compiles or links: network and
+/// terminal behaviour only. A user's `~/.cargo/config.toml` that holds nothing else (the
+/// usual `[net] git-fetch-with-cli = true`) is an ancestor of every stage under `$HOME`
+/// and must not make a private stage root there unbuildable.
+const INERT_CARGO_TABLES: &[&str] = &["net", "http", "term", "future-incompat-report"];
+
+/// Whether the Cargo config at `path` holds only [`INERT_CARGO_TABLES`].
+///
+/// This is a line scan, not a TOML parse, and it fails closed: a key before the first
+/// table header, a quoted or unknown table name, or an unreadable file all count as not
+/// inert. A multi-line value whose continuation line starts with `[` is also read as a
+/// header and therefore rejected, which is the safe direction.
+fn cargo_config_is_inert(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let mut in_table = false;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header.trim_start_matches('[').trim_start();
+            let end = name
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(name.len());
+            if !INERT_CARGO_TABLES.contains(&&name[..end]) {
+                return false;
+            }
+            in_table = true;
+        } else if !in_table {
+            return false;
+        }
+    }
+    true
+}
+
 fn reject_ambient_cargo_configs(current_dir: &Path, cargo_home: &Path) -> Result<()> {
     let mut directory = current_dir.parent();
     while let Some(path) = directory {
         for name in ["config", "config.toml"] {
             let config = path.join(".cargo").join(name);
-            if config.exists() {
+            if config.exists() && !cargo_config_is_inert(&config) {
                 return Err(format!(
                     "shipping guest build rejects ambient Cargo config {}; remove it and retry",
                     config.display()
@@ -5346,13 +5389,26 @@ fn resolve_frontend(root: &Path, requested: Option<&Path>) -> Result<PathBuf> {
     frontend_from_checkout(&source)
 }
 
+/// Executable names the replay frontend is built under, in preference order. The package
+/// is `psoxide-emulator`; the `frontend` alias builds beside it for older scripts.
+const FRONTEND_BINARIES: [&str; 2] = ["psoxide-emulator", "frontend"];
+
+/// A runnable frontend already built under `source`, in its own or its `emu` workspace's target.
+fn built_frontend(source: &Path) -> Option<PathBuf> {
+    [source.to_path_buf(), source.join("emu")]
+        .iter()
+        .flat_map(|workspace| {
+            FRONTEND_BINARIES
+                .iter()
+                .map(move |name| workspace.join("target/release").join(name))
+        })
+        .find(|candidate| is_runnable(candidate))
+}
+
 /// Reuse a checkout's built frontend, or build one there. Never elsewhere.
 fn frontend_from_checkout(source: &Path) -> Result<PathBuf> {
-    let built = source.join("target/release/frontend");
-    for candidate in [built.clone(), source.join("emu/target/release/frontend")] {
-        if is_runnable(&candidate) {
-            return Ok(candidate);
-        }
+    if let Some(built) = built_frontend(source) {
+        return Ok(built);
     }
     // The frontend crate lives in the `emu` workspace in a full checkout and
     // at the root of the hydrated SDK tree; try both before failing.
@@ -5364,10 +5420,10 @@ fn frontend_from_checkout(source: &Path) -> Result<PathBuf> {
         let mut command = Command::new(require_tool(&["cargo"])?);
         command
             .current_dir(&dir)
-            .args(["build", "--release", "-p", "frontend"]);
+            .args(["build", "--release", "-p", "psoxide-emulator"]);
         match run(&mut command) {
             Ok(()) => {
-                if is_runnable(&built) {
+                if let Some(built) = built_frontend(source) {
                     return Ok(built);
                 }
             }
@@ -11747,6 +11803,36 @@ mod provenance_tests {
             .expect_err("ancestor Cargo config must fail closed")
             .to_string();
         assert!(error.contains(&ambient.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn inert_cargo_configs_do_not_block_a_stage_under_home() {
+        let directory = TestDirectory::new();
+        let game = directory.0.join("home/lane/stage/game");
+        let home = directory.0.join("cargo-home");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir_all(directory.0.join("home/.cargo")).unwrap();
+        let prepared_home = prepare_shipping_cargo_home_at(&home).unwrap();
+        let ambient = directory.0.join("home/.cargo/config.toml");
+        fs::write(
+            &ambient,
+            b"# fetch with the git CLI\n[net]\ngit-fetch-with-cli = true\n",
+        )
+        .unwrap();
+        reject_ambient_cargo_configs(&game, &prepared_home)
+            .expect("a [net]-only config cannot change the guest build");
+        for hostile in [
+            "[net]\ngit-fetch-with-cli = true\n[build]\nrustflags = ['-Copt-level=0']\n",
+            "paths = ['../x']\n[net]\nretry = 1\n",
+            "[\"build\"]\ntarget = 'x'\n",
+            "[target.mipsel-sony-psx]\nlinker = 'x'\n",
+        ] {
+            fs::write(&ambient, hostile).unwrap();
+            assert!(
+                reject_ambient_cargo_configs(&game, &prepared_home).is_err(),
+                "{hostile}"
+            );
+        }
     }
 
     #[test]
