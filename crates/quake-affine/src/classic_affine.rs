@@ -1359,28 +1359,26 @@ impl PacketWriter {
         debug_assert!(attributes
             .iter()
             .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let packet = unsafe {
-            ClassicTriTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                [
-                    (projected[0].screen[0], projected[0].screen[1]),
-                    (projected[1].screen[0], projected[1].screen[1]),
-                    (projected[2].screen[0], projected[2].screen[1]),
-                ],
-                [
-                    uv_word(attributes[0]),
-                    uv_word(attributes[1]),
-                    uv_word(attributes[2]),
-                ],
-                [
-                    attributes[0].color,
-                    attributes[1].color,
-                    attributes[2].color,
-                ],
-                self.clut_high_word,
-                self.tpage_high_word,
-                otz,
-            )
-        };
+        let packet = ClassicTriTexturedGouraud::with_staged_slot_prepacked_colors(
+            [
+                (projected[0].screen[0], projected[0].screen[1]),
+                (projected[1].screen[0], projected[1].screen[1]),
+                (projected[2].screen[0], projected[2].screen[1]),
+            ],
+            [
+                uv_word(attributes[0]),
+                uv_word(attributes[1]),
+                uv_word(attributes[2]),
+            ],
+            [
+                attributes[0].color,
+                attributes[1].color,
+                attributes[2].color,
+            ],
+            self.clut_high_word,
+            self.tpage_high_word,
+            otz,
+        );
         unsafe { ptr::write(self.next.cast::<ClassicTriTexturedGouraud>(), packet) };
         self.next = unsafe {
             self.next
@@ -1420,31 +1418,29 @@ impl PacketWriter {
         debug_assert!(attributes
             .iter()
             .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let packet = unsafe {
-            ClassicQuadTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                [
-                    (projected[0].screen[0], projected[0].screen[1]),
-                    (projected[1].screen[0], projected[1].screen[1]),
-                    (projected[2].screen[0], projected[2].screen[1]),
-                    (projected[3].screen[0], projected[3].screen[1]),
-                ],
-                [
-                    uv_word(attributes[0]),
-                    uv_word(attributes[1]),
-                    uv_word(attributes[2]),
-                    uv_word(attributes[3]),
-                ],
-                [
-                    attributes[0].color,
-                    attributes[1].color,
-                    attributes[2].color,
-                    attributes[3].color,
-                ],
-                self.clut_high_word,
-                self.tpage_high_word,
-                otz,
-            )
-        };
+        let packet = ClassicQuadTexturedGouraud::with_staged_slot_prepacked_colors(
+            [
+                (projected[0].screen[0], projected[0].screen[1]),
+                (projected[1].screen[0], projected[1].screen[1]),
+                (projected[2].screen[0], projected[2].screen[1]),
+                (projected[3].screen[0], projected[3].screen[1]),
+            ],
+            [
+                uv_word(attributes[0]),
+                uv_word(attributes[1]),
+                uv_word(attributes[2]),
+                uv_word(attributes[3]),
+            ],
+            [
+                attributes[0].color,
+                attributes[1].color,
+                attributes[2].color,
+                attributes[3].color,
+            ],
+            self.clut_high_word,
+            self.tpage_high_word,
+            otz,
+        );
         unsafe { ptr::write(self.next.cast::<ClassicQuadTexturedGouraud>(), packet) };
         self.next = unsafe {
             self.next
@@ -1486,24 +1482,22 @@ impl PacketWriter {
         debug_assert!(vertices
             .iter()
             .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let packet = unsafe {
-            ClassicTriTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                [
-                    (vertices[0].screen[0], vertices[0].screen[1]),
-                    (vertices[1].screen[0], vertices[1].screen[1]),
-                    (vertices[2].screen[0], vertices[2].screen[1]),
-                ],
-                [
-                    uv_compact_word(vertices[0]),
-                    uv_compact_word(vertices[1]),
-                    uv_compact_word(vertices[2]),
-                ],
-                [vertices[0].color, vertices[1].color, vertices[2].color],
-                self.clut_high_word,
-                self.tpage_high_word,
-                otz,
-            )
-        };
+        let packet = ClassicTriTexturedGouraud::with_staged_slot_prepacked_colors(
+            [
+                (vertices[0].screen[0], vertices[0].screen[1]),
+                (vertices[1].screen[0], vertices[1].screen[1]),
+                (vertices[2].screen[0], vertices[2].screen[1]),
+            ],
+            [
+                uv_compact_word(vertices[0]),
+                uv_compact_word(vertices[1]),
+                uv_compact_word(vertices[2]),
+            ],
+            [vertices[0].color, vertices[1].color, vertices[2].color],
+            self.clut_high_word,
+            self.tpage_high_word,
+            otz,
+        );
         unsafe { ptr::write(self.next.cast::<ClassicTriTexturedGouraud>(), packet) };
         self.next = unsafe {
             self.next
@@ -1641,28 +1635,26 @@ impl ResidentPacketWriter {
             debug_assert!(attributes
                 .iter()
                 .all(|vertex| vertex.color & 0xff00_0000 == 0));
-            let packet = unsafe {
-                ClassicTriTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                    [
-                        (projected[0].screen[0], projected[0].screen[1]),
-                        (projected[1].screen[0], projected[1].screen[1]),
-                        (projected[2].screen[0], projected[2].screen[1]),
-                    ],
-                    [
-                        uv_word(attributes[0]),
-                        uv_word(attributes[1]),
-                        uv_word(attributes[2]),
-                    ],
-                    [
-                        attributes[0].color,
-                        attributes[1].color,
-                        attributes[2].color,
-                    ],
-                    self.clut_high_word,
-                    self.tpage_high_word,
-                    otz,
-                )
-            };
+            let packet = ClassicTriTexturedGouraud::with_staged_slot_prepacked_colors(
+                [
+                    (projected[0].screen[0], projected[0].screen[1]),
+                    (projected[1].screen[0], projected[1].screen[1]),
+                    (projected[2].screen[0], projected[2].screen[1]),
+                ],
+                [
+                    uv_word(attributes[0]),
+                    uv_word(attributes[1]),
+                    uv_word(attributes[2]),
+                ],
+                [
+                    attributes[0].color,
+                    attributes[1].color,
+                    attributes[2].color,
+                ],
+                self.clut_high_word,
+                self.tpage_high_word,
+                otz,
+            );
             unsafe { ptr::write(packet_ptr, packet) };
             self.invariant_miss_slots = self.invariant_miss_slots.wrapping_add(1);
         }
@@ -1707,31 +1699,29 @@ impl ResidentPacketWriter {
             debug_assert!(attributes
                 .iter()
                 .all(|vertex| vertex.color & 0xff00_0000 == 0));
-            let packet = unsafe {
-                ClassicQuadTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                    [
-                        (projected[0].screen[0], projected[0].screen[1]),
-                        (projected[1].screen[0], projected[1].screen[1]),
-                        (projected[2].screen[0], projected[2].screen[1]),
-                        (projected[3].screen[0], projected[3].screen[1]),
-                    ],
-                    [
-                        uv_word(attributes[0]),
-                        uv_word(attributes[1]),
-                        uv_word(attributes[2]),
-                        uv_word(attributes[3]),
-                    ],
-                    [
-                        attributes[0].color,
-                        attributes[1].color,
-                        attributes[2].color,
-                        attributes[3].color,
-                    ],
-                    self.clut_high_word,
-                    self.tpage_high_word,
-                    otz,
-                )
-            };
+            let packet = ClassicQuadTexturedGouraud::with_staged_slot_prepacked_colors(
+                [
+                    (projected[0].screen[0], projected[0].screen[1]),
+                    (projected[1].screen[0], projected[1].screen[1]),
+                    (projected[2].screen[0], projected[2].screen[1]),
+                    (projected[3].screen[0], projected[3].screen[1]),
+                ],
+                [
+                    uv_word(attributes[0]),
+                    uv_word(attributes[1]),
+                    uv_word(attributes[2]),
+                    uv_word(attributes[3]),
+                ],
+                [
+                    attributes[0].color,
+                    attributes[1].color,
+                    attributes[2].color,
+                    attributes[3].color,
+                ],
+                self.clut_high_word,
+                self.tpage_high_word,
+                otz,
+            );
             unsafe { ptr::write(packet_ptr, packet) };
             self.invariant_miss_slots = self.invariant_miss_slots.wrapping_add(1);
         }
@@ -2281,29 +2271,27 @@ impl<const RESTORE_WINDOW: bool> AffinePacketWriter for WindowedPacketWriter<RES
         debug_assert!(attributes
             .iter()
             .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let mut packet = unsafe {
-            TriTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                [
-                    (projected[0].screen[0], projected[0].screen[1]),
-                    (projected[1].screen[0], projected[1].screen[1]),
-                    (projected[2].screen[0], projected[2].screen[1]),
-                ],
-                [
-                    offset_uv_word(attributes[0], self.uv_offset),
-                    offset_uv_word(attributes[1], self.uv_offset),
-                    offset_uv_word(attributes[2], self.uv_offset),
-                ],
-                [
-                    attributes[0].color,
-                    attributes[1].color,
-                    attributes[2].color,
-                ],
-                self.clut_high_word,
-                self.tpage_high_word,
-                self.texture_window_word,
-                otz,
-            )
-        };
+        let mut packet = TriTexturedGouraud::with_staged_slot_prepacked_colors(
+            [
+                (projected[0].screen[0], projected[0].screen[1]),
+                (projected[1].screen[0], projected[1].screen[1]),
+                (projected[2].screen[0], projected[2].screen[1]),
+            ],
+            [
+                offset_uv_word(attributes[0], self.uv_offset),
+                offset_uv_word(attributes[1], self.uv_offset),
+                offset_uv_word(attributes[2], self.uv_offset),
+            ],
+            [
+                attributes[0].color,
+                attributes[1].color,
+                attributes[2].color,
+            ],
+            self.clut_high_word,
+            self.tpage_high_word,
+            self.texture_window_word,
+            otz,
+        );
         if RESTORE_WINDOW {
             packet.tag = packet.tag.wrapping_add(1 << 24) | TAG_SCOPED_TEXTURE_WINDOW;
         }
@@ -2341,32 +2329,30 @@ impl<const RESTORE_WINDOW: bool> AffinePacketWriter for WindowedPacketWriter<RES
         debug_assert!(attributes
             .iter()
             .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let mut packet = unsafe {
-            QuadTexturedGouraud::with_staged_slot_prepacked_unchecked(
-                [
-                    (projected[0].screen[0], projected[0].screen[1]),
-                    (projected[1].screen[0], projected[1].screen[1]),
-                    (projected[2].screen[0], projected[2].screen[1]),
-                    (projected[3].screen[0], projected[3].screen[1]),
-                ],
-                [
-                    offset_uv_word(attributes[0], self.uv_offset),
-                    offset_uv_word(attributes[1], self.uv_offset),
-                    offset_uv_word(attributes[2], self.uv_offset),
-                    offset_uv_word(attributes[3], self.uv_offset),
-                ],
-                [
-                    attributes[0].color,
-                    attributes[1].color,
-                    attributes[2].color,
-                    attributes[3].color,
-                ],
-                self.clut_high_word,
-                self.tpage_high_word,
-                self.texture_window_word,
-                otz,
-            )
-        };
+        let mut packet = QuadTexturedGouraud::with_staged_slot_prepacked_colors(
+            [
+                (projected[0].screen[0], projected[0].screen[1]),
+                (projected[1].screen[0], projected[1].screen[1]),
+                (projected[2].screen[0], projected[2].screen[1]),
+                (projected[3].screen[0], projected[3].screen[1]),
+            ],
+            [
+                offset_uv_word(attributes[0], self.uv_offset),
+                offset_uv_word(attributes[1], self.uv_offset),
+                offset_uv_word(attributes[2], self.uv_offset),
+                offset_uv_word(attributes[3], self.uv_offset),
+            ],
+            [
+                attributes[0].color,
+                attributes[1].color,
+                attributes[2].color,
+                attributes[3].color,
+            ],
+            self.clut_high_word,
+            self.tpage_high_word,
+            self.texture_window_word,
+            otz,
+        );
         if RESTORE_WINDOW {
             packet.tag = packet.tag.wrapping_add(1 << 24) | TAG_SCOPED_TEXTURE_WINDOW;
         }
