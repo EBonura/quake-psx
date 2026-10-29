@@ -26,6 +26,7 @@ struct Segment {
 const SEGMENTS: &[Segment] = &[
     Segment { map: 1, route: include_str!("../routes/e1m1.txt"), next_map: 2 },
     Segment { map: 2, route: include_str!("../routes/e1m2.txt"), next_map: 3 },
+    Segment { map: 3, route: include_str!("../routes/e1m3.txt"), next_map: 4 },
 ];
 
 enum Phase {
