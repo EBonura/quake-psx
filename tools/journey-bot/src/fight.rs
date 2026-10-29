@@ -15,8 +15,12 @@ pub const GRENADE: u32 = 5;
 pub const ROCKET: u32 = 6;
 
 /// Monster states that mean it is no longer a threat.
+/// Zombies get up again until they are gibbed and a player runs past them, so they are not
+/// fought.
+const ZOMBIE: u8 = 3;
+
 fn threat(m: &Monster) -> bool {
-    m.alive() && !matches!(m.state, 13 | 14 | 15 | 17)
+    m.alive() && m.kind != ZOMBIE && !matches!(m.state, 13 | 14 | 15 | 17)
 }
 
 pub struct Fighter {

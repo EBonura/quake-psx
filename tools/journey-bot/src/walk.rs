@@ -592,3 +592,14 @@ impl Walker {
         true
     }
 }
+
+impl Walker {
+    /// The item being worked on, for traces.
+    pub fn cur(&self) -> String {
+        match self.route.get(self.next) {
+            Some(Item::Wp(w)) => format!("wp({},{} z{:?} r{})", w.x, w.y, w.z, w.radius),
+            Some(other) => format!("{other:?}"),
+            None => "end".into(),
+        }
+    }
+}

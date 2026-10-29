@@ -1,0 +1,8 @@
+# E1M3 spawn to the exit (port of the e1m2-e1m3 route gate's E1M3 stages).
+@go 512 -746 z=-119 r=12          # the gold lift deck
+@wait until=zle:-300              # it carries the player down
+@wait until=mover:87:top
+@go -976 -360 z=-336 r=24         # the gold key
+@wait until=key:2
+@go 320 -880 r=24                 # back at the lift, which must be called
+@wait until=mover:87:top
