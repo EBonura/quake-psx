@@ -42,8 +42,10 @@ pub struct Journey {
     frame: u32,
     maps_dir: String,
     pub routesim: String,
+    /// Attempt number: varies the dodge rhythm and delays the first step on each map.
+    pub seed: u32,
     world: Option<(u32, World)>,
-    fighter: Fighter,
+    pub fighter: Fighter,
     latched: HashSet<u16>,
     last_map: u32,
     skip_tick: u32,
@@ -63,7 +65,7 @@ fn planner_for(routesim: &str, maps_dir: &str, map: u32) -> Option<Planner> {
     if routesim.is_empty() {
         return None;
     }
-    Some(Planner { routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
+    Some(Planner { last_dz: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
 }
 
 impl Journey {
@@ -82,6 +84,7 @@ impl Journey {
             frame: 0,
             maps_dir: maps_dir.to_string(),
             routesim: String::new(),
+            seed: 0,
             world: None,
             fighter: Fighter::new(),
             latched: HashSet::new(),
@@ -220,14 +223,16 @@ impl Script for Journey {
                     return None;
                 } else {
                     let world = &self.world.as_ref().expect("world loaded").1;
-                    match self.fighter.step(o, world) {
+                    // Swimming: no fight, the air is short (the route is a long dive).
+                    let engaged = if o.water >= 2 { None } else { self.fighter.step(o, world) };
+                    match engaged {
                         Some(c) => {
                             self.last = format!("FIGHT f{} s{} y{} b{:x}", c.forward, c.strafe, c.yaw, c.buttons);
                             c
                         }
                         None => {
                             // Pick up what a player would walk a few steps for.
-                            if walker.at_plain_waypoint() && o.grounded {
+                            if walker.at_plain_waypoint() && o.grounded && o.water == 0 {
                                 let p = o.pos();
                                 let mut best: Option<(i32, u16, [i32; 3])> = None;
                                 for k in &o.pickups {
@@ -237,7 +242,13 @@ impl Script for Journey {
                                     let q = [k.origin[0] >> 12, k.origin[1] >> 12, k.origin[2] >> 12];
                                     let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
                                     let d = ((dx * dx + dy * dy) as f64).sqrt() as i32;
-                                    if d <= 260 && (q[2] - p[2]).abs() <= 48 && best.map_or(true, |b| d < b.0) {
+                                    let reach = match (k.code >> 16, o.health) {
+                                        (1, h) if h < 50 => 700,
+                                        (1, h) if h < 75 => 400,
+                                        (2, _) => 400,
+                                        _ => 260,
+                                    };
+                                    if d <= reach && (q[2] - p[2]).abs() <= 48 && best.map_or(true, |b| d < b.0) {
                                         best = Some((d, k.index, q));
                                     }
                                 }
@@ -248,13 +259,17 @@ impl Script for Journey {
                                 }
                             }
                             let c = walker.step(o, &ctx).unwrap_or_default();
-                            self.last = format!("WALK wp{} f{} s{} y{} b{:x}", walker.next, c.forward, c.strafe, c.yaw, c.buttons);
+                            self.last = format!("WALK wp{} {} f{} s{} y{} b{:x}", walker.next, walker.cur(), c.forward, c.strafe, c.yaw, c.buttons);
                             c
                         }
                     }
                 }
             }
             Phase::Done => return None,
+        };
+        let cmd = match (&self.phase, &self.world) {
+            (Phase::Map { .. }, Some((_, world))) if next_phase.is_none() && o.water == 0 => repel(o, world, cmd),
+            _ => cmd,
         };
         if let Some(p) = next_phase {
             self.phase = p;
@@ -279,4 +294,34 @@ fn wanted(o: &Obs, code: i32) -> bool {
         4 => !owns(sub as u32),
         _ => false,
     }
+}
+
+/// Step away from a zombie within arm's reach: standing to aim or walk while one claws is how
+/// the player dies, and zombies are slow enough to leave behind.
+fn repel(o: &Obs, world: &World, c: Command) -> Command {
+    const REACH: f64 = 75.0;
+    let p = o.pos();
+    let (mut ax, mut ay, mut near) = (0.0f64, 0.0f64, false);
+    for m in &o.monsters {
+        if m.kind != 3 || !m.alive() || matches!(m.state, 13 | 14 | 15 | 17) {
+            continue;
+        }
+        let (mx, my, mz) = (m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12);
+        if (mz - p[2]).abs() > 64 {
+            continue;
+        }
+        let (dx, dy) = ((p[0] - mx) as f64, (p[1] - my) as f64);
+        let d = (dx * dx + dy * dy).sqrt().max(1.0);
+        if d < REACH {
+            ax += dx / d * (REACH - d + 10.0);
+            ay += dy / d * (REACH - d + 10.0);
+            near = true;
+        }
+    }
+    if !near {
+        return c;
+    }
+    let (forward, strafe) = move_toward(o, ax as i32, ay as i32, 4);
+    let (forward, strafe) = Fighter::keep_footing(o, world, forward, strafe);
+    Command { forward, strafe, ..c }
 }

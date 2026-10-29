@@ -1,8 +1,82 @@
 # E1M3 spawn to the exit (port of the e1m2-e1m3 route gate's E1M3 stages).
-@go 512 -746 z=-119 r=12          # the gold lift deck
-@wait until=zle:-300              # it carries the player down
-@wait until=mover:87:top
+@go 516 -1180 z=-40 r=8            # square up to the narrow beam
+@go 516 -1056 z=-40 r=10           # 32 units wide, a drop on both sides
+@go 440 -896 z=-71 r=12 skipif=zle:-300   # the stair beside the lift shaft
+@push 520 -896 until=zle:-300     # step off into the shaft: the pit below is where the key is
 @go -976 -360 z=-336 r=24         # the gold key
 @wait until=key:2
 @go 320 -880 r=24                 # back at the lift, which must be called
 @wait until=mover:87:top
+408 -864                          # onto the lift in the pit
+496 -776 r=12
+@wait until=zge:-130              # it carries the player up
+@wait until=mover:87:bottom
+@go -760 -1240 z=73 r=24 plat=87   # the stair button landing
+@shoot -828 -1240 104 weapon=1 until=mover:28:top
+@wait until=mover:24:top
+@go -548 -136 z=-71 r=20          # the gold door
+@push -500 -203 until=nokey:2
+@restock hp=90                    # past the door, before the secret passage and the dive
+@go 72 -336 z=-183 r=4
+@push 72 -300 until=latched:54   # walk on into the trigger of the secret doors
+@wait until=mover:55:top
+72 -160 z=-183 r=20
+104 -114 z=-288 r=24 skipif=zle:-270
+24 -114 z=-288 r=24 skipif=zle:-270
+@wait until=mover:60:top      # the trapdoor drops the player into the water
+96 -166 z=-288 r=20
+72 -600 z=-288 r=24
+351 -557 z=-287 r=24
+431 -493 z=-287 r=24
+783 -493 z=-287 r=24
+807 -405 z=-287 r=8
+819 -397 z=-287 r=8
+903 -397 z=-287 r=8
+999 -381 z=-225 r=12
+1015 -365 z=-213 r=10
+1064 -400 z=-184 r=12
+1064 -480 z=-184 r=12
+920 -480 z=-184 r=12
+888 -488 z=-184 r=4
+868 -488 z=-160 r=1 jump
+868 -480 z=-160 r=1
+868 -464 z=-128 r=1 jump
+868 -448 z=-128 r=1
+868 -416 z=-104 r=1 jump
+868 -398 z=-104 r=1
+868 -352 z=-72 r=1 jump
+868 -336 z=-72 r=1
+840 -336 z=-40 r=1 jump
+824 -352 z=-40 r=8
+744 -360 z=-40 r=12
+@push 700 -360 until=latched:115   # the corridor button, a wall button west of the landing
+@wait until=mover:114:top     # it opens the corridor doors
+@restock hp=90
+796 -341 r=24
+882 -297 r=24
+972 -275 r=24
+1063 -253 r=24
+1160 -309 r=24
+1226 -408 r=24
+1320 -434 r=24
+1416 -415 r=24
+1518 -303 r=24
+1607 -258 r=24
+1672 -200 r=24
+@restock hp=90
+1644 -184 r=24
+1712 -158 r=24
+1699 -93 r=24
+1600 97 r=24
+1489 139 r=24
+1372 124 r=24
+1315 212 r=24
+1314 310 r=24
+1303 400 r=24
+1364 548 r=12
+@push 1360 432 until=zge:500        # the end lift
+1360 760
+1360 880
+1400 960
+1340 1030 z=560 r=16
+1340 1060 z=560 r=12

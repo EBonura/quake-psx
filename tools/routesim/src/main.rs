@@ -1409,6 +1409,7 @@ fn walk_to(
 
     LAST_VISITED.with(|cells| cells.borrow_mut().clear());
     reset_teleport_marks();
+    let edge_margin: i32 = std::env::var("ROUTESIM_MARGIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let key = |point: [i32; 3]| -> (i32, i32, i32) {
         (
             point[0].div_euclid(step),
@@ -1528,6 +1529,26 @@ fn walk_to(
             ) else {
                 continue;
             };
+            // `ROUTESIM_MARGIN=n`: keep the path n units from a ledge, so a closed-loop walker
+            // that drifts a little does not step off narrow ground.
+            if edge_margin > 0 {
+                let near_ledge = [(edge_margin, 0), (-edge_margin, 0), (0, edge_margin), (0, -edge_margin)]
+                    .iter()
+                    .any(|&(ox, oy)| {
+                        floor_below(
+                            scene,
+                            next_x + ox,
+                            next_y + oy,
+                            floor + STEP_HEIGHT,
+                            STEP_HEIGHT + 40,
+                            scratch,
+                        )
+                        .is_none()
+                    });
+                if near_ledge {
+                    continue;
+                }
+            }
             let contents = point_contents(
                 scene,
                 Vec3I32 {

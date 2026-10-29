@@ -15,12 +15,24 @@ pub const GRENADE: u32 = 5;
 pub const ROCKET: u32 = 6;
 
 /// Monster states that mean it is no longer a threat.
-/// Zombies get up again until they are gibbed and a player runs past them, so they are not
-/// fought.
+/// Zombies get up again until one hit takes more than their 60 health, so they are only
+/// fought with a weapon that does that at close range (see `zombie_weapon`).
 const ZOMBIE: u8 = 3;
 
 fn threat(m: &Monster) -> bool {
-    m.alive() && m.kind != ZOMBIE && !matches!(m.state, 13 | 14 | 15 | 17)
+    m.alive() && !matches!(m.state, 13 | 14 | 15 | 17)
+}
+
+/// The weapon that gibs a zombie in one hit, if the player has the ammunition.
+fn zombie_weapon(o: &Obs) -> Option<u32> {
+    let owns = |w: u32| o.weapons & (1 << w) != 0;
+    // Shotgun blasts do 56 at best, short of the 60 that gibs one; only grenades are spent on
+    // them, and only when plenty are left for the rest of the map.
+    if owns(GRENADE) && o.ammo[2] >= 4 {
+        Some(GRENADE)
+    } else {
+        None
+    }
 }
 
 pub struct Fighter {
@@ -30,11 +42,13 @@ pub struct Fighter {
     pub target: Option<u16>,
     strafe_sign: i32,
     flip_at: u32,
+    /// Varies the dodge rhythm between attempts of the same journey.
+    pub seed: u32,
 }
 
 impl Fighter {
     pub fn new() -> Self {
-        Self { frame: 0, last_cycle: 0, engaged_frames: 0, target: None, strafe_sign: 1, flip_at: 0 }
+        Self { frame: 0, last_cycle: 0, engaged_frames: 0, target: None, strafe_sign: 1, flip_at: 0, seed: 0 }
     }
 
     fn desired_weapon(o: &Obs, dist: i32) -> u32 {
@@ -43,7 +57,8 @@ impl Fighter {
         if owns(ROCKET) && rockets > 0 && dist > 220 && o.health > 40 && dist < 700 {
             return ROCKET;
         }
-        if owns(SUPER_SHOTGUN) && shells >= 2 {
+        // The double barrel spreads: close work only. Nails hold their line at range.
+        if dist <= 300 && owns(SUPER_SHOTGUN) && shells >= 2 {
             return SUPER_SHOTGUN;
         }
         if owns(SUPER_NAILGUN) && nails >= 2 {
@@ -51,6 +66,9 @@ impl Fighter {
         }
         if owns(NAILGUN) && nails >= 1 {
             return NAILGUN;
+        }
+        if owns(SUPER_SHOTGUN) && shells >= 2 {
+            return SUPER_SHOTGUN;
         }
         if shells >= 1 && owns(SHOTGUN) {
             return SHOTGUN;
@@ -72,7 +90,7 @@ impl Fighter {
         let eye = [o.origin[0], o.origin[1], o.origin[2] + (22 << 12)];
         let mut best: Option<(&Monster, i32)> = None;
         for m in &o.monsters {
-            if !threat(m) {
+            if !threat(m) || (m.kind == ZOMBIE && zombie_weapon(o).is_none()) {
                 continue;
             }
             let mp = [m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12];
@@ -81,7 +99,8 @@ impl Fighter {
             let dist = (dx * dx + dy * dy).sqrt() as i32;
             let dz = (mp[2] - p[2]).abs();
             // Sleepers are only fought when close; hunters from farther away.
-            let reach = if m.active() { 800 } else { 250 };
+            // Sleepers are left alone (shooting one wakes the room); hunters from farther away.
+            let reach = if !m.active() && m.state == 0 { 0 } else if m.kind == ZOMBIE { 200 } else { 800 };
             if dist > reach || dz > 200 {
                 continue;
             }
@@ -97,7 +116,7 @@ impl Fighter {
     }
 
     /// Drop the part of a move that would carry the player off a ledge.
-    fn keep_footing(o: &Obs, world: &World, forward: i32, strafe: i32) -> (i32, i32) {
+    pub fn keep_footing(o: &Obs, world: &World, forward: i32, strafe: i32) -> (i32, i32) {
         if forward == 0 && strafe == 0 {
             return (forward, strafe);
         }
@@ -130,7 +149,10 @@ impl Fighter {
         self.engaged_frames += 1;
         let p = o.pos();
         let mp = [m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12];
-        let want_weapon = Self::desired_weapon(o, dist);
+        let want_weapon = match (m.kind == ZOMBIE).then(|| zombie_weapon(o)).flatten() {
+            Some(w) => w,
+            None => Self::desired_weapon(o, dist),
+        };
         let mut buttons = 0u16;
         if o.weapon != want_weapon && self.frame >= self.last_cycle + 8 {
             self.last_cycle = self.frame;
@@ -158,7 +180,7 @@ impl Fighter {
         }
         if self.frame >= self.flip_at {
             self.strafe_sign = -self.strafe_sign;
-            self.flip_at = self.frame + 25 + (m.index as u32 % 20);
+            self.flip_at = self.frame + 20 + ((m.index as u32 + self.seed.wrapping_mul(7) + self.frame / 5) % 25);
         }
         let weapon = o.weapon;
         let (forward, strafe) = if err.abs() > 700 {

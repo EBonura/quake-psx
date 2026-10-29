@@ -150,6 +150,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut shot_every = 0u32;
     let mut maps = String::from("id1psx/maps");
     let mut routesim = String::new();
+    let mut seed = 0u32;
     let mut save_at: Vec<u32> = Vec::new();
     let mut resume: Option<(PathBuf, u32)> = None;
     let mut trace = (0u32, 0u32);
@@ -162,6 +163,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--maps" => { maps = args.rest[i + 1].clone(); i += 2; }
             "--save-at" => { save_at.push(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--resume" => { resume = Some((PathBuf::from(&args.rest[i + 1]), args.rest[i + 2].parse().unwrap())); i += 3; }
+            "--seed" => { seed = args.rest[i + 1].parse().unwrap(); i += 2; }
             "--routesim" => { routesim = args.rest[i + 1].clone(); i += 2; }
             "--trace" => { trace = (args.rest[i + 1].parse().unwrap(), args.rest[i + 2].parse().unwrap()); i += 3; }
             "--trace-every" => { trace_every = args.rest[i + 1].parse().unwrap(); i += 2; }
@@ -173,6 +175,8 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         None => script::Journey::new(&maps),
     };
     journey.routesim = routesim;
+    journey.seed = seed;
+    journey.fighter.seed = seed;
     let mut pending = false;
     let mut n = 0u32;
     let mut last_map = resume.as_ref().map_or(0, |(_, m)| *m);
