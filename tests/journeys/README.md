@@ -40,5 +40,8 @@ shells out to `tools/routesim path` (breadth-first walkable route over the cooke
 
 ## Status
 
-See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to E1M1 to the
-E1M2 load, replayed on CPU and with the hardware renderer comparison.
+See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to E1M1 to E1M2 to the
+E1M3 load, replayed on the CPU renderer. Route legs that only walk are written as
+`@go x y` (a dry path planned by `tools/routesim` from wherever the player stands, every
+grid node kept); the bot also detours a few steps for health, ammunition and weapons it
+needs, as a player does.

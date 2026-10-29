@@ -85,6 +85,9 @@ pub enum Item {
     UseAt { target: [i32; 3], until: Cond },
     /// Walk straight at `target` (no pathing, no stopping) until the condition.
     Push { target: [i32; 2], until: Cond },
+    /// Walk to `(x, y)` along a planned dry path (every node kept), planned from wherever the
+    /// player stands when the item is reached.
+    Go { x: i32, y: i32, z: Option<i32>, radius: i32 },
 }
 
 /// Parse `x y [z=N] [r=N] [jump] [use] [req=a,b]` lines; `#` starts a comment.
@@ -113,6 +116,12 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 }),
                 "use" => out.push(Item::UseAt { target: [num(1), num(2), num(3)], until: until(&f) }),
                 "push" => out.push(Item::Push { target: [num(1), num(2)], until: until(&f) }),
+                "go" => out.push(Item::Go {
+                    x: num(1),
+                    y: num(2),
+                    z: f.iter().find_map(|t| t.strip_prefix("z=")).map(|v| v.parse().unwrap()),
+                    radius: f.iter().find_map(|t| t.strip_prefix("r=")).map_or(16, |v| v.parse().unwrap()),
+                }),
                 other => panic!("unknown directive @{other}"),
             }
             continue;
@@ -200,6 +209,50 @@ pub struct Planner {
 }
 
 impl Planner {
+    /// Dry walkable path to `(x, y)` with every grid node kept (no straight-line shortcuts,
+    /// so a narrow bridge stays a bridge). `radius` is the arrival radius of the last point.
+    pub fn plan_dry(&self, from: [i32; 3], to: [i32; 2], to_z: Option<i32>, opened: &[u16], radius: i32) -> Option<Vec<Wp>> {
+        let open: Vec<String> = opened.iter().map(|i| i.to_string()).collect();
+        let z = to_z.map_or("any".to_string(), |z| z.to_string());
+        let out = std::process::Command::new(&self.routesim)
+            .args([&self.psb, "path", "--from", &from[0].to_string(), &from[1].to_string(), &from[2].to_string(), "--to", &to[0].to_string(), &to[1].to_string(), &z])
+            .env("ROUTESIM_OPEN", open.join(","))
+            .env("ROUTESIM_NO_SIMPLIFY", "1")
+            .env("ROUTESIM_PATH_Z", "1")
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        if text.contains("PATH STUCK") {
+            return None;
+        }
+        let mut nodes: Vec<(i32, i32)> = Vec::new();
+        for line in text.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let f: Vec<&str> = line.split_whitespace().collect();
+            nodes.push((f[0].parse().ok()?, f[1].parse().ok()?));
+        }
+        let last = nodes.len().checked_sub(1)?;
+        // Every second node (32 units apart on the 16-unit grid), always the last.
+        let route = nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 1 || *i == last)
+            .map(|(i, &(x, y))| Wp {
+                x,
+                y,
+                z: None,
+                radius: if i == last { radius } else { 16 },
+                jump: false,
+                use_btn: false,
+                touch: false,
+                req: Vec::new(),
+            })
+            .collect();
+        Some(route)
+    }
+
     /// Breadth-first walkable route from `from` to `(x, y)` at any height, as waypoints.
     pub fn plan(&self, from: [i32; 3], to: [i32; 2], to_z: Option<i32>, opened: &[u16]) -> Option<Vec<Wp>> {
         let open: Vec<String> = opened.iter().map(|i| i.to_string()).collect();
@@ -328,6 +381,31 @@ impl Walker {
                         continue;
                     }
                 }
+                Item::Go { x, y, z, radius } => {
+                    let (x, y, z, radius) = (*x, *y, *z, *radius);
+                    let mut path = match &self.planner {
+                        Some(pl) => {
+                            let opened: Vec<u16> = ctx.latched.iter().copied().collect();
+                            pl.plan_dry(p, [x, y], z, &opened, radius)
+                        }
+                        None => None,
+                    };
+                    if path.is_none() {
+                        self.plan_note = Some(format!("go FAILED at {:?} -> ({},{})", p, x, y));
+                    }
+                    let mut fallback = path.take().unwrap_or_else(|| {
+                        vec![Wp { x, y, z: None, radius, jump: false, use_btn: false, touch: false, req: Vec::new() }]
+                    });
+                    if let Some(last) = fallback.last_mut() {
+                        last.z = z;
+                    }
+                    self.route.remove(self.next);
+                    for (k, w) in fallback.into_iter().enumerate() {
+                        self.route.insert(self.next + k, Item::Wp(w));
+                    }
+                    self.best = i32::MAX;
+                    continue;
+                }
                 Item::Wait(c) | Item::Shoot { until: c, .. } | Item::UseAt { until: c, .. } | Item::Push { until: c, .. } => {
                     if c.holds(o, ctx, self.item_frames) {
                         self.advance();
@@ -349,6 +427,7 @@ impl Walker {
         }
         let w = match item {
             Item::Wp(w) => w,
+            Item::Go { .. } => unreachable!("expanded above"),
             Item::Wait(_) => {
                 self.waiting = true;
                 return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });
@@ -488,5 +567,28 @@ impl Walker {
                 0
             },
         })
+    }
+}
+
+impl Walker {
+    /// True when the walker is heading for a plain waypoint (not waiting, shooting or pushing).
+    pub fn at_plain_waypoint(&self) -> bool {
+        !self.waiting && matches!(self.route.get(self.next), Some(Item::Wp(_)))
+    }
+
+    /// Walk to `to` first (a pickup), then carry on to the waypoint that was being
+    /// approached, both along planned dry paths. Returns false when no path exists.
+    pub fn detour(&mut self, from: [i32; 3], to: [i32; 2], opened: &[u16]) -> bool {
+        let Some(pl) = self.planner.clone() else { return false };
+        let Some(Item::Wp(back)) = self.route.get(self.next).cloned() else { return false };
+        let Some(there) = pl.plan_dry(from, to, None, opened, 10) else { return false };
+        let at = self.next;
+        let mut items: Vec<Item> = there.into_iter().map(Item::Wp).collect();
+        items.push(Item::Go { x: back.x, y: back.y, z: None, radius: back.radius.max(10) });
+        for (k, it) in items.into_iter().enumerate() {
+            self.route.insert(at + k, it);
+        }
+        self.best = i32::MAX;
+        true
     }
 }

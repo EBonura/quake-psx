@@ -199,6 +199,25 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             eprintln!("saved state {}", path.display());
             save_at.retain(|m| *m != o.map);
         }
+        if n == 1 || o.map != last_map {
+            let list: Vec<String> = o
+                .pickups
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{}:{}/{}/{}@{},{},{}",
+                        p.index,
+                        p.code >> 16,
+                        (p.code >> 8) & 255,
+                        p.code & 255,
+                        p.origin[0] >> 12,
+                        p.origin[1] >> 12,
+                        p.origin[2] >> 12
+                    )
+                })
+                .collect();
+            eprintln!("PICKUPS map{} [{}]", o.map, list.join(" "));
+        }
         let step = journey.step(&o);
         let Some(sample) = step else {
             if let Some(f) = &journey.failure { eprintln!("FAILED: {f}"); } else { finished = true; }
@@ -218,7 +237,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
                 (d < 500).then(|| format!("m{}k{}s{}hp{}@{}", m.index, m.kind, m.state, m.health, d))
             }).collect();
             let mv: Vec<String> = o.movers.iter().filter(|m| m.state != 0 || m.class == 0x10).map(|m| format!("{}:{}@{},{},{}", m.index, m.state, m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12)).collect();
-            eprintln!("T f{n} [{}] pos{:?} vel{:?} g{} w{} hp{} wpn{} mon[{}] movers[{}]", journey.last, p, [o.velocity[0] >> 12, o.velocity[1] >> 12, o.velocity[2] >> 12], o.grounded as u8, o.water, o.health, o.weapon, near.join(" "), mv.join(" "));
+            eprintln!("T f{n} [{}] pos{:?} vel{:?} g{} w{} hp{} wpn{} ammo{:?} own{:x} mon[{}] movers[{}]", journey.last, p, [o.velocity[0] >> 12, o.velocity[1] >> 12, o.velocity[2] >> 12], o.grounded as u8, o.water, o.health, o.weapon, o.ammo, o.weapons, near.join(" "), mv.join(" "));
         }
         if n % 30 == 0 {
             eprintln!(

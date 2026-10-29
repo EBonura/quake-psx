@@ -46,6 +46,7 @@ pub struct Journey {
     latched: HashSet<u16>,
     last_map: u32,
     skip_tick: u32,
+    foraged: HashSet<(u32, u16)>,
     progress: (u32, usize, u32),
     pub last: String,
     pub failure: Option<String>,
@@ -85,6 +86,7 @@ impl Journey {
             latched: HashSet::new(),
             last_map: 0,
             skip_tick: 0,
+            foraged: HashSet::new(),
             progress: (0, 0, 0),
             last: String::new(),
             failure: None,
@@ -162,6 +164,11 @@ impl Script for Journey {
         if (1..=8).contains(&o.map) {
             self.ensure_world(o.map);
         }
+        if let Phase::Map { seg, walker } = &mut self.phase {
+            if walker.planner.is_none() {
+                walker.planner = planner_for(&self.routesim, &self.maps_dir, SEGMENTS[*seg].map);
+            }
+        }
         let ctx_latched = self.latched.clone();
         let ctx = Ctx { latched: &ctx_latched };
         let mut next_phase: Option<Phase> = None;
@@ -218,6 +225,27 @@ impl Script for Journey {
                             c
                         }
                         None => {
+                            // Pick up what a player would walk a few steps for.
+                            if walker.at_plain_waypoint() && o.grounded {
+                                let p = o.pos();
+                                let mut best: Option<(i32, u16, [i32; 3])> = None;
+                                for k in &o.pickups {
+                                    if self.foraged.contains(&(o.map, k.index)) || !wanted(o, k.code) {
+                                        continue;
+                                    }
+                                    let q = [k.origin[0] >> 12, k.origin[1] >> 12, k.origin[2] >> 12];
+                                    let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+                                    let d = ((dx * dx + dy * dy) as f64).sqrt() as i32;
+                                    if d <= 260 && (q[2] - p[2]).abs() <= 48 && best.map_or(true, |b| d < b.0) {
+                                        best = Some((d, k.index, q));
+                                    }
+                                }
+                                if let Some((_, index, q)) = best {
+                                    self.foraged.insert((o.map, index));
+                                    let opened: Vec<u16> = ctx_latched.iter().copied().collect();
+                                    walker.detour(p, [q[0], q[1]], &opened);
+                                }
+                            }
                             let c = walker.step(o, &ctx).unwrap_or_default();
                             self.last = format!("WALK wp{} f{} s{} y{} b{:x}", walker.next, c.forward, c.strafe, c.yaw, c.buttons);
                             c
@@ -231,5 +259,23 @@ impl Script for Journey {
             self.phase = p;
         }
         Some(pad::sample(cmd))
+    }
+}
+
+/// Whether a player in this state would go out of the way for a pickup.
+fn wanted(o: &Obs, code: i32) -> bool {
+    let (kind, sub, amount) = (code >> 16, (code >> 8) & 255, code & 255);
+    let owns = |w: u32| o.weapons & (1 << w) != 0;
+    match kind {
+        1 => o.health + amount <= 125 && o.health <= 80,
+        2 => o.armor < 60,
+        3 => match sub {
+            0 => o.ammo[0] < 60,
+            1 => (owns(3) || owns(4)) && o.ammo[1] < 100,
+            2 => (owns(5) || owns(6)) && o.ammo[2] < 30,
+            _ => false,
+        },
+        4 => !owns(sub as u32),
+        _ => false,
     }
 }

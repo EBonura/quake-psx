@@ -6,12 +6,12 @@ pad = "analog"
 max_ticks = 400000
 
 [addr]
-JOURNEY_STATE = 0x8008f670
+JOURNEY_STATE = 0x8008f360
 
 [[step]]
 label = "pad tape to e1m1"
 tape = "tapes/seg-00-to-e1m1.pxtape"
-timeout = 4960
+timeout = 4660
 
 [[step]]
 checkpoint = "e1m1-loaded"
@@ -159,7 +159,7 @@ note = "secrets total"
 label = "pad tape to e1m2"
 tape = "tapes/seg-01-to-e1m2.pxtape"
 tape_rebase = true
-timeout = 10728
+timeout = 9408
 
 [[step]]
 checkpoint = "e1m2-loaded"
@@ -228,7 +228,7 @@ sym = "JOURNEY_STATE"
 offset = 88
 size = 4
 op = "eq"
-value = 25
+value = 29
 note = "shells"
 [[step.assert]]
 kind = "ram"
@@ -285,6 +285,154 @@ offset = 124
 size = 4
 op = "eq"
 value = 16
+note = "kills total"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 128
+size = 4
+op = "eq"
+value = 0
+note = "secrets"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 132
+size = 4
+op = "eq"
+value = 3
+note = "secrets total"
+
+[[step]]
+label = "pad tape to e1m3"
+tape = "tapes/seg-02-to-e1m3.pxtape"
+tape_rebase = true
+timeout = 18840
+
+[[step]]
+checkpoint = "e1m3-loaded"
+golden = false
+[[step.assert]]
+kind = "not_flat"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 16
+size = 4
+op = "eq"
+value = 3
+note = "map"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 24
+size = 4
+op = "eq"
+value = 0
+note = "skill"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 32
+size = 4
+op = "eq"
+value = 4291952640
+note = "origin x"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 36
+size = 4
+op = "eq"
+value = 4288446464
+note = "origin y"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 40
+size = 4
+op = "eq"
+value = 364544
+note = "origin z"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 76
+size = 4
+op = "eq"
+value = 91
+note = "health"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 80
+size = 4
+op = "eq"
+value = 83
+note = "armor"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 88
+size = 4
+op = "eq"
+value = 25
+note = "shells"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 92
+size = 4
+op = "eq"
+value = 50
+note = "nails"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 96
+size = 4
+op = "eq"
+value = 4
+note = "rockets"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 100
+size = 4
+op = "eq"
+value = 0
+note = "cells"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 104
+size = 4
+op = "eq"
+value = 7
+note = "weapons"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 112
+size = 4
+op = "eq"
+value = 0
+note = "keys"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 120
+size = 4
+op = "eq"
+value = 0
+note = "kills"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 124
+size = 4
+op = "eq"
+value = 31
 note = "kills total"
 [[step.assert]]
 kind = "ram"
