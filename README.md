@@ -74,7 +74,7 @@ cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- buil
 ```
 
 `components.lock.json` pins the SDK, emulator support crates, and editor/engine
-sources independently. The SDK is `87511102`, the emulator is `6800e664`, and
+sources independently. The SDK is `5b1f2b8d`, the emulator is `6800e664`, and
 the editor is `7185e604`; the lock records their full immutable revisions.
 The bootstrap verifies imported file hashes before reuse. No external firmware
 is loaded by PSoXide.
