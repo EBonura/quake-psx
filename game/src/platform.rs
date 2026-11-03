@@ -361,6 +361,10 @@ pub fn gpu_init_before_interrupts() {
         configure_world_material();
         psx_gpu::fill_rect(0, 0, 512, 256, 0, 0, 0);
         psx_gpu::fill_rect(0, 256, 512, 256, 0, 0, 0);
+        // The closing draw-done sequence fills a 16 x 8 block with black. The default
+        // block (1008, 504) is menu picture data here; rows 496..511 left of x = 320 sit
+        // below both framebuffers and are never written, so the sequence works there.
+        psx_io::gpu::set_draw_done_scratch(0, 504);
         (&mut *addr_of_mut!(OTS).cast::<OrderingTable<OT_DEPTH>>()).clear();
         (&mut *addr_of_mut!(OTS).cast::<OrderingTable<OT_DEPTH>>().add(1)).clear();
         SCREEN_COMMAND_COUNT = 0;
