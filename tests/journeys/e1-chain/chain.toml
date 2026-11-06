@@ -6,7 +6,7 @@ pad = "analog"
 max_ticks = 400000
 
 [addr]
-JOURNEY_STATE = 0x8008f360
+JOURNEY_STATE = 0x8008f880
 
 [[step]]
 label = "pad tape to e1m1"
@@ -159,7 +159,7 @@ note = "secrets total"
 label = "pad tape to e1m2"
 tape = "tapes/seg-01-to-e1m2.pxtape"
 tape_rebase = true
-timeout = 9408
+timeout = 9480
 
 [[step]]
 checkpoint = "e1m2-loaded"
@@ -307,7 +307,7 @@ note = "secrets total"
 label = "pad tape to e1m3"
 tape = "tapes/seg-02-to-e1m3.pxtape"
 tape_rebase = true
-timeout = 18840
+timeout = 17760
 
 [[step]]
 checkpoint = "e1m3-loaded"
@@ -360,7 +360,7 @@ sym = "JOURNEY_STATE"
 offset = 76
 size = 4
 op = "eq"
-value = 91
+value = 98
 note = "health"
 [[step.assert]]
 kind = "ram"
@@ -368,7 +368,7 @@ sym = "JOURNEY_STATE"
 offset = 80
 size = 4
 op = "eq"
-value = 83
+value = 96
 note = "armor"
 [[step.assert]]
 kind = "ram"
@@ -392,7 +392,7 @@ sym = "JOURNEY_STATE"
 offset = 96
 size = 4
 op = "eq"
-value = 4
+value = 2
 note = "rockets"
 [[step.assert]]
 kind = "ram"
