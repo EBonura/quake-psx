@@ -27,10 +27,10 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/quake106.zip";
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
-// Editor revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "7fc272418b3116dea28c894e384a9b5533891f7f";
+// PSoXide (SDK repository: sdk/, crates/ and engine/) revision required by the shipping provenance and remote-main guard.
+const PSOXIDE_REV: &str = "095f13213823ec94cc6b976d681f671ad1c8d4c0";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "bfb46440549213cb7acaced016e0f277313e938f";
+const PSOXIDE_SDK_REV: &str = "095f13213823ec94cc6b976d681f671ad1c8d4c0";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
@@ -3269,7 +3269,7 @@ fn hydrate_psoxide(
             let lock = root.join("components.lock.json");
             let components: serde_json::Value = serde_json::from_slice(&fs::read(&lock)?)?;
             if components["components"]["sdk"]["revision"].as_str() != Some(PSOXIDE_SDK_REV)
-                || components["components"]["editor"]["revision"].as_str() != Some(PSOXIDE_REV)
+                || PSOXIDE_SDK_REV != PSOXIDE_REV
             {
                 return Err("component lock and build-driver source pins disagree".into());
             }
@@ -3336,7 +3336,7 @@ fn default_hydration_plan(linked: &str, expected: &str) -> Result<String> {
         "default hydration is disabled: PSoXide {expected} is not published and the \
          compiled hydration library resolves {linked}, so hydrating would copy the \
          {linked} sources mislabeled as {expected}. Supply the pinned local worktree \
-         instead: --psoxide /path/to/PSoXide-editor"
+         instead: --psoxide /path/to/PSoXide"
     )
     .into())
 }
@@ -5032,7 +5032,7 @@ fn verify_psoxide_rev_on_main() -> Result<()> {
     let output = Command::new("gh")
         .args([
             "api",
-            &format!("repos/EBonura/PSoXide-editor/compare/{PSOXIDE_REV}...main"),
+            &format!("repos/EBonura/PSoXide/compare/{PSOXIDE_REV}...main"),
             "--jq",
             ".status",
         ])
@@ -5324,7 +5324,7 @@ fn write_shipping_provenance(
         exe.bytes,
     );
     let mut document: serde_json::Value = serde_json::from_str(&json)?;
-    document["psoxide"]["repository"] = "EBonura/PSoXide-editor".into();
+    document["psoxide"]["repository"] = "EBonura/PSoXide".into();
     if let Some(pack) = MUSIC_PACK.get() {
         document["music"] = pack.receipt.clone();
     }
@@ -11317,7 +11317,7 @@ mod source_contract_tests {
         .expect_err("mismatch must refuse default hydration");
         let message = error.to_string();
         assert!(
-            message.contains("--psoxide /path/to/PSoXide-editor"),
+            message.contains("--psoxide /path/to/PSoXide"),
             "{message}"
         );
         assert!(message.contains("aaaaaaaa"), "{message}");
@@ -11342,7 +11342,7 @@ mod source_contract_tests {
         } else {
             let message = plan.expect_err("local-only phase refuses").to_string();
             assert!(
-                message.contains("--psoxide /path/to/PSoXide-editor"),
+                message.contains("--psoxide /path/to/PSoXide"),
                 "{message}"
             );
         }

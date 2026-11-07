@@ -53,13 +53,13 @@ path = "../../tests/pusher_atomicity.rs"
 # The hydration helper and the guest SDK resolve from the same published
 # revision. The build verifies this lockfile source before copying any SDK
 # inputs into the content-addressed guest stage.
-psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "bfb46440549213cb7acaced016e0f277313e938f" }
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "095f13213823ec94cc6b976d681f671ad1c8d4c0" }
 quake-cook = { path = "../../crates/quake-cook" }
 quake-core = { path = "../../crates/quake-core" }
 quake-formats = { path = "../../crates/quake-formats" }
 # The games-library install, shared by every game. A host-only crate, so it is pinned
 # on its own revision and does not move the guest SDK (psoxide-link above).
-psx-library = { git = "https://github.com/EBonura/PSoXide.git", rev = "bfb46440549213cb7acaced016e0f277313e938f" }
+psx-library = { git = "https://github.com/EBonura/PSoXide.git", rev = "095f13213823ec94cc6b976d681f671ad1c8d4c0" }
 sha2 = "0.10"
 
 serde_json = "1"
