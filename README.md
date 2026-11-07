@@ -73,17 +73,16 @@ cargo run --locked --manifest-path psoxide-pin/Cargo.toml
 cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build
 ```
 
-`components.lock.json` pins the SDK, emulator support crates, and editor/engine
-sources independently. The SDK is `bfb464405`, the emulator is `bb788f5b`, and
-the editor is `7fc27241`; the lock records their full immutable revisions.
+`components.lock.json` pins the SDK (which carries the engine) and the emulator
+support crates independently. The SDK is `d442e2b64` and the emulator is
+`d31e7075`; the lock records their full immutable revisions.
 The bootstrap verifies imported file hashes before reuse. No external firmware
 is loaded by PSoXide.
 
-For a local override, use a clean, bootstrapped PSoXide-editor checkout at the
-locked editor revision:
+For a local override, use a clean PSoXide checkout at the locked SDK revision:
 
 ```sh
-cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build --psoxide /path/to/PSoXide-editor
+cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build --psoxide /path/to/PSoXide
 ```
 
 Set `QUAKE_PSX_FRONTEND` to the standalone PSoXide-emulator frontend executable
@@ -122,7 +121,7 @@ To build from an existing Quake installation, pass its directory explicitly:
 
 ```sh
 cargo run --locked --release --manifest-path host/quake-build/Cargo.toml -- build \
-  --psoxide /path/to/PSoXide-editor \
+  --psoxide /path/to/PSoXide \
   --quake-dir /path/to/Quake/id1
 ```
 
@@ -145,7 +144,7 @@ cargo quake-build disc        # rebuild the standalone disc (the music is commit
 cargo quake-build --help      # list regression commands
 ```
 
-Pass `--psoxide /path/to/PSoXide-editor` when using the explicit SDK worktree.
+Pass `--psoxide /path/to/PSoXide` when using the explicit SDK worktree.
 
 ## Controls
 
@@ -192,7 +191,7 @@ cargo test --manifest-path host/quake-build/Cargo.toml
 (cd crates/quake-cook && cargo test)
 (cd crates/quake-core && cargo test)
 (cd crates/quake-formats && cargo test)
-cargo quake-build check --psoxide /path/to/PSoXide-editor
+cargo quake-build check --psoxide /path/to/PSoXide
 ```
 
 The emulator regressions cover map loading, combat, monsters, mechanisms,
