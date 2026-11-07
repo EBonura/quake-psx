@@ -74,7 +74,7 @@ const XA_PACK_REPOSITORY: &str = "https://github.com/EBonura/PSoXide.git";
 /// `feat/shared-xa-encoder-2026-10-15` until it reaches `main`). The guest SDK
 /// pin in `components.lock.json` is separate and unchanged: this revision is
 /// used only as a host build tool, never linked into the game.
-const XA_PACK_REVISION: &str = "4113960f79ea4a64b53bcc9c34318ea1b562e86e";
+const XA_PACK_REVISION: &str = "ea5c49ebc880db8e7000ea27e90d6a5e432fda67";
 
 /// Write `source` to `target` with its PCM data repeated `times` times: the
 /// same header with the data length updated, the samples appended end to end.
