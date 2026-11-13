@@ -225,9 +225,8 @@ mod card {
 
     /// Write `bytes` to one card, formatting it first if it is blank.
     ///
-    /// The tokenless constructor is the one the rest of the game's controller
-    /// code uses (`psx_pad::poll_port1`); nothing else touches SIO0 while a
-    /// menu action runs.
+    /// The tokenless constructor steals the port, as the game's pad reads do;
+    /// nothing else touches SIO0 while a menu action runs.
     #[allow(deprecated)]
     #[inline(never)]
     #[optimize(size)]

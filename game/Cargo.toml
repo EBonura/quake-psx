@@ -91,9 +91,7 @@ perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
 classic-lights = ["quake-core/classic-lights"]
 classic-poses = ["quake-core/classic-poses"]
 smooth-poses = ["quake-core/smooth-poses"]
-# DualShock rumble on damage and gunfire. Needs the SDK's motor API (the pad
-# integration branch: psx_pad::Rumble, poll_rumble_on, enable_rumble_on), which
-# the pinned SDK does not have yet, so this does not build until the pin moves.
+# DualShock rumble on damage and gunfire, through psx_pad::Controllers::set_rumble.
 # Diagnostic: clear the frame to magenta instead of black, so cracks and
 # dropped triangles read as magenta. Never part of a shipping image.
 probe-clear-magenta = []

@@ -12,20 +12,6 @@ remove = "W3"
 
 [[exception]]
 program = "quake-psx"
-kind = "deprecated-use"
-item = "game/src/input.rs"
-count = 3
-remove = "W2"
-
-[[exception]]
-program = "quake-psx"
-kind = "deprecated-use"
-item = "game/src/intro.rs"
-count = 3
-remove = "W2"
-
-[[exception]]
-program = "quake-psx"
 kind = "feature"
 item = "psx-io/present-queue"
 remove = "W7"

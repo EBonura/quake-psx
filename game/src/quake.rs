@@ -196,15 +196,12 @@ pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
 
 #[optimize(size)]
 pub fn run() -> ! {
-    // Match VoXide's hardware-proven ordering exactly: initialise the GPU,
-    // complete the DualShock 0x43/0x44 exchange, and only then enable VBlank
-    // interrupts. An interrupt in the middle of that exchange can leave a
-    // capable pad reporting digital mode for the rest of the session.
     crate::platform::gpu_init_before_interrupts();
-    #[cfg(not(any(feature = "episode1-regression", feature = "hardware-regression")))]
-    {
-        let _ = psx_pad::enable_analog_port1();
-    }
+    // The one pad reader: the first poll of a pad runs the analog handshake.
+    let mut pads = psx_pad::Controllers::new();
+    // SAFETY: the game's only reader of the controller port; a memory-card
+    // transfer borrows the port through its own token and never overlaps a poll.
+    let mut port = unsafe { psx_io::periph::ControllerPort::steal() };
     crate::platform::start_vblank_counter();
     psx_spu::init();
     // Route the CD's own audio into the mix, for the XA ambient music in
@@ -226,7 +223,9 @@ pub fn run() -> ! {
         feature = "hardware-regression",
         feature = "perf-fixed-ticks"
     )))]
-    crate::intro::show(crate::platform::boot_framebuffer());
+    crate::intro::show(crate::platform::boot_framebuffer(), || {
+        pads.poll(&mut port, psx_pad::Port::One).buttons
+    });
 
     // One fixed-capacity allocation is reused across every Episode 1 map. The
     // PSoXide target allocator is intentionally monotonic, so allowing each
@@ -334,7 +333,7 @@ pub fn run() -> ! {
     }
     psx_rt::tty::println("quake-psx: Rust Start map resident");
 
-    let mut input = crate::input::Input::new();
+    let mut input = crate::input::Input::new(pads, port);
     let mut rumble = crate::rumble::Rumbler::new();
     let mut menu = quake_core::menu::Menu::new();
     #[cfg(any(

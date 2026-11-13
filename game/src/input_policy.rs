@@ -24,65 +24,6 @@ const DPAD: u16 = button::UP | button::RIGHT | button::DOWN | button::LEFT;
 
 pub const MENU_STICK_THRESHOLD: i16 = 48;
 
-/// Poll cadence for reasserting locked DualShock analog mode.
-pub const ANALOG_RETRY_POLLS: u8 = 15;
-/// Analog-mode exchanges attempted on one connected pad before giving up on
-/// it. A pad that stays digital through eight requests (two seconds) is
-/// either digital or ignores the request; hammering it four times a second
-/// forever only keeps interrupting its ordinary polls. A disconnect and
-/// reconnect starts the budget over.
-pub const ANALOG_RETRY_ATTEMPTS: u8 = 8;
-
-/// Bounded reconnect policy shared with the host input regression.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct AnalogRetry {
-    remaining: u8,
-    attempts: u8,
-}
-
-impl AnalogRetry {
-    #[optimize(size)]
-    pub const fn new() -> Self {
-        Self {
-            remaining: 0,
-            attempts: 0,
-        }
-    }
-
-    /// Return `true` when the caller should run the analog-mode exchange.
-    /// `connected` false (nothing on the port) resets the attempt budget.
-    #[optimize(size)]
-    pub fn poll(&mut self, is_analog: bool, connected: bool) -> bool {
-        if is_analog {
-            self.remaining = 0;
-            self.attempts = 0;
-            return false;
-        }
-        if !connected {
-            self.remaining = 0;
-            self.attempts = 0;
-            return false;
-        }
-        if self.attempts >= ANALOG_RETRY_ATTEMPTS {
-            return false;
-        }
-        if self.remaining == 0 {
-            self.remaining = ANALOG_RETRY_POLLS - 1;
-            self.attempts += 1;
-            return true;
-        }
-        self.remaining -= 1;
-        false
-    }
-}
-
-/// Consecutive polls a connected pad may answer with an unrecognised ID
-/// before its buttons are trusted anyway. One such frame is a garbled
-/// exchange (a held button would read as a fresh press); a pad that answers
-/// this way every frame is a controller the driver does not classify, and
-/// its digital buttons are still the player's input.
-pub const UNKNOWN_MODE_TRUST_POLLS: u8 = 3;
-
 /// Convert the DualShock's right-positive horizontal convention into Quake's
 /// left-positive yaw/strafe convention.
 ///
@@ -393,19 +334,5 @@ mod tests {
         let left = tracker.update(0, -49, 0);
         assert_eq!(left.pressed, 0);
         assert_eq!(left.menu_pressed, button::LEFT);
-    }
-
-    #[optimize(size)]
-    #[test]
-    fn non_analog_pad_retries_immediately_then_every_fifteen_polls() {
-        let mut retry = AnalogRetry::new();
-        assert!(retry.poll(false, true));
-        for _ in 1..ANALOG_RETRY_POLLS {
-            assert!(!retry.poll(false, true));
-        }
-        assert!(retry.poll(false, true));
-
-        assert!(!retry.poll(true, true));
-        assert!(retry.poll(false, true));
     }
 }

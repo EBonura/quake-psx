@@ -9,7 +9,7 @@
 
 use psx_font::{fonts::BASIC_8X16, FontAtlas};
 use psx_gpu::framebuf::FrameBuffer;
-use psx_pad::{button, poll_port1, ButtonState};
+use psx_pad::{button, ButtonState};
 use psx_vram::{Clut, TextureDepth, TexturePage};
 
 const LOGO_TPAGE: TexturePage = TexturePage::new(896, 0, TextureDepth::Bit4);
@@ -25,7 +25,7 @@ const SKIP_GRACE: i32 = 8;
 const TAG: &str = "Built with PSoXide";
 
 #[optimize(size)]
-pub fn show(fb: &mut FrameBuffer) {
+pub fn show(fb: &mut FrameBuffer, mut poll: impl FnMut() -> ButtonState) {
     // The mark is stored run-length coded (`quake_core::cover`) and expands one
     // 32-word row at a time, so no plain copy of it stays in RAM.
     let mut words = quake_core::cover::decode_words(&crate::bonnie::COVER_BONNIE_RLE);
@@ -54,10 +54,10 @@ pub fn show(fb: &mut FrameBuffer) {
             || buttons.is_held(button::CIRCLE)
             || buttons.is_held(button::START)
     };
-    let mut previous = poll_port1().buttons;
+    let mut previous = poll();
     let mut frame = 0i32;
     while frame < TOTAL {
-        let buttons = poll_port1().buttons;
+        let buttons = poll();
         if frame > SKIP_GRACE && any(buttons) && !any(previous) {
             break;
         }

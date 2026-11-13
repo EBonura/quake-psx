@@ -1,8 +1,7 @@
 //! DualShock motors for damage and gunfire.
 //!
-//! Built only with the `rumble` cargo feature, which needs the SDK's motor
-//! API (`psx_pad::Rumble`, `poll_rumble_on`, `enable_rumble_on`, on the pad
-//! integration branch). Without the feature every method here is an empty
+//! Built only with the `rumble` cargo feature, which asks for the motors through
+//! `psx_pad::Controllers::set_rumble`. Without the feature every method here is an empty
 //! inline function, so the game loop calls them unconditionally and a normal
 //! image carries no motor code and no per-frame cost.
 //!
