@@ -307,12 +307,27 @@ pub fn gpu_init_before_interrupts() {
     }
 }
 
-/// The display's frame buffer, for the boot intro that runs before the
-/// renderer owns the frame. Immediate-mode drawing only; nothing else may be
-/// touching the GPU while the caller holds this.
+/// The shared PSoXide boot splash, drawn before the renderer owns the frame.
+/// `buttons` reads the pad once per frame, for the press that skips it.
 #[optimize(size)]
-pub fn boot_framebuffer() -> &'static mut FrameBuffer {
-    unsafe { framebuffer() }
+pub fn show_boot_splash(buttons: impl FnMut() -> psx_pad::ButtonState) {
+    // SAFETY: nothing else touches the GPU until the splash returns.
+    let mut dma = unsafe { psx_io::periph::GpuDma::steal() };
+    let mut buffers = psx_gpu::display::DoubleBuffer::with_stride(
+        psx_gpu::display::Resolution::R320X240,
+        BACK_BUFFER_Y,
+    );
+    psx_splash::show(
+        psx_gpu::Gpu::from_dma_mut(&mut dma),
+        &mut buffers,
+        "Built with PSoXide",
+        psx_display::Brightness::DEFAULT,
+        buttons,
+    );
+    // The splash swapped its own pair of buffers; the renderer's follows where
+    // the display was left.
+    // SAFETY: single-threaded, and the splash is done with the GPU.
+    unsafe { framebuffer().drawing = u8::from(buffers.draw_origin().1 != 0) };
 }
 
 /// Enable the VBlank clock after the controller configuration transaction.

@@ -12,7 +12,6 @@ pub mod body;
 pub mod bsp_axis_adapter;
 pub mod collision;
 pub mod combat;
-pub mod cover;
 pub mod door;
 pub mod effects;
 pub mod electrode;

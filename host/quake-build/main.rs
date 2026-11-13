@@ -85,6 +85,7 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     ".psoxide/sdk/crates/psx-settings",
     ".psoxide/sdk/crates/psx-sfx",
     ".psoxide/sdk/crates/psx-spu",
+    ".psoxide/sdk/crates/psx-splash",
     ".psoxide/sdk/crates/psx-telemetry",
     ".psoxide/sdk/crates/psx-tick",
     ".psoxide/sdk/crates/psx-vram",
@@ -138,6 +139,7 @@ members = [
     "crates/psx-tick",
     "crates/psx-cdstream",
     "crates/psx-display",
+    "crates/psx-splash",
 ]
 
 [workspace.package]
@@ -167,6 +169,7 @@ psx-pad = { path = "crates/psx-pad" }
 psx-tick = { path = "crates/psx-tick" }
 psx-cdstream = { path = "crates/psx-cdstream" }
 psx-display = { path = "crates/psx-display" }
+psx-splash = { path = "crates/psx-splash" }
 psx-vram = { path = "crates/psx-vram" }
 psx-font = { path = "crates/psx-font" }
 psx-math = { path = "crates/psx-math" }

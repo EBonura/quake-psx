@@ -17,7 +17,6 @@ mod asset;
 mod audio;
 #[cfg(feature = "bestiary-regression")]
 mod bestiary_regression;
-mod bonnie;
 #[cfg(feature = "combat-regression")]
 mod combat_regression;
 #[cfg(feature = "e1m1-chain-regression")]
@@ -30,7 +29,6 @@ mod episode1_regression;
 mod forward_chunk_reader;
 mod input;
 mod input_policy;
-mod intro;
 #[cfg(feature = "journey-telemetry")]
 mod journey;
 #[cfg(feature = "monster-regression")]

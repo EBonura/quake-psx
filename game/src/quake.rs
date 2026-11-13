@@ -215,7 +215,7 @@ pub fn run() -> ! {
     // wrong on a console.
     psx_spu::set_cd_volume(psx_spu::CdVolume::SILENCE, psx_spu::CdVolume::SILENCE);
     psx_spu::enable_cd_audio(true);
-    // The shared PSoXide boot intro. Route regressions and the fixed-step
+    // The shared PSoXide boot splash. Route regressions and the fixed-step
     // bench drive the pad from boot on a tick schedule, so they skip it.
     #[cfg(not(any(
         feature = "emulator-telemetry",
@@ -223,9 +223,7 @@ pub fn run() -> ! {
         feature = "hardware-regression",
         feature = "perf-fixed-ticks"
     )))]
-    crate::intro::show(crate::platform::boot_framebuffer(), || {
-        pads.poll(&mut port, psx_pad::Port::One).buttons
-    });
+    crate::platform::show_boot_splash(|| pads.poll(&mut port, psx_pad::Port::One).buttons);
 
     // One fixed-capacity allocation is reused across every Episode 1 map. The
     // PSoXide target allocator is intentionally monotonic, so allowing each

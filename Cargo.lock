@@ -189,6 +189,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-splash"
+version = "0.1.0"
+dependencies = [
+ "psx-display",
+ "psx-font",
+ "psx-gpu",
+ "psx-pad",
+ "psx-rt",
+ "psx-vram",
+]
+
+[[package]]
 name = "psx-spu"
 version = "0.1.0"
 dependencies = [
@@ -251,8 +263,8 @@ name = "quake-psx"
 version = "0.1.0"
 dependencies = [
  "psx-bsp",
+ "psx-display",
  "psx-engine",
- "psx-font",
  "psx-gpu",
  "psx-gte",
  "psx-io",
@@ -264,6 +276,7 @@ dependencies = [
  "psx-residency",
  "psx-rt",
  "psx-sfx",
+ "psx-splash",
  "psx-spu",
  "psx-telemetry",
  "psx-tick",

@@ -204,7 +204,8 @@ psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-mc = { path = "../.psoxide/sdk/crates/psx-mc" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
-psx-font = { path = "../.psoxide/sdk/crates/psx-font" }
+psx-display = { path = "../.psoxide/sdk/crates/psx-display" }
+psx-splash = { path = "../.psoxide/sdk/crates/psx-splash" }
 psx-gte = { path = "../.psoxide/sdk/crates/psx-gte" }
 psx-math = { path = "../.psoxide/sdk/crates/psx-math" }
 psx-pad = { path = "../.psoxide/sdk/crates/psx-pad" }
