@@ -5,13 +5,6 @@
 
 [[exception]]
 program = "quake-psx"
-kind = "cop0-asm"
-item = "game/src/platform.rs"
-count = 1
-remove = "W3"
-
-[[exception]]
-program = "quake-psx"
 kind = "feature"
 item = "psx-io/present-queue"
 remove = "W7"
@@ -32,15 +25,8 @@ remove = "W7"
 program = "quake-psx"
 kind = "register-literal"
 item = "game/src/platform.rs"
-count = 2
+count = 1
 remove = "unscheduled"
-
-[[exception]]
-program = "quake-psx"
-kind = "vector-write"
-item = "game/src/platform.rs"
-count = 2
-remove = "W3"
 
 [[exception]]
 program = "quake-psx"

@@ -191,9 +191,6 @@ hardware-performance = ["blocking-present"]
 # chain's GP0(1Fh) has run. This feature selects the old blocking present
 # instead (wait_idle, vblank edge, flip, kick), for A/Bs. See platform.rs.
 blocking-present = []
-# Diagnostic: record the interrupted PC of every VBlank IRQ in a 1,024-entry
-# ring (QUAKE_IRQ_EPC), to see what code the IRQ lands in.
-irq-epc-probe = []
 hardware-regression = ["hardware-performance"]
 
 [dependencies]

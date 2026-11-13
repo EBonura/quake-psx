@@ -151,85 +151,6 @@ unsafe fn wait_for_pending_submission() {
 // finished, and before direct GP0/GP1 or GPU DMA access, which psx-rt's
 // direct-access guard turns into a wait for the queue to drain.
 
-/// With `irq-epc-probe`, a handler that records each interrupt's EPC runs
-/// ahead of psx-rt's.
-#[cfg(feature = "irq-epc-probe")]
-pub(crate) mod irq_epc_probe {
-    use core::ptr::write_volatile;
-
-    #[no_mangle]
-    pub static mut QUAKE_IRQ_EPC: [u32; 1024] = [0; 1024];
-    #[no_mangle]
-    pub static mut QUAKE_IRQ_EPC_COUNT: u32 = 0;
-
-    // Runs ahead of psx-rt's handler, which counts the VBlank, kicks the
-    // present queue, acknowledges the IRQ and returns. Only $k0/$k1.
-    #[cfg(target_arch = "mips")]
-    core::arch::global_asm!(
-        r#"
-    .set noreorder
-    .section .text.quake_exception_handler
-    .globl quake_exception_handler
-quake_exception_handler:
-    lui   $26, 0x1f80
-    lw    $27, 0x1070($26)
-    lw    $26, 0x1074($26)
-    nop
-    and   $27, $27, $26
-    andi  $27, $27, 0x0001
-    beqz  $27, 9f
-    nop
-    lui   $26, %hi(QUAKE_IRQ_EPC_COUNT)
-    lw    $27, %lo(QUAKE_IRQ_EPC_COUNT)($26)
-    nop
-    addiu $27, $27, 1
-    sw    $27, %lo(QUAKE_IRQ_EPC_COUNT)($26)
-    addiu $27, $27, -1
-    andi  $27, $27, 0x3ff
-    sll   $27, $27, 2
-    lui   $26, %hi(QUAKE_IRQ_EPC)
-    addiu $26, $26, %lo(QUAKE_IRQ_EPC)
-    addu  $26, $26, $27
-    mfc0  $27, $14
-    nop
-    sw    $27, 0($26)
-9:
-    j     __psx_rt_exception_handler
-    nop
-    .set reorder
-"#,
-    );
-
-    /// Point the exception vector at the handler above, after psx-rt has
-    /// installed and enabled its own.
-    #[cfg(target_arch = "mips")]
-    pub fn install() {
-        const EXCEPTION_VECTOR: *mut u32 = 0x8000_0080 as *mut u32;
-        const J_OPCODE: u32 = 0x0800_0000;
-        unsafe {
-            let handler: u32;
-            core::arch::asm!(
-                "lui {0}, %hi(quake_exception_handler)",
-                "addiu {0}, {0}, %lo(quake_exception_handler)",
-                out(reg) handler,
-            );
-            // SAFETY: the handler uses only $k0/$k1 and jumps into psx-rt's
-            // with $sp untouched, so an interrupt is safe on a scratchpad
-            // stack. (The pointer type comes from the parameter; the source
-            // gate rejects spelling out a foreign ABI.)
-            psx_rt::interrupts::declare_stack_safe_handler(core::mem::transmute::<usize, _>(
-                handler as usize,
-            ));
-            write_volatile(EXCEPTION_VECTOR, J_OPCODE | ((handler >> 2) & 0x03ff_ffff));
-            write_volatile(EXCEPTION_VECTOR.add(1), 0);
-        }
-        psx_rt::cache::flush_instruction_cache();
-    }
-
-    #[cfg(not(target_arch = "mips"))]
-    pub fn install() {}
-}
-
 /// The new back buffer's GPU state, as the first two nodes of the chain the
 /// VBlank handler kicks: draw area and offset (only after a swap), then the
 /// world draw mode and the clear. One per arena, since the handler may still
@@ -402,8 +323,6 @@ pub fn start_vblank_counter() {
     // it set, and registers the direct-access guard.
     #[cfg(not(feature = "blocking-present"))]
     psx_rt::present::start();
-    #[cfg(feature = "irq-epc-probe")]
-    irq_epc_probe::install();
 }
 
 /// Configure Quake's 320x240 projection convention.
