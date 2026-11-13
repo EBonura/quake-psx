@@ -12113,6 +12113,9 @@ mod provenance_tests {
         let mut pinned = GUEST_RECIPE_PATHS
             .iter()
             .filter(|path| path.starts_with(".psoxide/") && !path.ends_with(".ld"))
+            // What the SDK crates' build scripts read for the architecture gate: not
+            // packages of the guest's graph.
+            .filter(|path| !matches!(**path, ".psoxide/sdk/profile.toml" | ".psoxide/crates/psx-gate"))
             .map(|path| path.to_string())
             .collect::<Vec<_>>();
         pinned.sort();
