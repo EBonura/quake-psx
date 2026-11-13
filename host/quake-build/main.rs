@@ -32,6 +32,8 @@ const PSOXIDE_REV: &str = "3b7ef12561fb3e1472f4422b8893d000d2d807fa";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
 const PSOXIDE_SDK_REV: &str = "3b7ef12561fb3e1472f4422b8893d000d2d807fa";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
+/// The program's exceptions to the SDK's architecture gate.
+const GATE_FILE: &str = "psx-gate.toml";
 const GUEST_STAGE_SCHEMA: u32 = 1;
 const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
 const GUEST_STAGE_MARKER: &str = ".quake-psx-guest-recipe";
@@ -57,6 +59,9 @@ const GUEST_RECIPE_PATHS: &[&str] = &[
     "crates/quake-core",
     "crates/quake-formats",
     ".psoxide/sdk/psoxide.ld",
+    // What the SDK crates' build scripts read for the architecture gate.
+    ".psoxide/sdk/profile.toml",
+    ".psoxide/crates/psx-gate",
     ".psoxide/crates/psx-hw",
     ".psoxide/crates/psxed-format",
     ".psoxide/engine/crates/psx-bsp",
@@ -4728,10 +4733,15 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         reset_guest_target(&stage.path)?;
     }
     let game = stage.path.join("game");
+    // The SDK's architecture gate (sdk/docs/GATE.md): the program does not build when it
+    // breaks a rule that its own psx-gate.toml does not list.
+    let gate_file = root.join(GATE_FILE);
+    check_architecture_gate(root, &gate_file, feature)?;
     let mut command = Command::new(require_tool(&["cargo"])?);
     command
         .current_dir(&game)
-        .args(["build", "--release", "--locked"]);
+        .args(["build", "--release", "--locked"])
+        .env("PSX_GATE_FILE", &gate_file);
     if fresh_target {
         let cargo_home = prepare_shipping_cargo_home()?;
         reject_ambient_cargo_configs(&game, &cargo_home)?;
@@ -4944,7 +4954,9 @@ fn build_disc(
         .arg("--out")
         .arg(&image)
         .args(["--volume", "QUAKE_PSX", "--world-pack-extra-dir"])
-        .arg(&chunks);
+        .arg(&chunks)
+        .arg("--gate-file")
+        .arg(root.join(GATE_FILE));
     if let Some(pack) = MUSIC_PACK.get() {
         for file in &pack.files {
             command.arg("--xa-file").arg(file);
@@ -9990,6 +10002,37 @@ fn run(command: &mut Command) -> Result<()> {
 /// Run one of the SDK's post-link checks (`tools/psoxide-hazard`: `hazard-patch`,
 /// `hazard-scan`, `stack-guard`), built from the hydrated checkout against its
 /// imported lockfile.
+/// Run `psx-gate` over the game's graph (as `feature` builds it) against its own exceptions.
+fn check_architecture_gate(root: &Path, gate_file: &Path, feature: Option<&str>) -> Result<()> {
+    let extra = env::var("QUAKE_PSX_EXTRA_FEATURES").unwrap_or_default();
+    let features = [feature.unwrap_or(""), extra.as_str()]
+        .iter()
+        .filter(|name| !name.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(",");
+    let sdk = root.join(".psoxide");
+    let mut args: Vec<&std::ffi::OsStr> = vec![
+        "--sdk".as_ref(),
+        sdk.as_os_str(),
+        "--crate".as_ref(),
+        root.as_os_str(),
+        "--program-file".as_ref(),
+        gate_file.as_os_str(),
+        "--".as_ref(),
+        "build".as_ref(),
+        "--release".as_ref(),
+        "--locked".as_ref(),
+        "-p".as_ref(),
+        "quake-psx".as_ref(),
+    ];
+    if !features.is_empty() {
+        args.push("--features".as_ref());
+        args.push(features.as_ref());
+    }
+    run_hazard_tool(root, "psx-gate", &args)
+}
+
 fn run_hazard_tool(root: &Path, bin: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
     let mut command = Command::new(require_tool(&["cargo"])?);
     command
