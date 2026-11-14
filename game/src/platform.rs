@@ -5,6 +5,7 @@ use psx_gpu::ot::OrderingTable;
 use psx_gte::math::{Mat3I16, Vec3I16, Vec3I32};
 use psx_gte::scene;
 use psx_pack::cd::{find_entry, SectorReader, SECTOR_WORDS, WORLD_PACK_DEFAULT_LBA};
+use psx_pack::{parse_entry, parse_header};
 use psx_pack::{PackEntry, SECTOR_BYTES};
 use psx_vram::VramRect;
 
@@ -18,7 +19,6 @@ const OT_DEPTH: usize = 2048;
 // three KiB and packet storage remains double-buffered in the renderer.
 const MAX_SCREEN_COMMANDS: usize = 384;
 
-const ASSET_COUNT: usize = 12;
 // Two sectors keep small Quake reads coalesced while leaving the largest
 // Episode 1 map enough resident heap beside the double-buffered GPU arenas.
 // The regression harness builds carry ~68 KB more code than the shipping
@@ -40,7 +40,8 @@ static mut GPU_SUBMISSION_PENDING: bool = false;
 
 static mut READER: SectorReader = SectorReader::new();
 static mut SECTOR: [u32; SECTOR_WORDS] = [0; SECTOR_WORDS];
-static mut ASSET_CACHE: [Option<PackEntry>; ASSET_COUNT] = [None; ASSET_COUNT];
+static mut PACK_TABLE: [TableEntry; PACK_TABLE_CAP] = [TableEntry::EMPTY; PACK_TABLE_CAP];
+static mut PACK_TABLE_LEN: usize = 0;
 static mut STORAGE_CACHE: [u32; SECTOR_WORDS * STORAGE_CACHE_SECTORS] =
     [0; SECTOR_WORDS * STORAGE_CACHE_SECTORS];
 static mut STORAGE_CACHE_CHUNK: u32 = u32::MAX;
@@ -836,36 +837,86 @@ unsafe fn flush_deferred_vram_uploads() {
     }
 }
 
+/// The pack's chunk table is one sector: this many entries is the pack's whole directory (the
+/// build's pack has 17 chunks), so it is read from the disc once and every lookup after that is
+/// a table scan in RAM.
+const PACK_TABLE_CAP: usize = 17;
+
+/// One directory entry, as much of a `PackEntry` as the reads below use.
+#[derive(Copy, Clone)]
+struct TableEntry {
+    chunk_id: u32,
+    sector_offset: u32,
+    byte_size: u32,
+}
+
+impl TableEntry {
+    const EMPTY: Self = Self { chunk_id: 0, sector_offset: 0, byte_size: 0 };
+}
+
+/// Read the directory sector (one session) into the table. `false` when the disc does not
+/// answer or the directory is not a single sector of at most `PACK_TABLE_CAP` chunks; the
+/// callers then look each chunk up through the SDK's scan.
 #[optimize(size)]
-fn cache_index(chunk_id: u32) -> Option<usize> {
-    match chunk_id {
-        1 => Some(0),
-        2 => Some(1),
-        3 => Some(2),
-        100 => Some(3),
-        101..=108 => Some((chunk_id - 97) as usize),
-        _ => None,
+unsafe fn read_pack_table() -> bool {
+    let reader = unsafe { &mut *addr_of_mut!(READER) };
+    let sector = unsafe { &mut *addr_of_mut!(SECTOR) };
+    if !unsafe { begin_session(reader, WORLD_PACK_DEFAULT_LBA) } {
+        reader.stop();
+        return false;
     }
+    let read = reader.read_sector(sector);
+    reader.stop();
+    if !read {
+        return false;
+    }
+    // SAFETY: the sector buffer is `SECTOR_BYTES` of initialised words.
+    let bytes = unsafe { core::slice::from_raw_parts(sector.as_ptr().cast::<u8>(), SECTOR_BYTES) };
+    let Some(header) = parse_header(bytes) else {
+        return false;
+    };
+    let count = header.chunk_count as usize;
+    if header.header_sectors != 1 || count == 0 || count > PACK_TABLE_CAP {
+        return false;
+    }
+    for index in 0..count {
+        let Some(entry) = parse_entry(bytes, index) else {
+            return false;
+        };
+        unsafe {
+            PACK_TABLE[index] = TableEntry {
+                chunk_id: entry.chunk_id,
+                sector_offset: entry.sector_offset,
+                byte_size: entry.byte_size,
+            };
+        }
+    }
+    unsafe { PACK_TABLE_LEN = count };
+    true
 }
 
 unsafe fn entry_for(chunk_id: u32) -> Option<PackEntry> {
-    let index = cache_index(chunk_id);
-    if let Some(index) = index {
-        if let Some(entry) = unsafe { ASSET_CACHE[index] } {
-            return Some(entry);
-        }
-    } else if !matches!(chunk_id, 4 | 5 | 109..=111) || unsafe { STORAGE_STREAM_ACTIVE } {
+    if unsafe { PACK_TABLE_LEN } == 0 && !unsafe { STORAGE_STREAM_ACTIVE } {
+        unsafe { read_pack_table() };
+    }
+    if unsafe { PACK_TABLE_LEN } != 0 {
+        let table = unsafe { &(&*addr_of!(PACK_TABLE))[..PACK_TABLE_LEN] };
+        let entry = table.iter().find(|entry| entry.chunk_id == chunk_id)?;
+        return Some(PackEntry {
+            chunk_id,
+            sector_offset: entry.sector_offset,
+            sector_count: entry.byte_size.div_ceil(SECTOR_BYTES as u32),
+            byte_size: entry.byte_size,
+            checksum: 0,
+        });
+    }
+    // The directory did not fit the table: scan the disc for this chunk, as the SDK does.
+    if unsafe { STORAGE_STREAM_ACTIVE } {
         return None;
     }
-    // Cold code uses the existing reader without reserving additional cache
-    // slots. Installation reads each package only at a quiescent map boundary.
     let reader = unsafe { &mut *addr_of_mut!(READER) };
     let sector = unsafe { &mut *addr_of_mut!(SECTOR) };
-    let entry = find_entry(reader, WORLD_PACK_DEFAULT_LBA, chunk_id, sector)?;
-    if let Some(index) = index {
-        unsafe { ASSET_CACHE[index] = Some(entry) };
-    }
-    Some(entry)
+    find_entry(reader, WORLD_PACK_DEFAULT_LBA, chunk_id, sector)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

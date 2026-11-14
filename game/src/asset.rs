@@ -449,9 +449,12 @@ impl ResidentMap {
             return Err(MapLoadError::Format);
         }
 
+        // The whole chunk is read front to back: one read session, not one per piece.
+        let mut stream = platform::ChunkStream::open_at(GRAPHICS_CHUNK, 0).map_err(MapLoadError::Storage)?;
         self.stream_scratch.clear();
         self.stream_scratch.resize(GRAPHICS_CLUT_BYTES, 0);
-        platform::read_chunk_exact(GRAPHICS_CHUNK, 0, &mut self.stream_scratch)
+        stream
+            .read_exact_at(0, &mut self.stream_scratch)
             .map_err(MapLoadError::Storage)?;
         platform::upload_vram(VramRect::new(0, 240, 256, 8), &self.stream_scratch)
             .map_err(|_| MapLoadError::VramUpload)?;
@@ -471,7 +474,8 @@ impl ResidentMap {
             .map_err(|_| MapLoadError::VramUpload)?;
 
         let mut count_bytes = [0u8; 2];
-        platform::read_chunk_exact(GRAPHICS_CHUNK, GRAPHICS_CLUT_BYTES as u32, &mut count_bytes)
+        stream
+            .read_exact_at(GRAPHICS_CLUT_BYTES as u32, &mut count_bytes)
             .map_err(MapLoadError::Storage)?;
         let picture_count = u16::from_le_bytes(count_bytes) as usize;
         let picture_offset = GRAPHICS_CLUT_BYTES
@@ -493,12 +497,9 @@ impl ResidentMap {
             .ok_or(MapLoadError::Format)?;
         self.stream_scratch.clear();
         self.stream_scratch.resize(record_bytes, 0);
-        platform::read_chunk_exact(
-            GRAPHICS_CHUNK,
-            (GRAPHICS_CLUT_BYTES + 2) as u32,
-            &mut self.stream_scratch,
-        )
-        .map_err(MapLoadError::Storage)?;
+        stream
+            .read_exact_at((GRAPHICS_CLUT_BYTES + 2) as u32, &mut self.stream_scratch)
+            .map_err(MapLoadError::Storage)?;
         self.graphics.clear();
         for (id, record) in self
             .stream_scratch
@@ -521,12 +522,12 @@ impl ResidentMap {
             let byte_count = batch_rows * GRAPHICS_PICTURE_ROW_BYTES;
             self.stream_scratch.clear();
             self.stream_scratch.resize(byte_count, 0);
-            platform::read_chunk_exact(
-                GRAPHICS_CHUNK,
-                (picture_offset + row * GRAPHICS_PICTURE_ROW_BYTES) as u32,
-                &mut self.stream_scratch,
-            )
-            .map_err(MapLoadError::Storage)?;
+            stream
+                .read_exact_at(
+                    (picture_offset + row * GRAPHICS_PICTURE_ROW_BYTES) as u32,
+                    &mut self.stream_scratch,
+                )
+                .map_err(MapLoadError::Storage)?;
             platform::upload_vram(
                 VramRect::new(960, row as u16, GRAPHICS_PICTURE_WIDTH, batch_rows as u16),
                 &self.stream_scratch,
@@ -536,12 +537,9 @@ impl ResidentMap {
         }
         self.weapon_icons.clear();
         self.weapon_icons.resize(GRAPHICS_WEAPON_ICON_BYTES, 0);
-        platform::read_chunk_exact(
-            GRAPHICS_CHUNK,
-            (picture_offset + GRAPHICS_PICTURE_BYTES) as u32,
-            &mut self.weapon_icons,
-        )
-        .map_err(MapLoadError::Storage)?;
+        stream
+            .read_exact_at((picture_offset + GRAPHICS_PICTURE_BYTES) as u32, &mut self.weapon_icons)
+            .map_err(MapLoadError::Storage)?;
         self.stream_scratch.clear();
         Ok(())
     }
