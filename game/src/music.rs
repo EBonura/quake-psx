@@ -22,6 +22,7 @@
 //! restarts the schedule from the top afterwards: nothing resumes in the
 //! middle of a song, so no state has to survive a read.
 
+use psx_fmv::iso::{find_in_directory, root_directory, PVD_LBA};
 use psx_io::cd::xa::{DriveSpeed, File, Player};
 use psx_io::periph::Cd;
 use psx_pack::cd::{SectorReader, SECTOR_WORDS};
@@ -361,45 +362,6 @@ impl Music {
 /// Most sectors between the volume descriptor and the root directory that the
 /// lookup reads through rather than seeking over (mkisopsx puts it four on).
 const MAX_ROOT_SKIP: u32 = 16;
-
-/// ISO 9660: the primary volume descriptor's sector.
-const PVD_LBA: u32 = 16;
-
-fn le32(bytes: &[u8]) -> u32 {
-    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-}
-
-/// Root directory `(lba, size_bytes)` from the primary volume descriptor.
-fn root_directory(pvd: &[u8]) -> Option<(u32, u32)> {
-    if pvd.len() < 190 || pvd[0] != 1 || &pvd[1..6] != b"CD001" {
-        return None;
-    }
-    let record = &pvd[156..190];
-    Some((le32(&record[2..6]), le32(&record[10..14])))
-}
-
-/// Find `name` in one sector of directory records, ignoring case and the
-/// `;1` version suffix. Returns `(lba, size_bytes)`.
-fn find_in_directory(sector: &[u8], name: &str) -> Option<(u32, u32)> {
-    let mut at = 0;
-    while at + 33 <= sector.len() {
-        let length = sector[at] as usize;
-        if length == 0 || at + length > sector.len() {
-            break;
-        }
-        let record = &sector[at..at + length];
-        let name_length = record[32] as usize;
-        if 33 + name_length <= length {
-            let found = &record[33..33 + name_length];
-            let found = found.split(|b| *b == b';').next().unwrap_or(found);
-            if found.eq_ignore_ascii_case(name.as_bytes()) {
-                return Some((le32(&record[2..6]), le32(&record[10..14])));
-            }
-        }
-        at += length;
-    }
-    None
-}
 
 /// One state-change line for the headless gate: `quake-music <what> tick=<n>
 /// song=<n> level=<n>`; `song` is 4294967295 where none applies. Formatted into

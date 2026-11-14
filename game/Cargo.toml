@@ -207,6 +207,7 @@ psx-tick = { path = "../.psoxide/sdk/crates/psx-tick" }
 psx-spu = { path = "../.psoxide/sdk/crates/psx-spu" }
 psx-sfx = { path = "../.psoxide/sdk/crates/psx-sfx" }
 psx-pack = { path = "../.psoxide/sdk/crates/psx-pack" }
+psx-fmv = { path = "../.psoxide/sdk/crates/psx-fmv" }
 psx-telemetry = { path = "../.psoxide/sdk/crates/psx-telemetry" }
 psx-engine = { path = "../.psoxide/engine/crates/psx-engine" }
 psx-render-contract = { path = "../.psoxide/engine/crates/psx-render-contract" }
