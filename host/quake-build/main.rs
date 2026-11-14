@@ -267,6 +267,7 @@ enum Action {
     E1m1ChainRegress,
     E1m1ChainBench,
     JourneyBuild,
+    JourneyBuildShipping,
     E1m1SpawnRegress,
     E1m1SaveRegress,
     E1m1MonsterRouteBench,
@@ -598,15 +599,24 @@ fn real_main() -> Result<()> {
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_monster_route_bench(&root, &frontend, &build, "e1m1-monster-route-bench")?;
         }
-        Action::JourneyBuild => {
-            // The image the journey tapes are recorded and replayed on: the
-            // shipping game plus the read-only state block, nothing else.
+        Action::JourneyBuild | Action::JourneyBuildShipping => {
+            // The image the journey tapes are recorded and replayed on: the shipping game
+            // plus the read-only state block. `journey-build` steps the world a fixed 30 Hz
+            // tick per frame (`perf-fixed-ticks-30hz`), so a recorded pad replays to the same
+            // state on every hardware model; `journey-build-shipping` keeps the shipping
+            // game's variable step (the VBlanks a frame took), which replays exactly only on
+            // the model it was recorded on.
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
-            let build = root.join("build-psoxide-journey");
+            let (dir, features) = if matches!(cli.action, Action::JourneyBuild) {
+                ("build-psoxide-journey", "journey-telemetry,perf-fixed-ticks-30hz")
+            } else {
+                ("build-psoxide-journey-shipping", "journey-telemetry")
+            };
+            let build = root.join(dir);
             fs::create_dir_all(&build)?;
             request_guest_link_map(build.join("quake-psx.map"))?;
-            build_disc(&root, &build, Some("journey-telemetry"), false)?;
+            build_disc(&root, &build, Some(features), false)?;
         }
         Action::E1m1ChainBench => {
             // Step the route by three ticks per frame so renderer changes do
@@ -2881,6 +2891,7 @@ fn parse_cli() -> Result<Cli> {
             | "e1m1-chain-regress"
             | "e1m1-chain-bench"
             | "journey-build"
+            | "journey-build-shipping"
             | "e1m1-spawn-regress"
             | "e1m1-save-regress"
             | "e1m1-monster-route-bench"
@@ -2946,6 +2957,7 @@ fn parse_cli() -> Result<Cli> {
                     "e1m1-chain-regress" => Action::E1m1ChainRegress,
                     "e1m1-chain-bench" => Action::E1m1ChainBench,
                     "journey-build" => Action::JourneyBuild,
+                    "journey-build-shipping" => Action::JourneyBuildShipping,
                     "e1m1-spawn-regress" => Action::E1m1SpawnRegress,
                     "e1m1-save-regress" => Action::E1m1SaveRegress,
                     "e1m1-monster-route-bench" => Action::E1m1MonsterRouteBench,
@@ -9819,6 +9831,7 @@ fn audit_ignored_top(top: &str) -> bool {
             | "build-psoxide-start-route-regression"
             | "build-psoxide-e1m1-chain-regression"
             | "build-psoxide-journey"
+            | "build-psoxide-journey-shipping"
             | "build-psoxide-e1m1-selection-cache-bench"
             | "build-psoxide-e1m1-topology-cache-bench"
             | "build-psoxide-e1m1-indexed-projection-bench"

@@ -6,8 +6,10 @@ noclip, give, warp or debug spawn. The tape is the only input.
 
 ## How a tape is made
 
-`cargo quake-build journey-build` builds `build-psoxide-journey/`: the shipping game plus
-the read-only state block in `game/src/journey.rs` (feature `journey-telemetry`). The
+`cargo quake-build journey-build` builds `build-psoxide-journey/`: the game at the fixed 30 Hz
+step (`perf-fixed-ticks-30hz`, so a tape replays on every hardware model) plus the read-only state block;
+`journey-build-shipping` builds `build-psoxide-journey-shipping/` with the shipping game's own variable step
+(replays exactly only on the hardware model it was recorded on: `real`). The state block is in `game/src/journey.rs` (feature `journey-telemetry`). The
 guest publishes the block at the top of every frame and never reads it back, so it cannot
 change play. `tools/journey-bot` boots that disc in the emulator, steps it exactly the way
 `psoxide-gate` does, and stops each time a new block is published, just before the frame's
@@ -20,7 +22,7 @@ cargo quake-build journey-build
 cargo build --release --manifest-path tools/routesim/Cargo.toml
 cargo build --release --manifest-path tools/journey-bot/Cargo.toml
 (cd <repo> && quake-journey-bot --disc build-psoxide-journey/quake-psx.cue \
-   --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 200 \
+   --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 2400 \
    --maps id1psx/maps --routesim <quake-routesim binary>)
 ```
 
@@ -42,8 +44,9 @@ shells out to `tools/routesim path` (breadth-first walkable route over the cooke
 
 ## Status
 
-See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to the E1M1 load, replayed on the real and
-mister hardware targets (`--frames 200` records exactly that segment). Route legs that only walk are written as
+See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to E1M1 to the E1M2 load (`--frames 2400` records exactly
+that), `e1-chain` replayed on the real and mister hardware targets and `e1-shipping` (record it with
+`--journey-name quake-e1-shipping --build-dir build-psoxide-journey-shipping`) on real only. Route legs that only walk are written as
 `@go x y` (a dry path planned by `tools/routesim` from wherever the player stands, every
 grid node kept); the bot also detours a few steps for health, ammunition and weapons it
 needs, as a player does.

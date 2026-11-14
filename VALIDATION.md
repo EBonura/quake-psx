@@ -228,22 +228,12 @@ quake-build ram` runs the same boot and prints the link-map breakdown of
 
 ## Journeys
 
-`cargo quake-build journey-build` makes the journey image (shipping game plus the
-read-only state block). `tools/journey-bot` plays it with a host controller and records pad
-tapes; `psoxide-gate run tests/journeys/e1-chain/chain.toml` replays them and checks the
-exact state at every map change. See `tests/journeys/README.md`.
+Two journeys replay recorded pad tapes through the real title menu, the START hall and the first maps, with live monsters at Easy skill. `tools/journey-bot` plays the journey image with a host controller and records the tapes; `psoxide-gate run <chain.toml> --hardware real|mister` replays them and checks the exact state (map, skill, origin, health, armour, ammunition, weapons, keys, kills, secrets) at every map change. See `tests/journeys/README.md`.
 
-The chain covers the title menu, the Easy hall and the E1 slipgate up to the E1M1 load, checked
-at the E1M1 checkpoint (map, skill, origin, health, armour, ammunition, weapons, keys, kills and
-secrets, exact), on `real` and `mister`. It is not covered: E1M1 to E1M2 and every map after it. The E1M1 to E1M2 tape replays
-exactly on `real` but not on `mister`: the game steps its world by the VBlanks a frame took,
-and the two targets present frames on different VBlanks, so a recorded pad gives a different
-play (a journey image built with `perf-fixed-ticks-30hz` replays exactly on both). The bot's
-E1M2 route stops at waypoint 222 of 247 (position 886, -335, 464); E1M2 to E1M3 is not
-recorded. Those segments are not in the chain file. Record with `--routesim
-tools/routesim/target/release/quake-routesim`; a missing planner binary makes every `@go` leg
-fail quietly. `--cut-every N` writes a checkpoint every N frames, to find where a replay leaves
-the recording.
+- `quake-e1-chain` (`tests/journeys/e1-chain`, image from `cargo quake-build journey-build`): Start (menu, Easy hall, E1 slipgate) to E1M1 to the E1M2 load, 40 checks, on `real` and on `mister`. The image steps the world one fixed 30 Hz tick per frame (`perf-fixed-ticks-30hz`), so a recorded pad replays to the same state on either hardware model. What it proves is therefore the game at the fixed step; it does not prove the shipping game's variable step (the VBlanks a frame took).
+- `quake-e1-shipping` (`tests/journeys/e1-shipping`, image from `cargo quake-build journey-build-shipping`): the same route on the shipping image, with its own timing. Run it on `--hardware real` only: the two models present frames on different VBlanks, so the shipping step, and with it the play, differs on `mister` and the tapes (recorded on `real`) end in another state there (9 of 40 checks fail on `mister`, by design of the timing, not a defect found).
+
+Not covered: every map after E1M2 (see `tests/journeys/README.md`). Record with `--routesim tools/routesim/target/release/quake-routesim`; a missing planner binary makes every `@go` leg fail quietly. `--cut-every N` writes a checkpoint every N frames, to find where a replay leaves the recording.
 
 ## Visual checks
 

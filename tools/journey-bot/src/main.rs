@@ -155,6 +155,8 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut trace = (0u32, 0u32);
     let mut trace_every = 6u32;
     let mut cut_every = 0u32;
+    let mut journey_name = String::from("quake-e1-chain");
+    let mut build_dir = String::from("build-psoxide-journey");
     let mut i = 0;
     while i < args.rest.len() {
         match args.rest[i].as_str() {
@@ -167,6 +169,8 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--trace" => { trace = (args.rest[i + 1].parse().unwrap(), args.rest[i + 2].parse().unwrap()); i += 3; }
             "--trace-every" => { trace_every = args.rest[i + 1].parse().unwrap(); i += 2; }
             "--cut-every" => { cut_every = args.rest[i + 1].parse().unwrap(); i += 2; }
+            "--journey-name" => { journey_name = args.rest[i + 1].clone(); i += 2; }
+            "--build-dir" => { build_dir = args.rest[i + 1].clone(); i += 2; }
             other => panic!("play arg {other}"),
         }
     }
@@ -260,7 +264,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     if let Some(start) = session.start_poll {
         write_tape_poll_bound(&args.out.join("play.pxtape"), &samples, start).unwrap();
         eprintln!("tape: {} samples from poll {start}; finished={finished}", samples.len());
-        emit::write_chain(&args.out, start, &samples, &boundaries, finished);
+        emit::write_chain(&args.out, &journey_name, &build_dir, start, &samples, &boundaries, finished);
     }
 }
 
