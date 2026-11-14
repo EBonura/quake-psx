@@ -53,7 +53,7 @@ pub struct Journey {
     pub segment_ends: Vec<(u32, u32)>,
 }
 
-const TO_EASY: &str = "544 544\n336 768\n272 1200\n256 1328\n232 1352\n";
+const TO_EASY: &str = "544 544\n336 768\n272 1200\n256 1328\n232 1352 r=28\n";
 const TO_PORTAL: &str = "352 1680\n304 1696\n176 1696\n-48 1648\n-64 1628\n";
 
 const MAP_NAMES: [&str; 9] = ["start", "e1m1", "e1m2", "e1m3", "e1m4", "e1m5", "e1m6", "e1m7", "e1m8"];

@@ -7,7 +7,7 @@ contains the exact Quake and PSoXide revisions and artifact hashes.
 The current release candidate uses PSoXide revision:
 
 ```text
-464dcbee633c5ace287d2fb71576bafcb933544d
+9bb3045bdd63c12e4983b3c7f322ad5a85764fd7
 ```
 
 ## Host tests
@@ -194,23 +194,24 @@ the resulting probes. A result is accepted only when both runs agree.
 
 ## Current results
 
-At source revision `238f236a5d937baeef5314b10938fdb8b9b97ee2`, with the SDK at
-`464dcbee633c5ace287d2fb71576bafcb933544d` and the emulator at
-`3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae`, the host suites, `ram` (the
-shipping image booted headlessly, with the link-map breakdown), `start-route-regress`,
-`e1m1-chain-regress`, `e1m1-spawn-regress`, `e1m1-save-regress`,
+At source revision `7bca82fe47f68df10881f2adf19ccf13b64e5a8a`, with the SDK at
+`9bb3045bdd63c12e4983b3c7f322ad5a85764fd7` and the emulator at
+`3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae`, the builder suite (90 tests), `ram` (the
+shipping image booted headlessly, with the link-map breakdown), `map-regress`,
+`start-route-regress`, `e1m1-chain-regress`, `e1m1-spawn-regress`, `e1m1-save-regress`,
 `visual-parity-regress` and the fixed-step `e1m1-chain-bench` passed on both the
 `real` and the `mister` hardware targets. The visual run matched its stored world,
 HUD and display hashes (`0x52a8fd14affff202`, `0xf0ff5a6113cad7ec`,
-`0xd4e066ef8f25ed5a`). `map-regress` runs but its initial-load check is red: the
-first load takes 440,995,618 cycles against a budget of 420,000,000 and 81
-sector-read sessions against 74.
+`0xd4e066ef8f25ed5a`). The first load takes 345,027,666 cycles (budget 420,000,000) in 41
+sector-read sessions (budget 74). The fixed-step chain journey passed all 60 checks on both
+targets and the shipping-timed journey all 40 on `real` (the tapes were recorded again on
+this build, see Journeys). The architecture gate passes with two exceptions held.
 
-The benchmark completed E1M1 deterministically at 26.715 fps (1,971,343,369 bus
-cycles over 1,556 presentations). The shipping image leaves 19,260 bytes of heap
-free after boot (floor 8,192). The target remains 30 fps. These figures are useful
-for comparing builds, but they are emulator measurements rather than
-original-hardware claims.
+The benchmark completed E1M1 deterministically at 26.957 fps (1,953,635,051 bus
+cycles over 1,556 presentations), 246 of whose frames take more than two VBlanks. The
+shipping image leaves 25,592 bytes of heap free after boot (floor 8,192). The target
+remains 30 fps. These figures are useful for comparing builds, but they are emulator
+measurements rather than original-hardware claims.
 
 ## Resource checks
 
@@ -231,7 +232,7 @@ quake-build ram` runs the same boot and prints the link-map breakdown of
 Two journeys replay recorded pad tapes through the real title menu, the START hall and the first maps, with live monsters at Easy skill. `tools/journey-bot` plays the journey image with a host controller and records the tapes; `psoxide-gate run <chain.toml> --hardware real|mister` replays them and checks the exact state (map, skill, origin, health, armour, ammunition, weapons, keys, kills, secrets) at every map change. See `tests/journeys/README.md`.
 
 - `quake-e1-chain` (`tests/journeys/e1-chain`, image from `cargo quake-build journey-build`): Start (menu, Easy hall, E1 slipgate) to E1M1 to E1M2 to the E1M3 load, 60 checks, on `real` and on `mister`. The image steps the world one fixed 30 Hz tick per frame (`perf-fixed-ticks-30hz`), so a recorded pad replays to the same state on either hardware model. What it proves is therefore the game at the fixed step; it does not prove the shipping game's variable step (the VBlanks a frame took).
-- `quake-e1-shipping` (`tests/journeys/e1-shipping`, image from `cargo quake-build journey-build-shipping`): the same route on the shipping image, with its own timing. Run it on `--hardware real` only: the two models present frames on different VBlanks, so the shipping step, and with it the play, differs on `mister` and the tapes (recorded on `real`) end in another state there (9 of 40 checks fail on `mister`, by design of the timing, not a defect found).
+- `quake-e1-shipping` (`tests/journeys/e1-shipping`, image from `cargo quake-build journey-build-shipping`): the same route on the shipping image, with its own timing. Run it on `--hardware real` only: the two models present frames on different VBlanks, so the shipping step, and with it the play, differs on `mister` and the tapes (recorded on `real`) end in another state there (9 of 40 checks fail on `mister`, by design of the timing, not a defect found). The tapes belong to one frame timing: a build that shows frames on other VBlanks (the presenter build did) replays them to another state, so they are recorded again after any change that moves the timing (the bot's `--journey-name quake-e1-shipping --build-dir build-psoxide-journey-shipping`, 2,400 frames).
 
 Not covered: every map after E1M3, and the shipping-step journey beyond the E1M2 load (the bot's route stops at the key island, waypoint 222 of 247: the `880 -337 z=433 r=10 jump` mark sits 6 units from where the shipping-timed run stands on the island rim at z 464, and the walker waits there for a lift that is not moving; the fixed-step run drops off the rim and passes). Record with `--routesim tools/routesim/target/release/quake-routesim`; a missing planner binary makes every `@go` leg fail quietly. `--cut-every N` writes a checkpoint every N frames, to find where a replay leaves the recording.
 

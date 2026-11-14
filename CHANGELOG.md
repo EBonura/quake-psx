@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- The frame path is the SDK's one present path. `gpu_end_frame` hands the frame's
+  ordering table to `psx_rt::present::Presenter::submit`, which links the draw area,
+  offset and clear of the buffer being drawn, kicks the walk and has the VBlank handler
+  flip at the first edge the 30 fps cap allows. The game's own present state is gone: the
+  per-arena preamble, the `publish_raw` call, the pending flag, the `FrameBuffer` (one
+  `DoubleBuffer`, shared with the boot splash), the `blocking-present` feature and the two
+  `present-queue` gate exceptions (four exceptions held before, two after). A frame now
+  reaches the screen as soon as it is drawn instead of when its successor was published.
+  SDK pin `9bb3045bd`. The picture is unchanged (every distinct image the build before showed over the
+  fixed-step benchmark run, loading screens included, is shown by this one), the benchmark is
+  26.957 fps against 26.840 (1,953,635,051 bus cycles against 1,962,203,460 over the same
+  1,556 presentations), 246 frames take more than two VBlanks against 259, and the
+  shipping image leaves 25,592 bytes of heap free after boot against 20,188 on the build
+  before. The shipping-timed journey is recorded again, since its step is the VBlanks a
+  frame took.
+
 - Damage report: the screen tint, the pain face, the view kick and the rumble now run
   off the damage `Inventory::take_damage` actually dealt (health lost, armor absorbed,
   summed per frame and drained by `take_damage_report`), not off health before minus

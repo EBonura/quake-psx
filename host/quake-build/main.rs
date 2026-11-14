@@ -4854,6 +4854,21 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         &[staged_exe.as_os_str(), map.as_os_str()],
     )?;
     }
+    // A frame-path function the SDK lists under `[inline]` must not be in the image as a
+    // function: the compiler's inline choice depends on the size of the program, so the
+    // examples cannot show it and this check does.
+    let profile = root.join(".psoxide/sdk/profile.toml");
+    run_hazard_tool(
+        root,
+        "inline-gate",
+        &[
+            staged_exe.as_os_str(),
+            "--map".as_ref(),
+            map.as_os_str(),
+            "--profile".as_ref(),
+            profile.as_os_str(),
+        ],
+    )?;
     // The receipt goes in last: it is the SHA-256 of the finished, patched executable (a
     // diagnostic receipt for a regression or bench build, which `build_disc` presses with
     // --diag).
