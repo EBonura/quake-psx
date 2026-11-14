@@ -27,9 +27,3 @@ kind = "register-literal"
 item = "game/src/platform.rs"
 count = 1
 remove = "unscheduled"
-
-[[exception]]
-program = "quake-psx"
-kind = "no-receipt"
-item = "-"
-remove = "W9"

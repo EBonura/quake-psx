@@ -4739,7 +4739,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     // The SDK's architecture gate (sdk/docs/GATE.md): the program does not build when it
     // breaks a rule that its own psx-gate.toml does not list.
     let gate_file = root.join(GATE_FILE);
-    check_architecture_gate(root, &gate_file, feature)?;
+    check_architecture_gate(root, &gate_file, feature, None)?;
     let mut command = Command::new(require_tool(&["cargo"])?);
     command
         .current_dir(&game)
@@ -4842,6 +4842,10 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         &[staged_exe.as_os_str(), map.as_os_str()],
     )?;
     }
+    // The receipt goes in last: it is the SHA-256 of the finished, patched executable (a
+    // diagnostic receipt for a regression or bench build, which `build_disc` presses with
+    // --diag).
+    check_architecture_gate(root, &gate_file, feature, Some(&staged_exe))?;
     if let Some(requested) = GUEST_LINK_MAP.get() {
         fs::copy(&map, requested)?;
     }
@@ -4957,9 +4961,11 @@ fn build_disc(
         .arg("--out")
         .arg(&image)
         .args(["--volume", "QUAKE_PSX", "--world-pack-extra-dir"])
-        .arg(&chunks)
-        .arg("--gate-file")
-        .arg(root.join(GATE_FILE));
+        .arg(&chunks);
+    if feature.is_some() {
+        // A regression or bench image carries diagnostic features and a diagnostic receipt.
+        command.arg("--diag");
+    }
     if let Some(pack) = MUSIC_PACK.get() {
         for file in &pack.files {
             command.arg("--xa-file").arg(file);
@@ -10006,7 +10012,12 @@ fn run(command: &mut Command) -> Result<()> {
 /// `hazard-scan`, `stack-guard`), built from the hydrated checkout against its
 /// imported lockfile.
 /// Run `psx-gate` over the game's graph (as `feature` builds it) against its own exceptions.
-fn check_architecture_gate(root: &Path, gate_file: &Path, feature: Option<&str>) -> Result<()> {
+fn check_architecture_gate(
+    root: &Path,
+    gate_file: &Path,
+    feature: Option<&str>,
+    receipt: Option<&Path>,
+) -> Result<()> {
     let extra = env::var("QUAKE_PSX_EXTRA_FEATURES").unwrap_or_default();
     let features = [feature.unwrap_or(""), extra.as_str()]
         .iter()
@@ -10022,13 +10033,18 @@ fn check_architecture_gate(root: &Path, gate_file: &Path, feature: Option<&str>)
         root.as_os_str(),
         "--program-file".as_ref(),
         gate_file.as_os_str(),
-        "--".as_ref(),
-        "build".as_ref(),
-        "--release".as_ref(),
-        "--locked".as_ref(),
-        "-p".as_ref(),
-        "quake-psx".as_ref(),
     ];
+    // With an executable, a pass also writes the gate receipt into it (what the disc
+    // builders check); the check ran over the same graph before the build.
+    if let Some(exe) = receipt {
+        args.push("--receipt".as_ref());
+        args.push(exe.as_os_str());
+    }
+    args.extend(
+        ["--", "build", "--release", "--locked", "-p", "quake-psx"]
+            .iter()
+            .map(std::ffi::OsStr::new),
+    );
     if !features.is_empty() {
         args.push("--features".as_ref());
         args.push(features.as_ref());
