@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 use psx_math::int32::{isqrt_i32, mul_q12_i32, square_i32_saturating};
-use psx_math::{atan2_q12, cos_q12, sin_q12};
+use psx_math::{atan2_q12, cos_q12, sin_q12, Mask64};
 use quake_core::body::{Body, BodyBlockers, BroadPhaseRegion, SweptUnitBox, PLAYER_BODY_SOURCE};
 use quake_core::collision::{
     trace_render_bsp_into, trace_translated_render_bsp_into, CollisionHull, RenderTraceScratch,
@@ -292,7 +292,7 @@ pub struct EntityScene {
     /// One `spawn_field` per `LinkDoors` chain that has one.
     door_fields: Vec<door::DoorField>,
     /// Chains a `door_killed` fired since the last mover pass, one bit each.
-    shot_door_chains: u64,
+    shot_door_chains: Mask64,
     trains: Vec<SceneTrain>,
     triggers: Vec<Trigger>,
     teleports: Vec<TeleportTrigger>,
@@ -962,7 +962,7 @@ impl EntityScene {
             collision_indices: Vec::with_capacity(MAX_RENDER_ENTITIES),
             movers: Vec::with_capacity(MAX_MOVERS),
             door_fields: Vec::with_capacity(MAX_DOOR_FIELDS),
-            shot_door_chains: 0,
+            shot_door_chains: Mask64::EMPTY,
             trains: Vec::with_capacity(MAX_TRAINS),
             triggers: Vec::with_capacity(MAX_TRIGGERS),
             teleports: Vec::with_capacity(MAX_TELEPORTS),
@@ -1153,7 +1153,7 @@ impl EntityScene {
         self.collision_indices.clear();
         self.movers.clear();
         self.door_fields.clear();
-        self.shot_door_chains = 0;
+        self.shot_door_chains = Mask64::EMPTY;
         self.trains.clear();
         self.triggers.clear();
         self.teleports.clear();
@@ -1805,8 +1805,8 @@ impl EntityScene {
         player_alive: bool,
         use_pressed: bool,
         ticks: u16,
-    ) -> u64 {
-        let mut fired = 0u64;
+    ) -> Mask64 {
+        let mut fired = Mask64::EMPTY;
         for field_index in 0..self.door_fields.len() {
             let field = &mut self.door_fields[field_index];
             field.tick(ticks);
@@ -1838,7 +1838,9 @@ impl EntityScene {
                 None
             };
             if let Some(activator) = activator {
-                fired |= 1u64 << group;
+                if group < 64 {
+                    fired.set(usize::from(group));
+                }
                 for mover in self
                     .movers
                     .iter_mut()
@@ -1849,11 +1851,11 @@ impl EntityScene {
             }
         }
         // `door_killed` runs `door_use` on the master, which walks the chain.
-        let shot = core::mem::take(&mut self.shot_door_chains);
-        if shot != 0 {
-            fired |= shot;
+        let shot = core::mem::replace(&mut self.shot_door_chains, Mask64::EMPTY);
+        if !shot.is_empty() {
+            fired = fired.or(shot);
             for mover in &mut self.movers {
-                if shot & (1u64 << mover.link_group) != 0 {
+                if shot.test(usize::from(mover.link_group)) {
                     mover.activator = TargetActivator::Player;
                 }
             }
@@ -2278,7 +2280,9 @@ impl EntityScene {
             // `door_killed` fires the whole chain with the next mover pass.
             mover.health = mover.max_health;
             if mover.source.class_name == 0x0c {
-                self.shot_door_chains |= 1u64 << mover.link_group;
+                if mover.link_group < 64 {
+                    self.shot_door_chains.set(usize::from(mover.link_group));
+                }
             } else {
                 mover.shot_open = true;
             }
@@ -3932,7 +3936,7 @@ impl EntityScene {
             // A door's own proximity is its chain's `spawn_field`, which
             // `fire_door_fields` has already answered for the whole chain.
             let chain_fired = source.class_name == 0x0c
-                && fired_door_chains & (1u64 << self.movers[mover_index].link_group) != 0;
+                && fired_door_chains.test(usize::from(self.movers[mover_index].link_group));
             let shot_open = self.movers[mover_index].shot_open;
             self.movers[mover_index].shot_open = false;
             // `func_button`'s spawn is an either/or: a button with health has

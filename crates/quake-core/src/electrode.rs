@@ -47,8 +47,8 @@ impl LightningEvent {
 /// 64-bit helper and no second copy of `mul_div_i32`.
 fn shorten_q12(v: i32, length: u32) -> i32 {
     debug_assert!(v.unsigned_abs() <= length);
-    let magnitude = u64::from(v.unsigned_abs()) * (100 << 12);
-    let quotient = psx_math::int32::div_u64_by_u32((magnitude >> 32) as u32, magnitude as u32, length) as i32;
+    let magnitude = psx_math::WideU::mul(v.unsigned_abs(), 100 << 12);
+    let quotient = psx_math::int32::div_u64_by_u32(magnitude.high(), magnitude.low(), length) as i32;
     if v < 0 {
         -quotient
     } else {
@@ -66,7 +66,10 @@ pub fn beam_endpoints(bounds: [[Vec3I32; 2]; 2]) -> [Vec3I32; 2] {
     let p1 = centre(bounds[0]);
     let mut p2 = centre(bounds[1]);
     let delta = [(p2.x - p1.x) >> 12, (p2.y - p1.y) >> 12, (p2.z - p1.z) >> 12];
-    let length = psx_math::int32::isqrt_u64(delta.iter().map(|&v| (i64::from(v) * i64::from(v)) as u64).sum());
+    let length = psx_math::Wide::mul(delta[0], delta[0])
+        .mul_add(delta[1], delta[1])
+        .mul_add(delta[2], delta[2])
+        .isqrt();
     if length != 0 {
         let shorten = |v| shorten_q12(v, length);
         p2.x -= shorten(delta[0]); p2.y -= shorten(delta[1]); p2.z -= shorten(delta[2]);

@@ -5935,9 +5935,12 @@ unsafe fn submit_view_ray_sky_background(
     debug_assert!(texture.atlas.x as u16 + width as u16 * 2 <= 256);
     debug_assert!(texture.atlas.y as u16 + height as u16 <= 256);
     let scroll = |cycle_seconds: u32| {
-        ((u64::from(frame) * u64::from(width)
-            / u64::from(ANIMATION_FRAMES_PER_SECOND * cycle_seconds))
-            & 0xff) as u8
+        let product = psx_math::WideU::mul(frame, u32::from(width));
+        (psx_math::int32::div_u64_by_u32(
+            product.high(),
+            product.low(),
+            ANIMATION_FRAMES_PER_SECOND * cycle_seconds,
+        ) & 0xff) as u8
     };
     let foreground_scroll = [
         scroll(SKY_FOREGROUND_CYCLE_SECONDS),

@@ -10046,6 +10046,7 @@ fn check_architecture_gate(
     feature: Option<&str>,
     receipt: Option<&Path>,
 ) -> Result<()> {
+    check_no_wide_source(root)?;
     let extra = env::var("QUAKE_PSX_EXTRA_FEATURES").unwrap_or_default();
     let features = [feature.unwrap_or(""), extra.as_str()]
         .iter()
@@ -10095,6 +10096,27 @@ fn size_ram(root: &Path, map: &Path, items: bool) -> Result<String> {
     }
     let result = output(&mut command)?;
     Ok(String::from_utf8_lossy(&result.stdout).into_owned())
+}
+
+/// No 64-bit integer and no float in guest source: the SDK's `psoxide-dev no64-scan`
+/// over the game and the crates it links. The sound format's FNV-1a bank hash is
+/// the one reviewed exception (the whole file, plus four marked fields in audio.rs).
+fn check_no_wide_source(root: &Path) -> Result<()> {
+    let mut command = Command::new(require_tool(&["cargo"])?);
+    command
+        .current_dir(root.join(".psoxide"))
+        .args(["run", "--quiet", "--release", "-p", "psoxide-dev", "--"])
+        .args(["no64-scan", "--floats", "--exempt"])
+        .arg(root.join("crates/quake-formats/src/sound.rs"));
+    for dir in [
+        "game/src",
+        "crates/quake-core/src",
+        "crates/quake-affine/src",
+        "crates/quake-formats/src",
+    ] {
+        command.arg(root.join(dir));
+    }
+    run(&mut command)
 }
 
 fn run_hazard_tool(root: &Path, bin: &str, args: &[&std::ffi::OsStr]) -> Result<()> {

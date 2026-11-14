@@ -6,7 +6,7 @@
 
 use psx_engine::div_q12_i32;
 use psx_math::int32::mul_q12_i32;
-use psx_math::{cos_q12, sin_q12};
+use psx_math::{cos_q12, sin_q12, Wide};
 use quake_formats::{Vec3I16, Vec3I32};
 
 use crate::survival::{
@@ -2263,16 +2263,15 @@ pub fn segment_aabb_fraction(
     let mut leave = Q12_ONE;
     let mut axis = 0usize;
     while axis < 3 {
-        let delta = i64::from(ends[axis]) - i64::from(starts[axis]);
-        if delta == 0 {
+        if ends[axis] == starts[axis] {
             if starts[axis] < mins[axis] || starts[axis] > maxs[axis] {
                 return None;
             }
             axis += 1;
             continue;
         }
-        let mut near = difference_ratio_q12(i64::from(mins[axis]) - i64::from(starts[axis]), delta);
-        let mut far = difference_ratio_q12(i64::from(maxs[axis]) - i64::from(starts[axis]), delta);
+        let mut near = slab_ratio_q12(mins[axis], starts[axis], ends[axis]);
+        let mut far = slab_ratio_q12(maxs[axis], starts[axis], ends[axis]);
         if near > far {
             core::mem::swap(&mut near, &mut far);
         }
@@ -2309,28 +2308,49 @@ pub fn segment_overlaps_i16_bounds(
 /// toward zero before calling the engine's 32-bit Q12 divider. If only the
 /// numerator is wider, the ratio is necessarily outside [-1, 1], so a signed
 /// saturated result preserves every slab decision in the segment interval.
-#[inline]
-fn difference_ratio_q12(numerator: i64, denominator: i64) -> i32 {
-    debug_assert_ne!(denominator, 0);
-    if denominator > i64::from(i32::MAX) || denominator < i64::from(i32::MIN) {
-        return div_q12_i32(
-            half_toward_zero(numerator) as i32,
-            half_toward_zero(denominator) as i32,
-        );
-    }
-    if numerator > i64::from(i32::MAX) || numerator < i64::from(i32::MIN) {
-        return if (numerator < 0) ^ (denominator < 0) {
+#[inline(always)]
+fn slab_ratio_q12(bound: i32, start: i32, end: i32) -> i32 {
+    let (numerator, denominator) = match (bound.checked_sub(start), end.checked_sub(start)) {
+        (Some(numerator), Some(denominator)) => (numerator, denominator),
+        _ => match difference_operands_q12(
+            Wide::of(bound).sub_w(Wide::of(start)),
+            Wide::of(end).sub_w(Wide::of(start)),
+        ) {
+            Ok(operands) => operands,
+            Err(saturated) => return saturated,
+        },
+    };
+    div_q12_i32(numerator, denominator)
+}
+
+/// The operands for the 32-bit divide, or the saturated ratio, when a
+/// difference needs more than 32 bits (see `slab_ratio_q12`).
+#[cold]
+#[inline(never)]
+fn difference_operands_q12(numerator: Wide, denominator: Wide) -> Result<(i32, i32), i32> {
+    debug_assert!(!denominator.is_zero());
+    let (Some(numerator_i32), Some(denominator_i32)) = (numerator.to_i32(), denominator.to_i32())
+    else {
+        if denominator.to_i32().is_none() {
+            return Ok((
+                half_toward_zero(numerator).low(),
+                half_toward_zero(denominator).low(),
+            ));
+        }
+        return Err(if numerator.is_negative() ^ denominator.is_negative() {
             i32::MIN
         } else {
             i32::MAX
-        };
-    }
-    div_q12_i32(numerator as i32, denominator as i32)
+        });
+    };
+    Ok((numerator_i32, denominator_i32))
 }
 
 #[inline(always)]
-fn half_toward_zero(value: i64) -> i64 {
-    (value >> 1) + i64::from(value < 0 && value & 1 != 0)
+fn half_toward_zero(value: Wide) -> Wide {
+    value
+        .sar(1)
+        .plus(i32::from(value.is_negative() && value.low_u32() & 1 != 0))
 }
 
 /// `v_forward` for the view angles, in Q12.
@@ -2367,6 +2387,87 @@ pub fn view_basis(angles: [i16; 3]) -> (Vec3I32, Vec3I32, Vec3I32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The slab ratio as it was written with 64-bit integers, kept here as the
+    /// reference for the wide-type version.
+    fn reference_ratio(numerator: i64, denominator: i64) -> i32 {
+        let half = |value: i64| (value >> 1) + i64::from(value < 0 && value & 1 != 0);
+        if denominator > i64::from(i32::MAX) || denominator < i64::from(i32::MIN) {
+            return div_q12_i32(half(numerator) as i32, half(denominator) as i32);
+        }
+        if numerator > i64::from(i32::MAX) || numerator < i64::from(i32::MIN) {
+            return if (numerator < 0) ^ (denominator < 0) {
+                i32::MIN
+            } else {
+                i32::MAX
+            };
+        }
+        div_q12_i32(numerator as i32, denominator as i32)
+    }
+
+    fn operands_ratio(numerator: Wide, denominator: Wide) -> i32 {
+        match difference_operands_q12(numerator, denominator) {
+            Ok((n, d)) => div_q12_i32(n, d),
+            Err(saturated) => saturated,
+        }
+    }
+
+    #[test]
+    fn slab_ratio_from_coordinates_matches_the_64_bit_reference() {
+        let mut state = 0x7654_3211u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state
+        };
+        for _ in 0..400_000 {
+            let wide = next() % 4 == 0;
+            let draw = |value: u32| if wide { value as i32 } else { (value as i32) >> 4 };
+            let (bound, start, end) = (draw(next()), draw(next()), draw(next()));
+            if start == end {
+                continue;
+            }
+            let (n, d) = (i64::from(bound) - i64::from(start), i64::from(end) - i64::from(start));
+            assert_eq!(slab_ratio_q12(bound, start, end), reference_ratio(n, d), "{bound} {start} {end}");
+        }
+    }
+
+    #[test]
+    fn slab_ratio_matches_the_64_bit_reference() {
+        let wide = |v: i64| Wide::from_parts((v >> 32) as i32, v as u32);
+        let edges: [i64; 12] = [
+            1,
+            -1,
+            4095,
+            -4096,
+            i64::from(i32::MAX),
+            i64::from(i32::MIN),
+            i64::from(i32::MAX) + 1,
+            i64::from(i32::MIN) - 1,
+            i64::from(i32::MAX) * 2,
+            i64::from(i32::MIN) * 2,
+            12345678901,
+            -12345678901,
+        ];
+        for &n in &edges {
+            for &d in &edges {
+                assert_eq!(operands_ratio(wide(n), wide(d)), reference_ratio(n, d), "{n} / {d}");
+            }
+        }
+        let mut state = 0x1234_5679u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state
+        };
+        for _ in 0..200_000 {
+            let n = (i64::from(next()) << 1 ^ i64::from(next())) - (1i64 << 32) + i64::from(next() >> 16);
+            let d = ((i64::from(next()) << 1) - (1i64 << 32)) >> (next() % 3);
+            if d == 0 {
+                continue;
+            }
+            let n = n >> (next() % 20);
+            assert_eq!(operands_ratio(wide(n), wide(d)), reference_ratio(n, d), "{n} / {d}");
+        }
+    }
 
     fn full_inventory() -> Inventory {
         // A literal, so that a new field fails to compile until it is saved.

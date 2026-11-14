@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 use psx_math::int32::isqrt_i32;
+use psx_math::Wide;
 use psx_sfx::{LoopingSample, OneShot, Player, Sample};
 use psx_spu::{SpuAddr, Voice, Volume};
 use quake_core::menu::{DEFAULT_SOUND_VOLUME, VOLUME_STEPS};
@@ -144,12 +145,14 @@ struct LocalBankSource {
     chunk_id: u32,
     offset: u32,
     len: u32,
+    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
     global_hash: u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct LocalBankIdentity {
     source: LocalBankSource,
+    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
     content_hash: u64,
 }
 
@@ -165,6 +168,7 @@ struct LoadedEffect {
 pub struct AudioBank {
     effects: Vec<LoadedEffect>,
     global_effect_count: usize,
+    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
     global_content_hash: u64,
     global_spu_high_water: u32,
     local_identity: Option<LocalBankIdentity>,
@@ -767,6 +771,7 @@ fn load_versioned_bank(
     len: u32,
     expected_kind: SoundBankKind,
     expected_base: u32,
+    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
     dependency_hash: u64,
     retain_count: usize,
     effects: &mut Vec<LoadedEffect>,
@@ -920,18 +925,21 @@ fn spatial_volumes(
     listener: Vec3I32,
     yaw: i16,
 ) -> Option<(Volume, Volume)> {
-    let dx = (origin.x.saturating_sub(listener.x) >> 12) as i64;
-    let dy = (origin.y.saturating_sub(listener.y) >> 12) as i64;
-    let dz = (origin.z.saturating_sub(listener.z) >> 12) as i64;
-    let distance_squared = dx
-        .saturating_mul(dx)
-        .saturating_add(dy.saturating_mul(dy))
-        .saturating_add(dz.saturating_mul(dz));
-    let clip_distance = i64::from((Q12_ONE << 8) / attenuation_q20);
-    if distance_squared >= clip_distance * clip_distance {
+    let dx = origin.x.saturating_sub(listener.x) >> 12;
+    let dy = origin.y.saturating_sub(listener.y) >> 12;
+    let dz = origin.z.saturating_sub(listener.z) >> 12;
+    // Each component is below 2^19, so the sum of squares cannot saturate.
+    let distance_squared = Wide::mul(dx, dx)
+        .mul_add(dy, dy)
+        .mul_add(dz, dz);
+    let clip_distance = (Q12_ONE << 8) / attenuation_q20;
+    if !distance_squared
+        .sub_w(Wide::mul(clip_distance, clip_distance))
+        .is_negative()
+    {
         return None;
     }
-    let distance = isqrt_i32(distance_squared as i32);
+    let distance = isqrt_i32(distance_squared.low());
     let distance_scale = Q12_ONE
         .saturating_sub((distance.saturating_mul(attenuation_q20)) >> 8)
         .max(0);
@@ -945,13 +953,13 @@ fn spatial_volumes(
         0
     } else {
         quake_core::spatial::pan_q12(
-            dx * i64::from(right_x) + dy * i64::from(right_y),
+            Wide::mul(dx, right_x).mul_add(dy, right_y),
             distance as u32,
             Q12_ONE,
         )
     };
-    let left_scale = ((i64::from(distance_scale) * i64::from(Q12_ONE - pan)) >> 12) as i32;
-    let right_scale = ((i64::from(distance_scale) * i64::from(Q12_ONE + pan)) >> 12) as i32;
+    let left_scale = Wide::mul(distance_scale, Q12_ONE - pan).shr_i32(12);
+    let right_scale = Wide::mul(distance_scale, Q12_ONE + pan).shr_i32(12);
     let scale_volume = |scale: i32| {
         let value = ((volume * scale) >> 12).clamp(0, QUAKE_MAX_VOLUME) as u16;
         Volume::linear(value, 256)
