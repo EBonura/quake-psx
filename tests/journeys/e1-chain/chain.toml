@@ -317,3 +317,153 @@ op = "eq"
 value = 3
 note = "secrets total"
 
+[[step]]
+label = "pad tape to e1m3"
+sync = "poll"
+tape = "tapes/seg-02-to-e1m3.pxtape"
+tape_rebase = true
+timeout = 22908
+
+[[step]]
+checkpoint = "e1m3-loaded"
+sync = "poll"
+golden = false
+[[step.assert]]
+kind = "not_flat"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 16
+size = 4
+op = "eq"
+value = 3
+note = "map"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 24
+size = 4
+op = "eq"
+value = 0
+note = "skill"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 32
+size = 4
+op = "eq"
+value = 4291952640
+note = "origin x"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 36
+size = 4
+op = "eq"
+value = 4288446464
+note = "origin y"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 40
+size = 4
+op = "eq"
+value = 364544
+note = "origin z"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 76
+size = 4
+op = "eq"
+value = 81
+note = "health"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 80
+size = 4
+op = "eq"
+value = 52
+note = "armor"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 88
+size = 4
+op = "eq"
+value = 25
+note = "shells"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 92
+size = 4
+op = "eq"
+value = 50
+note = "nails"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 96
+size = 4
+op = "eq"
+value = 6
+note = "rockets"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 100
+size = 4
+op = "eq"
+value = 0
+note = "cells"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 104
+size = 4
+op = "eq"
+value = 7
+note = "weapons"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 112
+size = 4
+op = "eq"
+value = 0
+note = "keys"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 120
+size = 4
+op = "eq"
+value = 0
+note = "kills"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 124
+size = 4
+op = "eq"
+value = 31
+note = "kills total"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 128
+size = 4
+op = "eq"
+value = 0
+note = "secrets"
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 132
+size = 4
+op = "eq"
+value = 3
+note = "secrets total"
+

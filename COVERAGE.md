@@ -22,8 +22,8 @@ secret exit and the E1M7 return to Start. A complete player-driven route for
 the whole episode is still missing.
 
 Player-driven journeys (`tests/journeys/`, live monsters, Easy): Start (menu, Easy hall,
-E1 slipgate) to E1M1 to the E1M2 load is chained and replays in `psoxide-gate` on the `real` and `mister`
-targets at the fixed 30 Hz step, and on `real` at the shipping step. E1M2 onward has no journey yet (see VALIDATION.md, Journeys). Per-map parity reports against the original are in `docs/parity/`.
+E1 slipgate) to E1M1 to E1M2 to the E1M3 load is chained and replays in `psoxide-gate` on the `real` and `mister`
+targets at the fixed 30 Hz step; the shipping-step journey (real only) reaches the E1M2 load. E1M3 onward has no journey yet (see VALIDATION.md, Journeys). Per-map parity reports against the original are in `docs/parity/`.
 
 ## Player
 

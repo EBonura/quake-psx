@@ -22,7 +22,7 @@ cargo quake-build journey-build
 cargo build --release --manifest-path tools/routesim/Cargo.toml
 cargo build --release --manifest-path tools/journey-bot/Cargo.toml
 (cd <repo> && quake-journey-bot --disc build-psoxide-journey/quake-psx.cue \
-   --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 2400 \
+   --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 7000 \
    --maps id1psx/maps --routesim <quake-routesim binary>)
 ```
 
@@ -44,9 +44,9 @@ shells out to `tools/routesim path` (breadth-first walkable route over the cooke
 
 ## Status
 
-See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to E1M1 to the E1M2 load (`--frames 2400` records exactly
-that), `e1-chain` replayed on the real and mister hardware targets and `e1-shipping` (record it with
-`--journey-name quake-e1-shipping --build-dir build-psoxide-journey-shipping`) on real only. Route legs that only walk are written as
+See `COVERAGE.md`. Chained so far: `e1-chain` (fixed step; `--frames 7000` records it) Start (menu, Easy hall, E1 slipgate) to E1M1 to E1M2 to
+the E1M3 load, replayed on the real and mister hardware targets; `e1-shipping` (record it with `--frames 2400
+--journey-name quake-e1-shipping --build-dir build-psoxide-journey-shipping`) Start to the E1M2 load, on real only. Route legs that only walk are written as
 `@go x y` (a dry path planned by `tools/routesim` from wherever the player stands, every
 grid node kept); the bot also detours a few steps for health, ammunition and weapons it
 needs, as a player does.
