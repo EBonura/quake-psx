@@ -22,6 +22,9 @@ cargo test --manifest-path host/quake-build/Cargo.toml
 (cd crates/quake-formats && cargo test)
 ```
 
+The builder tests resolve the emulator frontend themselves, so run them with `QUAKE_PSX_FRONTEND`
+unset: two of them (`resolve_frontend_*`) fail when it points at a binary.
+
 The last pre-release run completed:
 
 | Suite | Result |
