@@ -26,6 +26,7 @@ timeout = 4656
 
 [[step]]
 checkpoint = "e1m1-loaded"
+sync = "poll"
 golden = false
 [[step.assert]]
 kind = "not_flat"

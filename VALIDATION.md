@@ -235,10 +235,15 @@ exact state at every map change. See `tests/journeys/README.md`.
 
 The chain covers the title menu, the Easy hall and the E1 slipgate up to the E1M1 load, checked
 at the E1M1 checkpoint (map, skill, origin, health, armour, ammunition, weapons, keys, kills and
-secrets, exact), on `real` and `mister`. It is not covered: E1M1 to E1M2 (the recorded tape
-replays in the gate to a different state than the bot reached; not understood yet), and every
-map after E1M2 (the bot's E1M2 route stops at waypoint 18). Those segments are not in the
-chain file.
+secrets, exact), on `real` and `mister`. It is not covered: E1M1 to E1M2 and every map after it. The E1M1 to E1M2 tape replays
+exactly on `real` but not on `mister`: the game steps its world by the VBlanks a frame took,
+and the two targets present frames on different VBlanks, so a recorded pad gives a different
+play (a journey image built with `perf-fixed-ticks-30hz` replays exactly on both). The bot's
+E1M2 route stops at waypoint 222 of 247 (position 886, -335, 464); E1M2 to E1M3 is not
+recorded. Those segments are not in the chain file. Record with `--routesim
+tools/routesim/target/release/quake-routesim`; a missing planner binary makes every `@go` leg
+fail quietly. `--cut-every N` writes a checkpoint every N frames, to find where a replay leaves
+the recording.
 
 ## Visual checks
 

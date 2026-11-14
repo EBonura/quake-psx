@@ -53,7 +53,7 @@ pub fn write_chain(
         writeln!(toml, "[[step]]\nlabel = \"pad tape to {label}\"\nsync = \"poll\"\ntape = \"tapes/{name}\"\ntape_rebase = true").unwrap();
         writeln!(toml, "timeout = {}\n", (end - from) * 4 + 4000).unwrap();
         if let Some(o) = obs {
-            writeln!(toml, "[[step]]\ncheckpoint = \"{label}-loaded\"\ngolden = false").unwrap();
+            writeln!(toml, "[[step]]\ncheckpoint = \"{label}-loaded\"\nsync = \"poll\"\ngolden = false").unwrap();
             writeln!(toml, "[[step.assert]]\nkind = \"not_flat\"").unwrap();
             for (word, value, what) in state_words(o) {
                 writeln!(toml, "[[step.assert]]\nkind = \"ram\"\nsym = \"JOURNEY_STATE\"\noffset = {}\nsize = 4\nop = \"eq\"\nvalue = {}\nnote = \"{what}\"", word * 4, value as i64).unwrap();

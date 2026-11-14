@@ -21,7 +21,7 @@ cargo build --release --manifest-path tools/routesim/Cargo.toml
 cargo build --release --manifest-path tools/journey-bot/Cargo.toml
 (cd <repo> && quake-journey-bot --disc build-psoxide-journey/quake-psx.cue \
    --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 200 \
-   --maps id1psx/maps --routesim <routesim binary>)
+   --maps id1psx/maps --routesim <quake-routesim binary>)
 ```
 
 The bot writes `<dir>/chain.toml` and `<dir>/tapes/seg-NN-to-<map>.pxtape`: one tape per

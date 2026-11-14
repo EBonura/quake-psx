@@ -154,6 +154,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut resume: Option<(PathBuf, u32)> = None;
     let mut trace = (0u32, 0u32);
     let mut trace_every = 6u32;
+    let mut cut_every = 0u32;
     let mut i = 0;
     while i < args.rest.len() {
         match args.rest[i].as_str() {
@@ -165,6 +166,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--routesim" => { routesim = args.rest[i + 1].clone(); i += 2; }
             "--trace" => { trace = (args.rest[i + 1].parse().unwrap(), args.rest[i + 2].parse().unwrap()); i += 3; }
             "--trace-every" => { trace_every = args.rest[i + 1].parse().unwrap(); i += 2; }
+            "--cut-every" => { cut_every = args.rest[i + 1].parse().unwrap(); i += 2; }
             other => panic!("play arg {other}"),
         }
     }
@@ -228,6 +230,11 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
             boundaries.push((MAP_LABELS[o.map as usize].to_string(), index, o.clone()));
             last_map = o.map;
+        } else if cut_every > 0 && n % cut_every == 0 {
+            // A diagnostic cut: a checkpoint of the exact state every `cut_every` frames, to find the
+            // first frame at which a replay leaves the recording.
+            let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
+            boundaries.push((format!("f{n:05}"), index, o.clone()));
         }
         if n >= trace.0 && n <= trace.1 && n % trace_every == 0 {
             let p = o.pos();
