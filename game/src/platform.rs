@@ -1,7 +1,10 @@
+use core::mem::MaybeUninit;
 use core::ptr::{addr_of, addr_of_mut};
 
-use psx_gpu::framebuf::FrameBuffer;
+use psx_gpu::display::{DoubleBuffer, Resolution};
+use psx_gpu::material::TextureMaterial;
 use psx_gpu::ot::OrderingTable;
+use psx_rt::present::{Part, Presenter};
 use psx_gte::math::{Mat3I16, Vec3I16, Vec3I32};
 use psx_gte::scene;
 use psx_pack::cd::{find_entry, SectorReader, SECTOR_WORDS, WORLD_PACK_DEFAULT_LBA};
@@ -31,12 +34,13 @@ const STORAGE_CACHE_SECTORS: usize = 2;
 const STORAGE_CACHE_BYTES: usize = STORAGE_CACHE_SECTORS * SECTOR_BYTES;
 
 static mut OTS: [OrderingTable<OT_DEPTH>; 2] = [OrderingTable::new(), OrderingTable::new()];
-static mut FRAME_BUFFER: FrameBuffer = FrameBuffer::new_strided(WIDTH, HEIGHT, BACK_BUFFER_Y);
+static mut BUFFERS: DoubleBuffer = DoubleBuffer::with_stride(Resolution::R320X240, BACK_BUFFER_Y);
+/// The frame path's one presenter, made by [`start_vblank_counter`].
+static mut PRESENTER: MaybeUninit<Presenter> = MaybeUninit::uninit();
 static mut SCREEN_COMMANDS: [usize; MAX_SCREEN_COMMANDS * 2] = [0; MAX_SCREEN_COMMANDS * 2];
 static mut SCREEN_COMMAND_COUNT: usize = 0;
 
 static mut BUILD_BUFFER: usize = 0;
-static mut GPU_SUBMISSION_PENDING: bool = false;
 
 static mut READER: SectorReader = SectorReader::new();
 static mut SECTOR: [u32; SECTOR_WORDS] = [0; SECTOR_WORDS];
@@ -119,74 +123,52 @@ unsafe fn build_ot() -> &'static mut OrderingTable<OT_DEPTH> {
     }
 }
 
-unsafe fn framebuffer() -> &'static mut FrameBuffer {
-    unsafe { &mut *addr_of_mut!(FRAME_BUFFER) }
+unsafe fn buffers() -> &'static mut DoubleBuffer {
+    unsafe { &mut *addr_of_mut!(BUFFERS) }
 }
 
-unsafe fn wait_for_pending_submission() {
-    if unsafe { GPU_SUBMISSION_PENDING } {
-        #[cfg(not(feature = "blocking-present"))]
-        psx_rt::present::wait_slot_empty();
-        psx_gpu::submit_linked_list_wait();
-        psx_gpu::wait_idle();
-    }
+/// The frame path's presenter.
+///
+/// # Safety
+/// [`start_vblank_counter`] has run, and nothing else holds the presenter.
+unsafe fn presenter() -> &'static mut Presenter {
+    unsafe { (*addr_of_mut!(PRESENTER)).assume_init_mut() }
 }
 
-// Non-blocking present, the default (`blocking-present` selects the old
-// path; `hardware-performance` implies it, since its cadence probe times
-// the blocking wait).
+// Every frame goes to the screen through psx-rt's one present path
+// (`psx_rt::present`, sdk/docs/PRESENT.md). `gpu_end_frame` hands the
+// frame's ordering table to the presenter and returns at once: the presenter
+// links the draw area, offset and clear of the buffer being drawn in front of
+// it, kicks the walk as soon as the frame before is on screen and channel 2
+// is idle, and psx-rt's VBlank handler flips to the finished frame at the
+// first edge the cap allows (30 fps, the SDK's default). Every chain ends on
+// [`psx_gpu::DRAW_DONE_NODE`], whose GP0(1Fh) the flip waits for.
 //
-// The blocking path in [`gpu_end_frame`] serialises "previous raster done,
-// vblank edge, flip, kick" on the CPU, so the CPU idles until the edge even
-// when the next frame could already be building. Here the finished frame's
-// chain goes to psx-rt's present queue (`psx_rt::present`, this game's
-// queue moved into the SDK) and the CPU returns at once: psx-rt's VBlank
-// handler flips to the previous frame and kicks the queued chain on the
-// first edge where the previous chain's closing GP0(1Fh) has run and DMA
-// channel 2 is idle. Every queued chain ends on [`psx_gpu::DRAW_DONE_NODE`].
-//
-// The new back buffer's draw area, offset, draw mode and clear travel as the
-// chain's first packets, so the handler writes only GP1(05h), GP1(02h) and
-// the channel 2 kick. The CPU waits only when it is a whole frame ahead (the
-// slot is still full), before rebuilding an arena whose walk has not
-// finished, and before direct GP0/GP1 or GPU DMA access, which psx-rt's
-// direct-access guard turns into a wait for the queue to drain.
+// The CPU waits only when it is a whole frame ahead (the slot is still
+// full), before rebuilding an arena whose walk has not finished, and before
+// direct GP0/GP1 or GPU DMA access, which psx-rt's direct-access guard turns
+// into a wait for everything in flight.
 
-/// The new back buffer's GPU state, as the first two nodes of the chain the
-/// VBlank handler kicks: draw area and offset (only after a swap), then the
-/// world draw mode and the clear. One per arena, since the handler may still
-/// be walking the other one.
-#[cfg(not(feature = "blocking-present"))]
+/// The world's draw mode (dithering on, texture page and window zero), the
+/// first node after the presenter's preamble. A frame's primitives and the
+/// screen tints change both, so each frame starts from this state.
 #[repr(C, align(4))]
-struct Preamble {
-    target_tag: u32,
-    draw_area_top_left: u32,
-    draw_area_bottom_right: u32,
-    draw_offset: u32,
-    clear_tag: u32,
+struct WorldState {
+    tag: u32,
     draw_mode: u32,
     texture_window: u32,
-    fill: u32,
-    fill_xy: u32,
-    fill_wh: u32,
 }
 
-#[cfg(not(feature = "blocking-present"))]
-const EMPTY_PREAMBLE: Preamble = Preamble {
-    target_tag: 0,
-    draw_area_top_left: 0,
-    draw_area_bottom_right: 0,
-    draw_offset: 0,
-    clear_tag: 0,
-    draw_mode: 0,
-    texture_window: 0,
-    fill: 0,
-    fill_xy: 0,
-    fill_wh: 0,
+const WORLD_MATERIAL: TextureMaterial = TextureMaterial::new(0, 0).with_dither(true);
+
+const WORLD_STATE: WorldState = WorldState {
+    tag: 0,
+    draw_mode: WORLD_MATERIAL.draw_mode_word(),
+    texture_window: WORLD_MATERIAL.texture_window_word(),
 };
 
-#[cfg(not(feature = "blocking-present"))]
-static mut PREAMBLES: [Preamble; 2] = [EMPTY_PREAMBLE, EMPTY_PREAMBLE];
+/// One per arena, since the walk of the other may still be reading its node.
+static mut WORLD_STATES: [WorldState; 2] = [WORLD_STATE, WORLD_STATE];
 
 #[cfg(feature = "hardware-performance")]
 unsafe fn hardware_perf_reset() {
@@ -275,9 +257,8 @@ pub fn gpu_init_before_interrupts() {
     psx_gpu::init(psx_gpu::display::VideoMode::Ntsc, psx_gpu::display::Resolution::R320X240);
     unsafe {
         BUILD_BUFFER = 0;
-        GPU_SUBMISSION_PENDING = false;
         DEFERRED_UPLOAD_COUNT = 0;
-        FRAME_BUFFER = FrameBuffer::new_strided(WIDTH, HEIGHT, BACK_BUFFER_Y);
+        BUFFERS = DoubleBuffer::with_stride(Resolution::R320X240, BACK_BUFFER_Y);
         psx_gpu::set_draw_area(0, 0, WIDTH - 1, HEIGHT - 1);
         psx_gpu::set_draw_offset(0, 0);
         configure_world_material();
@@ -314,31 +295,34 @@ pub fn gpu_init_before_interrupts() {
 pub fn show_boot_splash(buttons: impl FnMut() -> psx_pad::ButtonState) {
     // SAFETY: nothing else touches the GPU until the splash returns.
     let mut dma = unsafe { psx_io::periph::GpuDma::steal() };
-    let mut buffers = psx_gpu::display::DoubleBuffer::with_stride(
-        psx_gpu::display::Resolution::R320X240,
-        BACK_BUFFER_Y,
-    );
+    // The splash draws into the renderer's own pair of buffers, so the
+    // presenter's first frame follows where the display was left.
     psx_splash::show(
         psx_gpu::Gpu::from_dma_mut(&mut dma),
-        &mut buffers,
+        unsafe { buffers() },
         "Built with PSoXide",
         psx_display::Brightness::DEFAULT,
         buttons,
     );
-    // The splash swapped its own pair of buffers; the renderer's follows where
-    // the display was left.
-    // SAFETY: single-threaded, and the splash is done with the GPU.
-    unsafe { framebuffer().drawing = u8::from(buffers.draw_origin().1 != 0) };
 }
 
 /// Enable the VBlank clock after the controller configuration transaction.
 #[optimize(size)]
 pub fn start_vblank_counter() {
     psx_rt::interrupts::install_vblank_counter();
-    // Raises the draw-done flag once, so the first queued frame's edge finds
-    // it set, and registers the direct-access guard.
-    #[cfg(not(feature = "blocking-present"))]
-    psx_rt::present::start();
+    // Raises the draw-done flag once, so the first frame's edge finds it set,
+    // and registers the direct-access guard. The GPU is idle: nothing has been
+    // handed over yet.
+    let clear = if cfg!(feature = "probe-clear-magenta") {
+        // Diagnostic: a magenta clear makes every pixel no polygon covered (a
+        // crack, a dropped oversize triangle) stand out from lit and dark
+        // surfaces alike.
+        (0xFF, 0x00, 0xFF)
+    } else {
+        (0x00, 0x00, 0x00)
+    };
+    // SAFETY: single-threaded; nothing reads the presenter before this returns.
+    unsafe { (*addr_of_mut!(PRESENTER)).write(Presenter::new(Some(clear))) };
 }
 
 /// Configure Quake's 320x240 projection convention.
@@ -447,12 +431,10 @@ pub fn gpu_begin_frame() {
             TELEMETRY_FRAME = TELEMETRY_FRAME.wrapping_add(1);
         }
         BUILD_BUFFER ^= 1;
-        #[cfg(not(feature = "blocking-present"))]
         psx_rt::present::wait_arena_free();
         build_ot().clear();
-        // Every queued chain ends on the shared GP0(1Fh) node, which raises
-        // the draw-done flag the VBlank handler flips on.
-        #[cfg(not(feature = "blocking-present"))]
+        // Every chain ends on the shared GP0(1Fh) node, which raises the
+        // draw-done flag the VBlank handler flips on.
         build_ot().end_with_draw_done();
         SCREEN_COMMAND_COUNT = 0;
     }
@@ -508,78 +490,18 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_end(psx_telemetry::stage::OT_SUBMIT);
     }
-    #[cfg(not(feature = "blocking-present"))]
-    unsafe {
-        queue_frame()
-    }
-    #[cfg(feature = "blocking-present")]
-    unsafe {
-        present_blocking()
-    }
+    unsafe { submit_frame() }
 }
 
-/// Publish the built frame to the VBlank handler and return without waiting
-/// for the edge. The GP0 stream is word-for-word the blocking path's.
-#[cfg(not(feature = "blocking-present"))]
-unsafe fn queue_frame() {
-    use psx_gpu::material::TextureMaterial;
-
-    psx_rt::present::wait_slot_empty();
-    let swap = unsafe { GPU_SUBMISSION_PENDING };
-    let fb = unsafe { framebuffer() };
-    // The flip exposes the previous frame, whose buffer is the current draw
-    // target; this frame then draws into the other one.
-    let display = if swap {
-        let word = 0x0500_0000 | (u32::from(fb.buffer_y(fb.drawing)) << 10);
-        fb.drawing ^= 1;
-        word
-    } else {
-        0
-    };
-    let target_y = u32::from(fb.buffer_y(fb.drawing));
-    let material = TextureMaterial::new(0, 0).with_dither(true);
-    let ot_head = build_ot().submit_head() as u32;
-    let preamble = unsafe { &mut *addr_of_mut!(PREAMBLES).cast::<Preamble>().add(BUILD_BUFFER) };
-    preamble.draw_area_top_left = 0xE300_0000 | (target_y << 10);
-    preamble.draw_area_bottom_right =
-        0xE400_0000 | u32::from(WIDTH - 1) | ((target_y + u32::from(HEIGHT) - 1) << 10);
-    preamble.draw_offset = 0xE500_0000 | ((target_y & 0x7FF) << 11);
-    preamble.draw_mode = material.draw_mode_word();
-    preamble.texture_window = material.texture_window_word();
-    // Diagnostic: a magenta clear makes every pixel no polygon covered (a crack,
-    // a dropped oversize triangle) stand out from lit and dark surfaces alike.
-    #[cfg(feature = "probe-clear-magenta")]
-    {
-        preamble.fill = 0x02FF_00FF;
-    }
-    #[cfg(not(feature = "probe-clear-magenta"))]
-    {
-        preamble.fill = 0x0200_0000;
-    }
-    preamble.fill_xy = target_y << 16;
-    preamble.fill_wh = (u32::from(HEIGHT) << 16) | u32::from(WIDTH);
-    preamble.clear_tag = (5 << 24) | (ot_head & 0x00FF_FFFF);
-    preamble.target_tag = (3 << 24) | (addr_of!(preamble.clear_tag) as u32 & 0x00FF_FFFF);
-
-    let mut head = addr_of!(preamble.target_tag);
-    if !swap {
-        // Nothing was flipped, so the draw target already matches (boot, or
-        // after gpu_present_pending_frame's swap).
-        head = addr_of!(preamble.clear_tag);
-    }
+/// Hand the built frame to the presenter and return without waiting for the
+/// edge.
+unsafe fn submit_frame() {
+    #[cfg(feature = "hardware-performance")]
+    let slot_wait_start = psx_rt::interrupts::vblank_count();
     if unsafe { DEFERRED_UPLOAD_COUNT } != 0 {
-        // Image loads go through the GP0 FIFO, so the previous frame must be
-        // off the GPU first. The slot is empty, so the handler cannot kick
-        // anything while the CPU owns GP0. Moving the draw target here keeps
-        // the stream in the blocking path's order.
-        if swap {
-            psx_gpu::submit_linked_list_wait();
-            psx_gpu::wait_idle();
-            psx_io::gpu::write_command(preamble.draw_area_top_left);
-            psx_io::gpu::write_command(preamble.draw_area_bottom_right);
-            psx_io::gpu::write_command(preamble.draw_offset);
-            head = addr_of!(preamble.clear_tag);
-        }
+        // Image loads go through the GP0 FIFO, so the walk before this frame
+        // must be off the GPU first: the first direct access waits for
+        // everything in flight (the direct-access guard).
         unsafe { flush_deferred_vram_uploads() };
     }
     #[cfg(feature = "emulator-telemetry")]
@@ -592,79 +514,27 @@ unsafe fn queue_frame() {
             SCREEN_COMMAND_COUNT,
         );
     }
-    // SAFETY: the slot is empty (wait_slot_empty above). The chain is this
-    // arena's preamble, ordering table and packets, ending on the shared
-    // GP0(1Fh) node; none of it is rebuilt before wait_arena_free says its
-    // walk has ended.
-    unsafe { psx_rt::present::publish_raw(head, display) };
+    let world = unsafe { &mut (*addr_of_mut!(WORLD_STATES))[BUILD_BUFFER] };
+    world.tag = (2 << 24) | (ot.submit_head() as u32 & 0x00FF_FFFF);
+    // SAFETY: the chain is this arena's world state, ordering table and
+    // packets, every node at most 16 words and ending on the shared GP0(1Fh)
+    // node; none of it is rebuilt before wait_arena_free says its walk has
+    // ended.
+    unsafe { presenter().submit(buffers(), addr_of!(world.tag), Part::Final) };
+    #[cfg(feature = "hardware-performance")]
     unsafe {
-        GPU_SUBMISSION_PENDING = true;
+        let now = psx_rt::interrupts::vblank_count();
+        hardware_perf_record_gpu_wait(slot_wait_start, now);
+        hardware_perf_record_present(now);
     }
 }
 
-/// Wait for the previous frame and the next vblank edge, flip, and kick this
-/// frame.
-#[cfg(feature = "blocking-present")]
-unsafe fn present_blocking() {
-    #[cfg(feature = "hardware-performance")]
-    let gpu_wait_start = psx_rt::interrupts::vblank_count();
-    if unsafe { GPU_SUBMISSION_PENDING } {
-        unsafe { wait_for_pending_submission() };
-    }
-    #[cfg(feature = "hardware-performance")]
-    unsafe {
-        hardware_perf_record_gpu_wait(gpu_wait_start, psx_rt::interrupts::vblank_count());
-    }
-    psx_rt::interrupts::wait_vblank();
-    if unsafe { GPU_SUBMISSION_PENDING } {
-        unsafe { framebuffer().swap() };
-    }
-
-    #[cfg(feature = "hardware-performance")]
-    unsafe {
-        hardware_perf_record_present(psx_rt::interrupts::vblank_count());
-    }
-    // Flush after the presentation edge, not before it: the GPU is idle here
-    // and the next vblank is a full frame away, so the FIFO transfer can
-    // never push a frame past the edge it was about to catch.
-    unsafe { flush_deferred_vram_uploads() };
-    #[cfg(feature = "emulator-telemetry")]
-    psx_telemetry::emit::counter(psx_telemetry::counter::VISUAL_FRAMES, 1);
-
-    configure_world_material();
-    unsafe { framebuffer().clear(0, 0, 0) };
-
-    let ot = unsafe { build_ot() };
-    unsafe {
-        ot.insert_packed_commands_reverse_unchecked(
-            addr_of!(SCREEN_COMMANDS).cast::<usize>(),
-            SCREEN_COMMAND_COUNT,
-        );
-        // SAFETY: the build buffer's table and the screen commands it links
-        // stay untouched until wait_for_pending_submission has waited this
-        // walk out; GPU_SUBMISSION_PENDING records that it is in flight.
-        psx_gpu::submit_linked_list_raw_async(ot.submit_head());
-    }
-    unsafe {
-        GPU_SUBMISSION_PENDING = true;
-    }
-}
-
-/// Wait for the just-submitted frame and expose it before returning.
+/// Wait until the frame just submitted is on screen and nothing is in flight.
 ///
-/// Normal gameplay intentionally pipelines one frame. Blocking map I/O has
-/// no later frame with which to perform that swap, so the loading path uses
-/// this explicit fence and leaves the completed loading image on screen.
+/// Normal gameplay pipelines one frame. Blocking map I/O has no later frame
+/// to push the loading image through, so the loading path waits for it here.
 pub fn gpu_present_pending_frame() {
-    unsafe {
-        if !GPU_SUBMISSION_PENDING {
-            return;
-        }
-        wait_for_pending_submission();
-        psx_rt::interrupts::wait_vblank();
-        framebuffer().swap();
-        GPU_SUBMISSION_PENDING = false;
-    }
+    psx_rt::present::wait_idle();
 }
 
 #[cfg(feature = "hardware-performance")]
@@ -722,7 +592,7 @@ pub fn upload_vram(rect: VramRect, bytes: &[u8]) -> Result<(), VramUploadError> 
     if bytes.len() != rect.w as usize * rect.h as usize * 2 {
         return Err(VramUploadError::SizeMismatch);
     }
-    unsafe { wait_for_pending_submission() };
+    psx_rt::present::wait_idle();
     psx_vram::upload_bytes(rect, bytes);
     psx_gpu::wait_idle();
     Ok(())

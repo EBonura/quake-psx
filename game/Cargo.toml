@@ -183,14 +183,8 @@ renderer-scratchpad-alias-projection = []
 # face's three-product inner-support test in the otherwise-unused second light
 # matrix row left live beside the four frustum planes.
 renderer-gte-near-classification = ["renderer-block-frustum"]
-# Times the blocking present's waits, so it builds the blocking path.
-hardware-performance = ["blocking-present"]
-# The VBlank-driven present queue is the default: gpu_end_frame publishes the
-# finished frame's chain to psx-rt's present queue (psx_rt::present) and
-# returns, and psx-rt's VBlank handler flips and kicks it once the previous
-# chain's GP0(1Fh) has run. This feature selects the old blocking present
-# instead (wait_idle, vblank edge, flip, kick), for A/Bs. See platform.rs.
-blocking-present = []
+# Times the frame path's waits and the interval between frames.
+hardware-performance = []
 hardware-regression = ["hardware-performance"]
 
 [dependencies]
@@ -198,7 +192,7 @@ quake-formats = { path = "../crates/quake-formats" }
 quake-core = { path = "../crates/quake-core" }
 quake-affine = { path = "../crates/quake-affine" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
-psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-192", "present-queue"] }
+psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-192"] }
 psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-mc = { path = "../.psoxide/sdk/crates/psx-mc" }

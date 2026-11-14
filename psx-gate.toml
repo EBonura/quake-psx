@@ -6,20 +6,8 @@
 [[exception]]
 program = "quake-psx"
 kind = "feature"
-item = "psx-io/present-queue"
-remove = "W7"
-
-[[exception]]
-program = "quake-psx"
-kind = "feature"
 item = "psx-rt/alloc"
 remove = "unscheduled"
-
-[[exception]]
-program = "quake-psx"
-kind = "feature"
-item = "psx-rt/present-queue"
-remove = "W7"
 
 [[exception]]
 program = "quake-psx"
