@@ -409,20 +409,6 @@ pub mod sort_class {
     pub const SKY: u32 = 7;
 }
 
-/// Tag the projections that follow with a primitive class (`sort-probe`
-/// measurement builds only; nothing otherwise).
-#[inline(always)]
-pub fn sort_probe_class(class: u32) {
-    #[cfg(feature = "sort-probe")]
-    // SAFETY: emulator-only port in Expansion Region 2 (PSoXide telemetry
-    // slice + 0x28); retail hardware ignores the write.
-    unsafe {
-        core::ptr::write_volatile(0x1F80_2F28 as *mut u32, class);
-    }
-    #[cfg(not(feature = "sort-probe"))]
-    let _ = class;
-}
-
 pub fn gpu_begin_frame() {
     unsafe {
         #[cfg(feature = "emulator-telemetry")]
