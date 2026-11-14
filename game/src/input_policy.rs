@@ -335,4 +335,68 @@ mod tests {
         assert_eq!(left.pressed, 0);
         assert_eq!(left.menu_pressed, button::LEFT);
     }
+
+    /// A full stick sweep (centre to each extreme and back, one step per
+    /// frame, then a diagonal) replayed through the tracker and through the
+    /// rule written out directly: a direction is on strictly beyond the
+    /// threshold, an edge is off-to-on, and nothing repeats while held. The
+    /// same sweep is the check for any shared stick fold that replaces the
+    /// tracker, with the threshold passed in.
+    #[optimize(size)]
+    #[test]
+    fn stick_sweep_edges_match_the_threshold_rule() {
+        let mut path = [(0i16, 0i16); 1400];
+        let mut n = 0;
+        for axis in 0..4 {
+            let end: i16 = if axis % 2 == 0 { -128 } else { 127 };
+            let step: i16 = if end < 0 { -1 } else { 1 };
+            let mut v = 0i16;
+            loop {
+                path[n] = if axis < 2 { (v, 0) } else { (0, v) };
+                n += 1;
+                if v == end {
+                    break;
+                }
+                v += step;
+            }
+            loop {
+                v -= step;
+                path[n] = if axis < 2 { (v, 0) } else { (0, v) };
+                n += 1;
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        for v in -128i16..=127 {
+            path[n] = (v, v);
+            n += 1;
+        }
+        let mut tracker = EdgeTracker::new();
+        let mut prev = 0u16;
+        let mut edges = 0u32;
+        for &(x, y) in &path[..n] {
+            let mut on = 0u16;
+            if y < -MENU_STICK_THRESHOLD {
+                on |= button::UP;
+            }
+            if y > MENU_STICK_THRESHOLD {
+                on |= button::DOWN;
+            }
+            if x < -MENU_STICK_THRESHOLD {
+                on |= button::LEFT;
+            }
+            if x > MENU_STICK_THRESHOLD {
+                on |= button::RIGHT;
+            }
+            let got = tracker.update(0, x, y);
+            assert_eq!(got.menu_pressed, on & !prev, "stick ({x}, {y})");
+            assert_eq!(got.pressed, 0);
+            edges += (on & !prev).count_ones();
+            prev = on;
+        }
+        // Four single-axis sweeps raise one edge each; the diagonal raises
+        // LEFT and UP on the way down and RIGHT and DOWN on the way up.
+        assert_eq!(edges, 8);
+    }
 }
