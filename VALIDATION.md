@@ -7,7 +7,7 @@ contains the exact Quake and PSoXide revisions and artifact hashes.
 The current release candidate uses PSoXide revision:
 
 ```text
-beae3000ea0af6908cc7387a5f7b6cc55436bac3
+464dcbee633c5ace287d2fb71576bafcb933544d
 ```
 
 ## Host tests
@@ -26,13 +26,12 @@ The last pre-release run completed:
 
 | Suite | Result |
 | --- | ---: |
-| Builder tests (`host/quake-build`) | 59 passed |
-| Input policy integration tests | 8 passed |
-| Pusher integration tests | 4 passed |
-| `quake-cook` | 30 passed |
-| `quake-core` unit tests | 308 passed |
-| `quake-core` integration tests | 24 passed |
-| `quake-formats` | 21 passed |
+| Builder tests (`host/quake-build`, every test target, including the input policy and pusher integration tests) | 90 passed |
+| `quake-affine` | 31 passed (41 with all features) |
+| `quake-cook` | 41 passed |
+| `quake-core` unit tests | 410 passed |
+| `quake-core` integration tests | 36 passed |
+| `quake-formats` | 24 passed |
 
 These tests cover checked file parsing, BSP conversion, collision, movement,
 movers, combat, monsters, loading, menus, input and fixed-capacity runtime
@@ -192,19 +191,23 @@ the resulting probes. A result is accepted only when both runs agree.
 
 ## Current results
 
-At source revision `ae28819a1f516e3e10c9ba638714a56b4bbfeb42`, the
-pre-release tree passed the host suites, `check`, the standalone build,
-`ship-boot`, `arsenal-regress`, `visual-parity-regress` and the fixed-step
-`e1m1-chain-bench`. The visual run matched its stored world, HUD and display
-hashes with no packet overflow.
+At source revision `238f236a5d937baeef5314b10938fdb8b9b97ee2`, with the SDK at
+`464dcbee633c5ace287d2fb71576bafcb933544d` and the emulator at
+`3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae`, the host suites, `ram` (the
+shipping image booted headlessly, with the link-map breakdown), `start-route-regress`,
+`e1m1-chain-regress`, `e1m1-spawn-regress`, `e1m1-save-regress`,
+`visual-parity-regress` and the fixed-step `e1m1-chain-bench` passed on both the
+`real` and the `mister` hardware targets. The visual run matched its stored world,
+HUD and display hashes (`0x52a8fd14affff202`, `0xf0ff5a6113cad7ec`,
+`0xd4e066ef8f25ed5a`). `map-regress` runs but its initial-load check is red: the
+first load takes 440,995,618 cycles against a budget of 420,000,000 and 81
+sector-read sessions against 74.
 
-The benchmark completed E1M1 twice deterministically at 21.857 fps, covering
-2,086 route frames, 2,134 presentations, every authored player mechanism and
-the E1M2 transition. The arsenal run likewise passed twice: all six Episode 1
-pickup weapons fired and animated, while the separate lightning probe verified
-its clipped beam and damage traces. The target remains 30 fps. These figures
-are useful for comparing builds, but they are emulator measurements rather
-than original-hardware claims.
+The benchmark completed E1M1 deterministically at 26.715 fps (1,971,343,369 bus
+cycles over 1,556 presentations). The shipping image leaves 19,260 bytes of heap
+free after boot (floor 8,192). The target remains 30 fps. These figures are useful
+for comparing builds, but they are emulator measurements rather than
+original-hardware claims.
 
 ## Resource checks
 
