@@ -15,9 +15,9 @@ name = "quake-journey-bot"
 path = "src/main.rs"
 
 [dependencies]
-emulator-core = { path = "../../.psoxide/emu/crates/emulator-core" }
-psoxide-settings = { path = "../../.psoxide/emu/crates/psoxide-settings" }
-psoxide-jit = { path = "../../.psoxide/emu/crates/psoxide-jit" }
+emulator-core = { git = "https://github.com/EBonura/PSoXide-emulator.git", rev = "3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae" }
+psoxide-settings = { git = "https://github.com/EBonura/PSoXide-emulator.git", rev = "3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae" }
+psoxide-jit = { git = "https://github.com/EBonura/PSoXide-emulator.git", rev = "3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 quake-core = { path = "../../crates/quake-core" }
 quake-formats = { path = "../../crates/quake-formats" }

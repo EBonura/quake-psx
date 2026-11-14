@@ -225,7 +225,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         };
         session.set_pad(sample);
         if o.map != last_map {
-            let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize + 1;
+            let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
             boundaries.push((MAP_LABELS[o.map as usize].to_string(), index, o.clone()));
             last_map = o.map;
         }
@@ -253,7 +253,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     if let Some(start) = session.start_poll {
         write_tape_poll_bound(&args.out.join("play.pxtape"), &samples, start).unwrap();
         eprintln!("tape: {} samples from poll {start}; finished={finished}", samples.len());
-        emit::write_chain(&args.out, addr, start, &samples, &boundaries, finished);
+        emit::write_chain(&args.out, start, &samples, &boundaries, finished);
     }
 }
 

@@ -20,15 +20,17 @@ cargo quake-build journey-build
 cargo build --release --manifest-path tools/routesim/Cargo.toml
 cargo build --release --manifest-path tools/journey-bot/Cargo.toml
 (cd <repo> && quake-journey-bot --disc build-psoxide-journey/quake-psx.cue \
-   --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 2300 \
+   --map build-psoxide-journey/quake-psx.map --out <dir> --mode play --frames 200 \
    --maps id1psx/maps --routesim <routesim binary>)
 ```
 
 The bot writes `<dir>/chain.toml` and `<dir>/tapes/seg-NN-to-<map>.pxtape`: one tape per
 map segment, cut at the frame that first shows the next map, and an exact checkpoint after
 each (map, skill, position, health, armour, ammunition, weapons, keys, kills and secrets).
-The `[addr]` entry names the state block in that build's link map, so regenerate the
-journey after any guest change.
+The chain file finds the state block by name in that build's link map (`symbols`), waits for the
+game's first published frame, and plays every tape with `sync = "poll"` and `tape_rebase`, so a
+change in boot, splash or load time moves nothing; regenerate the chain when the game's play
+changes (a tape is the pad, not the state).
 
 ```sh
 psoxide-gate run tests/journeys/e1-chain/chain.toml --disc $PWD/build-psoxide-journey/quake-psx.cue
@@ -40,8 +42,8 @@ shells out to `tools/routesim path` (breadth-first walkable route over the cooke
 
 ## Status
 
-See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to E1M1 to E1M2 to the
-E1M3 load, replayed on the CPU renderer. Route legs that only walk are written as
+See `COVERAGE.md`. Chained so far: Start (menu, Easy hall, E1 slipgate) to the E1M1 load, replayed on the real and
+mister hardware targets (`--frames 200` records exactly that segment). Route legs that only walk are written as
 `@go x y` (a dry path planned by `tools/routesim` from wherever the player stands, every
 grid node kept); the bot also detours a few steps for health, ammunition and weapons it
 needs, as a player does.

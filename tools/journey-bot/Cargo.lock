@@ -122,11 +122,12 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 [[package]]
 name = "emulator-core"
 version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
 dependencies = [
- "psx-gte-core",
- "psx-hw",
+ "psx-gte-core 0.1.0 (git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae)",
+ "psx-hw 0.1.0 (git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae)",
  "psx-iso",
- "psx-telemetry",
+ "psx-telemetry 0.1.0 (git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae)",
  "psx-trace",
  "serde",
  "serde_bytes",
@@ -319,6 +320,7 @@ dependencies = [
 [[package]]
 name = "psoxide-jit"
 version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
 dependencies = [
  "emulator-core",
  "postcard",
@@ -327,10 +329,11 @@ dependencies = [
 [[package]]
 name = "psoxide-settings"
 version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
 dependencies = [
  "directories",
  "postcard",
- "psx-hw",
+ "psx-hw 0.1.0 (git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae)",
  "psx-iso",
  "ron",
  "serde",
@@ -342,7 +345,7 @@ name = "psx-asset"
 version = "0.1.0"
 dependencies = [
  "psx-gte",
- "psx-hw",
+ "psx-hw 0.1.0",
  "psxed-format",
 ]
 
@@ -353,7 +356,7 @@ dependencies = [
  "psx-engine",
  "psx-gpu",
  "psx-gte",
- "psx-math",
+ "psx-math 0.1.0",
  "psx-pack",
 ]
 
@@ -361,7 +364,7 @@ dependencies = [
 name = "psx-cdstream"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
  "psx-rt",
 ]
@@ -371,7 +374,7 @@ name = "psx-display"
 version = "0.1.0"
 dependencies = [
  "psx-gpu",
- "psx-hw",
+ "psx-hw 0.1.0",
 ]
 
 [[package]]
@@ -380,19 +383,21 @@ version = "0.1.0"
 dependencies = [
  "psx-asset",
  "psx-cdstream",
+ "psx-display",
  "psx-font",
  "psx-gpu",
  "psx-gte",
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
  "psx-level",
- "psx-math",
+ "psx-math 0.1.0",
  "psx-pad",
  "psx-rt",
  "psx-settings",
  "psx-sfx",
+ "psx-splash",
  "psx-spu",
- "psx-telemetry",
+ "psx-telemetry 0.1.0",
  "psx-tick",
  "psx-vram",
 ]
@@ -402,9 +407,9 @@ name = "psx-font"
 version = "0.1.0"
 dependencies = [
  "psx-gpu",
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
- "psx-math",
+ "psx-math 0.1.0",
  "psx-vram",
 ]
 
@@ -413,7 +418,7 @@ name = "psx-gpu"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
 ]
 
@@ -421,15 +426,23 @@ dependencies = [
 name = "psx-gte"
 version = "0.1.0"
 dependencies = [
- "psx-gte-core",
- "psx-hw",
+ "psx-gte-core 0.1.0",
+ "psx-hw 0.1.0",
 ]
 
 [[package]]
 name = "psx-gte-core"
 version = "0.1.0"
 dependencies = [
- "psx-math",
+ "psx-math 0.1.0",
+]
+
+[[package]]
+name = "psx-gte-core"
+version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
+dependencies = [
+ "psx-math 0.1.0 (git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae)",
  "serde",
 ]
 
@@ -441,26 +454,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-hw"
+version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "psx-io"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
 ]
 
 [[package]]
 name = "psx-iso"
 version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
 
 [[package]]
 name = "psx-level"
 version = "0.1.0"
 dependencies = [
- "psx-math",
+ "psx-math 0.1.0",
 ]
 
 [[package]]
 name = "psx-math"
 version = "0.1.0"
+
+[[package]]
+name = "psx-math"
+version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
 
 [[package]]
 name = "psx-pack"
@@ -473,16 +500,16 @@ dependencies = [
 name = "psx-pad"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
- "psx-math",
+ "psx-math 0.1.0",
 ]
 
 [[package]]
 name = "psx-rt"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
 ]
 
@@ -499,15 +526,27 @@ name = "psx-sfx"
 version = "0.2.0"
 dependencies = [
  "psx-asset",
- "psx-math",
+ "psx-math 0.1.0",
  "psx-spu",
+]
+
+[[package]]
+name = "psx-splash"
+version = "0.1.0"
+dependencies = [
+ "psx-display",
+ "psx-font",
+ "psx-gpu",
+ "psx-pad",
+ "psx-rt",
+ "psx-vram",
 ]
 
 [[package]]
 name = "psx-spu"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
 ]
 
@@ -515,7 +554,15 @@ dependencies = [
 name = "psx-telemetry"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
+]
+
+[[package]]
+name = "psx-telemetry"
+version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
+dependencies = [
+ "psx-hw 0.1.0 (git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae)",
 ]
 
 [[package]]
@@ -525,6 +572,7 @@ version = "0.1.0"
 [[package]]
 name = "psx-trace"
 version = "0.1.0"
+source = "git+https://github.com/EBonura/PSoXide-emulator.git?rev=3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae#3ce0aa9c4aba4745a268e8a45e67a7bdb18217ae"
 dependencies = [
  "serde",
  "serde_json",
@@ -534,7 +582,7 @@ dependencies = [
 name = "psx-vram"
 version = "0.1.0"
 dependencies = [
- "psx-hw",
+ "psx-hw 0.1.0",
  "psx-io",
 ]
 
@@ -555,7 +603,7 @@ dependencies = [
  "psx-bsp",
  "psx-engine",
  "psx-gte",
- "psx-math",
+ "psx-math 0.1.0",
  "quake-formats",
 ]
 

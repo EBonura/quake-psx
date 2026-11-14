@@ -233,6 +233,13 @@ read-only state block). `tools/journey-bot` plays it with a host controller and 
 tapes; `psoxide-gate run tests/journeys/e1-chain/chain.toml` replays them and checks the
 exact state at every map change. See `tests/journeys/README.md`.
 
+The chain covers the title menu, the Easy hall and the E1 slipgate up to the E1M1 load, checked
+at the E1M1 checkpoint (map, skill, origin, health, armour, ammunition, weapons, keys, kills and
+secrets, exact), on `real` and `mister`. It is not covered: E1M1 to E1M2 (the recorded tape
+replays in the gate to a different state than the bot reached; not understood yet), and every
+map after E1M2 (the bot's E1M2 route stops at waypoint 18). Those segments are not in the
+chain file.
+
 ## Visual checks
 
 The automated camera checks command counts, display dimensions, world and HUD
