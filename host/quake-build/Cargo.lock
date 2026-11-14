@@ -114,7 +114,7 @@ dependencies = [
 [[package]]
 name = "psoxide-link"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=3b7ef12561fb3e1472f4422b8893d000d2d807fa#3b7ef12561fb3e1472f4422b8893d000d2d807fa"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=464dcbee633c5ace287d2fb71576bafcb933544d#464dcbee633c5ace287d2fb71576bafcb933544d"
 dependencies = [
  "serde_json",
  "toml",
@@ -171,6 +171,7 @@ version = "0.1.0"
 dependencies = [
  "psx-asset",
  "psx-cdstream",
+ "psx-display",
  "psx-font",
  "psx-gpu",
  "psx-gte",
@@ -182,6 +183,7 @@ dependencies = [
  "psx-rt",
  "psx-settings",
  "psx-sfx",
+ "psx-splash",
  "psx-spu",
  "psx-telemetry",
  "psx-tick",
@@ -247,7 +249,7 @@ dependencies = [
 [[package]]
 name = "psx-library"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=3b7ef12561fb3e1472f4422b8893d000d2d807fa#3b7ef12561fb3e1472f4422b8893d000d2d807fa"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=464dcbee633c5ace287d2fb71576bafcb933544d#464dcbee633c5ace287d2fb71576bafcb933544d"
 dependencies = [
  "serde_json",
  "sha2",
@@ -300,6 +302,18 @@ dependencies = [
  "psx-asset",
  "psx-math",
  "psx-spu",
+]
+
+[[package]]
+name = "psx-splash"
+version = "0.1.0"
+dependencies = [
+ "psx-display",
+ "psx-font",
+ "psx-gpu",
+ "psx-pad",
+ "psx-rt",
+ "psx-vram",
 ]
 
 [[package]]
