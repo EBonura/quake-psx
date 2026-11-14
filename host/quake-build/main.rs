@@ -28,9 +28,9 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // PSoXide (SDK repository: sdk/, crates/ and engine/) revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "9bb3045bdd63c12e4983b3c7f322ad5a85764fd7";
+const PSOXIDE_REV: &str = "2b81e68869caca5815691024a6796e5b25ea6419";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "9bb3045bdd63c12e4983b3c7f322ad5a85764fd7";
+const PSOXIDE_SDK_REV: &str = "2b81e68869caca5815691024a6796e5b25ea6419";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 /// The program's exceptions to the SDK's architecture gate.
 const GATE_FILE: &str = "psx-gate.toml";
@@ -44,7 +44,6 @@ const SHIPPING_CARGO_HOME_SCHEMA: u32 = 1;
 mod library;
 mod monster_code;
 mod music;
-mod ram_report;
 
 const GUEST_RECIPE_PATHS: &[&str] = &[
     // The guest's workspace root: its manifest carries the release profile
@@ -446,18 +445,11 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let cli = parse_cli()?;
+    let root = repository_root();
     if let Some(map) = &cli.ram_map {
-        let text = fs::read_to_string(map)
-            .map_err(|error| format!("read link map {}: {error}", map.display()))?;
-        let parsed = ram_report::parse(&text);
-        if cli.ram_items {
-            print!("{}", ram_report::items(&parsed));
-        } else {
-            print!("{}", ram_report::report(&parsed));
-        }
+        print!("{}", size_ram(&root, map, cli.ram_items)?);
         return Ok(());
     }
-    let root = repository_root();
     if cli.action == Action::Install {
         let games_dir = cli
             .games_dir
@@ -5805,7 +5797,13 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
     // This route only reaches the Start map, so it is the floor of the
     // measurement; docs/RAM.md records the deeper gameplay routes.
     let stack_depth = stack_profile_depth(&capture.join("stack.csv"))?;
-    let stack_reserve = ram_report::parse(&map_text).stack_reserve.unwrap_or(0);
+    let breakdown = size_ram(root, map, false)?;
+    let stack_reserve = breakdown
+        .lines()
+        .find_map(|line| line.strip_prefix("stack reserve "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|bytes| bytes.parse::<u32>().ok())
+        .unwrap_or(0);
 
     let halted = (halt.address..halt.address.saturating_add(halt.size)).contains(&pc);
     // A panic compiles to BREAK (see build_game), which psx-rt's exception handler
@@ -5873,7 +5871,6 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
     );
     fs::write(capture.join("summary.txt"), &summary)?;
     print!("{summary}");
-    let breakdown = ram_report::report(&ram_report::parse(&map_text));
     fs::write(capture.join("ram-report.txt"), &breakdown)?;
     print!("\n{breakdown}");
     if failures.is_empty() {
@@ -10081,6 +10078,23 @@ fn check_architecture_gate(
         args.push(features.as_ref());
     }
     run_hazard_tool(root, "psx-gate", &args)
+}
+
+/// The link-map RAM report of a guest image, from the SDK's `psoxide-size ram`
+/// (`items` lists every placed input section instead of the summary).
+fn size_ram(root: &Path, map: &Path, items: bool) -> Result<String> {
+    let mut command = Command::new(require_tool(&["cargo"])?);
+    command
+        .current_dir(root)
+        .args(["run", "--quiet", "--release", "--locked", "--manifest-path"])
+        .arg(root.join(".psoxide/tools/psoxide-size/Cargo.toml"))
+        .args(["--", "ram"])
+        .arg(map);
+    if items {
+        command.arg("--items");
+    }
+    let result = output(&mut command)?;
+    Ok(String::from_utf8_lossy(&result.stdout).into_owned())
 }
 
 fn run_hazard_tool(root: &Path, bin: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
