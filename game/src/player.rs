@@ -197,7 +197,7 @@ impl Player {
 
     pub fn bounds(&self) -> (Vec3I32, Vec3I32) {
         let origin = self.movement.origin();
-        (add(origin, PLAYER_MINS_Q12), add(origin, PLAYER_MAXS_Q12))
+        (origin.saturating_add(PLAYER_MINS_Q12), origin.saturating_add(PLAYER_MAXS_Q12))
     }
 
     /// Lend the player body to the brush-mover pass. Quake's pushers move
@@ -420,10 +420,3 @@ impl Player {
     }
 }
 
-fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
-    }
-}

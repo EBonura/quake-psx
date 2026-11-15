@@ -2412,7 +2412,7 @@ impl EntityScene {
             }
             // `check.origin + 0.5 * (check.mins + check.maxs)`.
             let end = midpoint_vec_all(entity.hit_mins, entity.hit_maxs);
-            let dot = dot_q12(normalize_q12(subtract_vec(end, start)), forward);
+            let dot = (normalize_q12(end.saturating_sub(start))).dot_q12(forward);
             if dot < best_dot {
                 // Too far to turn.
                 continue;
@@ -2427,8 +2427,8 @@ impl EntityScene {
         };
         // Keep the horizontal heading, only bend the pitch onto the target:
         // `end = v_forward * (dir . v_forward); end_z = dir_z; normalize`.
-        let dir = subtract_vec(self.entities[index].origin, player_origin);
-        let along = dot_q12(dir, forward);
+        let dir = (self.entities[index].origin).saturating_sub(player_origin);
+        let along = dir.dot_q12(forward);
         normalize_q12(Vec3I32 {
             x: mul_q12_i32(along, forward.x),
             y: mul_q12_i32(along, forward.y),
@@ -2630,7 +2630,7 @@ impl EntityScene {
                     removed = true;
                     break;
                 }
-                let end = add_vec(rocket.origin, rocket.step);
+                let end = rocket.origin.saturating_add(rocket.step);
                 let mut scratch = TraceScratch::default();
                 let mut world = Trace::default();
                 if !self.trace_point(map, &rocket.origin, &end, &mut scratch, &mut world) {
@@ -2748,7 +2748,7 @@ impl EntityScene {
                     removed = true;
                     break;
                 }
-                let end = add_vec(nail.origin, nail.step);
+                let end = nail.origin.saturating_add(nail.step);
                 let mut scratch = TraceScratch::default();
                 let mut world = Trace::default();
                 if !self.trace_point(map, &nail.origin, &end, &mut scratch, &mut world) {
@@ -2794,14 +2794,11 @@ impl EntityScene {
                                 .saturating_add(nail.damage.max(0) as u16);
                             // `T_Damage (other, self, self.owner, 9)`: the
                             // spike itself is the inflictor.
-                            result.player_impulse = add_vec(
-                                result.player_impulse,
-                                knockback_impulse(
+                            result.player_impulse = result.player_impulse.saturating_add(knockback_impulse(
                                     player_origin_from_mins(player_mins),
                                     interpolate_segment(nail.origin, end, fraction),
                                     nail.damage,
-                                ),
-                            );
+                                ));
                             hit_player = true;
                         }
                     }
@@ -2917,7 +2914,7 @@ impl EntityScene {
                     break;
                 }
                 ball.velocity.z = ball.velocity.z.saturating_sub(GRAVITY_STEP_Q12);
-                let end = add_vec(ball.origin, ball.velocity);
+                let end = ball.origin.saturating_add(ball.velocity);
                 let mut scratch = TraceScratch::default();
                 let mut world = Trace::default();
                 if !self.trace_point(map, &ball.origin, &end, &mut scratch, &mut world) {
@@ -2931,14 +2928,11 @@ impl EntityScene {
                         .saturating_add(traps::FIREBALL_DAMAGE as u16);
                     // `fire_touch`: `T_Damage (other, self, self, 20)`, so the
                     // ball at its contact point pushes the player.
-                    result.player_impulse = add_vec(
-                        result.player_impulse,
-                        knockback_impulse(
+                    result.player_impulse = result.player_impulse.saturating_add(knockback_impulse(
                             player_origin_from_mins(player_mins),
                             ball.origin,
                             traps::FIREBALL_DAMAGE,
-                        ),
-                    );
+                        ));
                 }
                 if hit_player || world.fraction < 1 << 12 {
                     result.impacts = result.impacts.saturating_add(1);
@@ -3012,7 +3006,7 @@ impl EntityScene {
                 grenade.angles.y = grenade.angles.y.wrapping_add(grenade.angular_velocity.y);
                 grenade.angles.z = grenade.angles.z.wrapping_add(grenade.angular_velocity.z);
                 grenade.velocity.z = grenade.velocity.z.saturating_sub(GRAVITY_STEP_Q12);
-                let end = add_vec(grenade.origin, grenade.velocity);
+                let end = grenade.origin.saturating_add(grenade.velocity);
                 let mut scratch = TraceScratch::default();
                 let mut world = Trace::default();
                 if !self.trace_point(map, &grenade.origin, &end, &mut scratch, &mut world) {
@@ -3438,9 +3432,7 @@ impl EntityScene {
             result.self_damage = result.self_damage.saturating_add(taken as u16);
             // `T_Damage`: the push uses the points before armour, and the
             // player's own rocket pushes just the same (rocket jumping).
-            result.player_impulse = add_vec(
-                result.player_impulse,
-                knockback_impulse(
+            result.player_impulse = result.player_impulse.saturating_add(knockback_impulse(
                     // `targ.origin`, not the box centre the falloff measures.
                     Vec3I32 {
                         z: player_origin.z.saturating_sub(4 << 12),
@@ -3448,8 +3440,7 @@ impl EntityScene {
                     },
                     self.knockback_centre.unwrap_or(impact),
                     player_points,
-                ),
-            );
+                ));
         }
         Some(())
     }
@@ -3539,8 +3530,8 @@ impl EntityScene {
                 || aabb_overlaps(
                     trace.end,
                     trace.end,
-                    subtract_vec(mins, slack),
-                    add_vec(maxs, slack),
+                    mins.saturating_sub(slack),
+                    maxs.saturating_add(slack),
                 )
             {
                 let mut damage = DamageResult::default();
@@ -4183,7 +4174,7 @@ impl EntityScene {
                     rider,
                     ground_entity,
                     render_index,
-                    subtract_vec(self.entities[render_index].origin, previous),
+                    (self.entities[render_index].origin).saturating_sub(previous),
                 )
             } else {
                 None
@@ -4315,7 +4306,7 @@ impl EntityScene {
                 rider,
                 ground_entity,
                 render_index,
-                subtract_vec(self.entities[render_index].origin, previous),
+                (self.entities[render_index].origin).saturating_sub(previous),
             );
             let blocked = blocker.is_some();
             if blocked {
@@ -4672,8 +4663,8 @@ impl EntityScene {
             self.targets.is_enabled(index)
         })?;
         let player_origin = midpoint_vec_all(player_mins, player_maxs);
-        let relative_mins = subtract_vec(player_mins, player_origin);
-        let relative_maxs = subtract_vec(player_maxs, player_origin);
+        let relative_mins = player_mins.saturating_sub(player_origin);
+        let relative_maxs = player_maxs.saturating_sub(player_origin);
         let (frag_mins, frag_maxs) =
             teleport::telefrag_bounds(target.origin, relative_mins, relative_maxs);
         let mut telefragged = 0u8;
@@ -4755,8 +4746,8 @@ impl EntityScene {
         }) else {
             return Some(false);
         };
-        let relative_mins = subtract_vec(hit_mins, origin);
-        let relative_maxs = subtract_vec(hit_maxs, origin);
+        let relative_mins = hit_mins.saturating_sub(origin);
+        let relative_maxs = hit_maxs.saturating_sub(origin);
         let (frag_mins, frag_maxs) =
             teleport::telefrag_bounds(target.origin, relative_mins, relative_maxs);
         let nightmare = self.nightmare();
@@ -5476,10 +5467,7 @@ impl EntityScene {
                         self.entities[index].hit_mins,
                         self.entities[index].hit_maxs,
                     );
-                    result.player_impulse = add_vec(
-                        result.player_impulse,
-                        knockback_impulse(player_origin, inflictor, damage),
-                    );
+                    result.player_impulse = result.player_impulse.saturating_add(knockback_impulse(player_origin, inflictor, damage));
                     if taken > 0 {
                         result.player_damage = result.player_damage.saturating_add(taken as u16);
                         result.push_sound(SoundEvent::player_voice(
@@ -6295,7 +6283,7 @@ impl EntityScene {
             if touched.is_some() || delta == Vec3I32::default() {
                 continue;
             }
-            let wished = add_vec(position, delta);
+            let wished = position.saturating_add(delta);
             let mut scratch = TraceScratch::default();
             let mut trace = Trace::default();
             if !self.trace_hull(map, hull, &position, &wished, &mut scratch, &mut trace) {
@@ -6382,10 +6370,7 @@ impl EntityScene {
         // the middle of its body box.
         let inflictor =
             midpoint_vec_all(self.entities[index].hit_mins, self.entities[index].hit_maxs);
-        result.player_impulse = add_vec(
-            result.player_impulse,
-            knockback_impulse(player_origin, inflictor, damage),
-        );
+        result.player_impulse = result.player_impulse.saturating_add(knockback_impulse(player_origin, inflictor, damage));
         if taken > 0 {
             result.player_damage = result.player_damage.saturating_add(taken as u16);
             result.push_sound(SoundEvent::player_voice(
@@ -6537,17 +6522,14 @@ impl EntityScene {
                     y: -cos_q12(angle),
                     z: 0,
                 };
-                let origin = add_vec(
-                    add_vec(shooter.origin, scale(facing, 14)),
-                    Vec3I32 {
+                let origin = (shooter.origin.saturating_add(scale(facing, 14))).saturating_add(Vec3I32 {
                         x: facing_right.x.saturating_mul(i32::from(side)),
                         y: facing_right.y.saturating_mul(i32::from(side)),
                         z: 30 << 12,
-                    },
-                );
+                    });
                 let across = if side > 0 { 13 } else { -13 };
-                let aim_point = subtract_vec(player_origin, scale(facing_right, across));
-                let dir = normalize_q12(subtract_vec(aim_point, origin));
+                let aim_point = player_origin.saturating_sub(scale(facing_right, across));
+                let dir = normalize_q12(aim_point.saturating_sub(origin));
                 (
                     MonsterMissileKind::Spit,
                     NAIL_MODEL_ID,
@@ -6754,7 +6736,7 @@ impl EntityScene {
             weapon,
             &mut splash,
         )?;
-        result.player_impulse = add_vec(result.player_impulse, splash.player_impulse);
+        result.player_impulse = result.player_impulse.saturating_add(splash.player_impulse);
         if splash.self_damage > 0 {
             result.player_damage = result.player_damage.saturating_add(splash.self_damage);
             result.push_sound(SoundEvent::player_voice(0xa0));
@@ -7197,22 +7179,16 @@ impl EntityScene {
                 if let MonsterMissileKind::Backpack(ammo) = missile.kind {
                     // `BackpackTouch`: `SOLID_TRIGGER` box '-16 -16 0' '16 16 56'
                     // against the player, whether the pack still flies or rests.
-                    let mins = add_vec(
-                        missile.origin,
-                        Vec3I32 {
+                    let mins = missile.origin.saturating_add(Vec3I32 {
                             x: -16 << 12,
                             y: -16 << 12,
                             z: 0,
-                        },
-                    );
-                    let maxs = add_vec(
-                        missile.origin,
-                        Vec3I32 {
+                        });
+                    let maxs = missile.origin.saturating_add(Vec3I32 {
                             x: 16 << 12,
                             y: 16 << 12,
                             z: 56 << 12,
-                        },
-                    );
+                        });
                     if weapon.inventory().health() > 0
                         && aabb_overlaps(mins, maxs, player_mins, player_maxs)
                     {
@@ -7246,7 +7222,7 @@ impl EntityScene {
                     missile.angles.z = missile.angles.z.wrapping_add(missile.angular_velocity.z);
                     missile.velocity.z = missile.velocity.z.saturating_sub(GRAVITY_STEP_Q12);
                 }
-                let end = add_vec(missile.origin, missile.velocity);
+                let end = missile.origin.saturating_add(missile.velocity);
                 let mut scratch = TraceScratch::default();
                 let mut world = Trace::default();
                 if !self.trace_point(map, &missile.origin, &end, &mut scratch, &mut world) {
@@ -7284,14 +7260,11 @@ impl EntityScene {
                             // `T_Damage (other, self, self.owner, ...)`: the
                             // missile is the inflictor, so it pushes from where
                             // it touched.
-                            result.player_impulse = add_vec(
-                                result.player_impulse,
-                                knockback_impulse(
+                            result.player_impulse = result.player_impulse.saturating_add(knockback_impulse(
                                     player_origin_from_mins(player_mins),
                                     impact,
                                     missile.damage,
-                                ),
-                            );
+                                ));
                             if taken > 0 {
                                 result.player_damage =
                                     result.player_damage.saturating_add(taken as u16);
@@ -8060,8 +8033,8 @@ impl EntityScene {
         // original already has the ground entity from the physics pass.  Use
         // the same geometric resting contact we use for other carried bodies
         // as a deterministic fallback against the mover's pre-step deck.
-        let previous_mins = subtract_vec(mins, delta);
-        let previous_maxs = subtract_vec(maxs, delta);
+        let previous_mins = mins.saturating_sub(delta);
+        let previous_maxs = maxs.saturating_sub(delta);
         let player_standing = ground_entity == Some(render_index as u16)
             || rests_on(rider.body(), previous_mins, previous_maxs);
         let mut scratch = TraceScratch::default();
@@ -8103,7 +8076,7 @@ impl EntityScene {
         // A blocked pusher is rolled back whole, so nothing it moved may keep
         // its move either. The ledger hands out no moves at all in that case.
         if let Some(origin) = ledger.player_move() {
-            rider.translate(subtract_vec(origin, rider.origin));
+            rider.translate(origin.saturating_sub(rider.origin));
         }
         for (index, origin) in ledger.body_moves().iter().copied() {
             update_moving_alias_origin(
@@ -8213,7 +8186,7 @@ impl EntityScene {
         ];
         let mut scratch = TraceScratch::default();
         for offset in offsets {
-            let eye = add_vec(target, offset);
+            let eye = target.saturating_add(offset);
             let mut trace = Trace::default();
             if self.trace_point(map, &eye, &target, &mut scratch, &mut trace)
                 && !trace.start_solid
@@ -8599,7 +8572,7 @@ impl EntityScene {
             }
             let target = midpoint_vec(entity.hit_mins, entity.hit_maxs);
             for &offset in &OFFSETS {
-                let eye = add_vec(target, offset);
+                let eye = target.saturating_add(offset);
                 let mut trace = Trace::default();
                 if self.trace_point(map, &eye, &target, &mut scratch, &mut trace)
                     && !trace.start_solid
@@ -8637,7 +8610,7 @@ impl EntityScene {
             }
         };
         let mut scratch = TraceScratch::default();
-        for candidate in [add_vec(eye, lateral), subtract_vec(eye, lateral)] {
+        for candidate in [eye.saturating_add(lateral), eye.saturating_sub(lateral)] {
             let mut side = Trace::default();
             let mut sight = Trace::default();
             if self.trace_point(map, &eye, &candidate, &mut scratch, &mut side)
@@ -8817,7 +8790,7 @@ impl EntityScene {
             }
             let target = midpoint_vec(entity.hit_mins, entity.hit_maxs);
             for &offset in offsets {
-                let eye = add_vec(target, offset);
+                let eye = target.saturating_add(offset);
                 let mut trace = Trace::default();
                 if self.trace_point(map, &eye, &target, &mut scratch, &mut trace)
                     && !trace.start_solid
@@ -9416,8 +9389,8 @@ fn update_moving_alias_origin(
         z: origin.z.saturating_sub(render.origin.z),
     };
     render.origin = origin;
-    render.hit_mins = add_vec(render.hit_mins, delta);
-    render.hit_maxs = add_vec(render.hit_maxs, delta);
+    render.hit_mins = render.hit_mins.saturating_add(delta);
+    render.hit_maxs = render.hit_maxs.saturating_add(delta);
     (render.clip_mins, render.clip_maxs) =
         alias_clip_bounds(origin, model_clip_radius(model.header()));
     render.leaf_index = leaf_index.min(u16::MAX as usize) as u16;
@@ -9831,7 +9804,7 @@ fn aabb_impact_normal(impact: Vec3I32, mins: Vec3I32, maxs: Vec3I32) -> Vec3I16 
 #[inline(never)]
 fn knockback_impulse(target_origin: Vec3I32, inflictor_center: Vec3I32, damage: i16) -> Vec3I32 {
     let damage = i32::from(damage.max(0));
-    let raw = subtract_vec(target_origin, inflictor_center);
+    let raw = target_origin.saturating_sub(inflictor_center);
     // Whole units keep the squares in range; inside one unit the raw Q12
     // offset is small enough to use directly.
     let shift = if raw.x.abs() >= 1 << 12 || raw.y.abs() >= 1 << 12 || raw.z.abs() >= 1 << 12 {
@@ -10378,8 +10351,8 @@ fn trace_translated_hull(
     scratch: &mut TraceScratch,
     output: &mut Trace,
 ) -> bool {
-    let local_start = subtract_vec(*start, origin);
-    let local_end = subtract_vec(*end, origin);
+    let local_start = (*start).saturating_sub(origin);
+    let local_end = (*end).saturating_sub(origin);
     let mut trace = Trace::default();
     if !hull.trace_into(&local_start, &local_end, scratch, &mut trace) {
         return false;
@@ -10422,31 +10395,6 @@ fn swept_player_overlaps_entity(start: Vec3I32, end: Vec3I32, entity: &RenderEnt
         axis += 1;
     }
     true
-}
-
-const fn add_vec(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
-    }
-}
-
-const fn subtract_vec(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_sub(right.x),
-        y: left.y.saturating_sub(right.y),
-        z: left.z.saturating_sub(right.z),
-    }
-}
-
-/// Q12 dot product. `left` may carry a large Q12 offset; `right` should be
-/// a unit-scale vector so the products stay in range.
-#[inline(never)]
-fn dot_q12(left: Vec3I32, right: Vec3I32) -> i32 {
-    mul_q12_i32(left.x, right.x)
-        .saturating_add(mul_q12_i32(left.y, right.y))
-        .saturating_add(mul_q12_i32(left.z, right.z))
 }
 
 #[cfg(any(

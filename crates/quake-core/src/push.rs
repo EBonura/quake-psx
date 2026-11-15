@@ -31,9 +31,9 @@ impl RiderBody {
 
     fn translated(self, delta: Vec3I32) -> Self {
         Self {
-            origin: add(self.origin, delta),
-            mins: add(self.mins, delta),
-            maxs: add(self.maxs, delta),
+            origin: self.origin.saturating_add(delta),
+            mins: self.mins.saturating_add(delta),
+            maxs: self.maxs.saturating_add(delta),
         }
     }
 }
@@ -129,7 +129,7 @@ pub fn push_move<C: MovementTrace + ?Sized>(
     let mut carried = false;
     let mut blocking_body = None;
     if standing_on || penetrates(body, mover_mins, mover_maxs) {
-        let destination = add(body.origin, delta);
+        let destination = body.origin.saturating_add(delta);
         let mut trace = MovementTraceResult::unobstructed(destination);
         // A provider that cannot answer leaves the body where it was, which
         // can only ever under-move a rider. The original has no such path.
@@ -138,7 +138,7 @@ pub fn push_move<C: MovementTrace + ?Sized>(
             // trace that never left solid, and `SV_PushEntity` takes that
             // answer as-is: a rider is moved and then tested, never refused up
             // front.
-            moved = body.translated(subtract(trace.end, body.origin));
+            moved = body.translated(trace.end.saturating_sub(body.origin));
             carried = moved.origin != body.origin;
             blocking_body = trace.blocking_body;
         }
@@ -199,22 +199,6 @@ impl BlockCrush {
     }
 }
 
-const fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
-    }
-}
-
-const fn subtract(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_sub(right.x),
-        y: left.y.saturating_sub(right.y),
-        z: left.z.saturating_sub(right.z),
-    }
-}
-
 const fn add_scalar(value: Vec3I32, amount: i32) -> Vec3I32 {
     Vec3I32 {
         x: value.x.saturating_add(amount),
@@ -247,7 +231,7 @@ mod tests {
             y: y << 12,
             z: z << 12,
         };
-        RiderBody::new(origin, add(origin, PLAYER_MINS), add(origin, PLAYER_MAXS))
+        RiderBody::new(origin, origin.saturating_add(PLAYER_MINS), origin.saturating_add(PLAYER_MAXS))
     }
 
     /// Open air: every push completes.
@@ -370,12 +354,12 @@ mod tests {
                 &mut scratch,
                 rider,
                 true,
-                subtract(after, before),
+                after.saturating_sub(before),
                 mins,
                 maxs,
             );
             assert!(!outcome.blocked, "open air never blocks a lift");
-            rider = rider.translated(subtract(outcome.origin, rider.origin));
+            rider = rider.translated(outcome.origin.saturating_sub(rider.origin));
             if plat.state() == QuakeMoverState::Top {
                 break;
             }
@@ -411,7 +395,7 @@ mod tests {
                 &mut scratch,
                 rider,
                 false,
-                subtract(after, before),
+                after.saturating_sub(before),
                 mins,
                 maxs,
             );
@@ -448,11 +432,11 @@ mod tests {
                 &mut scratch,
                 rider,
                 true,
-                subtract(after, before),
+                after.saturating_sub(before),
                 mins,
                 maxs,
             );
-            rider = rider.translated(subtract(outcome.origin, rider.origin));
+            rider = rider.translated(outcome.origin.saturating_sub(rider.origin));
             if outcome.blocked {
                 plat = restore;
                 blocked_ticks += 1;
@@ -486,11 +470,11 @@ mod tests {
                 &mut scratch,
                 rider,
                 true,
-                subtract(after, before),
+                after.saturating_sub(before),
                 mins,
                 maxs,
             );
-            rider = rider.translated(subtract(outcome.origin, rider.origin));
+            rider = rider.translated(outcome.origin.saturating_sub(rider.origin));
             assert!(
                 !outcome.blocked,
                 "a retreating lift cannot still be crushing"
@@ -544,12 +528,12 @@ mod tests {
                 &mut scratch,
                 rider,
                 true,
-                subtract(after, before),
+                after.saturating_sub(before),
                 mins,
                 maxs,
             );
             assert!(!outcome.blocked);
-            rider = rider.translated(subtract(outcome.origin, rider.origin));
+            rider = rider.translated(outcome.origin.saturating_sub(rider.origin));
             if door.state() == QuakeMoverState::Top {
                 break;
             }

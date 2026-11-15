@@ -232,12 +232,7 @@ impl<'a> Reader<'a> {
 /// Half-Life save uses). The memory card's own per-frame XOR catches media
 /// damage; this catches a short or interleaved write and a layout change.
 pub fn checksum(bytes: &[u8]) -> u32 {
-    let mut hash: u32 = 0x811c_9dc5;
-    for &byte in bytes {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    hash
+    psx_pack::fnv1a32(bytes)
 }
 
 /// Write `values` as words with zero runs coded as a zero word and a run

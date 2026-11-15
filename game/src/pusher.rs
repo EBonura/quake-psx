@@ -72,9 +72,9 @@ impl Rider {
 
     /// Move the whole body by `delta`. Only a committed ledger may call this.
     pub fn translate(&mut self, delta: Vec3I32) {
-        self.origin = add(self.origin, delta);
-        self.mins = add(self.mins, delta);
-        self.maxs = add(self.maxs, delta);
+        self.origin = self.origin.saturating_add(delta);
+        self.mins = self.mins.saturating_add(delta);
+        self.maxs = self.maxs.saturating_add(delta);
         self.carried = true;
     }
 }
@@ -239,10 +239,3 @@ where
     ledger
 }
 
-const fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
-    }
-}

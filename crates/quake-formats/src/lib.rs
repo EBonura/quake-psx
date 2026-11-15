@@ -520,11 +520,8 @@ pub fn episode_directory_index(
     Ok(None)
 }
 
-#[optimize(size)]
 fn directory_checksum(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0x811c_9dc5, |hash, byte| {
-        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
-    })
+    psx_pack::fnv1a32(bytes)
 }
 
 /// A reader which replays one already-validated PSB index from memory while

@@ -1446,16 +1446,7 @@ pub fn run() -> ! {
         // also stands in for the damage message's `from` when the view kick
         // is worked out below.
         #[allow(unused_mut)]
-        let mut damage_impulse = add_vec(
-            add_vec(
-                rocket_result.unwrap_or_default().player_impulse,
-                grenade_result.unwrap_or_default().damage.player_impulse,
-            ),
-            add_vec(
-                nail_result.unwrap_or_default().player_impulse,
-                fireball_result.unwrap_or_default().player_impulse,
-            ),
-        );
+        let mut damage_impulse = ((rocket_result.unwrap_or_default().player_impulse).saturating_add(grenade_result.unwrap_or_default().damage.player_impulse)).saturating_add((nail_result.unwrap_or_default().player_impulse).saturating_add(fireball_result.unwrap_or_default().player_impulse));
         player.add_velocity(damage_impulse);
         // `T_Damage` runs `player_pain` for the player's own rocket, a trap
         // spike and a lava ball too; only the hazards had a voice.
@@ -1560,10 +1551,10 @@ pub fn run() -> ! {
                         CENTERPRINT_TICKS,
                     );
                 }
-                knockback = add_vec(knockback, result.player_impulse);
+                knockback = knockback.saturating_add(result.player_impulse);
             }
             player.add_velocity(knockback);
-            damage_impulse = add_vec(damage_impulse, knockback);
+            damage_impulse = damage_impulse.saturating_add(knockback);
             #[cfg(feature = "monster-regression")]
             crate::monster_regression::observe(&entities, &weapon, monsters.unwrap_or_default());
             #[cfg(feature = "spawn-probe")]
@@ -2268,10 +2259,3 @@ fn reset_level_state(
     Some(player)
 }
 
-fn add_vec(left: quake_formats::Vec3I32, right: quake_formats::Vec3I32) -> quake_formats::Vec3I32 {
-    quake_formats::Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
-    }
-}

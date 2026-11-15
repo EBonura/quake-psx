@@ -301,10 +301,10 @@ impl QuakeMover {
         let (speed, wait_ticks, automatic, toggle) = match class {
             CLASS_FUNC_BUTTON => {
                 let lip = i32::from(if source.count == 0 { 4 } else { source.count }) << 12;
-                let distance = dot_q12(direction, size)
+                let distance = direction.dot_q12(size)
                     .saturating_abs()
                     .saturating_sub(lip);
-                top = add(bottom, scale_q12(direction, distance));
+                top = bottom.saturating_add(direction.scale_q12(distance));
                 (
                     authored_speed(source.speed, BUTTON_DEFAULT_SPEED),
                     fixed_seconds_to_ticks(source.wait, 60),
@@ -335,7 +335,7 @@ impl QuakeMover {
             }
             CLASS_FUNC_DOOR_SECRET => {
                 let (sideways, forward) = secret_legs(source.spawn_flags, direction, size);
-                top = add(bottom, sideways);
+                top = bottom.saturating_add(sideways);
                 extra = forward;
                 // `if (!self.wait) self.wait = 5`.
                 (
@@ -347,10 +347,10 @@ impl QuakeMover {
             }
             _ => {
                 let lip = i32::from(if source.count == 0 { 8 } else { source.count }) << 12;
-                let distance = dot_q12(direction, size)
+                let distance = direction.dot_q12(size)
                     .saturating_abs()
                     .saturating_sub(lip);
-                top = add(bottom, scale_q12(direction, distance));
+                top = bottom.saturating_add(direction.scale_q12(distance));
                 // `DOOR_START_OPEN` spawns the door one whole travel away from
                 // the brush it was authored in and sends it BACK there when it
                 // is triggered, which the original expresses by swapping the
@@ -370,7 +370,7 @@ impl QuakeMover {
                 )
             }
         };
-        let mut open_offset = subtract(top, bottom);
+        let mut open_offset = top.saturating_sub(bottom);
         if open_offset == (Vec3I32 { x: 0, y: 0, z: 0 }) && class == CLASS_FUNC_BUTTON {
             // One Q20.12 quantum is deliberately below the whole-unit bounds
             // and render precision. It exists only to drive Bottom -> Top.
@@ -565,7 +565,7 @@ impl QuakeMover {
         } = self.extra
         {
             // A secret door's forward leg rides on top of `dest1`.
-            origin = add(origin, secret_forward_offset(leg, progress, travel_ticks));
+            origin = origin.saturating_add(secret_forward_offset(leg, progress, travel_ticks));
         }
         BrushTransform::translated(origin)
     }
@@ -995,36 +995,6 @@ fn secret_forward_offset(leg: Vec3I16, progress: u16, travel_ticks: u16) -> Vec3
         x: axis(leg.x, progress, travel_ticks),
         y: axis(leg.y, progress, travel_ticks),
         z: axis(leg.z, progress, travel_ticks),
-    }
-}
-
-fn dot_q12(left: Vec3I32, right: Vec3I32) -> i32 {
-    psx_math::int32::mul_q12_i32(left.x, right.x)
-        .saturating_add(psx_math::int32::mul_q12_i32(left.y, right.y))
-        .saturating_add(psx_math::int32::mul_q12_i32(left.z, right.z))
-}
-
-fn scale_q12(vector: Vec3I32, factor: i32) -> Vec3I32 {
-    Vec3I32 {
-        x: psx_math::int32::mul_q12_i32(vector.x, factor),
-        y: psx_math::int32::mul_q12_i32(vector.y, factor),
-        z: psx_math::int32::mul_q12_i32(vector.z, factor),
-    }
-}
-
-const fn subtract(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_sub(right.x),
-        y: left.y.saturating_sub(right.y),
-        z: left.z.saturating_sub(right.z),
-    }
-}
-
-const fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
     }
 }
 

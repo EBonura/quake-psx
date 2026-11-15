@@ -623,7 +623,7 @@ impl MovementState {
             y: mul_q12_i32(psx_math::sin_q12(yaw), WATER_JUMP_PROBE_Q12),
             z: 0,
         };
-        let waist_end = add(self.origin, forward);
+        let waist_end = self.origin.saturating_add(forward);
         trace(collision, &self.origin, &waist_end, scratch);
         if scratch.trace.trapped() || scratch.trace.fraction >= Q12_ONE {
             return false;
@@ -637,7 +637,7 @@ impl MovementState {
         if position_stuck(collision, lifted, scratch) {
             return false;
         }
-        let lifted_end = add(lifted, forward);
+        let lifted_end = lifted.saturating_add(forward);
         trace(collision, &lifted, &lifted_end, scratch);
         if scratch.trace.trapped() || scratch.trace.fraction < Q12_ONE {
             return false;
@@ -791,7 +791,7 @@ impl MovementState {
         if self.velocity.x == 0 && self.velocity.y == 0 {
             return;
         }
-        let destination = add(self.origin, frame_displacement(self.velocity));
+        let destination = self.origin.saturating_add(frame_displacement(self.velocity));
         trace(collision, &self.origin, &destination, scratch);
         if !scratch.trace.trapped() && scratch.trace.fraction == Q12_ONE {
             self.origin = scratch.trace.end;
@@ -1038,7 +1038,7 @@ fn accelerate(velocity: &mut Vec3I32, direction: Vec3I32, wish_speed: i32, air: 
     } else {
         wish_speed
     };
-    let current_speed = dot(*velocity, direction);
+    let current_speed = (*velocity).dot_q12(direction);
     let add_speed = target_speed.saturating_sub(current_speed);
     if add_speed <= 0 {
         return;
@@ -1182,7 +1182,7 @@ fn fly_move_for_time<C: MovementTrace + ?Sized>(
         } else {
             Vec3I32 { x: 0, y: 0, z: 0 }
         };
-        if dot(*velocity, primal_velocity) <= 0 {
+        if (*velocity).dot_q12(primal_velocity) <= 0 {
             *velocity = Vec3I32 { x: 0, y: 0, z: 0 };
             break;
         }
@@ -1343,7 +1343,7 @@ fn crease_velocity(velocity: Vec3I32, left: Vec3I16, right: Vec3I16) -> Vec3I32 
         y: div_q12_i32(direction.y, direction_length),
         z: div_q12_i32(direction.z, direction_length),
     };
-    scale(unit, dot(velocity, unit))
+    unit.scale_q12(velocity.dot_q12(unit))
 }
 
 fn vector_length(vector: Vec3I32) -> i32 {
@@ -1366,12 +1366,6 @@ fn vector_length(vector: Vec3I32) -> i32 {
     .saturating_mul(1 << precision_shift)
 }
 
-fn dot(left: Vec3I32, right: Vec3I32) -> i32 {
-    mul_q12_i32(left.x, right.x)
-        .saturating_add(mul_q12_i32(left.y, right.y))
-        .saturating_add(mul_q12_i32(left.z, right.z))
-}
-
 fn dot_normal(vector: Vec3I32, normal: Vec3I16) -> i32 {
     mul_q12_i32(vector.x, normal.x as i32)
         .saturating_add(mul_q12_i32(vector.y, normal.y as i32))
@@ -1383,22 +1377,6 @@ fn frame_displacement(velocity: Vec3I32) -> Vec3I32 {
         x: velocity.x / VIDEO_TICKS_PER_SECOND,
         y: velocity.y / VIDEO_TICKS_PER_SECOND,
         z: velocity.z / VIDEO_TICKS_PER_SECOND,
-    }
-}
-
-fn add(left: Vec3I32, right: Vec3I32) -> Vec3I32 {
-    Vec3I32 {
-        x: left.x.saturating_add(right.x),
-        y: left.y.saturating_add(right.y),
-        z: left.z.saturating_add(right.z),
-    }
-}
-
-fn scale(vector: Vec3I32, factor: i32) -> Vec3I32 {
-    Vec3I32 {
-        x: mul_q12_i32(vector.x, factor),
-        y: mul_q12_i32(vector.y, factor),
-        z: mul_q12_i32(vector.z, factor),
     }
 }
 

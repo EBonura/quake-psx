@@ -14,6 +14,7 @@ version = "0.1.0"
 dependencies = [
  "psx-gte",
  "psx-hw",
+ "psx-math",
  "psxed-format",
 ]
 
@@ -96,6 +97,7 @@ version = "0.1.0"
 dependencies = [
  "psx-gte-core",
  "psx-hw",
+ "psx-math",
 ]
 
 [[package]]
@@ -210,6 +212,7 @@ version = "0.1.0"
 dependencies = [
  "psx-hw",
  "psx-io",
+ "psx-math",
 ]
 
 [[package]]
@@ -225,6 +228,7 @@ dependencies = [
  "psx-gpu",
  "psx-gte",
  "psx-math",
+ "psx-pack",
  "quake-formats",
 ]
 
@@ -233,4 +237,6 @@ name = "quake-formats"
 version = "0.1.0"
 dependencies = [
  "psx-bsp",
+ "psx-math",
+ "psx-pack",
 ]
