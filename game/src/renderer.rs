@@ -240,7 +240,7 @@ const SKY_FOREGROUND_CYCLE_SECONDS: u32 = 8;
 const SKY_FOREGROUND_COLUMNS: usize = 10;
 const SKY_FOREGROUND_ROWS: usize = 12;
 const SKY_OT_SLOT: u32 = 2047;
-const SKY_BACKGROUND_WORDS: usize = psx_bsp::sky::VIEW_RAY_SKY_PACKET_WORDS;
+const SKY_BACKGROUND_WORDS: usize = psx_engine::sky::VIEW_RAY_SKY_PACKET_WORDS;
 // Every page that draws into this arena is a fixed string set with a bounded
 // digit count. The peak is the Levels page plus the longest now-playing banner
 // at 228 quads; 232 leaves four packets of measured margin. Each arena entry is
@@ -5871,7 +5871,7 @@ fn animate_special_surface(vertices: &mut [ClassicAffineVertex], texture: Textur
     }
 }
 
-type SkySamples = psx_bsp::sky::LayeredSkySamples;
+type SkySamples = psx_engine::sky::LayeredSkySamples;
 
 /// Last frame's sky lattice samples with the view rotation and layer width
 /// that produced them. The guest is single-threaded and the renderer owns the
@@ -5957,7 +5957,7 @@ unsafe fn submit_view_ray_sky_background(
     let samples = unsafe { cached_sky_samples(view.rotation.m, width) };
 
     let submit = || unsafe {
-        let sky = psx_bsp::sky::submit_layered_sky_samples_to_slot(
+        let sky = psx_engine::sky::submit_layered_sky_samples_to_slot(
             texture.texture_page,
             clut_texture(),
             [texture.atlas.x, texture.atlas.y],
@@ -7991,12 +7991,12 @@ fn compact_plane_distance(plane: CompactPlane, point: Vec3I32) -> i32 {
 }
 
 fn decompress_visibility(input: &[u8], offset: usize, output: &mut [u8]) -> bool {
-    psx_bsp::visibility::decode_strict(input, offset, output)
+    psx_pack::visibility::decode_strict(input, offset, output)
 }
 
 /// OR one Quake RLE visibility row into an already decompressed row without a
 /// third scratch buffer. Zero runs only advance the destination.
 #[optimize(size)]
 fn merge_visibility(input: &[u8], offset: usize, output: &mut [u8]) -> bool {
-    psx_bsp::visibility::merge_strict(input, offset, output)
+    psx_pack::visibility::merge_strict(input, offset, output)
 }

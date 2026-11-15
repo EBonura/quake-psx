@@ -86,7 +86,7 @@ pub fn screen_view_ray(
 /// a radial streak. Keep the original signed deltas and translate the whole
 /// packet by complete periods until all four coordinates fit in GP0's byte
 /// UVs.
-pub use psx_bsp::sky::packet_quad_uv;
+pub use psx_engine::sky::packet_quad_uv;
 
 /// Return material-relative UV bytes for a layered Quake sky vertex.
 ///
