@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Consolidation onto the SDK (SDK pin `1df54aec3`). The music files are found with the SDK's ISO9660
+- Consolidation onto the SDK (SDK pin `b05a6476`). The music files are found with the SDK's ISO9660
   lookup; the button edges use `PadEdges` (the menu's left-stick fold stays four comparisons: the SDK's
   `stick_bits::<48>` links 12 bytes more text); the
   depth-sort probe writes through `psx_telemetry::emit::sort_class` (its gate exception is gone);
