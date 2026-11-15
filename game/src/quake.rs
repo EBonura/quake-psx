@@ -50,7 +50,6 @@ pub(crate) fn reinstall_monster_code(
     monster_code: &mut crate::monster_code::MonsterCode,
 ) {
     if monster_code.install(world, crate::monster_code::Image::Monsters).is_err() {
-        psx_rt::tty::println("quake-psx: Rust monster code reinstall failed");
         psx_rt::halt();
     }
 }
@@ -152,7 +151,6 @@ fn load_game(
         presentation,
         monster_code,
     ) else {
-        psx_rt::tty::println("quake-psx: Rust saved game load failed");
         psx_rt::halt();
     };
     music.suspend_for_load();
@@ -177,7 +175,6 @@ fn load_game(
         presentation,
         monster_code,
     ) else {
-        psx_rt::tty::println("quake-psx: Rust saved game recovery load failed");
         psx_rt::halt();
     };
     Ok(player)
@@ -237,7 +234,6 @@ pub fn run() -> ! {
     #[cfg(feature = "monster-code-overlay")]
     let mut monster_code = crate::monster_code::MonsterCode::new();
     if world.load_graphics().is_err() {
-        psx_rt::tty::println("quake-psx: Rust graphics load failed");
         psx_rt::halt();
     }
     let mut entities = crate::entity::EntityScene::new();
@@ -251,7 +247,6 @@ pub fn run() -> ! {
     let mut renderer = crate::renderer::Renderer::new();
     let boot_map = initial_map();
     let Some(loading_picture) = world.picture(quake_formats::GraphicsPictureId::Disc) else {
-        psx_rt::tty::println("quake-psx: Rust loading picture is missing");
         psx_rt::halt();
     };
     let global_audio = quake_core::loading::present_before_payload(
@@ -264,7 +259,6 @@ pub fn run() -> ! {
         },
     );
     if global_audio.is_err() {
-        psx_rt::tty::println("quake-psx: Rust global sound load failed");
         let mut line = [0u8; STATUS_LINE_BYTES];
         let status = status_line(b"SOUND ERROR ", crate::platform::storage_diag(), &mut line);
         renderer.draw_loading_status(loading_picture, boot_map, status);
@@ -281,7 +275,6 @@ pub fn run() -> ! {
         #[cfg(feature = "monster-code-overlay")]
         &mut monster_code,
     ) else {
-        psx_rt::tty::println("quake-psx: Rust initial level load failed");
         psx_rt::halt();
     };
     let mut weapon = quake_core::combat::WeaponState::new();
@@ -292,44 +285,36 @@ pub fn run() -> ! {
     let mut ring_sound_ticks: u16 = 0;
     #[cfg(feature = "arsenal-regression")]
     if !crate::arsenal_regression::setup(&world, &entities, &mut player) {
-        psx_rt::tty::println("quake-psx: Rust arsenal regression setup failed");
         psx_rt::halt();
     }
     #[cfg(feature = "combat-regression")]
     if !crate::combat_regression::setup(&world, &mut entities, &mut player) {
-        psx_rt::tty::println("quake-psx: Rust combat regression setup failed");
         psx_rt::halt();
     }
     #[cfg(feature = "monster-regression")]
     if !crate::monster_regression::setup(&world, &entities, &mut player) {
-        psx_rt::tty::println("quake-psx: Rust monster regression setup failed");
         psx_rt::halt();
     }
     #[cfg(feature = "monsterjump-regression")]
     if !crate::monsterjump_regression::setup(&world, &mut entities, &mut player) {
-        psx_rt::tty::println("quake-psx: Rust monster-jump regression setup failed");
         psx_rt::halt();
     }
     #[cfg(feature = "bestiary-regression")]
     if !crate::bestiary_regression::setup(&world, &entities, &player) {
-        psx_rt::tty::println("quake-psx: Rust bestiary regression setup failed");
         psx_rt::halt();
     }
     #[cfg(feature = "survival-regression")]
     if !crate::survival_regression::setup(&world) {
-        psx_rt::tty::println("quake-psx: Rust survival regression setup failed");
         psx_rt::halt();
     }
     #[cfg(feature = "ambient-regression")]
     {
         let Some(origin) = audio.regression_ambient_origin() else {
-            psx_rt::tty::println("quake-psx: Rust ambient regression found no emitter");
             psx_rt::halt();
         };
         let camera = player.camera();
         audio.spatialize(origin, camera.angles[1]);
     }
-    psx_rt::tty::println("quake-psx: Rust Start map resident");
 
     let mut input = crate::input::Input::new(pads, port);
     let mut rumble = crate::rumble::Rumbler::new();
@@ -502,7 +487,6 @@ pub fn run() -> ! {
                     #[cfg(feature = "monster-code-overlay")]
                     &mut monster_code,
                 ) else {
-                    psx_rt::tty::println("quake-psx: Rust level transition failed");
                     psx_rt::halt();
                 };
                 player = next_player;
@@ -621,7 +605,6 @@ pub fn run() -> ! {
                     #[cfg(feature = "monster-code-overlay")]
                     &mut monster_code,
                 ) else {
-                    psx_rt::tty::println("quake-psx: Rust new game load failed");
                     psx_rt::halt();
                 };
                 player = next_player;
@@ -834,7 +817,6 @@ pub fn run() -> ! {
         #[cfg(feature = "monster-code-overlay")]
         monster_code.tick_bubbles(&world, presentation.impact_particles_mut(), elapsed_ticks,
             player.origin(), player.water_level()).unwrap_or_else(|_| {
-                psx_rt::tty::println("quake-psx: bubble code admission failed");
                 psx_rt::halt()
             });
         #[cfg(not(feature = "monster-code-overlay"))]
@@ -913,7 +895,6 @@ pub fn run() -> ! {
                 #[cfg(feature = "monster-code-overlay")]
                 &mut monster_code,
             ) else {
-                psx_rt::tty::println("quake-psx: Rust respawn level load failed");
                 psx_rt::halt();
             };
             player = next_player;
@@ -934,7 +915,6 @@ pub fn run() -> ! {
                 #[cfg(feature = "monster-code-overlay")]
                 &mut monster_code,
             ) else {
-                psx_rt::tty::println("quake-psx: Rust regression map load failed");
                 psx_rt::halt();
             };
             player = next_player;
@@ -956,13 +936,11 @@ pub fn run() -> ! {
                     #[cfg(feature = "monster-code-overlay")]
                     &mut monster_code,
                 ) else {
-                    psx_rt::tty::println("quake-psx: Rust bestiary stage load failed");
                     psx_rt::halt();
                 };
                 player = next_player;
                 weapon = quake_core::combat::WeaponState::new();
                 if !crate::bestiary_regression::setup(&world, &entities, &player) {
-                    psx_rt::tty::println("quake-psx: Rust bestiary stage setup failed");
                     psx_rt::halt();
                 }
                 game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
@@ -1190,14 +1168,12 @@ pub fn run() -> ! {
                 #[cfg(feature = "monster-code-overlay")]
                 &mut monster_code,
             ) else {
-                psx_rt::tty::println("quake-psx: Rust level transition failed");
                 psx_rt::halt();
             };
             player = next_player;
             weapon.map_loaded();
             #[cfg(feature = "arsenal-regression")]
             if !crate::arsenal_regression::map_loaded(&world, &entities, &mut player) {
-                psx_rt::tty::println("quake-psx: Rust arsenal regression map setup failed");
                 psx_rt::halt();
             }
             game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
@@ -1441,7 +1417,6 @@ pub fn run() -> ! {
                 #[cfg(feature = "monster-code-overlay")]
                 &mut monster_code,
             ) else {
-                psx_rt::tty::println("quake-psx: Rust systems regression map load failed");
                 psx_rt::halt();
             };
             player = next_player;
@@ -1521,7 +1496,6 @@ pub fn run() -> ! {
                 &world, &mut entities, player.origin(), player.velocity(),
                 player_mins, player_maxs, show_hostile_ticks != 0, &mut weapon, elapsed_ticks,
             ).unwrap_or_else(|_| {
-                psx_rt::tty::println("quake-psx: monster code admission failed");
                 psx_rt::halt()
             });
             #[cfg(not(feature = "monster-code-overlay"))]

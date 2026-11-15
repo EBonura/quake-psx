@@ -171,6 +171,5 @@ compile_error!("gameplay regression features are mutually exclusive");
 
 #[no_mangle]
 fn main() {
-    psx_rt::tty::println("quake-psx: all-Rust PSoXide boot");
     quake::run()
 }
