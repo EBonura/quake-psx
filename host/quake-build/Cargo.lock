@@ -114,7 +114,7 @@ dependencies = [
 [[package]]
 name = "psoxide-link"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=6d02f3411b701020a334ed1670809b98e0694214#6d02f3411b701020a334ed1670809b98e0694214"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=b584b999a892e808b707f6493ee308d9e4493ed3#b584b999a892e808b707f6493ee308d9e4493ed3"
 dependencies = [
  "serde_json",
  "toml",
@@ -251,7 +251,7 @@ dependencies = [
 [[package]]
 name = "psx-library"
 version = "0.1.0"
-source = "git+https://github.com/EBonura/PSoXide.git?rev=6d02f3411b701020a334ed1670809b98e0694214#6d02f3411b701020a334ed1670809b98e0694214"
+source = "git+https://github.com/EBonura/PSoXide.git?rev=b584b999a892e808b707f6493ee308d9e4493ed3#b584b999a892e808b707f6493ee308d9e4493ed3"
 dependencies = [
  "serde_json",
  "sha2",
@@ -370,6 +370,7 @@ dependencies = [
  "psx-engine",
  "psx-gte",
  "psx-math",
+ "psx-pack",
  "quake-formats",
 ]
 
@@ -379,6 +380,7 @@ version = "0.1.0"
 dependencies = [
  "psx-bsp",
  "psx-math",
+ "psx-pack",
 ]
 
 [[package]]
