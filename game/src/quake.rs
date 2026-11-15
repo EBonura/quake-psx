@@ -200,9 +200,10 @@ pub fn run() -> ! {
     // transfer borrows the port through its own token and never overlaps a poll.
     let mut port = unsafe { psx_io::periph::ControllerPort::steal() };
     crate::platform::start_vblank_counter();
-    psx_spu::init();
+    // SAFETY: the game's only SPU user until the audio bank takes the driver below.
+    let spu = psx_spu::Spu::new(unsafe { psx_io::periph::SpuDma::steal() });
     // Route the CD's own audio into the mix, for the XA ambient music in
-    // `music.rs`; `psx_spu::init` leaves the CD input muted. The input stays at
+    // `music.rs`; `Spu::new` leaves the CD input muted. The input stays at
     // zero until a loop starts: `music.rs` owns the CD volume from here on and
     // raises it with its fades, to at most half of hardware gain (Quake keeps
     // the main volume at `Volume::MAX` and plays its one-shots at
@@ -237,7 +238,7 @@ pub fn run() -> ! {
         psx_rt::halt();
     }
     let mut entities = crate::entity::EntityScene::new();
-    let mut audio = crate::audio::AudioBank::new();
+    let mut audio = crate::audio::AudioBank::new(spu);
     let mut presentation = LevelPresentation::new();
     // `cl_dlights`. Held beside the presentation pools rather than inside
     // them because only the renderer ever reads it, and it follows the same

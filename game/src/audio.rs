@@ -6,7 +6,7 @@ use core::mem::MaybeUninit;
 use psx_math::int32::isqrt_i32;
 use psx_math::{Wide, WideU};
 use psx_sfx::{LoopingSample, OneShot, Player, Sample};
-use psx_spu::{SpuAddr, Voice, Volume};
+use psx_spu::{Spu, SpuAddr, Voice, Volume};
 use quake_core::menu::{DEFAULT_SOUND_VOLUME, VOLUME_STEPS};
 use quake_formats::{
     sound_hash_extend, validate_sound_records, LumpKind, SoundBankHeader, SoundBankKind, Vec3I32,
@@ -164,6 +164,8 @@ struct LoadedEffect {
 }
 
 pub struct AudioBank {
+    /// The one SPU driver: boot reset it, and every sample upload goes through it.
+    spu: Spu,
     effects: Vec<LoadedEffect>,
     global_effect_count: usize,
     global_content_hash: WideU,
@@ -230,8 +232,9 @@ struct AmbientSource {
 }
 
 impl AudioBank {
-    pub fn new() -> Self {
+    pub fn new(spu: Spu) -> Self {
         Self {
+            spu,
             effects: Vec::with_capacity(AUDIO_EFFECT_CAPACITY),
             global_effect_count: 0,
             global_content_hash: WideU::of(0),
@@ -270,6 +273,7 @@ impl AudioBank {
             SOUND_SPU_BASE,
             WideU::of(0),
             0,
+            &mut self.spu,
             &mut self.effects,
             scratch,
         );
@@ -363,6 +367,7 @@ impl AudioBank {
             self.global_spu_high_water,
             self.global_content_hash,
             self.global_effect_count,
+            &mut self.spu,
             &mut self.effects,
             scratch,
         );
@@ -770,6 +775,7 @@ fn load_versioned_bank(
     expected_base: u32,
     dependency_hash: WideU,
     retain_count: usize,
+    spu: &mut Spu,
     effects: &mut Vec<LoadedEffect>,
     scratch: &mut Vec<u8>,
 ) -> Result<(SoundBankHeader, AudioPhaseTelemetry), AudioLoadError> {
@@ -852,7 +858,7 @@ fn load_versioned_bank(
     // variable table size is reread at the start of the next bounded session.
     let first_upload_bytes = first_available & !15;
     if first_upload_bytes != 0 {
-        psx_spu::upload_adpcm(
+        spu.upload_adpcm(
             SpuAddr::new(header.payload_base),
             &first_payload[..first_upload_bytes],
         );
@@ -872,7 +878,7 @@ fn load_versioned_bank(
         let already_hashed = hashed.saturating_sub(uploaded).min(byte_count);
         hash = sound_hash_extend(hash, &scratch[already_hashed..]);
         hashed = hashed.max(uploaded + byte_count);
-        psx_spu::upload_adpcm(SpuAddr::new(header.payload_base + uploaded as u32), scratch);
+        spu.upload_adpcm(SpuAddr::new(header.payload_base + uploaded as u32), scratch);
         uploaded += byte_count;
     }
     if uploaded != payload_len || hashed != payload_len || hash != header.content_hash {
