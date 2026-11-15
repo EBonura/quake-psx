@@ -14,6 +14,7 @@ version = "0.1.0"
 dependencies = [
  "psx-gte",
  "psx-hw",
+ "psx-math",
  "psxed-format",
 ]
 
@@ -77,6 +78,7 @@ dependencies = [
  "psx-gpu",
  "psx-hw",
  "psx-io",
+ "psx-math",
  "psx-pack",
  "psx-rt",
  "psx-spu",
@@ -109,6 +111,7 @@ version = "0.1.0"
 dependencies = [
  "psx-gte-core",
  "psx-hw",
+ "psx-math",
 ]
 
 [[package]]
