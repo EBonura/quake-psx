@@ -12,12 +12,10 @@ use quake_affine::materialize_classic_affine_indexed_baked_vertices;
 #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
 use quake_affine::submit_classic_affine_batch;
 
-use psx_engine::{
-    attributed_clip::{
-        clip_to_plane_uninit_unchecked, lerp_q12_i32_rounded, ratio_q12_i32, AttributedClipPlane,
-        ClipTraversal,
-    },
-    compose_model_view_transform,
+use psx_engine::compose_model_view_transform;
+use psx_math::attributed_clip::{
+    clip_to_plane_uninit_unchecked, lerp_q12_i32_rounded, ratio_q12_i32, AttributedClipPlane,
+    ClipTraversal,
 };
 #[cfg(feature = "renderer-census")]
 use quake_affine::{
