@@ -138,18 +138,18 @@ fn main() {
     // Quake's shipping frame nests the orchestration and renderer paths. The
     // full shipping route reached SP=0x801f5f88: 40,824 bytes below the
     // linker's STACK_INIT=0x801fff00 (the profiler reports a 41,024-byte root
-    // depth from its entry SP=0x801fffc8). Derive a game-local linker script
-    // which reserves 52 KiB, leaving 12,424 bytes above the heap boundary,
-    // without changing every PSoXide program.
+    // depth from its entry SP=0x801fffc8). Reserve 52 KiB through the SDK's
+    // STACK_RESERVE_OVERRIDE hook, leaving 12,424 bytes above the heap
+    // boundary, without changing every PSoXide program. The script defining it
+    // must come before the SDK script on the link line.
     let linker_source = fs::read_to_string(&linker)
         .unwrap_or_else(|error| panic!("read {}: {error}", linker.display()));
-    let stack_marker = "STACK_RESERVE = 0x8000;";
-    assert!(
-        linker_source.contains(stack_marker),
-        "PSoXide linker stack marker changed; re-audit Quake's stack reserve"
-    );
-    let quake_linker =
-        PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("quake-psoxide.ld");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let stack_reserve = out_dir.join("quake-stack-reserve.ld");
+    fs::write(&stack_reserve, "STACK_RESERVE_OVERRIDE = 0xD000;\n")
+        .unwrap_or_else(|error| panic!("write {}: {error}", stack_reserve.display()));
+    println!("cargo:rustc-link-arg=-T{}", stack_reserve.display());
+    let quake_linker = out_dir.join("quake-psoxide.ld");
     // The world pass alternates, batch after batch, between the ordinary
     // face loop and the engine's batch kernel with its two packet leaves:
     // 3.8 KB together, which fits the 4 KB direct-mapped I-cache only when
@@ -165,9 +165,7 @@ fn main() {
     );
     fs::write(
         &quake_linker,
-        linker_source
-            .replacen(stack_marker, "STACK_RESERVE = 0xD000;", 1)
-            .replacen(text_marker, &world_pass, 1),
+        linker_source.replacen(text_marker, &world_pass, 1),
     )
     .unwrap_or_else(|error| panic!("write {}: {error}", quake_linker.display()));
 

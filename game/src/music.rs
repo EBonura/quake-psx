@@ -22,7 +22,7 @@
 //! restarts the schedule from the top afterwards: nothing resumes in the
 //! middle of a song, so no state has to survive a read.
 
-use psx_fmv::iso::{find_in_directory, root_directory, PVD_LBA};
+use psx_io::iso::{as_bytes, find_in_directory, root_directory, sectors, PVD_LBA};
 use psx_io::cd::xa::{DriveSpeed, File, Player};
 use psx_io::periph::Cd;
 use psx_pack::cd::{SectorReader, SECTOR_WORDS};
@@ -326,8 +326,7 @@ impl Music {
             let mut lba = PVD_LBA;
             let mut root = (0, 0);
             while reader.read_sector(&mut sector) {
-                let bytes =
-                    core::slice::from_raw_parts(sector.as_ptr().cast::<u8>(), SECTOR_WORDS * 4);
+                let bytes = as_bytes(&sector);
                 if lba == PVD_LBA {
                     match root_directory(bytes) {
                         Some(at) if at.0 > PVD_LBA && at.0 - PVD_LBA <= MAX_ROOT_SKIP => root = at,
@@ -342,7 +341,7 @@ impl Music {
                     }
                     // A root directory this small is one sector; scan a few in
                     // case not.
-                    if lba + 1 >= root.0 + root.1.div_ceil(2048).min(4) {
+                    if lba + 1 >= root.0 + sectors(root.1).min(4) {
                         break;
                     }
                 }
