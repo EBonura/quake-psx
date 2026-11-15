@@ -271,8 +271,8 @@ pub fn gpu_init_before_interrupts() {
         gpu.set_draw_area((0, 0), (WIDTH - 1, HEIGHT - 1));
         gpu.set_draw_offset((0, 0));
         configure_world_material();
-        psx_gpu::fill_rect(0, 0, 512, 256, 0, 0, 0);
-        psx_gpu::fill_rect(0, 256, 512, 256, 0, 0, 0);
+        gpu.draw(&psx_gpu::prim::FillRect::new((0, 0), (512, 256), (0, 0, 0)));
+        gpu.draw(&psx_gpu::prim::FillRect::new((0, 256), (512, 256), (0, 0, 0)));
         // The closing draw-done sequence fills a 16 x 8 block with black. The default
         // block (1008, 504) is menu picture data here; rows 496..511 left of x = 320 sit
         // below both framebuffers and are never written, so the sequence works there.
