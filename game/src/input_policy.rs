@@ -20,7 +20,7 @@ pub mod button {
     pub const SQUARE: u16 = 1 << 15;
 }
 
-use psx_pad::{stick_bits, PadEdges};
+use psx_pad::PadEdges;
 
 const DPAD: u16 = button::UP | button::RIGHT | button::DOWN | button::LEFT;
 
@@ -163,8 +163,9 @@ pub struct ButtonEdges {
 
 /// Tracks gameplay and menu edges independently, matching the C port's
 /// left-stick-as-D-pad menu behavior without quantizing analog gameplay. Both
-/// edges are the SDK's `PadEdges`; the menu's mask adds the left stick folded by
-/// `stick_bits` (each axis strictly beyond `MENU_STICK_THRESHOLD`, no hysteresis).
+/// edges are the SDK's `PadEdges`; the menu's mask adds the left stick, each axis
+/// strictly beyond `MENU_STICK_THRESHOLD` (no hysteresis). The four comparisons are
+/// written out here: `psx_pad::stick_bits` links 12 bytes more text in the shipping image.
 #[derive(Copy, Clone)]
 pub struct EdgeTracker {
     game: PadEdges,
@@ -183,9 +184,20 @@ impl EdgeTracker {
     #[optimize(size)]
     pub fn update(&mut self, held: u16, left_x: i16, left_y: i16) -> ButtonEdges {
         let game = self.game.update(held);
-        let menu = self
-            .menu
-            .update(held | stick_bits::<MENU_STICK_THRESHOLD>(left_x, left_y));
+        let mut menu_buttons = held;
+        if left_y < -MENU_STICK_THRESHOLD {
+            menu_buttons |= button::UP;
+        }
+        if left_y > MENU_STICK_THRESHOLD {
+            menu_buttons |= button::DOWN;
+        }
+        if left_x < -MENU_STICK_THRESHOLD {
+            menu_buttons |= button::LEFT;
+        }
+        if left_x > MENU_STICK_THRESHOLD {
+            menu_buttons |= button::RIGHT;
+        }
+        let menu = self.menu.update(menu_buttons);
         ButtonEdges {
             pressed: game.pressed(),
             menu_pressed: menu.pressed(),
