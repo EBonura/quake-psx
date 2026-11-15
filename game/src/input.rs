@@ -56,7 +56,7 @@ impl Input {
 
         let (mut strafe, mut forward, mut yaw, mut pitch) = (0, 0, 0, 0);
         let (mut left_x, mut left_y) = (0, 0);
-        if pad.is_analog() {
+        if pad.mode.has_sticks() {
             let (lx, ly) = pad.sticks.left_centered();
             left_x = lx;
             left_y = ly;
