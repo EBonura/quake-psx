@@ -20,7 +20,14 @@ pub mod button {
     pub const SQUARE: u16 = 1 << 15;
 }
 
+#[cfg(test)]
+use psx_pad::stick_bits;
 use psx_pad::PadEdges;
+
+#[cfg(test)]
+fn sticks(x: i16, y: i16) -> u16 {
+    stick_bits::<MENU_STICK_THRESHOLD>(x, y)
+}
 
 const DPAD: u16 = button::UP | button::RIGHT | button::DOWN | button::LEFT;
 
@@ -164,8 +171,8 @@ pub struct ButtonEdges {
 /// Tracks gameplay and menu edges independently, matching the C port's
 /// left-stick-as-D-pad menu behavior without quantizing analog gameplay. Both
 /// edges are the SDK's `PadEdges`; the menu's mask adds the left stick, each axis
-/// strictly beyond `MENU_STICK_THRESHOLD` (no hysteresis). The four comparisons are
-/// written out here: `psx_pad::stick_bits` links 12 bytes more text in the shipping image.
+/// strictly beyond `MENU_STICK_THRESHOLD` (no hysteresis), folded by the SDK's
+/// `stick_bits_of`, which the caller passes in as `stick_buttons`.
 #[derive(Copy, Clone)]
 pub struct EdgeTracker {
     game: PadEdges,
@@ -182,21 +189,9 @@ impl EdgeTracker {
     }
 
     #[optimize(size)]
-    pub fn update(&mut self, held: u16, left_x: i16, left_y: i16) -> ButtonEdges {
+    pub fn update(&mut self, held: u16, stick_buttons: u16) -> ButtonEdges {
         let game = self.game.update(held);
-        let mut menu_buttons = held;
-        if left_y < -MENU_STICK_THRESHOLD {
-            menu_buttons |= button::UP;
-        }
-        if left_y > MENU_STICK_THRESHOLD {
-            menu_buttons |= button::DOWN;
-        }
-        if left_x < -MENU_STICK_THRESHOLD {
-            menu_buttons |= button::LEFT;
-        }
-        if left_x > MENU_STICK_THRESHOLD {
-            menu_buttons |= button::RIGHT;
-        }
+        let menu_buttons = held | stick_buttons;
         let menu = self.menu.update(menu_buttons);
         ButtonEdges {
             pressed: game.pressed(),
@@ -315,24 +310,24 @@ mod tests {
     #[test]
     fn analog_menu_directions_are_edges_and_rearm_after_recentering() {
         let mut tracker = EdgeTracker::new();
-        assert_eq!(tracker.update(0, 0, -49).menu_pressed, button::UP);
-        assert_eq!(tracker.update(0, 0, -127).menu_pressed, 0);
-        assert_eq!(tracker.update(0, 0, -48).menu_pressed, 0);
-        assert_eq!(tracker.update(0, 0, -49).menu_pressed, button::UP);
+        assert_eq!(tracker.update(0, sticks(0, -49)).menu_pressed, button::UP);
+        assert_eq!(tracker.update(0, sticks(0, -127)).menu_pressed, 0);
+        assert_eq!(tracker.update(0, sticks(0, -48)).menu_pressed, 0);
+        assert_eq!(tracker.update(0, sticks(0, -49)).menu_pressed, button::UP);
     }
 
     #[optimize(size)]
     #[test]
     fn physical_and_virtual_menu_edges_coexist_without_gameplay_edges() {
         let mut tracker = EdgeTracker::new();
-        let first = tracker.update(button::CROSS, 49, 0);
+        let first = tracker.update(button::CROSS, sticks(49, 0));
         assert_eq!(first.pressed, button::CROSS);
         assert_eq!(first.menu_pressed, button::CROSS | button::RIGHT);
 
-        let held = tracker.update(button::CROSS, 80, 0);
+        let held = tracker.update(button::CROSS, sticks(80, 0));
         assert_eq!(held, ButtonEdges::default());
 
-        let left = tracker.update(0, -49, 0);
+        let left = tracker.update(0, sticks(-49, 0));
         assert_eq!(left.pressed, 0);
         assert_eq!(left.menu_pressed, button::LEFT);
     }
@@ -390,7 +385,7 @@ mod tests {
             if x > MENU_STICK_THRESHOLD {
                 on |= button::RIGHT;
             }
-            let got = tracker.update(0, x, y);
+            let got = tracker.update(0, sticks(x, y));
             assert_eq!(got.menu_pressed, on & !prev, "stick ({x}, {y})");
             assert_eq!(got.pressed, 0);
             edges += (on & !prev).count_ones();

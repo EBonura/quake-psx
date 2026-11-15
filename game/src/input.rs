@@ -1,8 +1,10 @@
 use psx_io::periph::ControllerPort;
-use psx_pad::{aim_curve, button, Controllers, Deadzone, PadState, Port};
+use psx_pad::{aim_curve, button, stick_bits_of, Controllers, Deadzone, PadState, Port};
 
 pub use crate::input_policy::InputFrame;
-use crate::input_policy::{quake_horizontal_axis, quake_look_pitch_axis, EdgeTracker};
+use crate::input_policy::{
+    quake_horizontal_axis, quake_look_pitch_axis, EdgeTracker, MENU_STICK_THRESHOLD,
+};
 
 const _: () = {
     assert!(crate::input_policy::button::SELECT == button::SELECT);
@@ -55,11 +57,8 @@ impl Input {
         let held = pad.buttons.bits();
 
         let (mut strafe, mut forward, mut yaw, mut pitch) = (0, 0, 0, 0);
-        let (mut left_x, mut left_y) = (0, 0);
         if pad.mode.has_sticks() {
             let (lx, ly) = pad.sticks.left_centered();
-            left_x = lx;
-            left_y = ly;
             let (rx, ry) = pad.sticks.right_centered();
             if let Some((x, y)) = Deadzone::new(deadzone).scaled(lx, ly) {
                 strafe = quake_horizontal_axis(x);
@@ -91,7 +90,9 @@ impl Input {
         if dpad_moves && pad.buttons.is_held(button::LEFT) {
             strafe = quake_horizontal_axis(-127);
         }
-        let edges = self.edges.update(held, left_x, left_y);
+        let edges = self
+            .edges
+            .update(held, stick_bits_of::<MENU_STICK_THRESHOLD>(&pad));
 
         InputFrame {
             movement: [forward, strafe],
