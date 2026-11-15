@@ -110,10 +110,8 @@ static mut HARDWARE_PERF_LAST_PRESENT: u32 = 0;
 static mut HARDWARE_PERF_HAS_PRESENT: bool = false;
 
 #[optimize(size)]
-fn configure_world_material() {
-    psx_gpu::material::TextureMaterial::new(0, 0)
-        .with_dither(true)
-        .apply_draw_mode();
+fn configure_world_material(gpu: &mut psx_gpu::Gpu) {
+    gpu.set_draw_mode(psx_gpu::material::TextureMaterial::new(0, 0).with_dither(true));
 }
 
 unsafe fn build_ot() -> &'static mut OrderingTable<OT_DEPTH> {
@@ -270,7 +268,7 @@ pub fn gpu_init_before_interrupts() {
         BUFFERS = DoubleBuffer::with_stride(Resolution::R320X240, BACK_BUFFER_Y);
         gpu.set_draw_area((0, 0), (WIDTH - 1, HEIGHT - 1));
         gpu.set_draw_offset((0, 0));
-        configure_world_material();
+        configure_world_material(&mut gpu);
         gpu.draw(&psx_gpu::prim::FillRect::new((0, 0), (512, 256), (0, 0, 0)));
         gpu.draw(&psx_gpu::prim::FillRect::new((0, 256), (512, 256), (0, 0, 0)));
         // The closing draw-done sequence fills a 16 x 8 block with black. The default
