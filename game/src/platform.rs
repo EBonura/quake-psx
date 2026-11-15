@@ -257,7 +257,7 @@ unsafe fn hardware_perf_record_present(now: u32) {
 pub fn gpu_init_before_interrupts() {
     // SAFETY: the token is a logic guard; nothing else owns the GPU DMA channel at boot. The driver
     // value is not kept: the rest of this module still draws through the tokenless calls.
-    let _ = psx_gpu::Gpu::new(
+    let mut gpu = psx_gpu::Gpu::new(
         unsafe { psx_io::periph::GpuDma::steal() },
         psx_gpu::display::DisplayConfig::new(
             psx_gpu::display::VideoMode::Ntsc,
@@ -268,8 +268,8 @@ pub fn gpu_init_before_interrupts() {
         BUILD_BUFFER = 0;
         DEFERRED_UPLOAD_COUNT = 0;
         BUFFERS = DoubleBuffer::with_stride(Resolution::R320X240, BACK_BUFFER_Y);
-        psx_gpu::set_draw_area(0, 0, WIDTH - 1, HEIGHT - 1);
-        psx_gpu::set_draw_offset(0, 0);
+        gpu.set_draw_area((0, 0), (WIDTH - 1, HEIGHT - 1));
+        gpu.set_draw_offset((0, 0));
         configure_world_material();
         psx_gpu::fill_rect(0, 0, 512, 256, 0, 0, 0);
         psx_gpu::fill_rect(0, 256, 512, 256, 0, 0, 0);
