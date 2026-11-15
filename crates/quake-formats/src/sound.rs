@@ -5,6 +5,8 @@
 //! same order), then the ADPCM payload. Both tables are covered by the
 //! content hash.
 
+use psx_math::WideU;
+
 use crate::{CookedRecord, RecordSlice, SoundEffect};
 
 /// Little-endian `QSB1`.
@@ -17,7 +19,7 @@ pub const SOUND_GLOBAL_EFFECTS: usize = 38;
 pub const SOUND_MAX_EFFECTS: usize = 255;
 pub const SOUND_SPU_BASE: u32 = 0x1100;
 pub const SOUND_SPU_END: u32 = 0x80000;
-pub const SOUND_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub const SOUND_HASH_OFFSET: WideU = WideU::FNV1A_OFFSET;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -33,8 +35,8 @@ pub struct SoundBankHeader {
     pub payload_base: u32,
     pub payload_bytes: u32,
     pub spu_high_water: u32,
-    pub dependency_hash: u64,
-    pub content_hash: u64,
+    pub dependency_hash: WideU,
+    pub content_hash: WideU,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -96,8 +98,8 @@ impl SoundBankHeader {
         bytes[12..16].copy_from_slice(&self.payload_base.to_le_bytes());
         bytes[16..20].copy_from_slice(&self.payload_bytes.to_le_bytes());
         bytes[20..24].copy_from_slice(&self.spu_high_water.to_le_bytes());
-        bytes[24..32].copy_from_slice(&self.dependency_hash.to_le_bytes());
-        bytes[32..40].copy_from_slice(&self.content_hash.to_le_bytes());
+        bytes[24..32].copy_from_slice(&hash_le_bytes(self.dependency_hash));
+        bytes[32..40].copy_from_slice(&hash_le_bytes(self.content_hash));
         bytes
     }
 
@@ -129,8 +131,8 @@ impl SoundBankHeader {
             payload_base: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
             payload_bytes: u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
             spu_high_water: u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
-            dependency_hash: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
-            content_hash: u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
+            dependency_hash: hash_from_le_bytes(&bytes[24..32]),
+            content_hash: hash_from_le_bytes(&bytes[32..40]),
         };
         if header.record_count as usize > SOUND_MAX_EFFECTS {
             return Err(SoundBankError::BadCount);
@@ -152,11 +154,11 @@ impl SoundBankHeader {
                 if header.record_count as usize != SOUND_GLOBAL_EFFECTS
                     || header.payload_base != SOUND_SPU_BASE
                     || header.payload_bytes == 0
-                    || header.dependency_hash != 0 =>
+                    || !header.dependency_hash.is_zero() =>
             {
                 return Err(SoundBankError::BadRange)
             }
-            SoundBankKind::Local if header.dependency_hash == 0 => {
+            SoundBankKind::Local if header.dependency_hash.is_zero() => {
                 return Err(SoundBankError::BadHash)
             }
             SoundBankKind::Local if (header.record_count == 0) != (header.payload_bytes == 0) => {
@@ -207,16 +209,30 @@ impl SoundBankHeader {
 }
 
 #[optimize(size)]
-pub fn sound_hash_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+pub fn sound_hash_extend(mut hash: WideU, bytes: &[u8]) -> WideU {
     for byte in bytes {
-        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        hash = hash.fnv1a_step(*byte);
     }
     hash
 }
 
 #[optimize(size)]
-pub fn sound_content_hash(table: &[u8], payload: &[u8]) -> u64 {
+pub fn sound_content_hash(table: &[u8], payload: &[u8]) -> WideU {
     sound_hash_extend(sound_hash_extend(SOUND_HASH_OFFSET, table), payload)
+}
+
+/// A bank hash as stored: the low word then the high word, little-endian (the
+/// bytes of a little-endian `u64`).
+pub fn hash_le_bytes(hash: WideU) -> [u8; 8] {
+    let mut bytes = [0; 8];
+    bytes[0..4].copy_from_slice(&hash.low().to_le_bytes());
+    bytes[4..8].copy_from_slice(&hash.high().to_le_bytes());
+    bytes
+}
+
+fn hash_from_le_bytes(bytes: &[u8]) -> WideU {
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    WideU::from_parts(word(4), word(0))
 }
 
 /// Validate a complete bank image and return its header, records, rates, and payload.
@@ -288,7 +304,7 @@ mod tests {
     use std::vec::Vec;
 
     #[optimize(size)]
-    fn bank(kind: SoundBankKind, dependency_hash: u64) -> Vec<u8> {
+    fn bank(kind: SoundBankKind, dependency_hash: WideU) -> Vec<u8> {
         let mut table = Vec::new();
         for (id, address) in [(1i16, SOUND_SPU_BASE), (2, SOUND_SPU_BASE + 16)] {
             table.extend_from_slice(&id.to_le_bytes());
@@ -334,13 +350,13 @@ mod tests {
             SoundBankHeader::decode(&[2, 0, 0, 0]),
             Err(SoundBankError::Truncated)
         );
-        let mut bytes = bank(SoundBankKind::Local, 7);
+        let mut bytes = bank(SoundBankKind::Local, WideU::of(7));
         bytes[0] = 0;
         assert!(matches!(
             decode_sound_bank(&bytes),
             Err(SoundBankError::BadMagic)
         ));
-        let mut bytes = bank(SoundBankKind::Local, 7);
+        let mut bytes = bank(SoundBankKind::Local, WideU::of(7));
         bytes[4] = 1;
         assert!(matches!(
             decode_sound_bank(&bytes),
@@ -351,12 +367,12 @@ mod tests {
     #[optimize(size)]
     #[test]
     fn rates_follow_the_records_and_must_be_nonzero() {
-        let bytes = bank(SoundBankKind::Local, 7);
+        let bytes = bank(SoundBankKind::Local, WideU::of(7));
         let (_, records, rates, _) = decode_sound_bank(&bytes).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(rates.len(), 2);
         assert_eq!(rates.get(1), Some(11_025));
-        let mut bytes = bank(SoundBankKind::Local, 7);
+        let mut bytes = bank(SoundBankKind::Local, WideU::of(7));
         let rate = SOUND_BANK_HEADER_BYTES + 2 * SOUND_BANK_RECORD_BYTES;
         bytes[rate..rate + 2].fill(0);
         let header = SoundBankHeader::decode(&bytes).unwrap();
@@ -365,7 +381,7 @@ mod tests {
             &bytes[SOUND_BANK_HEADER_BYTES..payload_offset],
             &bytes[payload_offset..],
         );
-        bytes[32..40].copy_from_slice(&hash.to_le_bytes());
+        bytes[32..40].copy_from_slice(&hash_le_bytes(hash));
         assert!(matches!(
             decode_sound_bank(&bytes),
             Err(SoundBankError::BadRate)
@@ -375,14 +391,14 @@ mod tests {
     #[optimize(size)]
     #[test]
     fn content_hash_and_dependency_are_fail_closed() {
-        let mut bytes = bank(SoundBankKind::Local, 7);
+        let mut bytes = bank(SoundBankKind::Local, WideU::of(7));
         let last = bytes.len() - 1;
         bytes[last] ^= 1;
         assert!(matches!(
             decode_sound_bank(&bytes),
             Err(SoundBankError::BadHash)
         ));
-        let mut bytes = bank(SoundBankKind::Local, 7);
+        let mut bytes = bank(SoundBankKind::Local, WideU::of(7));
         bytes[24..32].fill(0);
         assert!(matches!(
             decode_sound_bank(&bytes),
@@ -399,7 +415,7 @@ mod tests {
             payload_base: 0x2800,
             payload_bytes: 0,
             spu_high_water: 0x2800,
-            dependency_hash: 7,
+            dependency_hash: WideU::of(7),
             content_hash: SOUND_HASH_OFFSET,
         };
         let bytes = header.encode();
@@ -414,7 +430,7 @@ mod tests {
     #[optimize(size)]
     #[test]
     fn duplicate_ids_fail_even_when_the_content_hash_is_self_consistent() {
-        let mut bytes = bank(SoundBankKind::Local, 7);
+        let mut bytes = bank(SoundBankKind::Local, WideU::of(7));
         let second_id = SOUND_BANK_HEADER_BYTES + SOUND_BANK_RECORD_BYTES;
         bytes[second_id..second_id + 2].copy_from_slice(&1i16.to_le_bytes());
         let header = SoundBankHeader::decode(&bytes).unwrap();
@@ -423,7 +439,7 @@ mod tests {
             &bytes[SOUND_BANK_HEADER_BYTES..payload_offset],
             &bytes[payload_offset..],
         );
-        bytes[32..40].copy_from_slice(&hash.to_le_bytes());
+        bytes[32..40].copy_from_slice(&hash_le_bytes(hash));
         assert!(matches!(
             decode_sound_bank(&bytes),
             Err(SoundBankError::DuplicateId)

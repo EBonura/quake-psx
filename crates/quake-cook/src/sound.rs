@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use psx_audio_cook::{adpcm::FLAG_LOOP_START, CookOptions, Looping};
 use psx_sfx::PARKING_TAIL;
 use quake_formats::{
-    sound_content_hash, SoundBankHeader, SoundBankKind, SOUND_BANK_HEADER_BYTES,
+    sound_content_hash, SoundBankHeader, SoundBankKind, WideU, SOUND_BANK_HEADER_BYTES,
     SOUND_BANK_RATE_BYTES, SOUND_BANK_RECORD_BYTES, SOUND_GLOBAL_EFFECTS, SOUND_MAX_EFFECTS,
     SOUND_SPU_BASE, SOUND_SPU_END,
 };
@@ -91,7 +91,7 @@ pub struct SoundCookStats {
 pub struct CookedGlobalSounds {
     pub data: Vec<u8>,
     pub stats: SoundCookStats,
-    content_hash: u64,
+    content_hash: WideU,
     spu_high_water: u32,
     sources: BTreeMap<u16, String>,
     encoded: Vec<EncodedSound>,
@@ -169,7 +169,7 @@ pub fn cook_global_sounds(
     }
     let encoded = encode_selected(pak, selected, SOUND_SPU_BASE, SOUND_GLOBAL_EFFECTS)?;
     let (data, content_hash, spu_high_water) =
-        encode_versioned_bank(SoundBankKind::Global, &encoded, SOUND_SPU_BASE, 0)?;
+        encode_versioned_bank(SoundBankKind::Global, &encoded, SOUND_SPU_BASE, WideU::of(0))?;
     let payload_bytes = encoded.iter().map(|sound| sound.bytes.len()).sum();
     Ok(CookedGlobalSounds {
         data,
@@ -413,8 +413,8 @@ fn encode_versioned_bank(
     kind: SoundBankKind,
     encoded: &[EncodedSound],
     payload_base: u32,
-    dependency_hash: u64,
-) -> Result<(Vec<u8>, u64, u32), CookError> {
+    dependency_hash: WideU,
+) -> Result<(Vec<u8>, WideU, u32), CookError> {
     if encoded.is_empty() && kind == SoundBankKind::Global {
         return Err(CookError::new("global sound bank is empty"));
     }

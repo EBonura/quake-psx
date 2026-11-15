@@ -162,8 +162,10 @@ version = "0.1.0"
 name = "psx-rt"
 version = "0.1.0"
 dependencies = [
+ "psx-gpu",
  "psx-hw",
  "psx-io",
+ "psx-tick",
 ]
 
 [[package]]
@@ -220,6 +222,7 @@ version = "0.1.0"
 dependencies = [
  "psx-hw",
  "psx-io",
+ "psx-math",
 ]
 
 [[package]]
@@ -241,4 +244,5 @@ name = "quake-formats"
 version = "0.1.0"
 dependencies = [
  "psx-bsp",
+ "psx-math",
 ]

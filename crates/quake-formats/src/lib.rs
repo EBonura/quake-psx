@@ -14,6 +14,7 @@ mod sound;
 pub mod quake_pxbsp;
 
 pub use psx_bsp::*;
+pub use psx_math::WideU;
 pub use sound::*;
 
 /// Footer magic for Quake's optional source-leaf AABB table appended to the

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 use psx_math::int32::isqrt_i32;
-use psx_math::Wide;
+use psx_math::{Wide, WideU};
 use psx_sfx::{LoopingSample, OneShot, Player, Sample};
 use psx_spu::{SpuAddr, Voice, Volume};
 use quake_core::menu::{DEFAULT_SOUND_VOLUME, VOLUME_STEPS};
@@ -145,15 +145,13 @@ struct LocalBankSource {
     chunk_id: u32,
     offset: u32,
     len: u32,
-    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
-    global_hash: u64,
+    global_hash: WideU,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct LocalBankIdentity {
     source: LocalBankSource,
-    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
-    content_hash: u64,
+    content_hash: WideU,
 }
 
 /// One resident bank record plus its cooked playback rate.
@@ -168,8 +166,7 @@ struct LoadedEffect {
 pub struct AudioBank {
     effects: Vec<LoadedEffect>,
     global_effect_count: usize,
-    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
-    global_content_hash: u64,
+    global_content_hash: WideU,
     global_spu_high_water: u32,
     local_identity: Option<LocalBankIdentity>,
     player: Player<12>,
@@ -237,7 +234,7 @@ impl AudioBank {
         Self {
             effects: Vec::with_capacity(AUDIO_EFFECT_CAPACITY),
             global_effect_count: 0,
-            global_content_hash: 0,
+            global_content_hash: WideU::of(0),
             global_spu_high_water: 0,
             local_identity: None,
             player: Player::new(DYNAMIC_VOICES, VIDEO_TICKS_HZ),
@@ -271,7 +268,7 @@ impl AudioBank {
             len,
             SoundBankKind::Global,
             SOUND_SPU_BASE,
-            0,
+            WideU::of(0),
             0,
             &mut self.effects,
             scratch,
@@ -281,7 +278,7 @@ impl AudioBank {
             Err(error) => {
                 self.effects.clear();
                 self.global_effect_count = 0;
-                self.global_content_hash = 0;
+                self.global_content_hash = WideU::of(0);
                 self.global_spu_high_water = 0;
                 return Err(error);
             }
@@ -320,7 +317,7 @@ impl AudioBank {
             return Err(AudioLoadError::Format);
         }
         if self.global_effect_count != SOUND_GLOBAL_EFFECTS
-            || self.global_content_hash == 0
+            || self.global_content_hash.is_zero()
             || self.global_spu_high_water <= SOUND_SPU_BASE
         {
             return Err(AudioLoadError::MissingGlobal);
@@ -342,7 +339,7 @@ impl AudioBank {
         self.teleporter_hum_count = entities.copy_teleporter_hums(&mut self.teleporter_hums) as u8;
         if self
             .local_identity
-            .is_some_and(|identity| identity.source == source && identity.content_hash != 0)
+            .is_some_and(|identity| identity.source == source && !identity.content_hash.is_zero())
         {
             self.rebuild_ambients(map, listener, yaw)?;
             let phase = AudioPhaseTelemetry::default();
@@ -771,8 +768,7 @@ fn load_versioned_bank(
     len: u32,
     expected_kind: SoundBankKind,
     expected_base: u32,
-    // psx-numeric-allow-next-line: the sound format's 64-bit FNV-1a bank hash (quake-formats sound.rs), compared for equality only
-    dependency_hash: u64,
+    dependency_hash: WideU,
     retain_count: usize,
     effects: &mut Vec<LoadedEffect>,
     scratch: &mut Vec<u8>,

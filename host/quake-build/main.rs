@@ -28,9 +28,9 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // PSoXide (SDK repository: sdk/, crates/ and engine/) revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "e613f75958950002a6e0d2266eafa2ac7f17c996";
+const PSOXIDE_REV: &str = "20f05ccf9120248219cad09b4cb87654b8868453";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "e613f75958950002a6e0d2266eafa2ac7f17c996";
+const PSOXIDE_SDK_REV: &str = "20f05ccf9120248219cad09b4cb87654b8868453";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 /// The program's exceptions to the SDK's architecture gate.
 const GATE_FILE: &str = "psx-gate.toml";
@@ -10099,15 +10099,13 @@ fn size_ram(root: &Path, map: &Path, items: bool) -> Result<String> {
 }
 
 /// No 64-bit integer and no float in guest source: the SDK's `psoxide-dev no64-scan`
-/// over the game and the crates it links. The sound format's FNV-1a bank hash is
-/// the one reviewed exception (the whole file, plus four marked fields in audio.rs).
+/// over the game and the crates it links. No exceptions.
 fn check_no_wide_source(root: &Path) -> Result<()> {
     let mut command = Command::new(require_tool(&["cargo"])?);
     command
         .current_dir(root.join(".psoxide"))
         .args(["run", "--quiet", "--release", "-p", "psoxide-dev", "--"])
-        .args(["no64-scan", "--floats", "--exempt"])
-        .arg(root.join("crates/quake-formats/src/sound.rs"));
+        .args(["no64-scan", "--floats"]);
     for dir in [
         "game/src",
         "crates/quake-core/src",
