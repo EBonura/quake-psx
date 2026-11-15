@@ -14,7 +14,7 @@ use quake_affine::submit_classic_affine_batch;
 
 use psx_engine::{
     attributed_clip::{
-        clip_convex_plane_uninit, lerp_q12_i32_rounded, ratio_q12_i32, AttributedClipPlane,
+        clip_to_plane_uninit_unchecked, lerp_q12_i32_rounded, ratio_q12_i32, AttributedClipPlane,
         ClipTraversal,
     },
     compose_model_view_transform,
@@ -7257,7 +7257,7 @@ unsafe fn clip_face_near(vertices: *mut ClassicAffineVertex, count: usize) -> us
     // one vertex on a convex polygon. Uninitialised output retains the old
     // zero-clear cost rather than paying for an abstraction-friendly buffer.
     let written = unsafe {
-        clip_convex_plane_uninit::<_, _, true>(
+        clip_to_plane_uninit_unchecked(
             source,
             &mut clipped[..count + 1],
             &QuakeNearClipPlane { depths },
