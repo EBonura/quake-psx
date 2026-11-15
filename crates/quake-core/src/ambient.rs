@@ -55,7 +55,7 @@ impl AmbientRandom {
 
     /// The next value, from the generator's better-mixed high bits.
     pub fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.0 = psx_fx::NrLcg::new(self.0).next();
         self.0 >> 8
     }
 

@@ -27,6 +27,7 @@ psx-bsp = { path = "../../.psoxide/engine/crates/psx-bsp" }
 psx-engine = { path = "../../.psoxide/engine/crates/psx-engine" }
 psx-math = { path = "../../.psoxide/sdk/crates/psx-math" }
 psx-pack = { path = "../../.psoxide/sdk/crates/psx-pack" }
+psx-fx = { path = "../../.psoxide/sdk/crates/psx-fx" }
 psx-gte = { path = "../../.psoxide/sdk/crates/psx-gte" }
 
 [dev-dependencies]

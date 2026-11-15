@@ -628,10 +628,7 @@ impl Survival {
 
     #[optimize(size)]
     fn next_random(&mut self) -> u32 {
-        self.random_state = self
-            .random_state
-            .wrapping_mul(1_664_525)
-            .wrapping_add(1_013_904_223);
+        self.random_state = psx_fx::NrLcg::new(self.random_state).next();
         self.random_state
     }
 }

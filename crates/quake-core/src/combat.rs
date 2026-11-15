@@ -2215,10 +2215,7 @@ impl WeaponState {
     }
 
     fn random_fraction_q12(&mut self) -> i32 {
-        self.random_state = self
-            .random_state
-            .wrapping_mul(1_664_525)
-            .wrapping_add(1_013_904_223);
+        self.random_state = psx_fx::NrLcg::new(self.random_state).next();
         ((self.random_state >> 1) & 0x7fff_ffff) as i32 & (Q12_ONE - 1)
     }
 }
