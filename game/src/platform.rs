@@ -42,7 +42,8 @@ static mut SCREEN_COMMAND_COUNT: usize = 0;
 
 static mut BUILD_BUFFER: usize = 0;
 
-static mut READER: SectorReader = SectorReader::new();
+// SAFETY: the one SectorReader of the program; the token is a logic guard.
+static mut READER: SectorReader = SectorReader::with_cd(unsafe { psx_io::periph::Cd::steal() });
 static mut SECTOR: [u32; SECTOR_WORDS] = [0; SECTOR_WORDS];
 static mut PACK_TABLE: [TableEntry; PACK_TABLE_CAP] = [TableEntry::EMPTY; PACK_TABLE_CAP];
 static mut PACK_TABLE_LEN: usize = 0;
@@ -254,7 +255,15 @@ unsafe fn hardware_perf_record_present(now: u32) {
 /// ordering already proven by VoXide on an original console.
 #[optimize(size)]
 pub fn gpu_init_before_interrupts() {
-    psx_gpu::init(psx_gpu::display::VideoMode::Ntsc, psx_gpu::display::Resolution::R320X240);
+    // SAFETY: the token is a logic guard; nothing else owns the GPU DMA channel at boot. The driver
+    // value is not kept: the rest of this module still draws through the tokenless calls.
+    let _ = psx_gpu::Gpu::new(
+        unsafe { psx_io::periph::GpuDma::steal() },
+        psx_gpu::display::DisplayConfig::new(
+            psx_gpu::display::VideoMode::Ntsc,
+            psx_gpu::display::Resolution::R320X240,
+        ),
+    );
     unsafe {
         BUILD_BUFFER = 0;
         DEFERRED_UPLOAD_COUNT = 0;
@@ -470,7 +479,7 @@ pub unsafe fn gpu_end_frame(packet_start: *mut u32, packet_end: *mut u32) {
         #[cfg(feature = "emulator-telemetry")]
         psx_telemetry::emit::stage_begin(psx_telemetry::stage::OT_SUBMIT);
         unsafe {
-            build_ot().insert_tagged_packet_stream_unchecked(packet_start, packet_end);
+            build_ot().resume_frame().add_tagged_packet_stream_unchecked(packet_start, packet_end);
         }
 
         #[cfg(feature = "emulator-telemetry")]
@@ -495,7 +504,7 @@ unsafe fn submit_frame() {
 
     let ot = unsafe { build_ot() };
     unsafe {
-        ot.insert_packed_commands_reverse_unchecked(
+        ot.resume_frame().add_packed_commands_reverse_unchecked(
             addr_of!(SCREEN_COMMANDS).cast::<usize>(),
             SCREEN_COMMAND_COUNT,
         );
@@ -580,7 +589,8 @@ pub fn upload_vram(rect: VramRect, bytes: &[u8]) -> Result<(), VramUploadError> 
     }
     psx_rt::present::wait_idle();
     psx_vram::upload_bytes(rect, bytes);
-    psx_gpu::wait_idle();
+    // SAFETY: as in `show_boot_splash`: nothing else touches the GPU while the upload completes.
+    psx_gpu::Gpu::from_dma_mut(&mut unsafe { psx_io::periph::GpuDma::steal() }).wait_idle();
     Ok(())
 }
 

@@ -310,7 +310,8 @@ impl Music {
     #[inline(never)]
     fn locate_files(&mut self) -> bool {
         let mut sector = [0u32; SECTOR_WORDS];
-        let mut reader = SectorReader::new();
+        // SAFETY: a token is a logic guard (`psx_io::periph`); nothing else reads the disc while the files are located.
+        let mut reader = SectorReader::with_cd(unsafe { Cd::steal() });
         let mut found = [false; XA_FILE_COUNT];
         // One read session from the volume descriptor forward: the root
         // directory sits a few sectors after it, and passing over those
