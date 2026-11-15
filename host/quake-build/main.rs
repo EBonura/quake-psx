@@ -6676,14 +6676,20 @@ fn run_survival_once(
     // changed display row with a poll is not a sound residency boundary.  The
     // cold local-bank telemetry is emitted only after the initial map, model,
     // and local-audio publication has finished.  Anything read after that
-    // marker belongs to gameplay or a same-map reset and must be resident.
+    // marker belongs to gameplay or a same-map reset and must be resident,
+    // except the monster-code overlay images: they are code, not map data, and
+    // `load_level` installs them from the disc every time (`monster_code.install`
+    // reads its payload): the Monsters image once after the cold publication,
+    // and on every same-map respawn the Doors image (`reset_level_state`) and
+    // the Monsters image again. Each such install is one ReadN session.
     let telemetry = String::from_utf8_lossy(&log);
     let publication_cycle = cold_local_audio_publication_cycle(&telemetry)?;
     require_display_flip_after_cycle(&route, publication_cycle)?;
     let later_reads = readn_sessions_after_cycle(&cd_commands, publication_cycle)?;
-    if later_reads != 0 {
+    let overlay_reads = 1 + 2 * hits;
+    if later_reads != overlay_reads {
         return Err(format!(
-            "same-map survival respawn performed {later_reads} ReadN sessions after cold level publication"
+            "same-map survival respawn performed {later_reads} ReadN sessions after cold level publication, expected {overlay_reads} (monster-code overlay installs only)"
         )
         .into());
     }
@@ -6831,9 +6837,15 @@ fn run_combat_regression(root: &Path, frontend: &Path, regression: &Path) -> Res
     // setup. Both additions are independently probe-pinned below. The final
     // MIPS layout moved the absolute frame timing, so the replacement image
     // was inspected and is still required to match twice.
-    // Previous pin: 0x6e666cc1fb6deb43/0x1f3df31c89a63bbf.
-    const EXPECTED_VRAM_FNV1A64: u64 = 0x4aba_9996_901d_f75c;
-    const EXPECTED_DISPLAY_FNV1A64: u64 = 0xf5c0_fea0_4b3a_324e;
+    // Previous pins: 0x6e666cc1fb6deb43/0x1f3df31c89a63bbf, then
+    // 0x4aba9996901df75c/0xf5c0fea04b3a324e (unchanged from the first public
+    // release until 2026-11-16, when it was inspected and re-blessed: the frame
+    // at guest frame 120 is the grunt at the stair with the shotgun, health 100,
+    // shells 23, and the probe checks above all pass; every build since August
+    // moved the absolute frame timing, which moves the second buffer in VRAM.
+    // The display hash is the same on main before the SDK pin wave).
+    const EXPECTED_VRAM_FNV1A64: u64 = 0xd8e6_1592_6b58_ffd0;
+    const EXPECTED_DISPLAY_FNV1A64: u64 = 0xf28f_014d_a1bd_688f;
     let capture = root.join("captures/combat-regression");
     let steps = env::var("QUAKE_PSX_COMBAT_REGRESSION_STEPS")
         .ok()
