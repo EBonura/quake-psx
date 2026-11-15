@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Consolidation onto the SDK (SDK pin `20f05ccf9`). The music files are found with the SDK's ISO9660
+- Consolidation onto the SDK (SDK pin `1df54aec3`). The music files are found with the SDK's ISO9660
   lookup; the menu's left stick and the button edges use `psx_pad::stick_bits` and `PadEdges`; the
   depth-sort probe writes through `psx_telemetry::emit::sort_class` (its gate exception is gone);
   the RAM report is the SDK's `psoxide-size ram`; and the guest source is scanned for 64-bit
