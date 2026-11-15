@@ -20,6 +20,8 @@ pub mod button {
     pub const SQUARE: u16 = 1 << 15;
 }
 
+use psx_pad::{stick_bits, PadEdges};
+
 const DPAD: u16 = button::UP | button::RIGHT | button::DOWN | button::LEFT;
 
 pub const MENU_STICK_THRESHOLD: i16 = 48;
@@ -160,46 +162,33 @@ pub struct ButtonEdges {
 }
 
 /// Tracks gameplay and menu edges independently, matching the C port's
-/// left-stick-as-D-pad menu behavior without quantizing analog gameplay.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+/// left-stick-as-D-pad menu behavior without quantizing analog gameplay. Both
+/// edges are the SDK's `PadEdges`; the menu's mask adds the left stick folded by
+/// `stick_bits` (each axis strictly beyond `MENU_STICK_THRESHOLD`, no hysteresis).
+#[derive(Copy, Clone)]
 pub struct EdgeTracker {
-    previous_buttons: u16,
-    previous_menu_buttons: u16,
+    game: PadEdges,
+    menu: PadEdges,
 }
 
 impl EdgeTracker {
     #[optimize(size)]
     pub const fn new() -> Self {
         Self {
-            previous_buttons: 0,
-            previous_menu_buttons: 0,
+            game: PadEdges::new(),
+            menu: PadEdges::new(),
         }
     }
 
     #[optimize(size)]
     pub fn update(&mut self, held: u16, left_x: i16, left_y: i16) -> ButtonEdges {
-        let pressed = held & !self.previous_buttons;
-        self.previous_buttons = held;
-
-        let mut menu_buttons = held;
-        if left_y < -MENU_STICK_THRESHOLD {
-            menu_buttons |= button::UP;
-        }
-        if left_y > MENU_STICK_THRESHOLD {
-            menu_buttons |= button::DOWN;
-        }
-        if left_x < -MENU_STICK_THRESHOLD {
-            menu_buttons |= button::LEFT;
-        }
-        if left_x > MENU_STICK_THRESHOLD {
-            menu_buttons |= button::RIGHT;
-        }
-        let menu_pressed = menu_buttons & !self.previous_menu_buttons;
-        self.previous_menu_buttons = menu_buttons;
-
+        let game = self.game.update(held);
+        let menu = self
+            .menu
+            .update(held | stick_bits::<MENU_STICK_THRESHOLD>(left_x, left_y));
         ButtonEdges {
-            pressed,
-            menu_pressed,
+            pressed: game.pressed(),
+            menu_pressed: menu.pressed(),
         }
     }
 }

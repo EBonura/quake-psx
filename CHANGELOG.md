@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Consolidation onto the SDK (SDK pin `e613f7595`). The music files are found with the SDK's ISO9660
+  lookup; the menu's left stick and the button edges use `psx_pad::stick_bits` and `PadEdges`; the
+  depth-sort probe writes through `psx_telemetry::emit::sort_class` (its gate exception is gone);
+  the RAM report is the SDK's `psoxide-size ram`; and the guest source is scanned for 64-bit
+  integers and floats by the SDK's `psoxide-dev no64-scan` in the gate. The plain wide-integer
+  sites in the spatial sound, slab trace, electrode beam, sky scroll and door-chain code moved
+  to `psx_math`; the sound bank's 64-bit FNV-1a hash is the one reviewed exception. Nothing a
+  player sees or feels changes.
 - The frame path is the SDK's one present path. `gpu_end_frame` hands the frame's
   ordering table to `psx_rt::present::Presenter::submit`, which links the draw area,
   offset and clear of the buffer being drawn, kicks the walk and has the VBlank handler
