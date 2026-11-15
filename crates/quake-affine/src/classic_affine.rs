@@ -11,7 +11,6 @@
 use core::{mem::size_of, ptr};
 
 use psx_gpu::material::TextureWindow;
-use psx_gpu::ot::TAG_SCOPED_TEXTURE_WINDOW;
 use psx_gpu::prim::{
     ClassicQuadTexturedGouraud, ClassicTriTextured, ClassicTriTexturedGouraud, QuadTexturedGouraud,
     TriTexturedGouraud,
@@ -2293,7 +2292,7 @@ impl<const RESTORE_WINDOW: bool> AffinePacketWriter for WindowedPacketWriter<RES
             otz,
         );
         if RESTORE_WINDOW {
-            packet.tag = packet.tag.wrapping_add(1 << 24) | TAG_SCOPED_TEXTURE_WINDOW;
+            packet.tag = packet.tag.wrapping_add(1 << 24);
         }
         packet.color0_cmd = self.color_command_word | attributes[0].color;
         unsafe { ptr::write(self.next.cast::<TriTexturedGouraud>(), packet) };
@@ -2354,7 +2353,7 @@ impl<const RESTORE_WINDOW: bool> AffinePacketWriter for WindowedPacketWriter<RES
             otz,
         );
         if RESTORE_WINDOW {
-            packet.tag = packet.tag.wrapping_add(1 << 24) | TAG_SCOPED_TEXTURE_WINDOW;
+            packet.tag = packet.tag.wrapping_add(1 << 24);
         }
         packet.color0_cmd = (self.color_command_word | 0x0800_0000) | attributes[0].color;
         unsafe { ptr::write(self.next.cast::<QuadTexturedGouraud>(), packet) };
