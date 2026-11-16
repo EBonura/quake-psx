@@ -82,7 +82,7 @@
 use psx_math::int32::mul_q12_i32;
 use quake_core::collision::{
     trace_render_bsp_into, trace_translated_render_bsp_into, BrushTransform, CollisionHull,
-    RenderTraceScratch, Trace, TraceScratch,
+    CompactPlane, PointTraceScratch, SharedCollisionHull, Trace, TraceScratch,
 };
 use quake_core::movement::{
     MovementInput, MovementScratch, MovementState, MovementTrace, MovementTraceResult,
@@ -192,11 +192,26 @@ struct Teleport {
 
 struct Scene {
     map: ResidentMap,
+    /// The map's planes as the SDK's render hulls read them.
+    render_planes: Vec<CompactPlane>,
     solids: Vec<Solid>,
     teleports: Vec<Teleport>,
 }
 
 impl Scene {
+    /// One brush model's render BSP as the SDK's point-trace hull.
+    fn render_hull(&self, head_node: i16) -> SharedCollisionHull<'_> {
+        // SAFETY: the resident map was loaded and validated by `ResidentMap::load`.
+        unsafe {
+            SharedCollisionHull::from_render_bsp(
+                &self.render_planes,
+                self.map.nodes(),
+                self.map.leaves(),
+                head_node,
+            )
+        }
+    }
+
     fn load(path: &str, skill: u8, runes: u8) -> Self {
         // Named entities a route has already opened by the time it needs the
         // geometry behind them. The guest still has to open them for real.
@@ -323,8 +338,19 @@ impl Scene {
                 );
             }
         }
+        let render_planes = map
+            .planes()
+            .iter()
+            .map(|plane| CompactPlane {
+                normal: plane.normal,
+                kind: plane.kind as u8,
+                sign_bits: 0,
+                distance: plane.distance,
+            })
+            .collect();
         Self {
             map,
+            render_planes,
             solids,
             teleports,
         }
@@ -904,13 +930,10 @@ fn trace_segment(scene: &Scene, args: &[String]) {
         trace.normal.z
     );
     let world = scene.map.brush_models().get(0).expect("world brush model");
-    let mut render_scratch = RenderTraceScratch::default();
+    let mut render_scratch = PointTraceScratch::default();
     let mut render_trace = Trace::default();
     let render_ok = trace_render_bsp_into(
-        scene.map.planes(),
-        scene.map.nodes(),
-        scene.map.leaves(),
-        world.head_nodes[0],
+        &scene.render_hull(world.head_nodes[0]),
         &start,
         &end,
         &mut render_scratch,
@@ -954,10 +977,7 @@ fn trace_segment(scene: &Scene, args: &[String]) {
         };
         let mut render_trace = Trace::default();
         if !trace_translated_render_bsp_into(
-            scene.map.planes(),
-            scene.map.nodes(),
-            scene.map.leaves(),
-            model.head_nodes[0],
+            &scene.render_hull(model.head_nodes[0]),
             solid.origin,
             &start,
             &end,

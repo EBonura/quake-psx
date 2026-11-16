@@ -1,8 +1,9 @@
 //! Cooked E1M1/E1M2 proof that point rays use render BSPs, not clipnodes.
 
+use psx_bsp::CompactPlane;
 use quake_core::collision::{
-    trace_render_bsp_into, trace_translated_render_bsp_into, CollisionHull, RenderTraceScratch,
-    Trace, TraceScratch, Q12_ONE,
+    trace_render_bsp_into, trace_translated_render_bsp_into, CollisionHull, PointTraceScratch,
+    SharedCollisionHull, Trace, TraceScratch, Q12_ONE,
 };
 use quake_formats::{resident::ResidentMap, SliceReader, Vec3I32};
 
@@ -17,6 +18,7 @@ fn translated_brush_render_hull_blocks_the_shifted_ray() {
     let nodes = resident.nodes();
     let leaves = resident.leaves();
     let clip_nodes = resident.clip_nodes();
+    let compact = compact_planes(&resident);
     let models = resident.brush_models();
     let entities = resident.entities();
     let door_entity = entities
@@ -63,15 +65,15 @@ fn translated_brush_render_hull_blocks_the_shifted_ray() {
         }
     }
     let mut trace = Trace::default();
+    let door_hull = unsafe {
+        SharedCollisionHull::from_render_bsp(&compact, nodes, leaves, door.head_nodes[0])
+    };
     assert!(trace_translated_render_bsp_into(
-        planes,
-        nodes,
-        leaves,
-        door.head_nodes[0],
+        &door_hull,
         origin,
         &start,
         &end,
-        &mut RenderTraceScratch::default(),
+        &mut PointTraceScratch::default(),
         &mut trace,
     ));
     assert!(
@@ -86,6 +88,20 @@ fn translated_brush_render_hull_blocks_the_shifted_ray() {
     let mut wrong = Trace::default();
     assert!(legacy.trace_into(&start, &end, &mut TraceScratch::default(), &mut wrong,));
     assert_eq!(wrong.fraction, Q12_ONE);
+}
+
+/// The conversion the game's resident map makes at load.
+fn compact_planes(resident: &ResidentMap) -> Vec<CompactPlane> {
+    resident
+        .planes()
+        .iter()
+        .map(|plane| CompactPlane {
+            normal: plane.normal,
+            kind: plane.kind as u8,
+            sign_bits: 0,
+            distance: plane.distance,
+        })
+        .collect()
 }
 
 fn q12(x: i32, y: i32, z: i32) -> Vec3I32 {
@@ -107,21 +123,23 @@ fn e1m2_shootable_button_ray_is_clear_but_a_static_wall_still_blocks() {
     let nodes = resident.nodes();
     let leaves = resident.leaves();
     let clip_nodes = resident.clip_nodes();
+    let compact = compact_planes(&resident);
     let models = resident.brush_models();
     let world = models.get(0).expect("world model");
+    // SAFETY: the cooked lumps were validated at load; the head comes from the world model.
+    let world_hull = unsafe {
+        SharedCollisionHull::from_render_bsp(&compact, nodes, leaves, world.head_nodes[0])
+    };
 
     // Ordinary reachable firing position to the center of E1M2 button #243.
     let start = q12(1460, -460, 334);
     let button = q12(1546, -552, 328);
     let mut trace = Trace::default();
     assert!(trace_render_bsp_into(
-        planes,
-        nodes,
-        leaves,
-        world.head_nodes[0],
+        &world_hull,
         &start,
         &button,
-        &mut RenderTraceScratch::default(),
+        &mut PointTraceScratch::default(),
         &mut trace,
     ));
     assert_eq!(trace.fraction, Q12_ONE, "button #243 must be shootable");
@@ -141,123 +159,14 @@ fn e1m2_shootable_button_ray_is_clear_but_a_static_wall_still_blocks() {
     // same authored firing position still clips this longer ray.
     let behind_wall = q12(1460, 0, 334);
     assert!(trace_render_bsp_into(
-        planes,
-        nodes,
-        leaves,
-        world.head_nodes[0],
+        &world_hull,
         &start,
         &behind_wall,
-        &mut RenderTraceScratch::default(),
+        &mut PointTraceScratch::default(),
         &mut trace,
     ));
     assert!(
         trace.fraction < Q12_ONE,
         "static wall must remain occluding"
-    );
-}
-
-/// The game traces through the resident map's aligned node and plane views;
-/// they must answer exactly as the cooked records do, for the world and every
-/// brush model, on every map.
-#[test]
-fn native_render_views_trace_exactly_like_the_cooked_records() {
-    use psx_bsp::{CompactNode, CompactPlane};
-    let mut checked = 0u32;
-    let mut blocked = 0u32;
-    for map in [
-        "start", "e1m1", "e1m2", "e1m3", "e1m4", "e1m5", "e1m6", "e1m7", "e1m8",
-    ] {
-        let path = format!("{}/../../id1psx/maps/{map}.psb", env!("CARGO_MANIFEST_DIR"));
-        let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
-        let mut reader = SliceReader::new(&bytes);
-        let mut resident = ResidentMap::new();
-        resident.load(0, &mut reader).expect("resident map");
-        let planes = resident.planes();
-        let nodes = resident.nodes();
-        let leaves = resident.leaves();
-        // The same conversion the game's resident map makes at load.
-        let compact_planes: Vec<CompactPlane> = planes
-            .iter()
-            .map(|plane| CompactPlane {
-                normal: plane.normal,
-                kind: plane.kind as u8,
-                sign_bits: 0,
-                distance: plane.distance,
-            })
-            .collect();
-        let compact_nodes: &[CompactNode] = nodes
-            .as_native_compact_nodes()
-            .expect("aligned render nodes");
-        let mut seed = 0x1234_5678u32 ^ map.len() as u32;
-        let mut next = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            seed
-        };
-        for model in resident.brush_models().iter() {
-            let span = |axis: usize| {
-                let (low, high) = match axis {
-                    0 => (model.mins.x, model.maxs.x),
-                    1 => (model.mins.y, model.maxs.y),
-                    _ => (model.mins.z, model.maxs.z),
-                };
-                (i32::from(low) - 64, i32::from(high) + 64)
-            };
-            for _ in 0..200 {
-                let mut point = || {
-                    let mut value = [0i32; 3];
-                    for (axis, slot) in value.iter_mut().enumerate() {
-                        let (low, high) = span(axis);
-                        let width = (high - low).max(1) as u32;
-                        *slot = (low + (next() % width) as i32) << 12 | (next() & 0xfff) as i32;
-                    }
-                    Vec3I32 {
-                        x: value[0],
-                        y: value[1],
-                        z: value[2],
-                    }
-                };
-                let (start, end) = (point(), point());
-                let origin = Vec3I32 {
-                    x: (next() % 129) as i32 - 64 << 12,
-                    y: (next() % 129) as i32 - 64 << 12,
-                    z: 0,
-                };
-                let mut cooked = Trace::default();
-                let mut native = Trace::default();
-                let cooked_ok = trace_translated_render_bsp_into(
-                    planes,
-                    nodes,
-                    leaves,
-                    model.head_nodes[0],
-                    origin,
-                    &start,
-                    &end,
-                    &mut RenderTraceScratch::default(),
-                    &mut cooked,
-                );
-                let native_ok = trace_translated_render_bsp_into(
-                    compact_planes.as_slice(),
-                    compact_nodes,
-                    leaves,
-                    model.head_nodes[0],
-                    origin,
-                    &start,
-                    &end,
-                    &mut RenderTraceScratch::default(),
-                    &mut native,
-                );
-                assert_eq!(cooked_ok, native_ok, "{map}");
-                assert_eq!(cooked, native, "{map}");
-                checked += 1;
-                blocked += u32::from(cooked_ok && cooked.fraction < Q12_ONE);
-            }
-        }
-    }
-    assert!(checked > 10_000);
-    assert!(
-        blocked > checked / 10,
-        "{blocked} of {checked} rays blocked"
     );
 }

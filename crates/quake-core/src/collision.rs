@@ -5,16 +5,12 @@
 //! PSoXide Y-up boundary around the shared caller-owned tracer and contains no
 //! BSP traversal implementation of its own.
 
-use core::mem::MaybeUninit;
-
 use psx_bsp::collision::{
-    CollisionHull as SharedCollisionHull, Trace as SharedTrace,
-    TransformedCollisionHull as SharedTransformedCollisionHull,
+    Trace as SharedTrace, TransformedCollisionHull as SharedTransformedCollisionHull,
 };
-use psx_bsp::{CompactNode, CompactPlane, Vec3I32 as SharedVec3I32};
-use psx_engine::div_q12_i32;
+use psx_bsp::Vec3I32 as SharedVec3I32;
 use psx_math::int32::mul_q12_i32;
-use quake_formats::{ClipNode, Leaf, Node, Plane, RecordSlice, Vec3I16, Vec3I32};
+use quake_formats::{ClipNode, Plane, RecordSlice, Vec3I16, Vec3I32};
 
 use crate::bsp_axis_adapter::{
     psoxide_normal_to_quake, psoxide_point_to_quake, quake_point_to_psoxide,
@@ -22,9 +18,11 @@ use crate::bsp_axis_adapter::{
 };
 
 pub use psx_bsp::collision::{
-    TraceScratch, CONTENTS_EMPTY, CONTENTS_LAVA, CONTENTS_SKY, CONTENTS_SLIME, CONTENTS_SOLID,
-    CONTENTS_WATER, Q12_ONE, TRACE_PLANE_EPSILON_Q12, TRACE_STACK_CAPACITY,
+    CollisionHull as SharedCollisionHull, PointTraceScratch, TraceScratch, CONTENTS_EMPTY,
+    CONTENTS_LAVA, CONTENTS_SKY, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, Q12_ONE,
+    TRACE_PLANE_EPSILON_Q12, TRACE_STACK_CAPACITY,
 };
+pub use psx_bsp::CompactPlane;
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 #[repr(C)]
@@ -39,249 +37,42 @@ pub struct Trace {
     pub plane_distance: i32,
 }
 
-#[derive(Copy, Clone)]
-struct RenderTraceContinuation {
-    far_child: i16,
-    plane_index: u16,
-    side: u8,
-    middle_fraction: i32,
-    end_fraction: i32,
-    middle: Vec3I32,
-    end: Vec3I32,
-}
-
-/// Caller-owned fixed workspace for tracing a point through the render BSP.
+/// Trace a Quake-space point segment through a render BSP hull, with the original game's
+/// semantics (`SV_RecursiveHullCheck`): the SDK's [`SharedCollisionHull::trace_render_point_into`].
 ///
-/// Quake model head zero indexes the render-node lump, not the clipnode lump.
-/// Weapon and sight point traces therefore use this tree and its leaf
-/// contents; body movement continues to use the canonical clipnode tracer.
+/// Quake model head zero indexes the render-node lump, not the clipnode lump, so weapon and
+/// sight point traces use a hull built over that tree and its leaf contents
+/// ([`SharedCollisionHull::from_render_bsp`]); body movement continues to use the exact
+/// clipnode tracer. Quake planes stay in their original Z-up axes and so do the points.
 ///
-/// A slot is only read after the same trace wrote it, so the slots start
-/// uninitialized like the shared tracer's [`TraceScratch`]. Zeroing the
-/// 2,560 bytes cost a `memset` per slot and a `memcpy` of the whole array
-/// on every construction, about 6,000 cycles for each sight or weapon trace.
-pub struct RenderTraceScratch {
-    continuations: [MaybeUninit<RenderTraceContinuation>; TRACE_STACK_CAPACITY],
-}
-
-impl RenderTraceScratch {
-    pub const fn new() -> Self {
-        Self {
-            continuations: [const { MaybeUninit::uninit() }; TRACE_STACK_CAPACITY],
-        }
-    }
-}
-
-impl Default for RenderTraceScratch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Render-BSP nodes as the point tracer reads them: the split plane and the
-/// two children. Implemented for the cooked records and for the resident
-/// map's native [`CompactNode`] view, which reads both fields with two aligned
-/// loads where the record decode takes six byte loads.
-pub trait RenderNodes: Copy {
-    fn len(self) -> usize;
-    fn plane_and_children(self, index: usize) -> Option<(u16, [i16; 2])>;
-}
-
-impl RenderNodes for RecordSlice<'_, Node> {
-    #[inline(always)]
-    fn len(self) -> usize {
-        RecordSlice::len(self)
-    }
-
-    #[inline(always)]
-    fn plane_and_children(self, index: usize) -> Option<(u16, [i16; 2])> {
-        let node = self.get(index)?;
-        Some((node.plane, node.children))
-    }
-}
-
-impl RenderNodes for &[CompactNode] {
-    #[inline(always)]
-    fn len(self) -> usize {
-        <[CompactNode]>::len(self)
-    }
-
-    #[inline(always)]
-    fn plane_and_children(self, index: usize) -> Option<(u16, [i16; 2])> {
-        let node = self.get(index)?;
-        Some((node.plane, node.children))
-    }
-}
-
-/// Render-BSP planes as the point tracer reads them. Implemented for the
-/// cooked 14-byte records, whose distance and class are unaligned words, and
-/// for the resident map's aligned [`CompactPlane`] copy of the same lump.
-pub trait RenderPlanes: Copy {
-    fn plane(self, index: usize) -> Option<Plane>;
-}
-
-impl RenderPlanes for RecordSlice<'_, Plane> {
-    #[inline(always)]
-    fn plane(self, index: usize) -> Option<Plane> {
-        self.get(index)
-    }
-}
-
-impl RenderPlanes for &[CompactPlane] {
-    #[inline(always)]
-    fn plane(self, index: usize) -> Option<Plane> {
-        Some(self.get(index)?.decoded())
-    }
-}
-
-/// Trace a Quake-space point segment through a checked render BSP.
-///
-/// This is integer-only and allocation-free. Malformed nodes, planes, leaves,
-/// cycles, or a traversal deeper than [`TRACE_STACK_CAPACITY`] return `false`
-/// and leave `output` unchanged.
+/// Malformed nodes, planes, leaves, cycles, or a traversal deeper than
+/// [`TRACE_STACK_CAPACITY`] return `false` and leave `output` unchanged.
 pub fn trace_render_bsp_into(
-    planes: impl RenderPlanes,
-    nodes: impl RenderNodes,
-    leaves: RecordSlice<'_, Leaf>,
-    head_node: i16,
+    hull: &SharedCollisionHull<'_>,
     start: &Vec3I32,
     end: &Vec3I32,
-    scratch: &mut RenderTraceScratch,
+    scratch: &mut PointTraceScratch,
     output: &mut Trace,
 ) -> bool {
-    let mut trace = Trace {
-        all_solid: true,
-        start_solid: false,
-        in_open: false,
-        in_water: false,
-        fraction: Q12_ONE,
-        end: *end,
-        normal: Vec3I16 { x: 0, y: 0, z: 0 },
-        plane_distance: 0,
-    };
-    let mut continuation_count = 0usize;
-    let mut node_index = head_node;
-    let mut start_fraction: i32 = 0;
-    let mut end_fraction = Q12_ONE;
-    let mut segment_start = *start;
-    let mut segment_end = *end;
-
-    loop {
-        let mut descent_budget = nodes.len();
-        while node_index >= 0 {
-            if descent_budget == 0 {
-                return false;
-            }
-            descent_budget -= 1;
-            let Some((plane_index, children)) = nodes.plane_and_children(node_index as usize)
-            else {
-                return false;
-            };
-            let Some(plane) = planes.plane(plane_index as usize) else {
-                return false;
-            };
-            let start_distance = render_plane_distance(plane, segment_start);
-            let end_distance = render_plane_distance(plane, segment_end);
-            if start_distance >= 0 && end_distance >= 0 {
-                node_index = children[0];
-                continue;
-            }
-            if start_distance < 0 && end_distance < 0 {
-                node_index = children[1];
-                continue;
-            }
-            let numerator = if start_distance < 0 {
-                start_distance.saturating_add(TRACE_PLANE_EPSILON_Q12)
-            } else {
-                start_distance.saturating_sub(TRACE_PLANE_EPSILON_Q12)
-            };
-            let fraction = div_q12_i32(numerator, start_distance.saturating_sub(end_distance))
-                .clamp(0, Q12_ONE);
-            let middle_fraction = start_fraction.saturating_add(mul_q12_i32(
-                end_fraction.saturating_sub(start_fraction),
-                fraction,
-            ));
-            let middle = render_interpolate(segment_start, segment_end, fraction);
-            let side = usize::from(start_distance < 0);
-            if continuation_count == TRACE_STACK_CAPACITY {
-                return false;
-            }
-            scratch.continuations[continuation_count] = MaybeUninit::new(RenderTraceContinuation {
-                far_child: children[side ^ 1],
-                plane_index,
-                side: side as u8,
-                middle_fraction,
-                end_fraction,
-                middle,
-                end: segment_end,
-            });
-            continuation_count += 1;
-            node_index = children[side];
-            end_fraction = middle_fraction;
-            segment_end = middle;
-        }
-
-        let Some(contents) = render_leaf_contents(leaves, node_index) else {
-            return false;
-        };
-        if contents != CONTENTS_SOLID {
-            trace.all_solid = false;
-            if contents == CONTENTS_EMPTY {
-                trace.in_open = true;
-            } else {
-                trace.in_water = true;
-            }
-        } else {
-            trace.start_solid = true;
-        }
-        if continuation_count == 0 {
-            *output = trace;
-            return true;
-        }
-        continuation_count -= 1;
-        // SAFETY: every slot below `continuation_count` was written by this
-        // trace before the count passed it.
-        let continuation = unsafe { scratch.continuations[continuation_count].assume_init() };
-        let Some(far_contents) = render_contents_from(
-            planes,
-            nodes,
-            leaves,
-            continuation.far_child,
-            continuation.middle,
-        ) else {
-            return false;
-        };
-        if far_contents != CONTENTS_SOLID {
-            node_index = continuation.far_child;
-            start_fraction = continuation.middle_fraction;
-            end_fraction = continuation.end_fraction;
-            segment_start = continuation.middle;
-            segment_end = continuation.end;
-            continue;
-        }
-        if trace.all_solid {
-            *output = trace;
-            return true;
-        }
-        let Some(plane) = planes.plane(continuation.plane_index as usize) else {
-            return false;
-        };
-        if continuation.side == 0 {
-            trace.normal = plane.normal;
-            trace.plane_distance = plane.distance;
-        } else {
-            trace.normal = Vec3I16 {
-                x: plane.normal.x.saturating_neg(),
-                y: plane.normal.y.saturating_neg(),
-                z: plane.normal.z.saturating_neg(),
-            };
-            trace.plane_distance = plane.distance.saturating_neg();
-        }
-        trace.fraction = continuation.middle_fraction;
-        trace.end = continuation.middle;
-        *output = trace;
-        return true;
+    let mut shared_output = SharedTrace::default();
+    if !hull.trace_render_point_into(
+        &SharedVec3I32 {
+            x: start.x,
+            y: start.y,
+            z: start.z,
+        },
+        &SharedVec3I32 {
+            x: end.x,
+            y: end.y,
+            z: end.z,
+        },
+        scratch,
+        &mut shared_output,
+    ) {
+        return false;
     }
+    *output = trace_from_shared_raw_axes(shared_output);
+    true
 }
 
 /// Trace a world-space point segment through a translated brush model's render BSP.
@@ -291,16 +82,12 @@ pub fn trace_render_bsp_into(
 /// so point traces must translate the query into model space. Interpreting head
 /// zero as a clipnode index can make a closed door block bodies while allowing
 /// sight and weapon rays through it.
-#[allow(clippy::too_many_arguments)]
 pub fn trace_translated_render_bsp_into(
-    planes: impl RenderPlanes,
-    nodes: impl RenderNodes,
-    leaves: RecordSlice<'_, Leaf>,
-    head_node: i16,
+    hull: &SharedCollisionHull<'_>,
     origin: Vec3I32,
     start: &Vec3I32,
     end: &Vec3I32,
-    scratch: &mut RenderTraceScratch,
+    scratch: &mut PointTraceScratch,
     output: &mut Trace,
 ) -> bool {
     let subtract_origin = |point: Vec3I32| Vec3I32 {
@@ -311,16 +98,7 @@ pub fn trace_translated_render_bsp_into(
     let local_start = subtract_origin(*start);
     let local_end = subtract_origin(*end);
     let mut local_trace = Trace::default();
-    if !trace_render_bsp_into(
-        planes,
-        nodes,
-        leaves,
-        head_node,
-        &local_start,
-        &local_end,
-        scratch,
-        &mut local_trace,
-    ) {
+    if !trace_render_bsp_into(hull, &local_start, &local_end, scratch, &mut local_trace) {
         return false;
     }
     local_trace.end = Vec3I32 {
@@ -334,60 +112,6 @@ pub fn trace_translated_render_bsp_into(
     local_trace.plane_distance = local_trace.plane_distance.saturating_add(translated_plane);
     *output = local_trace;
     true
-}
-
-fn render_contents_from(
-    planes: impl RenderPlanes,
-    nodes: impl RenderNodes,
-    leaves: RecordSlice<'_, Leaf>,
-    mut node_index: i16,
-    point: Vec3I32,
-) -> Option<i16> {
-    let mut descent_budget = nodes.len();
-    while node_index >= 0 {
-        if descent_budget == 0 {
-            return None;
-        }
-        descent_budget -= 1;
-        let (plane_index, children) = nodes.plane_and_children(node_index as usize)?;
-        let plane = planes.plane(plane_index as usize)?;
-        node_index = children[(render_plane_distance(plane, point) < 0) as usize];
-    }
-    render_leaf_contents(leaves, node_index)
-}
-
-fn render_leaf_contents(leaves: RecordSlice<'_, Leaf>, encoded: i16) -> Option<i16> {
-    if encoded >= 0 {
-        return None;
-    }
-    let index = (-1i32 - i32::from(encoded)) as usize;
-    Some(leaves.get(index)?.contents)
-}
-
-fn render_plane_distance(plane: Plane, point: Vec3I32) -> i32 {
-    let dot = match plane.kind {
-        0 => point.x,
-        1 => point.y,
-        2 => point.z,
-        _ => mul_q12_i32(point.x, plane.normal.x as i32)
-            .saturating_add(mul_q12_i32(point.y, plane.normal.y as i32))
-            .saturating_add(mul_q12_i32(point.z, plane.normal.z as i32)),
-    };
-    dot.saturating_sub(plane.distance)
-}
-
-fn render_interpolate(start: Vec3I32, end: Vec3I32, fraction: i32) -> Vec3I32 {
-    Vec3I32 {
-        x: start
-            .x
-            .saturating_add(mul_q12_i32(end.x.saturating_sub(start.x), fraction)),
-        y: start
-            .y
-            .saturating_add(mul_q12_i32(end.y.saturating_sub(start.y), fraction)),
-        z: start
-            .z
-            .saturating_add(mul_q12_i32(end.z.saturating_sub(start.z), fraction)),
-    }
 }
 
 /// Quake-local rigid brush transform.

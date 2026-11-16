@@ -626,6 +626,23 @@ impl ResidentMap {
             .expect("resident-map load validated render-node alignment")
     }
 
+    /// The render BSP of one brush model as the SDK's point-trace hull: the aligned
+    /// resident planes, the render-node and leaf records, `head_node` from the model.
+    #[inline]
+    pub fn render_hull(&self, head_node: i16) -> psx_bsp::collision::CollisionHull<'_> {
+        // SAFETY: the resident-map load validated every render-node plane index and
+        // child against the plane, node and leaf lumps, and the node lump's native
+        // alignment (as for the clip hulls above); `head_node` is a model's own.
+        unsafe {
+            psx_bsp::collision::CollisionHull::from_render_bsp(
+                &self.collision_planes,
+                self.shared.nodes(),
+                self.shared.leaves(),
+                head_node,
+            )
+        }
+    }
+
     /// Clip-node wire records are already the native little-endian layout, so
     /// collision traversals borrow them directly without a duplicate arena.
     #[optimize(size)]

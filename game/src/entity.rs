@@ -7,7 +7,7 @@ use psx_math::int32::{isqrt_i32, mul_q12_i32, square_i32_saturating};
 use psx_math::{atan2_q12, cos_q12, sin_q12, Mask64};
 use quake_core::body::{Body, BodyBlockers, BroadPhaseRegion, SweptUnitBox, PLAYER_BODY_SOURCE};
 use quake_core::collision::{
-    trace_render_bsp_into, trace_translated_render_bsp_into, CollisionHull, RenderTraceScratch,
+    trace_render_bsp_into, trace_translated_render_bsp_into, CollisionHull, PointTraceScratch,
     Trace, TraceScratch, CONTENTS_SKY, CONTENTS_SOLID, Q12_ONE,
 };
 use quake_core::combat::{
@@ -9980,16 +9980,9 @@ fn trace_scene_point(
         return false;
     };
     let mut best = Trace::default();
-    let mut render_scratch = RenderTraceScratch::default();
-    // The aligned resident views: the cooked records' unaligned fields
-    // cost a byte load each on every node step.
-    let planes = map.collision_planes();
-    let nodes = map.render_nodes();
+    let mut render_scratch = PointTraceScratch::default();
     if !trace_render_bsp_into(
-        planes,
-        nodes,
-        map.leaves(),
-        world.head_nodes[0],
+        &map.render_hull(world.head_nodes[0]),
         start,
         end,
         &mut render_scratch,
@@ -10011,10 +10004,7 @@ fn trace_scene_point(
         };
         let mut candidate = Trace::default();
         if !trace_translated_render_bsp_into(
-            planes,
-            nodes,
-            map.leaves(),
-            model.head_nodes[0],
+            &map.render_hull(model.head_nodes[0]),
             entity.origin,
             start,
             end,

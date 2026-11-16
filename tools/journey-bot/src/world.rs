@@ -1,11 +1,15 @@
 //! The cooked map, for the controller's own line-of-sight checks.
 
-use quake_core::collision::{trace_render_bsp_into, RenderTraceScratch, Trace};
+use quake_core::collision::{
+    trace_render_bsp_into, CompactPlane, PointTraceScratch, SharedCollisionHull, Trace,
+};
 use quake_formats::resident::ResidentMap;
 use quake_formats::{SliceReader, Vec3I32};
 
 pub struct World {
     map: ResidentMap,
+    /// The map's planes as the SDK's render hulls read them.
+    planes: Vec<CompactPlane>,
 }
 
 const Q12_ONE: i32 = 4096;
@@ -16,21 +20,37 @@ impl World {
         let mut reader = SliceReader::new(&bytes);
         let mut map = ResidentMap::new();
         map.load(1, &mut reader).unwrap_or_else(|e| panic!("{path}: {e:?}"));
-        World { map }
+        let planes = map
+            .planes()
+            .iter()
+            .map(|plane| CompactPlane {
+                normal: plane.normal,
+                kind: plane.kind as u8,
+                sign_bits: 0,
+                distance: plane.distance,
+            })
+            .collect();
+        World { map, planes }
     }
 
     /// True when the static world does not block the segment (Q12 points).
     pub fn los(&self, from: [i32; 3], to: [i32; 3]) -> bool {
         let world = self.map.brush_models().get(0).expect("world model");
-        let mut scratch = RenderTraceScratch::default();
+        let mut scratch = PointTraceScratch::default();
         let mut trace = Trace::default();
         let start = Vec3I32 { x: from[0], y: from[1], z: from[2] };
         let end = Vec3I32 { x: to[0], y: to[1], z: to[2] };
+        // SAFETY: the map was loaded and validated by `ResidentMap::load`.
+        let hull = unsafe {
+            SharedCollisionHull::from_render_bsp(
+                &self.planes,
+                self.map.nodes(),
+                self.map.leaves(),
+                world.head_nodes[0],
+            )
+        };
         let ok = trace_render_bsp_into(
-            self.map.planes(),
-            self.map.nodes(),
-            self.map.leaves(),
-            world.head_nodes[0],
+            &hull,
             &start,
             &end,
             &mut scratch,
