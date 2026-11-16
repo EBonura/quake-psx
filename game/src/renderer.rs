@@ -2123,15 +2123,12 @@ impl Renderer {
                     };
                     let window = special_texture_window(texture).word();
                     let submit = move || unsafe {
-                        submit_classic_affine_scoped_windowed_fan(
-                            fan_vertices,
-                            vertex_count,
-                            next,
-                            tpage,
-                            clut,
-                            window,
-                            ClassicAffineProfile::QUAKE_REFERENCE,
-                        )
+                        {
+                        #[cfg(feature = "exp-sdk-window")]
+                        { sdk_windowed_fan(fan_vertices, vertex_count, next, tpage, clut, window) }
+                        #[cfg(not(feature = "exp-sdk-window"))]
+                        { submit_classic_affine_scoped_windowed_fan(fan_vertices, vertex_count, next, tpage, clut, window, ClassicAffineProfile::QUAKE_REFERENCE) }
+                    }
                     };
                     let submitted = if view_space {
                         with_view_space_projection(submit)
@@ -3986,15 +3983,12 @@ impl Renderer {
                 let tpage = texture.texture_page;
                 let window = special_texture_window(texture).word();
                 let submit = move || unsafe {
-                    submit_classic_affine_scoped_windowed_fan(
-                        fan_vertices,
-                        vertex_count,
-                        next,
-                        tpage,
-                        clut_texture(),
-                        window,
-                        ClassicAffineProfile::QUAKE_REFERENCE,
-                    )
+                    {
+                        #[cfg(feature = "exp-sdk-window")]
+                        { sdk_windowed_fan(fan_vertices, vertex_count, next, tpage, clut_texture(), window) }
+                        #[cfg(not(feature = "exp-sdk-window"))]
+                        { submit_classic_affine_scoped_windowed_fan(fan_vertices, vertex_count, next, tpage, clut_texture(), window, ClassicAffineProfile::QUAKE_REFERENCE) }
+                    }
                 };
                 let submitted = if view_space {
                     with_view_space_projection(submit)
@@ -6014,6 +6008,109 @@ fn packet_capacity(next: *mut u32, end: *mut u32, needed_words: usize) -> bool {
     remaining >= 0 && needed_words <= remaining as usize
 }
 
+/// EXPERIMENT (lane w4-quake, audit row 5): the world batch through the SDK's
+/// `psx_engine::affine_surface` with the error-bounded split rule.
+#[cfg(feature = "exp-sdk-affine")]
+#[inline(never)]
+unsafe fn sdk_world_batch(
+    vertices: *mut ClassicAffineVertex,
+    vertex_count: usize,
+    surfaces: *const ClassicAffineBatchSurface,
+    surface_count: usize,
+    output: *mut u32,
+) -> ClassicAffineSubmit {
+    use psx_engine::affine_surface::{
+        submit_surface_batch_screened_with_rule, AffineSurface, ErrorBounded, SurfaceProfile,
+    };
+    let mut sdk_surfaces = [AffineSurface::default(); BATCH_MAX_SURFACES];
+    for i in 0..surface_count {
+        let s = unsafe { *surfaces.add(i) };
+        sdk_surfaces[i] = AffineSurface {
+            first_vertex: s.first_vertex,
+            vertex_count: s.vertex_count,
+            tpage: s.tpage,
+            clut: s.clut,
+            uv_offset: [0, 0],
+            compact: 1,
+            texture_window_word: 0,
+            color_command_word: 0x3400_0000,
+        };
+    }
+    let profile = SurfaceProfile {
+        screen_width: 320,
+        screen_height: 240,
+        ot_depth: 2048,
+        split_once_below: 0,
+        split_twice_below: 0,
+    };
+    let (submit, mask) = unsafe {
+        submit_surface_batch_screened_with_rule(
+            vertices.cast(),
+            vertex_count,
+            sdk_surfaces.as_ptr(),
+            surface_count,
+            output,
+            &profile,
+            ErrorBounded {
+                budget_q3: if cfg!(feature = "exp-sdk-ref") { 1 } else { u32::from(batch_error_budget(output)) },
+            },
+        )
+    };
+    unsafe { *addr_of_mut!(EXP_SDK_NEAR_MASKS) += mask.count_ones() };
+    ClassicAffineSubmit {
+        next_packet: submit.next_packet,
+        packets: submit.packets,
+        hardware_triangles: submit.hardware_triangles,
+    }
+}
+
+/// Surfaces the SDK's screened writer left unwritten (near divide zone).
+#[cfg(any(feature = "exp-sdk-affine", feature = "exp-sdk-window"))]
+#[no_mangle]
+pub static mut EXP_SDK_NEAR_MASKS: u32 = 0;
+
+/// EXPERIMENT: one windowed fan through the SDK writer.
+#[cfg(feature = "exp-sdk-window")]
+#[inline(never)]
+unsafe fn sdk_windowed_fan(
+    vertices: *mut ClassicAffineVertex,
+    vertex_count: usize,
+    output: *mut u32,
+    tpage: u16,
+    clut: u16,
+    window: u32,
+) -> ClassicAffineSubmit {
+    use psx_engine::affine_surface::{
+        submit_surface_batch_screened, AffineSurface, SurfaceProfile,
+    };
+    let surface = AffineSurface {
+        first_vertex: 0,
+        vertex_count: vertex_count as u16,
+        tpage,
+        clut,
+        uv_offset: [0, 0],
+        compact: 0,
+        texture_window_word: window,
+        color_command_word: 0x3400_0000,
+    };
+    let profile = SurfaceProfile {
+        screen_width: 320,
+        screen_height: 240,
+        ot_depth: 2048,
+        split_once_below: 136,
+        split_twice_below: 60,
+    };
+    let (submit, mask) = unsafe {
+        submit_surface_batch_screened(vertices.cast(), vertex_count, &surface, 1, output, &profile)
+    };
+    unsafe { *addr_of_mut!(EXP_SDK_NEAR_MASKS) += mask.count_ones() };
+    ClassicAffineSubmit {
+        next_packet: submit.next_packet,
+        packets: submit.packets,
+        hardware_triangles: submit.hardware_triangles,
+    }
+}
+
 unsafe fn flush_batch(
     vertices: *mut ClassicAffineVertex,
     vertex_count: usize,
@@ -6028,7 +6125,11 @@ unsafe fn flush_batch(
             hardware_triangles: 0,
         };
     }
-    #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
+    #[cfg(feature = "exp-sdk-affine")]
+    return unsafe {
+        sdk_world_batch(vertices, vertex_count, surfaces, surface_count, output)
+    };
+    #[cfg(all(not(feature = "exp-sdk-affine"), not(feature = "renderer-quake-specialized-kernel")))]
     unsafe {
         submit_classic_affine_batch(
             vertices,
@@ -6043,7 +6144,7 @@ unsafe fn flush_batch(
             },
         )
     }
-    #[cfg(feature = "renderer-quake-specialized-kernel")]
+    #[cfg(all(not(feature = "exp-sdk-affine"), feature = "renderer-quake-specialized-kernel"))]
     unsafe {
         submit_quake_classic_affine_batch_budget(
             vertices,

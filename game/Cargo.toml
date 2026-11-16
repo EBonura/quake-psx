@@ -34,6 +34,11 @@ default = [
     "renderer-error-bounded-tessellation",
     "smooth-poses",
 ]
+# Row 5 measurement (lane w4-quake): the world batch and the windowed fan through
+# psx_engine::affine_surface instead of quake-affine. Never default.
+exp-sdk-affine = []
+exp-sdk-window = []
+exp-sdk-ref = []
 episode1-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
 ambient-regression = []
