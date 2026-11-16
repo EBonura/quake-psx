@@ -3,8 +3,8 @@
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
-use psx_math::int32::isqrt_i32;
-use psx_math::{Wide, WideU};
+use psx_math::WideU;
+use psx_sfx::space::{quake_scales, Attn};
 use psx_sfx::{LoopingSample, OneShot, Player, Sample};
 use psx_spu::{Spu, SpuAddr, Voice, Volume};
 use quake_core::menu::{DEFAULT_SOUND_VOLUME, VOLUME_STEPS};
@@ -40,13 +40,10 @@ const TELEPORT_HUM_SOUND: i16 = 0x07;
 const TELEPORT_HUM_VOLUME: i32 = QUAKE_MAX_VOLUME / 2;
 // Voice 0 is music, 1..=11 are static loops, and 12..=23 remain dynamic.
 const _: () = assert!(AMBIENT_FIRST_VOICE as usize + MAX_AMBIENT_VOICES == 12);
-const Q12_ONE: i32 = 4096;
 /// `S_StaticSound` hands `ambientsound`'s `ATTN_STATIC` to the same ramp a
 /// one-shot uses, so a map ambient fades out over `1000 / 3` units rather
 /// than the ad-hoc clip this port used to give it.
-const AMBIENT_ATTENUATION_Q20: i32 = Attenuation::Static.q20();
-/// `sound_nominal_clip_dist`: an `ATTN_NORM` voice is silent 1000 units out.
-const NOMINAL_CLIP_DISTANCE: i32 = 1000;
+const AMBIENT_ATTENUATION: Attn = Attn::Static;
 const QUAKE_MAX_VOLUME: i32 = 250;
 /// Calibrated full slider level of a one-shot, out of 256. At the original
 /// `volume 0.7` default this becomes 128: the port's historic half-scale mix.
@@ -100,13 +97,13 @@ pub enum Attenuation {
 }
 
 impl Attenuation {
-    const fn q20(self) -> i32 {
-        let attenuation = match self {
-            Self::Norm => 1,
-            Self::Idle => 2,
-            Self::Static => 3,
-        };
-        attenuation * (Q12_ONE << 8) / NOMINAL_CLIP_DISTANCE
+    /// The SDK's name for the class (`psx_sfx::space`).
+    const fn attn(self) -> Attn {
+        match self {
+            Self::Norm => Attn::Norm,
+            Self::Idle => Attn::Idle,
+            Self::Static => Attn::Static,
+        }
     }
 }
 
@@ -196,15 +193,14 @@ pub struct AudioBank {
     sfx_volume: u8,
 }
 
-/// A positional one-shot's emitter, in whole units. `attenuation_q20` is
-/// [`Attenuation::q20`] (it fits a halfword), and zero for a voice with no
-/// emitter (a listener-relative sound, or a free voice).
+/// A positional one-shot's emitter, in whole units. `attenuation` is `None` for a voice with
+/// no emitter (a listener-relative sound, or a free voice).
 #[derive(Copy, Clone)]
 struct ChannelSpot {
     x: i16,
     y: i16,
     z: i16,
-    attenuation_q20: i16,
+    attenuation: Option<Attn>,
 }
 
 impl ChannelSpot {
@@ -212,7 +208,7 @@ impl ChannelSpot {
         x: 0,
         y: 0,
         z: 0,
-        attenuation_q20: 0,
+        attenuation: None,
     };
 }
 
@@ -542,7 +538,7 @@ impl AudioBank {
             let (left, right) = spatial_volumes(
                 ambient.origin,
                 self.scaled_sfx_volume(ambient.volume),
-                AMBIENT_ATTENUATION_Q20,
+                AMBIENT_ATTENUATION,
                 listener,
                 yaw,
             )
@@ -554,7 +550,10 @@ impl AudioBank {
         for slot in 0..self.spots.len() {
             let spot = self.spots[slot];
             let remaining = ((self.channels[slot] >> 16) as u16).wrapping_sub(self.now) as i16;
-            if spot.attenuation_q20 == 0 || remaining <= 0 {
+            let Some(attenuation) = spot.attenuation else {
+                continue;
+            };
+            if remaining <= 0 {
                 continue;
             }
             let (left, right) = spatial_volumes(
@@ -564,7 +563,7 @@ impl AudioBank {
                     z: i32::from(spot.z) << 12,
                 },
                 self.scaled_sfx_volume(ONE_SHOT_MAX_VOLUME),
-                i32::from(spot.attenuation_q20),
+                attenuation,
                 listener,
                 yaw,
             )
@@ -713,7 +712,7 @@ impl AudioBank {
         let (left, right) = spatial_volumes(
             origin,
             self.scaled_sfx_volume(ONE_SHOT_MAX_VOLUME),
-            attenuation.q20(),
+            attenuation.attn(),
             self.listener,
             self.listener_yaw,
         )?;
@@ -721,7 +720,7 @@ impl AudioBank {
             x: (origin.x >> 12) as i16,
             y: (origin.y >> 12) as i16,
             z: (origin.z >> 12) as i16,
-            attenuation_q20: attenuation.q20() as i16,
+            attenuation: Some(attenuation.attn()),
         };
         self.play_one_shot_volumes(id, left, right, key, video_tick, spot)
     }
@@ -917,51 +916,23 @@ fn ambient_sound(class_name: u8) -> Option<(i16, i32)> {
     })
 }
 
-/// `S_Spatialize`: `(1 - dist) * (1 -+ dot(right, source))` per ear, from a
-/// `volume` out of 256, or `None` once the source is beyond its clip.
+/// `S_Spatialize`: `(1 - dist) * (1 -+ dot(right, source))` per ear (the SDK's
+/// `psx_sfx::space::quake_scales`), from a `volume` out of 256, or `None` once the source is
+/// beyond its clip.
 #[inline(never)]
 fn spatial_volumes(
     origin: Vec3I32,
     volume: i32,
-    attenuation_q20: i32,
+    attenuation: Attn,
     listener: Vec3I32,
     yaw: i16,
 ) -> Option<(Volume, Volume)> {
-    let dx = origin.x.saturating_sub(listener.x) >> 12;
-    let dy = origin.y.saturating_sub(listener.y) >> 12;
-    let dz = origin.z.saturating_sub(listener.z) >> 12;
-    // Each component is below 2^19, so the sum of squares cannot saturate.
-    let distance_squared = Wide::mul(dx, dx)
-        .mul_add(dy, dy)
-        .mul_add(dz, dz);
-    let clip_distance = (Q12_ONE << 8) / attenuation_q20;
-    if !distance_squared
-        .sub_w(Wide::mul(clip_distance, clip_distance))
-        .is_negative()
-    {
-        return None;
-    }
-    let distance = isqrt_i32(distance_squared.low());
-    let distance_scale = Q12_ONE
-        .saturating_sub((distance.saturating_mul(attenuation_q20)) >> 8)
-        .max(0);
-    if distance_scale == 0 {
-        return None;
-    }
-
-    let angle = yaw as u16 & 0x0fff;
-    let (right_x, right_y) = quake_core::spatial::listener_right_q12(angle);
-    let pan = if distance == 0 {
-        0
-    } else {
-        quake_core::spatial::pan_q12(
-            Wide::mul(dx, right_x).mul_add(dy, right_y),
-            distance as u32,
-            Q12_ONE,
-        )
-    };
-    let left_scale = Wide::mul(distance_scale, Q12_ONE - pan).shr_i32(12);
-    let right_scale = Wide::mul(distance_scale, Q12_ONE + pan).shr_i32(12);
+    let (left_scale, right_scale) = quake_scales(
+        attenuation,
+        [listener.x, listener.y, listener.z],
+        yaw as u16,
+        [origin.x, origin.y, origin.z],
+    )?;
     let scale_volume = |scale: i32| {
         let value = ((volume * scale) >> 12).clamp(0, QUAKE_MAX_VOLUME) as u16;
         Volume::linear(value, 256)
