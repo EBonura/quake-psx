@@ -8,6 +8,7 @@
 //! chain route or a station derived at runtime from the cooked map, and the
 //! only inputs are ordinary pad presses.
 
+use crate::probe::Probe;
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
 
 use psx_math::int32::mul_q12_i32;
@@ -20,7 +21,6 @@ use crate::asset::{EpisodeMap, ResidentMap};
 use crate::input::InputFrame;
 use crate::player::{Player, PlayerFrame};
 
-const PROBE_MAGIC: u32 = 0x5150_5358;
 // Version 9: the convergence probes took 5 through 8.
 const PROBE_VERSION: u32 = 9;
 const PHASE_ROUTE: u32 = 1;
@@ -66,90 +66,6 @@ const DESCENDED_Z: i32 = -150;
 /// The 136-byte gameplay probe record shared by every headless gate. Field
 /// names stay the shared ones so the host reader keeps one layout; the
 /// comment on each line is what this gate stores there.
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct Probe {
-    magic: u32,
-    version: u32,
-    complete: u32,
-    phase: u32,
-    failure_code: u32,
-    failure_map: u32,
-    failure_entity: u32, // failing stage
-    failure_detail: u32,
-    total_frames: u32,
-    maps_loaded: u32,
-    maps_validated: u32,
-    transitions: u32,          // authored quad entity index
-    weapon_selected: u32,      // hazard damage taken
-    weapon_fired: u32,         // fall damage taken
-    weapon_animated: u32,      // drowning damage taken
-    monster_present: u32,      // quad seconds at pickup
-    monster_animated: u32,     // quad seconds when half spent
-    monster_state_bounds: u32, // authored hazard leaf index
-    monster_attack: u32,       // deaths
-    monster_pain: u32,         // respawns
-    monster_death: u32,        // respawn health
-    boss: u32,                 // respawn shells
-    current_map: u32,
-    route_index: u32,
-    last_health: u32,        // player x
-    state_ranges: u32,       // player y
-    valid_state_ranges: u32, // player z
-    map_loads: u32,
-    stage_frames: u32,       // current stage
-    shock_count: u32,        // water levels seen, one bit per level
-    intermission_state: u32, // water types seen: water 1, slime 2, lava 4
-    player_state: u32,       // mechanism bits
-    weapon_pickups: u32,     // lowest player z reached
-    // Motor health: `stall_frames << 8 | MovementStalls bits`. A shipping map
-    // must never stall the player motor nor leave a collision query
-    // unresolved, so any non-zero value here fails the gate.
-    target_edges: u32,
-}
-
-impl Probe {
-    const fn new() -> Self {
-        Self {
-            magic: PROBE_MAGIC,
-            version: PROBE_VERSION,
-            complete: 0,
-            phase: PHASE_ROUTE,
-            failure_code: 0,
-            failure_map: 0,
-            failure_entity: 0,
-            failure_detail: 0,
-            total_frames: 0,
-            maps_loaded: 0,
-            maps_validated: 0,
-            transitions: u32::MAX,
-            weapon_selected: 0,
-            weapon_fired: 0,
-            weapon_animated: 0,
-            monster_present: 0,
-            monster_animated: 0,
-            monster_state_bounds: u32::MAX,
-            monster_attack: 0,
-            monster_pain: 0,
-            monster_death: 0,
-            boss: 0,
-            current_map: u32::MAX,
-            route_index: 0,
-            last_health: 0,
-            state_ranges: 0,
-            valid_state_ranges: 0,
-            map_loads: 0,
-            stage_frames: 0,
-            shock_count: 0,
-            intermission_state: 0,
-            player_state: 0,
-            weapon_pickups: 0,
-            target_edges: 0,
-        }
-    }
-}
-
-const _: [(); 136] = [(); core::mem::size_of::<Probe>()];
 
 #[derive(Copy, Clone)]
 struct Waypoint {
@@ -290,8 +206,36 @@ const LOWER_LEVEL_APPROACH: &[Waypoint] = &[
     waypoint(80, 1040),
 ];
 
+// What this gate puts in the shared probe fields (see `crate::probe`):
+//   failure_entity       failing stage
+//   transitions          authored quad entity index (starts at u32::MAX)
+//   weapon_selected      hazard damage taken
+//   weapon_fired         fall damage taken
+//   weapon_animated      drowning damage taken
+//   monster_present      quad seconds at pickup
+//   monster_animated     quad seconds when half spent
+//   monster_state_bounds authored hazard leaf index (starts at u32::MAX)
+//   monster_attack       deaths
+//   monster_pain         respawns
+//   monster_death        respawn health
+//   boss                 respawn shells
+//   last_health          player x
+//   state_ranges         player y
+//   valid_state_ranges   player z
+//   stage_frames         current stage
+//   shock_count          water levels seen, one bit per level
+//   intermission_state   water types seen: water 1, slime 2, lava 4
+//   player_state         mechanism bits
+//   weapon_pickups       lowest player z reached
+//   target_edges         motor health: `stall_frames << 8 | MovementStalls bits`. A shipping
+//                        map must never stall the player motor nor leave a collision query
+//                        unresolved, so any non-zero value here fails the gate.
 #[used]
-static mut PROBE: Probe = Probe::new();
+static mut PROBE: Probe = Probe {
+    transitions: u32::MAX,
+    monster_state_bounds: u32::MAX,
+    ..Probe::new(PROBE_VERSION, PHASE_ROUTE)
+};
 static mut ROUTE_INDEX: usize = 0;
 static mut STAGE: usize = 0;
 static mut PREVIOUS_HEALTH: i16 = 100;

@@ -1,5 +1,6 @@
 //! Focused real-guest proof for E1M6's authored `trigger_monsterjump`.
 
+use crate::probe::Probe;
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
 
 use crate::asset::{EpisodeMap, ResidentMap};
@@ -7,7 +8,6 @@ use crate::entity::EntityScene;
 use crate::input::InputFrame;
 use crate::player::Player;
 
-const PROBE_MAGIC: u32 = 0x5150_5358;
 const PROBE_VERSION: u32 = 13;
 const PHASE_FLIGHT: u32 = 0xb0;
 const PHASE_COMPLETE: u32 = 0xb1;
@@ -22,90 +22,12 @@ const ROSE: u32 = 1 << 1;
 const LANDED: u32 = 1 << 2;
 const REQUIRED: u32 = TRIGGERED | ROSE | LANDED;
 
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct Probe {
-    magic: u32,
-    version: u32,
-    complete: u32,
-    phase: u32,
-    failure_code: u32,
-    failure_map: u32,
-    failure_entity: u32,
-    failure_detail: u32,
-    total_frames: u32,
-    maps_loaded: u32,
-    maps_validated: u32,
-    transitions: u32,
-    weapon_selected: u32,
-    weapon_fired: u32,
-    weapon_animated: u32,
-    monster_present: u32,
-    monster_animated: u32,
-    monster_state_bounds: u32,
-    monster_attack: u32,
-    monster_pain: u32,
-    monster_death: u32,
-    boss: u32,
-    current_map: u32,
-    route_index: u32,
-    last_health: u32,
-    state_ranges: u32,
-    valid_state_ranges: u32,
-    map_loads: u32,
-    stage_frames: u32,
-    shock_count: u32,
-    intermission_state: u32,
-    player_state: u32,
-    weapon_pickups: u32,
-    target_edges: u32,
-}
-
-impl Probe {
-    const fn new() -> Self {
-        Self {
-            magic: PROBE_MAGIC,
-            version: PROBE_VERSION,
-            complete: 0,
-            phase: PHASE_FLIGHT,
-            failure_code: 0,
-            failure_map: 0,
-            failure_entity: u32::MAX,
-            failure_detail: 0,
-            total_frames: 0,
-            maps_loaded: 0,
-            maps_validated: 0,
-            transitions: 0,
-            weapon_selected: 0,
-            weapon_fired: 0,
-            weapon_animated: 0,
-            monster_present: 0,
-            monster_animated: 0,
-            monster_state_bounds: 0,
-            monster_attack: 0,
-            monster_pain: 0,
-            monster_death: 0,
-            boss: 0,
-            current_map: u32::MAX,
-            route_index: 0,
-            last_health: 0,
-            state_ranges: 0,
-            valid_state_ranges: 0,
-            map_loads: 0,
-            stage_frames: 0,
-            shock_count: 0,
-            intermission_state: 0,
-            player_state: 0,
-            weapon_pickups: 0,
-            target_edges: 0,
-        }
-    }
-}
-
-const _: [(); 136] = [(); core::mem::size_of::<Probe>()];
 
 #[used]
-static mut PROBE: Probe = Probe::new();
+static mut PROBE: Probe = Probe {
+    failure_entity: u32::MAX,
+    ..Probe::new(PROBE_VERSION, PHASE_FLIGHT)
+};
 static mut SOURCE: u16 = u16::MAX;
 static mut ORIGINAL: quake_formats::Vec3I32 = quake_formats::Vec3I32 { x: 0, y: 0, z: 0 };
 static mut START_Z: i32 = 0;

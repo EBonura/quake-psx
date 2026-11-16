@@ -42,6 +42,21 @@ mod monsterjump_regression;
 mod music;
 #[cfg(feature = "monster-code-overlay")]
 mod monster_code;
+#[cfg(any(
+    feature = "arsenal-regression",
+    feature = "bestiary-regression",
+    feature = "combat-regression",
+    feature = "e1m1-chain-regression",
+    feature = "e1m2-e1m3-route-regression",
+    feature = "episode1-regression",
+    feature = "episode1-route-regression",
+    feature = "monster-regression",
+    feature = "monsterjump-regression",
+    feature = "start-route-regression",
+    feature = "survival-regression",
+    feature = "systems-regression"
+))]
+mod probe;
 mod platform;
 mod player;
 mod pusher;
