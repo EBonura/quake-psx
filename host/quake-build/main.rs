@@ -5666,7 +5666,11 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
         )
     })?;
     let halt = link_map_symbol(&map_text, "psx_rt::halt")?;
-    let heap_start = link_map_symbol(&map_text, "__heap_start = .")?.address;
+    // The SDK linker script assigns `__heap_start = __bss_end` (913a9e7b and
+    // later); older pins wrote `__heap_start = .`.
+    let heap_start = link_map_symbol(&map_text, "__heap_start = __bss_end")
+        .or_else(|_| link_map_symbol(&map_text, "__heap_start = ."))?
+        .address;
     let cursor_address = link_map_symbol(&map_text, "psx_rt::heap::ALLOCATOR (.0)")?.address;
     let cursor = ram_word(&fs::read(&ram)?, cursor_address)?;
     if !(heap_start..=SHIP_BOOT_HEAP_END).contains(&cursor) {
