@@ -283,6 +283,7 @@ name = "quake-core"
 version = "0.1.0"
 dependencies = [
  "psx-bsp",
+ "psx-display",
  "psx-engine",
  "psx-fx",
  "psx-gte",
