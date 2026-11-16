@@ -587,7 +587,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "route-monsters,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                    "route-monsters,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
                 ),
                 false,
             )?;
@@ -655,7 +655,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-lattice-clip",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum",
                 ),
                 false,
             )?;
@@ -673,7 +673,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum",
                 ),
                 false,
             )?;
@@ -691,7 +691,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy",
                 ),
                 false,
             )?;
@@ -713,7 +713,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-gte-near-classification",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-gte-near-classification",
                 ),
                 false,
             )?;
@@ -730,7 +730,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification",
                 ),
                 false,
             )?;
@@ -753,7 +753,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize",
                 ),
                 false,
             )?;
@@ -776,7 +776,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy",
+                    "renderer-selection-cache,renderer-block-frustum,renderer-cell-policy",
                 ),
                 false,
             )?;
@@ -809,7 +809,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
+                    "renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize",
                 ),
                 false,
             )?;
@@ -827,7 +827,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
+                    "renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
                 ),
                 false,
             )?;
@@ -844,7 +844,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-quake-specialized-kernel",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy",
                 ),
                 false,
             )?;
@@ -866,7 +866,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize",
                 ),
                 false,
             )?;
@@ -883,7 +883,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
                 ),
                 false,
             )?;
@@ -905,7 +905,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks-30hz,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                    "e1m1-chain-regression,perf-fixed-ticks-30hz,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
                 ),
                 false,
             )?;
@@ -923,7 +923,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-screen-frustum",
                 ),
                 false,
             )?;
@@ -942,7 +942,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-selection-drop-world",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-selection-drop-world",
                 ),
                 false,
             )?;
@@ -962,7 +962,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-selection-decimate",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase,renderer-selection-decimate",
                 ),
                 false,
             )?;
@@ -1024,14 +1024,14 @@ fn real_main() -> Result<()> {
             cook_assets(&root, &pak, false)?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             let features =
-                "renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip";
+                "renderer-selection-cache,renderer-block-frustum";
 
             let visual = root.join("build-psoxide-gpu-polygon-clip-visual-regression");
             build_disc(
                 &root,
                 &visual,
                 Some(
-                    "visual-parity-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip",
+                    "visual-parity-regression,renderer-selection-cache,renderer-block-frustum",
                 ),
                 false,
             )?;
@@ -1042,7 +1042,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &routes,
                 Some(
-                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip",
+                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum",
                 ),
                 false,
             )?;
@@ -1133,7 +1133,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip",
+                    "e1m1-chain-regression,perf-fixed-ticks,renderer-selection-cache,renderer-block-frustum",
                 ),
                 false,
             )?;
@@ -1156,7 +1156,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize",
+                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize",
                 ),
                 false,
             )?;
@@ -1171,7 +1171,7 @@ fn real_main() -> Result<()> {
                 &root,
                 &build,
                 Some(
-                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-gpu-polygon-clip,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-specialized-kernel,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
+                    "e1m2-e1m3-route-regression,renderer-selection-cache,renderer-block-frustum,renderer-cell-policy,renderer-cell-liquid-policy,renderer-gte-near-classification,renderer-quake-baked-materialize,renderer-scratchpad-liquid-phase",
                 ),
                 false,
             )?;
@@ -5666,7 +5666,7 @@ fn run_ship_boot(root: &Path, frontend: &Path, build: &Path, map: &Path) -> Resu
         )
     })?;
     let halt = link_map_symbol(&map_text, "psx_rt::halt")?;
-    // The SDK linker script assigns `__heap_start = __bss_end` (913a9e7b and
+    // The SDK linker script assigns `__heap_start = __bss_end` (fec004b5 and
     // later); older pins wrote `__heap_start = .`.
     let heap_start = link_map_symbol(&map_text, "__heap_start = __bss_end")
         .or_else(|_| link_map_symbol(&map_text, "__heap_start = ."))?

@@ -18,11 +18,9 @@ default = [
     "monster-code-overlay",
     "renderer-selection-cache",
     "renderer-block-frustum",
-    "renderer-gpu-polygon-clip",
     "renderer-cell-policy",
     "renderer-cell-liquid-policy",
     "renderer-gte-near-classification",
-    "renderer-quake-specialized-kernel",
     "renderer-quake-baked-materialize",
     "renderer-scratchpad-liquid-phase",
     "renderer-screen-frustum",
@@ -31,7 +29,6 @@ default = [
     "collision-scratchpad-stack",
     "gameplay-scratchpad-stack",
     "renderer-scratchpad-alias-projection",
-    "renderer-error-bounded-tessellation",
     "smooth-poses",
 ]
 map-regression = ["emulator-telemetry"]
@@ -131,20 +128,6 @@ renderer-selection-decimate = []
 # Harder form of the same ceiling: submit no world faces at all, pricing
 # everything the frame does apart from the world surface path.
 renderer-selection-drop-world = ["renderer-selection-decimate"]
-# Visual-exact CPU/GPU trade: retain conservative whole-face rejection, then
-# let the PS1 draw area clip individual lattice packets outside the viewport.
-renderer-gpu-lattice-clip = ["quake-affine/classic-affine-gpu-lattice-clip"]
-# Broader form which also delegates level-zero GT3/GT4 clipping to the GPU.
-renderer-gpu-polygon-clip = ["quake-affine/classic-affine-gpu-polygon-clip"]
-# Specialize the ordinary world kernel around QUAKE_REFERENCE rather than
-# carrying a runtime profile through every root and packet decision.
-renderer-quake-specialized-kernel = [
-    "quake-affine/classic-affine-quake-specialized-kernel",
-]
-# World faces split by their predicted affine warp (quake-affine
-# `classic-affine-lattice`, profile QUAKE_ERROR_BOUNDED: a 16-pixel budget)
-# instead of the fixed depth bands; wide faces split as quad fans.
-renderer-error-bounded-tessellation = ["quake-affine/classic-affine-lattice"]
 # Quake's dominant baked-corner gather as one fixed inline MIPS schedule.
 # Dynamic light-style and UV-offset faces retain the authoritative generic path.
 renderer-quake-baked-materialize = []

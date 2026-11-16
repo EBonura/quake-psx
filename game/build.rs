@@ -151,7 +151,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", stack_reserve.display());
     let quake_linker = out_dir.join("quake-psoxide.ld");
     // The world pass alternates, batch after batch, between the ordinary
-    // face loop and the engine's batch kernel with its two packet leaves:
+    // face loop and the SDK's world batch kernel with its two packet leaves:
     // 3.8 KB together, which fits the 4 KB direct-mapped I-cache only when
     // the four sit side by side. Placed by the linker's default order they
     // shared cache sets and refilled each other on every batch.
@@ -161,7 +161,7 @@ fn main() {
         "PSoXide linker text rule changed; re-audit Quake's world-pass placement"
     );
     let world_pass = format!(
-        "        *(.text.*ordinary_world_faces*)\n        *(.text.*submit_quake_classic_affine_batch_budget*)\n        *(.text.*quake_kernel*leaf_quad_words*)\n        *(.text.*quake_kernel*leaf_tri_words*)\n{text_marker}"
+        "        *(.text.*ordinary_world_faces*)\n        *(.text.*affine_surface*submit_world_batch*)\n        *(.text.*affine_surface*leaf_quad_words*)\n        *(.text.*affine_surface*leaf_tri_words*)\n        *(.text.*renderer*windowed_fan*)\n{text_marker}"
     );
     fs::write(
         &quake_linker,

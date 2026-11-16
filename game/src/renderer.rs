@@ -9,8 +9,6 @@ use core::ptr::{self, addr_of, addr_of_mut};
 
 #[cfg(not(all(feature = "renderer-quake-baked-materialize", target_arch = "mips")))]
 use quake_affine::materialize_classic_affine_indexed_baked_vertices;
-#[cfg(not(feature = "renderer-quake-specialized-kernel"))]
-use quake_affine::submit_classic_affine_batch;
 
 use psx_engine::compose_model_view_transform;
 use psx_math::attributed_clip::{
@@ -24,13 +22,14 @@ use quake_affine::{
     ClassicAffineTopologyCensus,
 };
 use quake_affine::{
-    materialize_classic_affine_indexed_vertices, submit_classic_affine_scoped_windowed_fan,
+    materialize_classic_affine_indexed_vertices,
     submit_classic_alias_model, submit_classic_alias_view_model, ClassicAffineBatchSurface,
     ClassicAffineIndexedCorner, ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit,
     ClassicAffineVertex, ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
 };
-#[cfg(feature = "renderer-quake-specialized-kernel")]
-use quake_affine::{submit_quake_classic_affine_batch_budget, QUAKE_COARSE_ERROR_BUDGET_Q3};
+use psx_engine::affine_surface::{
+    submit_world_batch, FirstPerson, WORLD_COARSE_ERROR_BUDGET_Q3 as QUAKE_COARSE_ERROR_BUDGET_Q3,
+};
 
 use psx_gpu::material::{BlendMode, TextureMaterial, TextureWindow};
 use psx_gpu::prim::{ClassicTriTextured, QuadTextured, QuadTexturedMaterial, RectFlat};
@@ -226,7 +225,8 @@ pub fn set_hud_mode(mode: HudMode) {
 const DUMMY_LIGHT_STYLE: usize = quake_core::lightstyle::DUMMY_STYLE;
 // Two-level subdivision emits at most 19 packets for one source triangle;
 // 13 words covers the larger textured-Gouraud quad packet.
-const WORST_PACKET_WORDS_PER_TRIANGLE: usize = quake_affine::WORST_PACKET_WORDS_PER_TRIANGLE;
+const WORST_PACKET_WORDS_PER_TRIANGLE: usize =
+    psx_engine::affine_surface::WORLD_PACKET_WORDS_PER_TRIANGLE;
 // A scoped windowed polygon adds its GP0(E2) selector and full-window reset.
 const WORST_WINDOWED_PACKET_WORDS_PER_TRIANGLE: usize = 19 * 15;
 const ALIAS_PACKET_WORDS: usize =
@@ -2123,15 +2123,7 @@ impl Renderer {
                     };
                     let window = special_texture_window(texture).word();
                     let submit = move || unsafe {
-                        submit_classic_affine_scoped_windowed_fan(
-                            fan_vertices,
-                            vertex_count,
-                            next,
-                            tpage,
-                            clut,
-                            window,
-                            ClassicAffineProfile::QUAKE_REFERENCE,
-                        )
+                        windowed_fan(fan_vertices, vertex_count, next, tpage, clut, window)
                     };
                     let submitted = if view_space {
                         with_view_space_projection(submit)
@@ -3986,15 +3978,7 @@ impl Renderer {
                 let tpage = texture.texture_page;
                 let window = special_texture_window(texture).word();
                 let submit = move || unsafe {
-                    submit_classic_affine_scoped_windowed_fan(
-                        fan_vertices,
-                        vertex_count,
-                        next,
-                        tpage,
-                        clut_texture(),
-                        window,
-                        ClassicAffineProfile::QUAKE_REFERENCE,
-                    )
+                    windowed_fan(fan_vertices, vertex_count, next, tpage, clut_texture(), window)
                 };
                 let submitted = if view_space {
                     with_view_space_projection(submit)
@@ -6009,6 +5993,51 @@ fn packet_capacity(next: *mut u32, end: *mut u32, needed_words: usize) -> bool {
     remaining >= 0 && needed_words <= remaining as usize
 }
 
+/// One convex fan with its own texture window (liquid, sky), through the SDK's
+/// affine surface writer on the depth bands of
+/// [`ClassicAffineProfile::QUAKE_REFERENCE`]. Each polygon carries its window
+/// selector and a full-window reset.
+#[inline(never)]
+unsafe fn windowed_fan(
+    vertices: *mut ClassicAffineVertex,
+    vertex_count: usize,
+    output: *mut u32,
+    tpage: u16,
+    clut: u16,
+    window: u32,
+) -> ClassicAffineSubmit {
+    use psx_engine::affine_surface::{submit_surface_batch, AffineSurface, SurfaceProfile};
+    let surface = AffineSurface {
+        first_vertex: 0,
+        vertex_count: vertex_count as u16,
+        tpage,
+        clut,
+        uv_offset: [0, 0],
+        compact: 0,
+        texture_window_word: window,
+        color_command_word: packet::SHADED_TEXTURED_TRIANGLE,
+    };
+    let reference = ClassicAffineProfile::QUAKE_REFERENCE;
+    let profile = SurfaceProfile {
+        screen_width: reference.screen_width,
+        screen_height: reference.screen_height,
+        ot_depth: reference.ot_depth,
+        split_once_below: reference.subdivide_once_at,
+        split_twice_below: reference.subdivide_twice_at,
+    };
+    // SAFETY: the fan sits at the start of a batch buffer that reserves
+    // SUBDIVISION_SCRATCH_VERTICES records after it, and the caller's packet
+    // check covers the writer's worst case (12 packets of 15 words a
+    // triangle, under the 19 of 15 it reserves).
+    let submit =
+        unsafe { submit_surface_batch(vertices.cast(), vertex_count, &surface, 1, output, profile) };
+    ClassicAffineSubmit {
+        next_packet: submit.next_packet,
+        packets: submit.packets,
+        hardware_triangles: submit.hardware_triangles,
+    }
+}
+
 unsafe fn flush_batch(
     vertices: *mut ClassicAffineVertex,
     vertex_count: usize,
@@ -6023,33 +6052,37 @@ unsafe fn flush_batch(
             hardware_triangles: 0,
         };
     }
-    #[cfg(not(feature = "renderer-quake-specialized-kernel"))]
-    unsafe {
-        submit_classic_affine_batch(
-            vertices,
-            vertex_count,
-            surfaces,
-            surface_count,
-            output,
-            if cfg!(feature = "renderer-error-bounded-tessellation") {
-                ClassicAffineProfile::QUAKE_ERROR_BOUNDED
-            } else {
-                ClassicAffineProfile::QUAKE_REFERENCE
-            },
-        )
-    }
-    #[cfg(feature = "renderer-quake-specialized-kernel")]
-    unsafe {
-        submit_quake_classic_affine_batch_budget(
-            vertices,
+    // SAFETY: the two vertex records share one layout (asserted below); the
+    // batch reserves the world path's scratch after its vertices and the
+    // caller its packet room.
+    let submitted = unsafe {
+        submit_world_batch::<FirstPerson>(
+            vertices.cast(),
             vertex_count,
             surfaces,
             surface_count,
             output,
             batch_error_budget(output),
         )
+    };
+    ClassicAffineSubmit {
+        next_packet: submitted.next_packet,
+        packets: submitted.packets,
+        hardware_triangles: submitted.hardware_triangles,
     }
 }
+
+const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+    use psx_engine::affine_surface::{AffineVertex, WORLD_SCRATCH_VERTICES};
+    assert!(size_of::<ClassicAffineVertex>() == size_of::<AffineVertex>());
+    assert!(align_of::<ClassicAffineVertex>() == align_of::<AffineVertex>());
+    assert!(offset_of!(ClassicAffineVertex, uv) == offset_of!(AffineVertex, uv));
+    assert!(offset_of!(ClassicAffineVertex, color) == offset_of!(AffineVertex, color));
+    assert!(offset_of!(ClassicAffineVertex, screen) == offset_of!(AffineVertex, screen));
+    assert!(offset_of!(ClassicAffineVertex, depth) == offset_of!(AffineVertex, depth));
+    assert!(SUBDIVISION_SCRATCH_VERTICES >= WORLD_SCRATCH_VERTICES);
+};
 
 /// End of the packet arena the frame being drawn writes into, set where
 /// `draw_frame` picks its arena.
@@ -6074,17 +6107,12 @@ pub static mut QUAKE_COARSE_BUDGET_BATCHES: u32 = 0;
 /// The error budget for a batch written at `output`: the profile's own,
 /// or [`QUAKE_COARSE_ERROR_BUDGET_Q3`] once the arena is nearly full, so a
 /// heavy view trades warp for packets instead of dropping faces.
-#[cfg(feature = "renderer-quake-specialized-kernel")]
 #[inline(always)]
 fn batch_error_budget(output: *mut u32) -> u8 {
     let end = unsafe { *addr_of!(PACKET_ARENA_END) };
     let remaining = (end as usize).wrapping_sub(output as usize) / core::mem::size_of::<u32>();
-    let normal = if cfg!(feature = "renderer-error-bounded-tessellation") {
-        ClassicAffineProfile::QUAKE_ERROR_BOUNDED.subdivide_error_px_q3
-    } else {
-        0
-    };
-    if normal != 0 && remaining < COARSE_BUDGET_REMAINING_WORDS {
+    let normal = ClassicAffineProfile::QUAKE_ERROR_BOUNDED.subdivide_error_px_q3;
+    if remaining < COARSE_BUDGET_REMAINING_WORDS {
         unsafe {
             *addr_of_mut!(QUAKE_COARSE_BUDGET_BATCHES) =
                 (*addr_of!(QUAKE_COARSE_BUDGET_BATCHES)).wrapping_add(1)
