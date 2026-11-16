@@ -18,3 +18,8 @@ build-std-features = ["compiler-builtins-mem"]
 # patcher (the SDK's `hazard-patch`, HAZARD_TRAMPOLINES in psx-rt),
 # the way Cortex and hl-psx build. QUAKE_PSX_DELAY_SLOT_NOPS=1 restores the
 # flag for an A/B.
+
+[env]
+# The hazard trampoline table size in code words (the SDK's psx-rt knob; the
+# former hazard-trampolines-192 feature).
+PSX_HAZARD_TRAMPOLINE_WORDS = "192"
