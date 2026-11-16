@@ -476,6 +476,7 @@ name = "psx-io"
 version = "0.1.0"
 dependencies = [
  "psx-hw 0.1.0",
+ "psx-math 0.1.0",
 ]
 
 [[package]]
@@ -488,6 +489,7 @@ name = "psx-level"
 version = "0.1.0"
 dependencies = [
  "psx-math 0.1.0",
+ "psx-pack",
 ]
 
 [[package]]
@@ -504,6 +506,7 @@ name = "psx-pack"
 version = "0.1.0"
 dependencies = [
  "psx-io",
+ "psx-math 0.1.0",
 ]
 
 [[package]]
@@ -522,6 +525,7 @@ dependencies = [
  "psx-gpu",
  "psx-hw 0.1.0",
  "psx-io",
+ "psx-math 0.1.0",
  "psx-tick",
 ]
 
@@ -530,6 +534,7 @@ name = "psx-settings"
 version = "0.1.0"
 dependencies = [
  "psx-display",
+ "psx-math 0.1.0",
  "psx-pad",
 ]
 
