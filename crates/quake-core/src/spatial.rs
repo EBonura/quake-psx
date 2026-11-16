@@ -80,7 +80,7 @@ mod tests {
         }
         let mut state = 0x9e37_79b9u32;
         let mut next = || {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state = psx_fx::NrLcg::step(state);
             state
         };
         for _ in 0..200_000 {

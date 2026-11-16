@@ -2215,7 +2215,7 @@ impl WeaponState {
     }
 
     fn random_fraction_q12(&mut self) -> i32 {
-        self.random_state = psx_fx::NrLcg::new(self.random_state).next();
+        self.random_state = psx_fx::NrLcg::step(self.random_state);
         ((self.random_state >> 1) & 0x7fff_ffff) as i32 & (Q12_ONE - 1)
     }
 }
@@ -2413,7 +2413,7 @@ mod tests {
     fn slab_ratio_from_coordinates_matches_the_64_bit_reference() {
         let mut state = 0x7654_3211u32;
         let mut next = || {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state = psx_fx::NrLcg::step(state);
             state
         };
         for _ in 0..400_000 {
@@ -2452,7 +2452,7 @@ mod tests {
         }
         let mut state = 0x1234_5679u32;
         let mut next = || {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state = psx_fx::NrLcg::step(state);
             state
         };
         for _ in 0..200_000 {

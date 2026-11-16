@@ -60,7 +60,7 @@ impl TrapRandom {
 
     #[optimize(size)]
     pub fn next(&mut self) -> u32 {
-        self.0 = psx_fx::NrLcg::new(self.0).next();
+        self.0 = psx_fx::NrLcg::step(self.0);
         self.0 >> 16
     }
 

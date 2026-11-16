@@ -116,7 +116,7 @@ mod tests {
     fn beam_shortening_matches_the_wide_division_it_replaced() {
         let mut state = 0x2545_f491u32;
         let mut next = || {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state = psx_fx::NrLcg::step(state);
             state >> 8
         };
         for _ in 0..4000 {
