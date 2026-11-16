@@ -31,7 +31,6 @@ pub mod screenblend;
 pub mod save;
 pub mod secrets;
 pub mod sky;
-pub mod spatial;
 pub mod survival;
 pub mod targets;
 pub mod teleport;
