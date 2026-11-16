@@ -5001,7 +5001,33 @@ fn build_disc(
             return Err(format!("missing build output {}", path.display()).into());
         }
     }
+    audit_root_directory(&image)?;
     println!("PSoXide disc: {}", cue.display());
+    Ok(())
+}
+
+/// The music lookup (`game/src/music.rs`) reads the ISO root through `iso::read_root_sector`,
+/// which holds one sector: stop the build if the root directory ever passes it.
+fn audit_root_directory(image: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    const RAW_SECTOR: u64 = 2352;
+    const USER_DATA_OFFSET: u64 = 24;
+    const PVD_LBA: u64 = 16;
+    let mut descriptor = [0u8; 2048];
+    let mut file = fs::File::open(image)?;
+    file.seek(SeekFrom::Start(PVD_LBA * RAW_SECTOR + USER_DATA_OFFSET))?;
+    file.read_exact(&mut descriptor)?;
+    if &descriptor[1..6] != b"CD001" {
+        return Err(format!("{} has no ISO volume descriptor at sector 16", image.display()).into());
+    }
+    // The root directory record sits at byte 156; its data length is the little-endian word at 10.
+    let length = u32::from_le_bytes(descriptor[166..170].try_into()?);
+    if length > 2048 {
+        return Err(format!(
+            "the ISO root directory is {length} bytes: the music lookup reads one sector (psx_io::iso::read_root_sector)"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -10254,6 +10280,25 @@ fn print_command(command: &Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_root_audit_stops_a_root_past_one_sector() {
+        let image = |root_length: u32| {
+            let mut bytes = vec![0u8; 17 * 2352];
+            let at = 16 * 2352 + 24;
+            bytes[at + 1..at + 6].copy_from_slice(b"CD001");
+            bytes[at + 166..at + 170].copy_from_slice(&root_length.to_le_bytes());
+            let path = std::env::temp_dir().join(format!("quake-root-audit-{root_length}.bin"));
+            fs::write(&path, bytes).unwrap();
+            path
+        };
+        let one = image(2048);
+        let two = image(4096);
+        assert!(audit_root_directory(&one).is_ok());
+        assert!(audit_root_directory(&two).is_err());
+        fs::remove_file(one).unwrap();
+        fs::remove_file(two).unwrap();
+    }
 
     /// Four real rows of a rust-lld map: the header, the input-section row
     /// that names the object file, and the two symbol rows the shipping boot
