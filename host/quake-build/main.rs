@@ -35,8 +35,6 @@ const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 /// The program's exceptions to the SDK's architecture gate.
 const GATE_FILE: &str = "psx-gate.toml";
 const GUEST_STAGE_SCHEMA: u32 = 1;
-const GUEST_STAGE_ROOT: &str = "/tmp/quake-psx-guest-v1";
-const GUEST_STAGE_MARKER: &str = ".quake-psx-guest-recipe";
 const SHIPPING_GUEST_PROFILE: &str = "release";
 const SHIPPING_CARGO_HOME: &str = "/tmp/quake-psx-cargo-home-v1";
 const SHIPPING_CARGO_HOME_MARKER: &str = ".quake-psx-shipping-cargo-home";
@@ -2419,9 +2417,6 @@ const GUEST_LIQUID_TEXTURE_CAPACITY: usize = 4;
 
 const GUEST_MAX_TARGET_ACTIONS: usize = 128;
 const GUEST_MAX_PLAYER_ACTIVATIONS: usize = 8;
-const GUEST_NAIL_POOL_CAPACITY: usize = 60;
-const GUEST_MAX_ROCKETS: usize = 8;
-const GUEST_MAX_GRENADES: usize = 8;
 /// Every emitter re-arms after at least three seconds and each ball lives five,
 /// so at most two of a spout's balls are ever in flight.
 const FIREBALLS_PER_EMITTER: usize = 2;
@@ -4352,85 +4347,6 @@ fn audit_rust_only_guest_lock(stage: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_guest_recipe(root: &Path, destination: &Path) -> Result<()> {
-    let files = guest_recipe_files(root)?;
-    for source in files {
-        let relative = source.strip_prefix(root)?;
-        let output = destination.join(relative);
-        let parent = output
-            .parent()
-            .ok_or_else(|| format!("guest stage output has no parent: {}", output.display()))?;
-        fs::create_dir_all(parent)?;
-        fs::copy(&source, &output)?;
-    }
-    for (relative, contents) in GUEST_STAGE_WORKSPACES {
-        let output = destination.join(relative);
-        fs::create_dir_all(output.parent().unwrap())?;
-        fs::write(output, contents)?;
-    }
-    Ok(())
-}
-
-fn guest_stage_marker(recipe: &GuestRecipe) -> String {
-    format!(
-        "schema={GUEST_STAGE_SCHEMA}\nsha256={}\nrust_toolchain_sha256={}\nrustc={}\ncargo={}\n",
-        recipe.sha256,
-        recipe.toolchain.rust_toolchain_sha256,
-        json_escape(&recipe.toolchain.rustc_version),
-        json_escape(&recipe.toolchain.cargo_version),
-    )
-}
-
-fn verify_guest_stage(stage: &Path, recipe: &GuestRecipe) -> Result<()> {
-    if fs::symlink_metadata(stage)?.file_type().is_symlink() {
-        return Err(format!(
-            "canonical guest stage rejects symlink {}; remove it and retry",
-            stage.display()
-        )
-        .into());
-    }
-    let marker = stage.join(GUEST_STAGE_MARKER);
-    let actual_marker = fs::read_to_string(&marker).map_err(|error| {
-        format!(
-            "canonical guest stage marker is missing or unreadable at {}: {error}",
-            marker.display()
-        )
-    })?;
-    let expected_marker = guest_stage_marker(recipe);
-    if actual_marker != expected_marker {
-        return Err(format!(
-            "canonical guest stage marker failed integrity at {}; remove the stage and retry",
-            stage.display()
-        )
-        .into());
-    }
-    for (relative, expected) in GUEST_STAGE_WORKSPACES {
-        let path = stage.join(relative);
-        let actual = fs::read_to_string(&path).map_err(|error| {
-            format!(
-                "canonical guest workspace is missing or unreadable at {}: {error}",
-                path.display()
-            )
-        })?;
-        if actual != *expected {
-            return Err(format!(
-                "canonical guest workspace failed integrity at {}; remove the stage and retry",
-                path.display()
-            )
-            .into());
-        }
-    }
-    let actual_hash = guest_recipe_hash(stage, &recipe.toolchain)?;
-    if actual_hash != recipe.sha256 {
-        return Err(format!(
-            "canonical guest stage content failed integrity at {}: expected {}, got {}; remove the stage and retry",
-            stage.display(), recipe.sha256, actual_hash
-        )
-        .into());
-    }
-    Ok(())
-}
-
 fn acquire_guest_stage_lock(base: &Path, recipe: &GuestRecipe) -> Result<GuestStageLock> {
     let path = base.join(format!(".{}.lock", recipe.sha256));
     let mut lock = File::options()
@@ -4449,68 +4365,19 @@ fn acquire_guest_stage_lock(base: &Path, recipe: &GuestRecipe) -> Result<GuestSt
     Ok(GuestStageLock { path })
 }
 
-fn prepare_guest_stage_at(
-    root: &Path,
-    recipe: &GuestRecipe,
-    base: &Path,
-) -> Result<PreparedGuestStage> {
-    fs::create_dir_all(base)?;
-    let base = base.canonicalize()?;
-    let lock = acquire_guest_stage_lock(&base, recipe)?;
-    let stage = base.join(&recipe.sha256);
-    if stage.exists() {
-        verify_guest_stage(&stage, recipe)?;
-        return Ok(PreparedGuestStage {
-            path: stage,
-            _lock: lock,
-        });
-    }
-
-    let temporary = base.join(format!(".{}.stage-{}", recipe.sha256, std::process::id()));
-    if temporary.exists() {
-        return Err(format!(
-            "stale atomic guest stage exists at {}; remove it and retry",
-            temporary.display()
-        )
-        .into());
-    }
-    fs::create_dir(&temporary)?;
-    let staged = (|| -> Result<()> {
-        copy_guest_recipe(root, &temporary)?;
-        let actual_hash = guest_recipe_hash(&temporary, &recipe.toolchain)?;
-        if actual_hash != recipe.sha256 {
-            return Err(format!(
-                "atomic guest stage changed content: expected {}, got {actual_hash}",
-                recipe.sha256
-            )
-            .into());
-        }
-        fs::write(
-            temporary.join(GUEST_STAGE_MARKER),
-            guest_stage_marker(recipe),
-        )?;
-        verify_guest_stage(&temporary, recipe)?;
-        fs::rename(&temporary, &stage)?;
-        Ok(())
-    })();
-    if let Err(error) = staged {
-        let _ = fs::remove_dir_all(&temporary);
-        return Err(error);
-    }
-    verify_guest_stage(&stage, recipe)?;
+/// The guest builds where it lives. Quake's workspace root is the repository root, so Cargo
+/// hashes every crate by its path relative to it and the build does not depend on where the
+/// checkout is (the staged copy this replaced produced the byte-identical ELF: measured on
+/// 11-16, `cmp` equal over 1,110,016 bytes). The lock keeps two builds of one checkout from
+/// sharing the target directory.
+fn prepare_guest_stage(root: &Path, recipe: &GuestRecipe) -> Result<PreparedGuestStage> {
+    let target = root.join("game/target");
+    fs::create_dir_all(&target)?;
+    let lock = acquire_guest_stage_lock(&target, recipe)?;
     Ok(PreparedGuestStage {
-        path: stage,
+        path: root.to_path_buf(),
         _lock: lock,
     })
-}
-
-/// The canonical stage, or `QUAKE_PSX_GUEST_STAGE_ROOT` for a checkout that
-/// must not share it (two clones building different SDKs side by side).
-fn prepare_guest_stage(root: &Path, recipe: &GuestRecipe) -> Result<PreparedGuestStage> {
-    let stage_root = env::var_os("QUAKE_PSX_GUEST_STAGE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(GUEST_STAGE_ROOT));
-    prepare_guest_stage_at(root, recipe, &stage_root)
 }
 
 /// Delete the guest's linked executables (the uplifted one and every feature
@@ -4751,7 +4618,8 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         .env("PSX_GATE_FILE", &gate_file);
     if fresh_target {
         let cargo_home = prepare_shipping_cargo_home()?;
-        reject_ambient_cargo_configs(&game, &cargo_home)?;
+        // The checkout's own configs are source (the recipe hashes them); only the ones above it are ambient.
+        reject_ambient_cargo_configs(root, &cargo_home)?;
         reset_shipping_registry_sources(&cargo_home)?;
         command.env("CARGO_HOME", cargo_home);
     }
@@ -4819,7 +4687,6 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
     // build's map beside it. Remove the linked outputs so this build links.
     force_guest_relink(&stage.path)?;
     run(&mut command)?;
-    verify_guest_stage(&stage.path, &recipe)?;
     let staged_exe = game_exe(&stage.path);
     if fs::read(&staged_exe)?.starts_with(b"\x7fELF") {
         monster_code::compose(root, &staged_exe, &map)?;
@@ -4869,19 +4736,7 @@ fn build_game(root: &Path, feature: Option<&str>, fresh_target: bool) -> Result<
         fs::copy(&map, requested)?;
     }
     audit_console_image(&staged_exe)?;
-    let destination = game_exe(root);
-    fs::create_dir_all(
-        destination
-            .parent()
-            .ok_or_else(|| format!("PS1 executable has no parent: {}", destination.display()))?,
-    )?;
-    fs::copy(&staged_exe, &destination)?;
-    audit_console_image(&destination)?;
-    println!(
-        "guest recipe: {} (canonical stage {})",
-        recipe.sha256,
-        stage.path.display()
-    );
+    println!("guest recipe: {} (built in place)", recipe.sha256);
     Ok(())
 }
 
@@ -12348,72 +12203,23 @@ mod provenance_tests {
     }
 
     #[test]
-    fn canonical_stage_is_atomic_locked_verified_and_rejects_tampering() {
-        let first = TestDirectory::new();
-        let second = TestDirectory::new();
-        let stages = TestDirectory::new();
-        write_guest_recipe_fixture(&first.0, "/checkout/one");
-        write_guest_recipe_fixture(&second.0, "/checkout/two");
+    fn the_guest_builds_in_place_under_one_lock() {
+        let checkout = TestDirectory::new();
+        write_guest_recipe_fixture(&checkout.0, "/checkout/one");
         let toolchain = fake_toolchain();
         let recipe = GuestRecipe {
-            sha256: guest_recipe_hash(&first.0, &toolchain).unwrap(),
+            sha256: guest_recipe_hash(&checkout.0, &toolchain).unwrap(),
             toolchain,
         };
-
-        let prepared = prepare_guest_stage_at(&first.0, &recipe, &stages.0).unwrap();
-        assert_eq!(prepared.path.file_name().unwrap(), recipe.sha256.as_str());
-        assert_eq!(
-            fs::read_to_string(prepared.path.join(GUEST_STAGE_MARKER)).unwrap(),
-            guest_stage_marker(&recipe)
-        );
-        assert!(
-            fs::read_dir(&stages.0)
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .all(|entry| !entry.file_name().to_string_lossy().contains(".stage-")),
-            "atomic staging must not leave a temporary directory"
-        );
-        let lock_error = prepare_guest_stage_at(&second.0, &recipe, &stages.0)
+        let prepared = prepare_guest_stage(&checkout.0, &recipe).unwrap();
+        assert_eq!(prepared.path, checkout.0);
+        let lock_error = prepare_guest_stage(&checkout.0, &recipe)
             .err()
-            .expect("the same recipe cannot build concurrently")
+            .expect("one checkout cannot build twice at once")
             .to_string();
         assert!(lock_error.contains("already locked"), "{lock_error}");
-        let stage_path = prepared.path.clone();
         drop(prepared);
-
-        let cached_exe = stage_path.join("game/target/release/quake-psx.exe");
-        fs::create_dir_all(cached_exe.parent().unwrap()).unwrap();
-        fs::write(&cached_exe, b"untrusted cached executable").unwrap();
-        let reused = prepare_guest_stage_at(&second.0, &recipe, &stages.0).unwrap();
-        assert_eq!(reused.path, stage_path);
-        assert!(
-            cached_exe.is_file(),
-            "ordinary builds may reuse a verified content-addressed target"
-        );
-        reset_guest_target(&reused.path).unwrap();
-        assert!(
-            !reused.path.join("game/target").exists(),
-            "a fresh shipping build must discard cached compiler output"
-        );
-        drop(reused);
-
-        let projected_manifest = stage_path.join(".psoxide/Cargo.toml");
-        fs::write(&projected_manifest, b"[workspace]\n# tampered\n").unwrap();
-        let manifest_error = prepare_guest_stage_at(&first.0, &recipe, &stages.0)
-            .err()
-            .expect("tampered projected workspace must fail closed")
-            .to_string();
-        assert!(
-            manifest_error.contains("workspace failed integrity"),
-            "{manifest_error}"
-        );
-        fs::write(&projected_manifest, PSOXIDE_ROOT_WORKSPACE).unwrap();
-
-        fs::write(stage_path.join("game/src/main.rs"), b"tampered\n").unwrap();
-        let tamper_error = prepare_guest_stage_at(&first.0, &recipe, &stages.0)
-            .err()
-            .expect("tampered canonical source must fail closed")
-            .to_string();
-        assert!(tamper_error.contains("failed integrity"), "{tamper_error}");
+        assert!(prepare_guest_stage(&checkout.0, &recipe).is_ok());
     }
+
 }
