@@ -275,6 +275,7 @@ dependencies = [
  "psx-gpu",
  "psx-gte",
  "psx-hw",
+ "psx-pack",
 ]
 
 [[package]]

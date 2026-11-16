@@ -11,6 +11,7 @@
 use core::{mem::size_of, ptr};
 
 use psx_gpu::material::TextureWindow;
+use psx_pack::WordFnv32;
 use psx_hw::gpu::packet;
 use psx_gpu::prim::{
     ClassicQuadTexturedGouraud, ClassicTriTextured, ClassicTriTexturedGouraud, QuadTexturedGouraud,
@@ -1549,7 +1550,9 @@ const fn packed_screen(screen: [i16; 2]) -> u32 {
 
 #[inline(always)]
 fn mix_resident_layout_hashes(hash_a: &mut u32, hash_b: &mut u32, value: u32) {
-    *hash_a = (*hash_a ^ value).wrapping_mul(0x0100_0193);
+    let mut word_hash = WordFnv32::from_state(*hash_a);
+    word_hash.push(value);
+    *hash_a = word_hash.finish();
     *hash_b = hash_b
         .rotate_left(7)
         .wrapping_add(value.wrapping_mul(0x85eb_ca6b));
@@ -3821,10 +3824,12 @@ unsafe fn submit_classic_affine_projected_fan_into_writer<W: AffinePacketWriter>
 #[inline(always)]
 fn topology_census_mix(census: &mut ClassicAffineTopologyCensus, value: u32) {
     if census.topology_hash_a == 0 && census.topology_hash_b == 0 {
-        census.topology_hash_a = 0x811c_9dc5;
+        census.topology_hash_a = WordFnv32::OFFSET_BASIS;
         census.topology_hash_b = 0x9e37_79b9;
     }
-    census.topology_hash_a = (census.topology_hash_a ^ value).wrapping_mul(0x0100_0193);
+    let mut word_hash = WordFnv32::from_state(census.topology_hash_a);
+    word_hash.push(value);
+    census.topology_hash_a = word_hash.finish();
     census.topology_hash_b = census
         .topology_hash_b
         .rotate_left(7)
@@ -4699,7 +4704,7 @@ unsafe fn submit_classic_affine_projected_resident_pass(
         hardware_triangles: 0,
         invariant_hit_slots: 0,
         invariant_miss_slots: 0,
-        layout_hash_a: 0x811c_9dc5,
+        layout_hash_a: WordFnv32::OFFSET_BASIS,
         layout_hash_b: 0x9e37_79b9,
         decision_bits: 0,
         decision_nibbles: 0,

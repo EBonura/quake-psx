@@ -13,6 +13,7 @@ path = "src/lib.rs"
 psx-engine = { path = "../../.psoxide/engine/crates/psx-engine" }
 psx-gpu = { path = "../../.psoxide/sdk/crates/psx-gpu" }
 psx-hw = { path = "../../.psoxide/crates/psx-hw" }
+psx-pack = { path = "../../.psoxide/sdk/crates/psx-pack" }
 psx-gte = { path = "../../.psoxide/sdk/crates/psx-gte" }
 
 [features]
