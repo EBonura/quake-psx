@@ -24,7 +24,7 @@ use quake_affine::{
     ClassicAffineTopologyCensus,
 };
 use quake_affine::{
-    materialize_classic_affine_indexed_vertices, submit_classic_affine_scoped_windowed_fan,
+    materialize_classic_affine_indexed_vertices,
     submit_classic_alias_model, submit_classic_alias_view_model, ClassicAffineBatchSurface,
     ClassicAffineIndexedCorner, ClassicAffinePosition, ClassicAffineProfile, ClassicAffineSubmit,
     ClassicAffineVertex, ClassicAliasFace, ClassicAliasProjectedVertex, ClassicAliasVertex,
@@ -2123,15 +2123,7 @@ impl Renderer {
                     };
                     let window = special_texture_window(texture).word();
                     let submit = move || unsafe {
-                        submit_classic_affine_scoped_windowed_fan(
-                            fan_vertices,
-                            vertex_count,
-                            next,
-                            tpage,
-                            clut,
-                            window,
-                            ClassicAffineProfile::QUAKE_REFERENCE,
-                        )
+                        windowed_fan(fan_vertices, vertex_count, next, tpage, clut, window)
                     };
                     let submitted = if view_space {
                         with_view_space_projection(submit)
@@ -3986,15 +3978,7 @@ impl Renderer {
                 let tpage = texture.texture_page;
                 let window = special_texture_window(texture).word();
                 let submit = move || unsafe {
-                    submit_classic_affine_scoped_windowed_fan(
-                        fan_vertices,
-                        vertex_count,
-                        next,
-                        tpage,
-                        clut_texture(),
-                        window,
-                        ClassicAffineProfile::QUAKE_REFERENCE,
-                    )
+                    windowed_fan(fan_vertices, vertex_count, next, tpage, clut_texture(), window)
                 };
                 let submitted = if view_space {
                     with_view_space_projection(submit)
@@ -6012,6 +5996,51 @@ fn packet_capacity(next: *mut u32, end: *mut u32, needed_words: usize) -> bool {
     // so compare the in-bounds distance as an integer instead.
     let remaining = unsafe { end.offset_from(next) };
     remaining >= 0 && needed_words <= remaining as usize
+}
+
+/// One convex fan with its own texture window (liquid, sky), through the SDK's
+/// affine surface writer on the depth-band schedule of
+/// [`ClassicAffineProfile::QUAKE_REFERENCE`]. Each polygon carries its window
+/// selector and a full-window reset.
+#[inline(never)]
+unsafe fn windowed_fan(
+    vertices: *mut ClassicAffineVertex,
+    vertex_count: usize,
+    output: *mut u32,
+    tpage: u16,
+    clut: u16,
+    window: u32,
+) -> ClassicAffineSubmit {
+    use psx_engine::affine_surface::{submit_surface_batch, AffineSurface, SurfaceProfile};
+    let surface = AffineSurface {
+        first_vertex: 0,
+        vertex_count: vertex_count as u16,
+        tpage,
+        clut,
+        uv_offset: [0, 0],
+        compact: 0,
+        texture_window_word: window,
+        color_command_word: 0x3400_0000,
+    };
+    let reference = ClassicAffineProfile::QUAKE_REFERENCE;
+    let profile = SurfaceProfile {
+        screen_width: reference.screen_width,
+        screen_height: reference.screen_height,
+        ot_depth: reference.ot_depth,
+        split_once_below: reference.subdivide_once_at,
+        split_twice_below: reference.subdivide_twice_at,
+    };
+    // SAFETY: the fan sits at the start of a batch buffer that reserves
+    // SUBDIVISION_SCRATCH_VERTICES records after it; the caller's packet
+    // capacity check covers the worst case of the SDK writer (12 packets of
+    // 15 words per triangle, fewer than the one it replaced).
+    let submit =
+        unsafe { submit_surface_batch(vertices.cast(), vertex_count, &surface, 1, output, profile) };
+    ClassicAffineSubmit {
+        next_packet: submit.next_packet,
+        packets: submit.packets,
+        hardware_triangles: submit.hardware_triangles,
+    }
 }
 
 unsafe fn flush_batch(
