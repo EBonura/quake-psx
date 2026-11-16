@@ -6727,12 +6727,10 @@ fn census_projection_batches(
 
 #[cfg(feature = "renderer-census")]
 fn selected_fingerprints(selected: &[u16]) -> (u32, u32) {
-    let mut fnv = 0x811c_9dc5u32;
+    let mut fnv = psx_pack::Fnv32::new();
     let mut mixed = 0x9e37_79b9u32 ^ selected.len() as u32;
     for (index, &entry) in selected.iter().enumerate() {
-        for byte in entry.to_le_bytes() {
-            fnv = (fnv ^ u32::from(byte)).wrapping_mul(0x0100_0193);
-        }
+        fnv.update(&entry.to_le_bytes());
         mixed ^= u32::from(entry)
             .wrapping_add((index as u32).wrapping_mul(0x85eb_ca6b))
             .rotate_left((index & 31) as u32);
@@ -6741,7 +6739,7 @@ fn selected_fingerprints(selected: &[u16]) -> (u32, u32) {
             .wrapping_mul(5)
             .wrapping_add(0xe654_6b64);
     }
-    (fnv, mixed)
+    (fnv.finish(), mixed)
 }
 
 #[cfg(feature = "renderer-census")]
