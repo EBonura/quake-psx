@@ -82,7 +82,7 @@ impl<'a> SoundRates<'a> {
     pub fn get(self, index: usize) -> Option<u32> {
         let start = index.checked_mul(SOUND_BANK_RATE_BYTES)?;
         let bytes = self.bytes.get(start..start + SOUND_BANK_RATE_BYTES)?;
-        Some(u32::from(u16::from_le_bytes([bytes[0], bytes[1]])))
+        Some(u32::from(psx_math::le::read_u16(bytes, 0)))
     }
 }
 
@@ -108,10 +108,10 @@ impl SoundBankHeader {
         let bytes = bytes
             .get(..SOUND_BANK_HEADER_BYTES)
             .ok_or(SoundBankError::Truncated)?;
-        if u32::from_le_bytes(bytes[0..4].try_into().unwrap()) != SOUND_BANK_MAGIC {
+        if psx_math::le::read_u32(bytes, 0) != SOUND_BANK_MAGIC {
             return Err(SoundBankError::BadMagic);
         }
-        if u16::from_le_bytes(bytes[4..6].try_into().unwrap()) != SOUND_BANK_VERSION {
+        if psx_math::le::read_u16(bytes, 4) != SOUND_BANK_VERSION {
             return Err(SoundBankError::BadVersion);
         }
         let kind = match bytes[6] {
@@ -127,10 +127,10 @@ impl SoundBankHeader {
         }
         let header = Self {
             kind,
-            record_count: u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-            payload_base: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-            payload_bytes: u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
-            spu_high_water: u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+            record_count: psx_math::le::read_u16(bytes, 8),
+            payload_base: psx_math::le::read_u32(bytes, 12),
+            payload_bytes: psx_math::le::read_u32(bytes, 16),
+            spu_high_water: psx_math::le::read_u32(bytes, 20),
             dependency_hash: hash_from_le_bytes(&bytes[24..32]),
             content_hash: hash_from_le_bytes(&bytes[32..40]),
         };

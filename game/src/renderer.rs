@@ -435,9 +435,9 @@ impl SpriteFrame {
             v: bytes[1],
             width: bytes[2],
             height: bytes[3],
-            left: i16::from_le_bytes([bytes[4], bytes[5]]),
-            up: i16::from_le_bytes([bytes[6], bytes[7]]),
-            beam_length: i16::from_le_bytes([bytes[8], bytes[9]]),
+            left: psx_math::le::read_i16(bytes, 4),
+            up: psx_math::le::read_i16(bytes, 6),
+            beam_length: psx_math::le::read_i16(bytes, 8),
             kind: bytes[10],
         };
         (frame.width != 0 && frame.height != 0 && frame.kind <= 4).then_some(frame)
@@ -4410,7 +4410,7 @@ impl Renderer {
                 if unsafe { ptr::read(face_marks.add(face_index)) } != 0 {
                     // Only the material, until the face proves to be liquid.
                     let record = faces.record_bytes(face_index).expect("validated face");
-                    let material = u16::from_le_bytes([record[4], record[5]]);
+                    let material = psx_math::le::read_u16(record, 4);
                     let liquid = self
                         .active_textures
                         .get(material as usize)

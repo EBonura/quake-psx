@@ -466,7 +466,7 @@ impl ResidentMap {
         // per-line CLUT cache when opaque and liquid packets interleave.
         for (index, color) in self.stream_scratch.chunks_exact_mut(2).enumerate() {
             if index % 256 != 255 {
-                let translucent = u16::from_le_bytes([color[0], color[1]]) | 0x8000;
+                let translucent = psx_math::le::read_u16(color, 0) | 0x8000;
                 color.copy_from_slice(&translucent.to_le_bytes());
             }
         }
@@ -477,7 +477,7 @@ impl ResidentMap {
         stream
             .read_exact_at(GRAPHICS_CLUT_BYTES as u32, &mut count_bytes)
             .map_err(MapLoadError::Storage)?;
-        let picture_count = u16::from_le_bytes(count_bytes) as usize;
+        let picture_count = psx_math::le::read_u16(&count_bytes, 0) as usize;
         let picture_offset = GRAPHICS_CLUT_BYTES
             + 2
             + picture_count

@@ -118,7 +118,7 @@ impl<'a> Reader<'a> {
     /// for a wrong magic, version, length or checksum.
     pub fn open(buf: &'a [u8]) -> Option<Self> {
         let body = buf.len().checked_sub(4)?;
-        let stored = u32::from_le_bytes(buf[body..].try_into().ok()?);
+        let stored = psx_math::le::get_u32(buf, body)?;
         if stored != checksum(&buf[..body]) {
             return None;
         }

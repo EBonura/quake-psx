@@ -72,12 +72,12 @@ pub struct LeafBounds {
 /// decompression.
 pub fn leaf_bounds_at(visibility: &[u8], leaf_index: usize) -> Option<LeafBounds> {
     let footer = visibility.get(visibility.len().checked_sub(LEAF_BOUNDS_FOOTER_BYTES)?..)?;
-    if u32::from_le_bytes(footer[0..4].try_into().ok()?) != LEAF_BOUNDS_TRAILER_MAGIC
-        || u16::from_le_bytes(footer[6..8].try_into().ok()?) as usize != LEAF_BOUNDS_RECORD_BYTES
+    if psx_math::le::get_u32(footer, 0)? != LEAF_BOUNDS_TRAILER_MAGIC
+        || psx_math::le::get_u16(footer, 6)? as usize != LEAF_BOUNDS_RECORD_BYTES
     {
         return None;
     }
-    let count = u16::from_le_bytes(footer[4..6].try_into().ok()?) as usize;
+    let count = psx_math::le::get_u16(footer, 4)? as usize;
     if leaf_index >= count {
         return None;
     }
@@ -429,11 +429,7 @@ impl ReadAt for DirectoryIndexReader<'_> {
         let mut cursor = PSB_HEADER_BYTES;
         for (kind_index, kind) in LumpKind::ALL.into_iter().enumerate() {
             let length_offset = self.length_offset + kind_index * 4;
-            let length = u32::from_le_bytes(
-                self.record[length_offset..length_offset + 4]
-                    .try_into()
-                    .unwrap(),
-            );
+            let length = psx_math::le::read_u32(&self.record, length_offset);
             if offset == cursor && output.len() == LUMP_HEADER_BYTES as usize {
                 output[..4].copy_from_slice(&(kind as i32).to_le_bytes());
                 output[4..].copy_from_slice(&(length as i32).to_le_bytes());
@@ -459,10 +455,10 @@ pub fn episode_directory_index(
     if bytes.len() < EPISODE_DIRECTORY_HEADER_BYTES + 4 {
         return Err(EpisodeDirectoryError::WrongSize);
     }
-    if u32::from_le_bytes(bytes[0..4].try_into().unwrap()) != EPISODE_DIRECTORY_MAGIC {
+    if psx_math::le::read_u32(bytes, 0) != EPISODE_DIRECTORY_MAGIC {
         return Err(EpisodeDirectoryError::BadMagic);
     }
-    let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    let version = psx_math::le::read_u16(bytes, 4);
     let (expected_bytes, record_bytes, magic_offset, length_offset) = match version {
         EPISODE_DIRECTORY_LEGACY_VERSION => (
             EPISODE_DIRECTORY_LEGACY_BYTES,
@@ -481,10 +477,10 @@ pub fn episode_directory_index(
     if bytes.len() != expected_bytes {
         return Err(EpisodeDirectoryError::WrongSize);
     }
-    if u16::from_le_bytes(bytes[6..8].try_into().unwrap()) as usize != EPISODE_DIRECTORY_MAPS {
+    if psx_math::le::read_u16(bytes, 6) as usize != EPISODE_DIRECTORY_MAPS {
         return Err(EpisodeDirectoryError::BadMapCount);
     }
-    if u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize != expected_bytes {
+    if psx_math::le::read_u32(bytes, 8) as usize != expected_bytes {
         return Err(EpisodeDirectoryError::WrongSize);
     }
     let checksum_offset = expected_bytes - 4;
@@ -495,12 +491,12 @@ pub fn episode_directory_index(
     for slot in 0..EPISODE_DIRECTORY_MAPS {
         let start = EPISODE_DIRECTORY_HEADER_BYTES + slot * record_bytes;
         let record = &bytes[start..start + record_bytes];
-        if u32::from_le_bytes(record[0..4].try_into().unwrap()) != chunk_id {
+        if psx_math::le::read_u32(record, 0) != chunk_id {
             continue;
         }
-        let file_len = u32::from_le_bytes(record[4..8].try_into().unwrap());
+        let file_len = psx_math::le::read_u32(record, 4);
         let magic = magic_offset
-            .map(|offset| u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap()))
+            .map(|offset| psx_math::le::read_u32(record, offset))
             .unwrap_or(PSB_MAGIC);
         if magic != PSB_MAGIC && magic != PSB5_MAGIC {
             return Err(EpisodeDirectoryError::BadIndex);
@@ -713,7 +709,7 @@ impl GraphicsPicture {
     pub fn decode(record: &[u8]) -> Option<Self> {
         let record = record.get(..GRAPHICS_PICTURE_RECORD_BYTES)?;
         Some(Self {
-            tpage: u16::from_le_bytes([record[0], record[1]]),
+            tpage: psx_math::le::read_u16(record, 0),
             u: record[2],
             v: record[3],
             width: record[4],
