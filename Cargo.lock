@@ -267,6 +267,7 @@ dependencies = [
  "psx-engine",
  "psx-gpu",
  "psx-gte",
+ "psx-hw",
 ]
 
 [[package]]
@@ -301,6 +302,7 @@ dependencies = [
  "psx-fmv",
  "psx-gpu",
  "psx-gte",
+ "psx-hw",
  "psx-io",
  "psx-math",
  "psx-mc",

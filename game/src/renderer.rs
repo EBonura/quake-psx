@@ -34,6 +34,7 @@ use quake_affine::{submit_quake_classic_affine_batch_budget, QUAKE_COARSE_ERROR_
 
 use psx_gpu::material::{BlendMode, TextureMaterial, TextureWindow};
 use psx_gpu::prim::{ClassicTriTextured, QuadTextured, QuadTexturedMaterial, RectFlat};
+use psx_hw::gpu::packet;
 use psx_gte::math::{Mat3I16, Vec3I16 as GteVec3I16, Vec3I32 as GteVec3I32};
 
 use psx_gte::scene::{self, AabbClipPlane};
@@ -310,7 +311,8 @@ impl ScreenTintQuad {
             draw_mode: material.draw_mode_word(),
             // Untextured semi-transparent flat quad: the blend equation comes
             // from the draw mode above and applies to the whole polygon.
-            color_cmd: 0x2a00_0000
+            color_cmd: packet::FLAT_QUAD
+                | packet::SEMI_TRANSPARENT
                 | (color.0 as u32)
                 | ((color.1 as u32) << 8)
                 | ((color.2 as u32) << 16),
@@ -7872,7 +7874,7 @@ unsafe fn mark_window_packets_translucent(mut packet: *mut u32, end: *mut u32) {
     while packet < end {
         let data_words = unsafe { ptr::read(packet) } >> 24;
         let command = unsafe { packet.add(2) };
-        unsafe { ptr::write(command, ptr::read(command) | 0x0200_0000) };
+        unsafe { ptr::write(command, ptr::read(command) | packet::SEMI_TRANSPARENT) };
         packet = unsafe { packet.add(data_words as usize + 1) };
     }
 }
