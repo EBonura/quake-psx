@@ -198,7 +198,7 @@ stalled on the E1M1 ramp; the corpse runs the old motor through
 | + 64-bit divides out of the guest (below) | 13,124 |
 
 The two 64-bit divides in game code are gone: the lightning beam shortening
-(`electrode::shorten_q12`) and the sound pan (`spatial::pan_q12`) use the SDK's
+(`electrode::shorten_q12`) and the sound pan (`psx_sfx::space::quake_scales`) use the SDK's
 64 by 32 divide, each tested against the wide expression. One `__udivdi3` call
 remains in `load_level`; it comes from pinned engine code (psx-bsp), so
 `u64_div_rem` (1,276 bytes) stays until the engine moves.
