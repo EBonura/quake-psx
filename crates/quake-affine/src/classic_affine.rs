@@ -10,12 +10,10 @@
 
 use core::{mem::size_of, ptr};
 
-use psx_gpu::material::TextureWindow;
 use psx_pack::WordFnv32;
 use psx_hw::gpu::packet;
 use psx_gpu::prim::{
-    ClassicQuadTexturedGouraud, ClassicTriTextured, ClassicTriTexturedGouraud, QuadTexturedGouraud,
-    TriTexturedGouraud,
+    ClassicQuadTexturedGouraud, ClassicTriTextured, ClassicTriTexturedGouraud,
 };
 use psx_gte::{
     math::Vec3I16,
@@ -762,175 +760,9 @@ impl AffinePacketWriter for PacketWriter {
     }
 }
 
-struct WindowedPacketWriter<const RESTORE_WINDOW: bool> {
-    next: *mut u32,
-    packets: u32,
-    clut_high_word: u32,
-    tpage_high_word: u32,
-    uv_offset: [u8; 2],
-    texture_window_word: u32,
-    color_command_word: u32,
-    profile: ClassicAffineProfile,
-}
-
-impl<const RESTORE_WINDOW: bool> AffinePacketWriter for WindowedPacketWriter<RESTORE_WINDOW> {
-    // Texture-window fans draw special surfaces (liquids, animated and
-    // windowed textures) on band subdivision. With the lattice inlined, this
-    // one writer grew by about 30 KB of code, which on Quake left the
-    // shipping heap under its floor.
-    const USES_LATTICE: bool = false;
-
-    #[inline(always)]
-    fn profile(&self) -> ClassicAffineProfile {
-        self.profile
-    }
-
-    #[inline(always)]
-    unsafe fn emit_tri(
-        &mut self,
-        projected: [&ClassicAffineVertex; 3],
-        attributes: [&ClassicAffineVertex; 3],
-        otz: u16,
-    ) {
-        if classic_tri_screen_clipped(
-            [
-                projected[0].screen,
-                projected[1].screen,
-                projected[2].screen,
-            ],
-            self.profile,
-        ) {
-            return;
-        }
-        debug_assert!(attributes
-            .iter()
-            .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let mut packet = TriTexturedGouraud::with_staged_slot_prepacked_colors(
-            [
-                (projected[0].screen[0], projected[0].screen[1]),
-                (projected[1].screen[0], projected[1].screen[1]),
-                (projected[2].screen[0], projected[2].screen[1]),
-            ],
-            [
-                offset_uv_word(attributes[0], self.uv_offset),
-                offset_uv_word(attributes[1], self.uv_offset),
-                offset_uv_word(attributes[2], self.uv_offset),
-            ],
-            [
-                attributes[0].color,
-                attributes[1].color,
-                attributes[2].color,
-            ],
-            self.clut_high_word,
-            self.tpage_high_word,
-            self.texture_window_word,
-            otz,
-        );
-        if RESTORE_WINDOW {
-            packet.tag = packet.tag.wrapping_add(1 << 24);
-        }
-        packet.color0_cmd = self.color_command_word | attributes[0].color;
-        unsafe { ptr::write(self.next.cast::<TriTexturedGouraud>(), packet) };
-        self.next = unsafe {
-            self.next
-                .add(size_of::<TriTexturedGouraud>() / size_of::<u32>())
-        };
-        if RESTORE_WINDOW {
-            unsafe { ptr::write(self.next, TextureWindow::NONE.word()) };
-            self.next = unsafe { self.next.add(1) };
-        }
-        self.packets = self.packets.wrapping_add(1);
-    }
-
-    #[inline(always)]
-    unsafe fn emit_quad(
-        &mut self,
-        projected: [&ClassicAffineVertex; 4],
-        attributes: [&ClassicAffineVertex; 4],
-        otz: u16,
-    ) {
-        if classic_quad_screen_clipped(
-            [
-                projected[0].screen,
-                projected[1].screen,
-                projected[2].screen,
-                projected[3].screen,
-            ],
-            self.profile,
-        ) {
-            return;
-        }
-        debug_assert!(attributes
-            .iter()
-            .all(|vertex| vertex.color & 0xff00_0000 == 0));
-        let mut packet = QuadTexturedGouraud::with_staged_slot_prepacked_colors(
-            [
-                (projected[0].screen[0], projected[0].screen[1]),
-                (projected[1].screen[0], projected[1].screen[1]),
-                (projected[2].screen[0], projected[2].screen[1]),
-                (projected[3].screen[0], projected[3].screen[1]),
-            ],
-            [
-                offset_uv_word(attributes[0], self.uv_offset),
-                offset_uv_word(attributes[1], self.uv_offset),
-                offset_uv_word(attributes[2], self.uv_offset),
-                offset_uv_word(attributes[3], self.uv_offset),
-            ],
-            [
-                attributes[0].color,
-                attributes[1].color,
-                attributes[2].color,
-                attributes[3].color,
-            ],
-            self.clut_high_word,
-            self.tpage_high_word,
-            self.texture_window_word,
-            otz,
-        );
-        if RESTORE_WINDOW {
-            packet.tag = packet.tag.wrapping_add(1 << 24);
-        }
-        packet.color0_cmd = (self.color_command_word | packet::QUAD) | attributes[0].color;
-        unsafe { ptr::write(self.next.cast::<QuadTexturedGouraud>(), packet) };
-        self.next = unsafe {
-            self.next
-                .add(size_of::<QuadTexturedGouraud>() / size_of::<u32>())
-        };
-        if RESTORE_WINDOW {
-            unsafe { ptr::write(self.next, TextureWindow::NONE.word()) };
-            self.next = unsafe { self.next.add(1) };
-        }
-        self.packets = self.packets.wrapping_add(1);
-    }
-}
-
-impl<const RESTORE_WINDOW: bool> WindowedPacketWriter<RESTORE_WINDOW> {
-    #[inline(always)]
-    unsafe fn finish(self, output: *mut u32) -> ClassicAffineSubmit {
-        let words = unsafe { self.next.offset_from(output) as u32 };
-        let restore_words = u32::from(RESTORE_WINDOW);
-        let tri_words = (size_of::<TriTexturedGouraud>() / size_of::<u32>()) as u32 + restore_words;
-        let quad_words =
-            (size_of::<QuadTexturedGouraud>() / size_of::<u32>()) as u32 + restore_words;
-        let quads =
-            words.wrapping_sub(self.packets.wrapping_mul(tri_words)) / (quad_words - tri_words);
-        ClassicAffineSubmit {
-            next_packet: self.next,
-            packets: self.packets,
-            hardware_triangles: self.packets.wrapping_add(quads),
-        }
-    }
-}
-
 #[inline(always)]
 const fn uv_word(vertex: &ClassicAffineVertex) -> u16 {
     vertex.uv[0] as u16 | ((vertex.uv[1] as u16) << 8)
-}
-
-#[inline(always)]
-const fn offset_uv_word(vertex: &ClassicAffineVertex, offset: [u8; 2]) -> u16 {
-    vertex.uv[0].wrapping_add(offset[0]) as u16
-        | ((vertex.uv[1].wrapping_add(offset[1]) as u16) << 8)
 }
 
 #[inline(always)]
@@ -3087,87 +2919,6 @@ pub const fn quake_error_bounded_profile(budget_q3: u8) -> ClassicAffineProfile 
     }
 }
 
-/// Project and submit one convex fan whose packets restore an unwindowed
-/// GP0(E2) state immediately after drawing.
-///
-/// This scoped variant is intended for a windowed material mixed with compact
-/// non-windowed packets in one ordering table. Since depth sorting may place
-/// either packet next, restoring the state inside every special polygon avoids
-/// paying for a redundant GP0(E2) command on every ordinary polygon.
-///
-/// # Safety
-/// The contract matches [`submit_classic_affine_windowed_fan`]. The caller's
-/// worst-case output capacity must include one additional data word per
-/// emitted polygon for the trailing reset command.
-pub unsafe fn submit_classic_affine_scoped_windowed_fan(
-    vertices: *mut ClassicAffineVertex,
-    vertex_count: usize,
-    output: *mut u32,
-    tpage: u16,
-    clut: u16,
-    texture_window_word: u32,
-    profile: ClassicAffineProfile,
-) -> ClassicAffineSubmit {
-    unsafe {
-        submit_classic_affine_windowed_fan_impl::<true>(
-            vertices,
-            vertex_count,
-            output,
-            tpage,
-            clut,
-            texture_window_word,
-            profile,
-        )
-    }
-}
-
-unsafe fn submit_classic_affine_windowed_fan_impl<const RESTORE_WINDOW: bool>(
-    vertices: *mut ClassicAffineVertex,
-    vertex_count: usize,
-    output: *mut u32,
-    tpage: u16,
-    clut: u16,
-    texture_window_word: u32,
-    profile: ClassicAffineProfile,
-) -> ClassicAffineSubmit {
-    if vertices.is_null() || output.is_null() || vertex_count < 3 {
-        return ClassicAffineSubmit {
-            next_packet: output,
-            packets: 0,
-            hardware_triangles: 0,
-        };
-    }
-    let mut index = 0usize;
-    while index + 2 < vertex_count {
-        unsafe { project_three_consecutive(vertices.add(index)) };
-        index += 3;
-    }
-    while index < vertex_count {
-        unsafe { project_one(vertices.add(index)) };
-        index += 1;
-    }
-
-    let mut writer = WindowedPacketWriter::<RESTORE_WINDOW> {
-        next: output,
-        packets: 0,
-        clut_high_word: (clut as u32) << 16,
-        tpage_high_word: (tpage as u32) << 16,
-        uv_offset: [0; 2],
-        texture_window_word,
-        color_command_word: packet::SHADED_TEXTURED_TRIANGLE,
-        profile,
-    };
-    unsafe {
-        submit_classic_affine_projected_fan_into_writer(
-            vertices,
-            vertex_count,
-            vertices.add(vertex_count),
-            &mut writer,
-        );
-        writer.finish(output)
-    }
-}
-
 #[inline(always)]
 fn light_color(light: [u8; 2], weights: [u16; 2]) -> u32 {
     let mut lit = light[0] as u32 * weights[0] as u32;
@@ -3405,6 +3156,8 @@ fn classic_clip_code(screen: [i16; 2], profile: ClassicAffineProfile) -> u8 {
     )
 }
 
+// The CPU screen rejection the GPU-clip features remove.
+#[allow(dead_code)]
 #[inline(always)]
 fn classic_tri_screen_clipped(screens: [[i16; 2]; 3], profile: ClassicAffineProfile) -> bool {
     classic_triangle_screen_rejected(
@@ -3414,6 +3167,7 @@ fn classic_tri_screen_clipped(screens: [[i16; 2]; 3], profile: ClassicAffineProf
     )
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 fn classic_quad_screen_clipped(screens: [[i16; 2]; 4], profile: ClassicAffineProfile) -> bool {
     classic_quad_screen_rejected(
@@ -3580,15 +3334,6 @@ mod tests {
             )
         };
         assert_eq!(required, 2);
-    }
-
-    #[test]
-    fn windowed_surface_uv_offsets_wrap_each_component() {
-        let vertex = ClassicAffineVertex {
-            uv: [250, 255],
-            ..ClassicAffineVertex::default()
-        };
-        assert_eq!(offset_uv_word(&vertex, [10, 2]), 0x0104);
     }
 
     #[test]
@@ -4233,79 +3978,6 @@ mod tests {
     }
 
     #[test]
-    fn scoped_window_writer_appends_reset_inside_each_packet() {
-        let vertices = [
-            ClassicAffineVertex {
-                screen: [10, 10],
-                depth: 512,
-                color: 0x0080_8080,
-                ..ClassicAffineVertex::default()
-            },
-            ClassicAffineVertex {
-                screen: [20, 10],
-                depth: 512,
-                color: 0x0080_8080,
-                ..ClassicAffineVertex::default()
-            },
-            ClassicAffineVertex {
-                screen: [10, 20],
-                depth: 512,
-                color: 0x0080_8080,
-                ..ClassicAffineVertex::default()
-            },
-            ClassicAffineVertex {
-                screen: [20, 20],
-                depth: 512,
-                color: 0x0080_8080,
-                ..ClassicAffineVertex::default()
-            },
-        ];
-        let mut storage = [0u32; 64];
-        let output = storage.as_mut_ptr();
-        let window = TextureWindow::power_of_two_tile(64, 64, 64, 64).word();
-        let mut writer = WindowedPacketWriter::<true> {
-            next: output,
-            packets: 0,
-            clut_high_word: 0x1234_0000,
-            tpage_high_word: 0x0160_0000,
-            uv_offset: [0; 2],
-            texture_window_word: window,
-            color_command_word: 0x3400_0000,
-            profile: ClassicAffineProfile::QUAKE_REFERENCE,
-        };
-        unsafe {
-            writer.emit_tri(
-                [&vertices[0], &vertices[1], &vertices[2]],
-                [&vertices[0], &vertices[1], &vertices[2]],
-                17,
-            );
-            writer.emit_quad(
-                [&vertices[0], &vertices[1], &vertices[2], &vertices[3]],
-                [&vertices[0], &vertices[1], &vertices[2], &vertices[3]],
-                23,
-            );
-        }
-        let tri_words = size_of::<TriTexturedGouraud>() / size_of::<u32>() + 1;
-        let quad_words = size_of::<QuadTexturedGouraud>() / size_of::<u32>() + 1;
-        assert_eq!(storage[0] >> 24, TriTexturedGouraud::WORDS as u32 + 1);
-        assert_eq!(storage[tri_words - 1], TextureWindow::NONE.word());
-        assert_eq!(
-            storage[tri_words] >> 24,
-            QuadTexturedGouraud::WORDS as u32 + 1
-        );
-        assert_eq!(
-            storage[tri_words + quad_words - 1],
-            TextureWindow::NONE.word()
-        );
-        let submit = unsafe { writer.finish(output) };
-        assert_eq!(submit.next_packet, unsafe {
-            output.add(tri_words + quad_words)
-        });
-        assert_eq!(submit.packets, 2);
-        assert_eq!(submit.hardware_triangles, 3);
-    }
-
-    #[test]
     fn underlay_keys_at_the_far_vertex_behind_its_pieces() {
         let profile = ClassicAffineProfile::QUAKE_REFERENCE;
         // A deep face: the far vertex sorts well behind average + bias.
@@ -4314,98 +3986,6 @@ mod tests {
         assert_eq!(underlay_otz(175, 704, profile), 183);
         // Clamped to the table.
         assert_eq!(underlay_otz(2040, 9000, profile), profile.ot_depth - 1);
-    }
-
-    #[test]
-    fn windowed_writer_preserves_translucent_material_command() {
-        let vertices = [
-            ClassicAffineVertex {
-                color: 0x0011_2233,
-                ..ClassicAffineVertex::default()
-            },
-            ClassicAffineVertex {
-                color: 0x0044_5566,
-                ..ClassicAffineVertex::default()
-            },
-            ClassicAffineVertex {
-                color: 0x0077_8899,
-                ..ClassicAffineVertex::default()
-            },
-            ClassicAffineVertex {
-                color: 0x0001_0203,
-                ..ClassicAffineVertex::default()
-            },
-        ];
-        let mut storage = [0u32; 64];
-        let output = storage.as_mut_ptr();
-        let mut writer = WindowedPacketWriter::<false> {
-            next: output,
-            packets: 0,
-            clut_high_word: 0x1234_0000,
-            tpage_high_word: 0x0567_0000,
-            uv_offset: [0; 2],
-            texture_window_word: 0xe200_0000,
-            color_command_word: 0x3600_0000,
-            profile: ClassicAffineProfile::QUAKE_REFERENCE,
-        };
-        unsafe {
-            writer.emit_tri(
-                [&vertices[0], &vertices[1], &vertices[2]],
-                [&vertices[0], &vertices[1], &vertices[2]],
-                7,
-            );
-            writer.emit_quad(
-                [&vertices[0], &vertices[1], &vertices[2], &vertices[3]],
-                [&vertices[0], &vertices[1], &vertices[2], &vertices[3]],
-                9,
-            );
-        }
-        let tri = unsafe { &*output.cast::<TriTexturedGouraud>() };
-        assert_eq!(tri.color0_cmd, 0x3611_2233);
-        let quad = unsafe {
-            &*output
-                .add(size_of::<TriTexturedGouraud>() / size_of::<u32>())
-                .cast::<QuadTexturedGouraud>()
-        };
-        assert_eq!(quad.color0_cmd, 0x3e11_2233);
-    }
-
-    #[test]
-    fn projected_packet_writers_reject_wholly_offscreen_primitives() {
-        let mut vertices = [ClassicAffineVertex::default(); 4];
-        for (index, screen) in [[-20, 20], [-10, 80], [-1, 140], [-30, 200]]
-            .into_iter()
-            .enumerate()
-        {
-            vertices[index].screen = screen;
-            vertices[index].color = 0x0080_8080;
-        }
-        let mut storage = [0u32; 64];
-        let output = storage.as_mut_ptr();
-        let mut writer = WindowedPacketWriter::<true> {
-            next: output,
-            packets: 0,
-            clut_high_word: 0x1234_0000,
-            tpage_high_word: 0x0567_0000,
-            uv_offset: [0; 2],
-            texture_window_word: 0xe200_0000,
-            color_command_word: 0x3400_0000,
-            profile: ClassicAffineProfile::QUAKE_REFERENCE,
-        };
-        unsafe {
-            writer.emit_tri(
-                [&vertices[0], &vertices[1], &vertices[2]],
-                [&vertices[0], &vertices[1], &vertices[2]],
-                7,
-            );
-            writer.emit_quad(
-                [&vertices[0], &vertices[1], &vertices[2], &vertices[3]],
-                [&vertices[0], &vertices[1], &vertices[2], &vertices[3]],
-                9,
-            );
-        }
-        assert_eq!(writer.packets, 0);
-        assert_eq!(writer.next, output);
     }
 
     #[test]
