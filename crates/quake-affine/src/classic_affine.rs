@@ -11,6 +11,7 @@
 use core::{mem::size_of, ptr};
 
 use psx_gpu::material::TextureWindow;
+use psx_hw::gpu::packet;
 use psx_gpu::prim::{
     ClassicQuadTexturedGouraud, ClassicTriTextured, ClassicTriTexturedGouraud, QuadTexturedGouraud,
     TriTexturedGouraud,
@@ -2355,7 +2356,7 @@ impl<const RESTORE_WINDOW: bool> AffinePacketWriter for WindowedPacketWriter<RES
         if RESTORE_WINDOW {
             packet.tag = packet.tag.wrapping_add(1 << 24);
         }
-        packet.color0_cmd = (self.color_command_word | 0x0800_0000) | attributes[0].color;
+        packet.color0_cmd = (self.color_command_word | packet::QUAD) | attributes[0].color;
         unsafe { ptr::write(self.next.cast::<QuadTexturedGouraud>(), packet) };
         self.next = unsafe {
             self.next
@@ -2690,7 +2691,7 @@ unsafe fn cut_triangle(out: &mut CutOutput, t: [CutVertex; 3], levels: u8) {
     let uv = |v: &CutVertex| (v.uv[0] as u32) | ((v.uv[1] as u32) << 8);
     let packet = [
         ((ClassicTriTexturedGouraud::WORDS as u32) << 24) | out.otz,
-        0x3400_0000 | rgb(&t[0]),
+        packet::SHADED_TEXTURED_TRIANGLE | rgb(&t[0]),
         pack(&t[0]),
         uv(&t[0]) | out.clut_word,
         rgb(&t[1]),
@@ -5200,7 +5201,7 @@ unsafe fn submit_classic_affine_windowed_fan_impl<const RESTORE_WINDOW: bool>(
         tpage_high_word: (tpage as u32) << 16,
         uv_offset: [0; 2],
         texture_window_word,
-        color_command_word: 0x3400_0000,
+        color_command_word: packet::SHADED_TEXTURED_TRIANGLE,
         profile,
     };
     unsafe {
@@ -5360,7 +5361,7 @@ pub unsafe fn submit_classic_affine_mixed_batch(
                 tpage_high_word: 0,
                 uv_offset: [0; 2],
                 texture_window_word: 0,
-                color_command_word: 0x3400_0000,
+                color_command_word: packet::SHADED_TEXTURED_TRIANGLE,
                 profile,
             };
             while surface_ptr != surface_end {
@@ -5440,7 +5441,7 @@ unsafe fn submit_classic_affine_windowed_batch_impl<const RESTORE_WINDOW: bool>(
         tpage_high_word: 0,
         uv_offset: [0; 2],
         texture_window_word: 0,
-        color_command_word: 0x3400_0000,
+        color_command_word: packet::SHADED_TEXTURED_TRIANGLE,
         profile,
     };
     let surface_end = unsafe { surfaces.add(surface_count) };

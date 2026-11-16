@@ -198,6 +198,7 @@ psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-mc = { path = "../.psoxide/sdk/crates/psx-mc" }
 psx-gpu = { path = "../.psoxide/sdk/crates/psx-gpu" }
+psx-hw = { path = "../.psoxide/crates/psx-hw" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
 psx-display = { path = "../.psoxide/sdk/crates/psx-display" }
 psx-splash = { path = "../.psoxide/sdk/crates/psx-splash" }

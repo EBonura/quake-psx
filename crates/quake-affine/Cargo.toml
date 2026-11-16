@@ -12,6 +12,7 @@ path = "src/lib.rs"
 # Hydrated from the repository-level PSoXide pin, like quake-core's.
 psx-engine = { path = "../../.psoxide/engine/crates/psx-engine" }
 psx-gpu = { path = "../../.psoxide/sdk/crates/psx-gpu" }
+psx-hw = { path = "../../.psoxide/crates/psx-hw" }
 psx-gte = { path = "../../.psoxide/sdk/crates/psx-gte" }
 
 [features]
