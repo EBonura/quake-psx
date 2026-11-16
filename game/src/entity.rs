@@ -947,12 +947,6 @@ struct GrenadeProjectile {
 }
 
 impl EntityScene {
-    /// Include dormant bosses and crucified/dead monsters: their later
-    /// activation and animation must retain the same original think code.
-    #[cfg(feature = "monster-code-overlay")]
-    pub(crate) fn needs_monster_code(&self) -> bool {
-        self.entities.iter().any(|entity| entity.monster.is_some())
-    }
     pub fn new() -> Self {
         Self {
             entities: Vec::with_capacity(MAX_RENDER_ENTITIES),
@@ -6481,7 +6475,7 @@ impl EntityScene {
         let Some(shooter) = self.entities.get(shooter_index).copied() else {
             return false;
         };
-        let (forward, right, up) = aim_basis(shooter.origin, player_origin);
+        let (forward, right, _up) = aim_basis(shooter.origin, player_origin);
         let scale = |vector: Vec3I32, units: i32| Vec3I32 {
             x: vector.x.saturating_mul(units),
             y: vector.y.saturating_mul(units),
@@ -7715,15 +7709,6 @@ impl EntityScene {
         self.skill
     }
 
-    /// Loaded `func_train` count and the corners they have reached so far.
-    pub fn train_stats(&self) -> (u16, u16) {
-        let mut arrivals = 0u16;
-        for train in &self.trains {
-            arrivals = arrivals.saturating_add(train.policy.corner_arrivals());
-        }
-        (self.trains.len().min(u16::MAX as usize) as u16, arrivals)
-    }
-
     /// `found_secrets` and `total_secrets` for this resident map.
     pub const fn secrets(&self) -> (u16, u16) {
         (self.secrets.found(), self.secrets.total())
@@ -8825,18 +8810,6 @@ impl EntityScene {
                 && map.entities().get(source)?.class_name == class_name)
                 .then_some((entity.source_index, entity.origin))
         })
-    }
-
-    /// Return the destination of the first change-level volume touched by the
-    /// player's Quake hull.
-    #[optimize(size)]
-    pub fn touched_change_level(
-        &self,
-        player_mins: Vec3I32,
-        player_maxs: Vec3I32,
-    ) -> Option<EpisodeMap> {
-        self.touched_change_level_trigger(player_mins, player_maxs)
-            .map(|(destination, _, _)| destination)
     }
 
     /// The first change-level volume the player's Quake hull is inside: where

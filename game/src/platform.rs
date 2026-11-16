@@ -831,7 +831,7 @@ impl ChunkStream {
         let reader = unsafe { &mut *addr_of_mut!(READER) };
         let started = unsafe { begin_session(reader, absolute_lba) };
         if !started {
-            unsafe { reader.stop() };
+            reader.stop();
             return Err(StorageError::ReadFailed);
         }
         unsafe { STORAGE_STREAM_ACTIVE = true };

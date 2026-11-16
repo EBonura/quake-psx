@@ -900,55 +900,6 @@ impl MovementState {
         }
     }
 
-    /// A riser that leans a few degrees (E1M1 has risers cooked with a 0.124
-    /// normal) is not Quake's `normal[2] == 0` step, so the original never
-    /// tries to climb it, and a player standing at its foot who has only just
-    /// started to walk moves under a unit per tick: too little to carry the
-    /// raised box past the lean before the step down lands on it again. The
-    /// player then oscillates on the spot. This retries the raised leg with
-    /// the distance one tick at the pressed walking speed covers, which is
-    /// where a player already at speed would be, and takes the step only when
-    /// that leg is clear and the step down lands on walkable ground. The
-    /// velocity is left alone, so the run-up is not given for free.
-    fn step_onto_leaning_riser<C: MovementTrace + ?Sized>(
-        &self,
-        collision: &C,
-        scratch: &mut MovementScratch,
-        raised_origin: Vec3I32,
-        wish_direction: Vec3I32,
-        wish_speed: i32,
-    ) -> Option<Vec3I32> {
-        if wish_speed <= 0 {
-            return None;
-        }
-        let reach = wish_speed / VIDEO_TICKS_PER_SECOND;
-        let forward = Vec3I32 {
-            x: raised_origin
-                .x
-                .saturating_add(mul_q12_i32(wish_direction.x, reach)),
-            y: raised_origin
-                .y
-                .saturating_add(mul_q12_i32(wish_direction.y, reach)),
-            z: raised_origin.z,
-        };
-        trace(collision, &raised_origin, &forward, scratch);
-        if scratch.trace.trapped() || scratch.trace.fraction != Q12_ONE {
-            return None;
-        }
-        let down = Vec3I32 {
-            x: forward.x,
-            y: forward.y,
-            z: forward.z.saturating_sub(STEP_HEIGHT_Q12),
-        };
-        trace(collision, &forward, &down, scratch);
-        if scratch.trace.trapped()
-            || scratch.trace.fraction == Q12_ONE
-            || (scratch.trace.normal.z as i32) < WALKABLE_NORMAL_Q12
-        {
-            return None;
-        }
-        Some(scratch.trace.end)
-    }
 }
 
 fn water_level<F>(origin: &Vec3I32, point_contents: &mut F) -> (u8, i16)

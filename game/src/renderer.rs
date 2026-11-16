@@ -1080,7 +1080,6 @@ fn request_subdivision_slot(
     counters.replacements = counters.replacements.wrapping_add(u32::from(replacing));
 }
 
-const RESIDENT_BASE_PACKET_SLOTS: usize = 0;
 
 /// Most leaves on the far side of one water plane whose PVS rows are merged
 /// into the camera's. Leaves past the bound are left out, never allocated.
@@ -7085,21 +7084,6 @@ fn select_frame_faces_blocked_in_place(
     };
 }
 
-/// Set [`NEAR_FACE_BIT`] on every selected face whose bounds reach behind
-/// the near plane. A separate pass over the (short) selected list rather than
-/// part of `select_frame_faces`, whose loop is at the register limit: folded
-/// in there the plane spilled the frustum selectors to the stack.
-#[inline(never)]
-fn flag_near_faces(visible_faces: &[VisibleFace], selected: &mut [u16], near: NearPlane) {
-    for entry in selected.iter_mut() {
-        let visible =
-            unsafe { visible_faces.get_unchecked((*entry & FRAME_FACE_INDEX_MASK) as usize) };
-        if near.reaches_behind(visible.bounds.mins, visible.bounds.maxs) {
-            *entry |= NEAR_FACE_BIT;
-        }
-    }
-}
-
 /// Preserve the separate, register-light selected-face pass while moving its
 /// three signed products to the GTE row already loaded beside the frustum.
 #[cfg(feature = "renderer-gte-near-classification")]
@@ -7473,8 +7457,8 @@ unsafe fn clip_face_view(vertices: *mut ClassicAffineVertex, count: usize) -> Vi
     if count > NEAR_VIEW_MAX_INPUT {
         return ViewClip::Fallback;
     }
-    let a = unsafe { addr_of_mut!(VIEW_CLIP_A).cast::<ViewCorner>() };
-    let b = unsafe { addr_of_mut!(VIEW_CLIP_B).cast::<ViewCorner>() };
+    let a = addr_of_mut!(VIEW_CLIP_A).cast::<ViewCorner>();
+    let b = addr_of_mut!(VIEW_CLIP_B).cast::<ViewCorner>();
     let exact_depth = NEAR_VIEW_EXACT_DEPTH << VIEW_CLIP_FRACTION_BITS;
     // Planes some corner lies outside of, and planes every corner does.
     let mut outside_any = 0u32;

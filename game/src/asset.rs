@@ -132,17 +132,6 @@ fn legacy_index_map(map: EpisodeMap) -> Result<PsbIndex, PsbError<StorageError>>
     PsbIndex::read(&mut reader)
 }
 
-#[optimize(size)]
-pub fn index_map(map: EpisodeMap) -> Result<PsbIndex, PsbError<StorageError>> {
-    let mut directory = [0; EPISODE_DIRECTORY_BYTES];
-    if platform::read_chunk_exact(EPISODE_DIRECTORY_CHUNK, 0, &mut directory).is_ok() {
-        return episode_directory_index_or_try(&directory, map.chunk_id(), || {
-            legacy_index_map(map)
-        });
-    }
-    legacy_index_map(map)
-}
-
 const TEXTURE_UPLOAD_ROWS: usize = 8;
 // Read 24 rows (30 KiB) per CD session, then pause the drive before three
 // bounded VRAM uploads. The timing model already drops sectors when ReadN is
@@ -584,16 +573,6 @@ impl ResidentMap {
     }
 
     #[optimize(size)]
-    pub fn vertices(&self) -> RecordSlice<'_, Vertex> {
-        self.shared.vertices()
-    }
-
-    #[optimize(size)]
-    pub fn vertex_data(&self) -> &[u8] {
-        self.shared.vertex_data()
-    }
-
-    #[optimize(size)]
     pub fn indexed_vertices(&self) -> Option<IndexedVertices<'_>> {
         self.shared.indexed_vertices()
     }
@@ -608,11 +587,6 @@ impl ResidentMap {
     #[optimize(size)]
     pub fn collision_planes(&self) -> &[CompactPlane] {
         &self.collision_planes
-    }
-
-    #[optimize(size)]
-    pub fn textures(&self) -> RecordSlice<'_, TextureInfo> {
-        self.shared.textures()
     }
 
     /// Compact texture descriptors decoded once for the active map generation.
@@ -645,21 +619,11 @@ impl ResidentMap {
     }
 
     #[optimize(size)]
-    pub fn nodes(&self) -> RecordSlice<'_, Node> {
-        self.shared.nodes()
-    }
-
-    #[optimize(size)]
     pub fn render_nodes(&self) -> &[CompactNode] {
         self.shared
             .nodes()
             .as_native_compact_nodes()
             .expect("resident-map load validated render-node alignment")
-    }
-
-    #[optimize(size)]
-    pub fn clip_nodes(&self) -> RecordSlice<'_, ClipNode> {
-        self.shared.clip_nodes()
     }
 
     /// Clip-node wire records are already the native little-endian layout, so
@@ -698,18 +662,8 @@ impl ResidentMap {
     }
 
     #[optimize(size)]
-    pub fn model_data(&self) -> &[u8] {
-        self.shared.model_data()
-    }
-
-    #[optimize(size)]
     pub fn alias_models(&self) -> AliasModelTable<'_> {
         self.shared.alias_models()
-    }
-
-    #[optimize(size)]
-    pub fn strings(&self) -> &[u8] {
-        self.shared.strings()
     }
 
     #[optimize(size)]
