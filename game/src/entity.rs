@@ -7735,7 +7735,7 @@ impl EntityScene {
     }
 
     /// The first moving train's leg inputs, for the guest diagnostic.
-    #[cfg(feature = "episode1-regression")]
+    #[cfg(feature = "map-regression")]
     pub fn regression_train_leg_debug(out: &mut [i32; 13]) {
         unsafe {
             *out = core::ptr::read_volatile(core::ptr::addr_of!(TRAIN_LEG_DEBUG));
@@ -7754,7 +7754,7 @@ impl EntityScene {
     /// units]`. The last is a position checksum the caller watches for change,
     /// which is how a moving train proves it moved rather than merely claiming
     /// a leg length.
-    #[cfg(feature = "episode1-regression")]
+    #[cfg(feature = "map-regression")]
     pub fn regression_train_probe(&self, out: &mut [u32; 3]) {
         out[0] = 0;
         out[1] = 0;
@@ -8971,7 +8971,7 @@ impl EntityScene {
     /// present in the emulator regression image; shipping gameplay must reach
     /// the volume through normal player movement.
     #[cfg(any(
-        feature = "episode1-regression",
+        feature = "map-regression",
         feature = "episode1-route-regression",
         feature = "arsenal-regression"
     ))]
@@ -9962,7 +9962,7 @@ fn monster_death_sound(class_name: u8) -> Option<i16> {
     }
 }
 
-#[cfg(feature = "episode1-regression")]
+#[cfg(feature = "map-regression")]
 static mut TRAIN_LEG_DEBUG: [i32; 13] = [0; 13];
 
 /// A zero-size trace through the world render hull and every visible solid
@@ -10370,7 +10370,7 @@ fn swept_player_overlaps_entity(start: Vec3I32, end: Vec3I32, entity: &RenderEnt
 }
 
 #[cfg(any(
-    feature = "episode1-regression",
+    feature = "map-regression",
     feature = "combat-regression",
     feature = "episode1-route-regression",
     feature = "arsenal-regression"

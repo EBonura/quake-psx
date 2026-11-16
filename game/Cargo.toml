@@ -34,7 +34,7 @@ default = [
     "renderer-error-bounded-tessellation",
     "smooth-poses",
 ]
-episode1-regression = ["emulator-telemetry"]
+map-regression = ["emulator-telemetry"]
 episode1-route-regression = ["emulator-telemetry"]
 ambient-regression = []
 audio-residency-regression = ["emulator-telemetry"]

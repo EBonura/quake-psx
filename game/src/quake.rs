@@ -321,7 +321,7 @@ pub fn run() -> ! {
     let mut rumble = crate::rumble::Rumbler::new();
     let mut menu = quake_core::menu::Menu::new();
     #[cfg(any(
-        feature = "episode1-regression",
+        feature = "map-regression",
         feature = "ambient-regression",
         feature = "combat-regression",
         feature = "arsenal-regression",
@@ -749,7 +749,7 @@ pub fn run() -> ! {
         }
         #[cfg(not(any(
             feature = "ambient-regression",
-            feature = "episode1-regression",
+            feature = "map-regression",
             feature = "combat-regression",
             feature = "arsenal-regression",
             feature = "monster-regression",
@@ -785,7 +785,7 @@ pub fn run() -> ! {
         // second, timing-sensitive movement test.
         #[cfg(any(
             feature = "ambient-regression",
-            feature = "episode1-regression",
+            feature = "map-regression",
             feature = "combat-regression",
             feature = "arsenal-regression",
             feature = "monster-regression",
@@ -903,7 +903,7 @@ pub fn run() -> ! {
             game_clock.realign(psx_rt::interrupts::vblank_count().wrapping_add(1));
             continue;
         }
-        #[cfg(feature = "episode1-regression")]
+        #[cfg(feature = "map-regression")]
         if let Some(destination) = crate::regression::drive(&world, &entities, &mut player) {
             let Some(next_player) = load_level(
                 &mut world,
@@ -1472,7 +1472,7 @@ pub fn run() -> ! {
         // deterministic waypoint movement; like the Episode 1 map route they
         // keep the monster think loop out of the probe.
         #[cfg(not(any(
-            feature = "episode1-regression",
+            feature = "map-regression",
             feature = "combat-regression",
             feature = "arsenal-regression",
             feature = "start-route-regression",
@@ -1736,7 +1736,7 @@ pub fn run() -> ! {
         #[cfg(feature = "visual-parity-regression")]
         crate::visual_parity_regression::observe_render(_render_stats);
 
-        #[cfg(feature = "episode1-regression")]
+        #[cfg(feature = "map-regression")]
         crate::regression::observe_render(_render_stats);
     }
 }
@@ -2250,7 +2250,7 @@ fn reset_level_state(
     world.restore_stream_scratch(stream_scratch);
     audio_result.ok()?;
     let player = presentation.commit_ready(Some(player))?;
-    #[cfg(feature = "episode1-regression")]
+    #[cfg(feature = "map-regression")]
     crate::regression::map_loaded(_map);
     #[cfg(feature = "start-route-regression")]
     crate::start_route_regression::map_loaded(_map);

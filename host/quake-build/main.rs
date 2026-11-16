@@ -546,7 +546,7 @@ fn real_main() -> Result<()> {
             let pak = resolve_pak(&root, cli.quake_dir.as_deref())?;
             cook_assets(&root, &pak, false)?;
             let build = root.join("build-psoxide-map-regression");
-            build_disc(&root, &build, Some("episode1-regression"), false)?;
+            build_disc(&root, &build, Some("map-regression"), false)?;
             let frontend = resolve_frontend(&root, cli.psoxide.as_deref())?;
             run_map_regression(&root, &frontend, &build)?;
         }
@@ -5283,7 +5283,17 @@ fn write_shipping_provenance(
 /// Do not fall back to a sibling checkout: that could test a different SDK
 /// revision from the one used to build the disc.
 fn resolve_frontend(root: &Path, requested: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = env::var_os("QUAKE_PSX_FRONTEND") {
+    resolve_frontend_with(env::var_os("QUAKE_PSX_FRONTEND"), root, requested)
+}
+
+/// [`resolve_frontend`] with `QUAKE_PSX_FRONTEND` passed in, so a test is not
+/// steered by the caller's environment.
+fn resolve_frontend_with(
+    env_frontend: Option<OsString>,
+    root: &Path,
+    requested: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(path) = env_frontend {
         let path = PathBuf::from(path);
         if !is_runnable(&path) {
             return Err(format!("QUAKE_PSX_FRONTEND is not runnable: {}", path.display()).into());
@@ -10733,7 +10743,7 @@ mod tests {
             fs::set_permissions(&decoy, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let error = resolve_frontend(&root, Some(requested.as_path()))
+        let error = resolve_frontend_with(None, &root, Some(requested.as_path()))
             .expect_err("an empty requested checkout must fail closed");
         let error = error.to_string();
         assert!(
@@ -10761,7 +10771,7 @@ mod tests {
         let not_a_frontend = temp.join("frontend");
         fs::write(&not_a_frontend, "not an executable").unwrap();
 
-        let error = resolve_frontend(&temp, Some(not_a_frontend.as_path()))
+        let error = resolve_frontend_with(None, &temp, Some(not_a_frontend.as_path()))
             .expect_err("a non-runnable explicit frontend must fail closed");
         assert!(error.to_string().contains("not runnable"), "got {error}");
 

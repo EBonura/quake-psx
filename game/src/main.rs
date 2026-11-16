@@ -48,7 +48,7 @@ mod monster_code;
     feature = "combat-regression",
     feature = "e1m1-chain-regression",
     feature = "e1m2-e1m3-route-regression",
-    feature = "episode1-regression",
+    feature = "map-regression",
     feature = "episode1-route-regression",
     feature = "monster-regression",
     feature = "monsterjump-regression",
@@ -61,7 +61,7 @@ mod platform;
 mod player;
 mod pusher;
 mod quake;
-#[cfg(feature = "episode1-regression")]
+#[cfg(feature = "map-regression")]
 mod regression;
 mod renderer;
 mod rumble;
@@ -78,7 +78,7 @@ mod visual_parity_regression;
 #[cfg(all(
     feature = "visual-parity-regression",
     any(
-        feature = "episode1-regression",
+        feature = "map-regression",
         feature = "episode1-route-regression",
         feature = "ambient-regression",
         feature = "combat-regression",
@@ -98,7 +98,7 @@ compile_error!("visual parity cannot be combined with a gameplay regression feat
 #[cfg(all(
     feature = "monsterjump-regression",
     any(
-        feature = "episode1-regression",
+        feature = "map-regression",
         feature = "episode1-route-regression",
         feature = "ambient-regression",
         feature = "combat-regression",
@@ -117,20 +117,20 @@ compile_error!("visual parity cannot be combined with a gameplay regression feat
 compile_error!("monster-jump regression cannot be combined with another regression feature");
 
 #[cfg(any(
-    all(feature = "combat-regression", feature = "episode1-regression"),
+    all(feature = "combat-regression", feature = "map-regression"),
     all(feature = "combat-regression", feature = "arsenal-regression"),
-    all(feature = "episode1-regression", feature = "arsenal-regression"),
+    all(feature = "map-regression", feature = "arsenal-regression"),
     all(feature = "monster-regression", feature = "combat-regression"),
-    all(feature = "monster-regression", feature = "episode1-regression"),
+    all(feature = "monster-regression", feature = "map-regression"),
     all(feature = "monster-regression", feature = "arsenal-regression"),
     all(feature = "start-route-regression", feature = "combat-regression"),
-    all(feature = "start-route-regression", feature = "episode1-regression"),
+    all(feature = "start-route-regression", feature = "map-regression"),
     all(feature = "start-route-regression", feature = "arsenal-regression"),
     all(feature = "start-route-regression", feature = "monster-regression"),
     all(feature = "start-route-regression", feature = "ambient-regression"),
     all(feature = "start-route-regression", feature = "hardware-regression"),
     all(feature = "e1m1-chain-regression", feature = "combat-regression"),
-    all(feature = "e1m1-chain-regression", feature = "episode1-regression"),
+    all(feature = "e1m1-chain-regression", feature = "map-regression"),
     all(feature = "e1m1-chain-regression", feature = "arsenal-regression"),
     all(feature = "e1m1-chain-regression", feature = "monster-regression"),
     all(feature = "e1m1-chain-regression", feature = "start-route-regression"),
@@ -139,7 +139,7 @@ compile_error!("monster-jump regression cannot be combined with another regressi
     all(feature = "e1m2-e1m3-route-regression", feature = "combat-regression"),
     all(
         feature = "e1m2-e1m3-route-regression",
-        feature = "episode1-regression"
+        feature = "map-regression"
     ),
     all(feature = "e1m2-e1m3-route-regression", feature = "arsenal-regression"),
     all(feature = "e1m2-e1m3-route-regression", feature = "monster-regression"),
@@ -157,7 +157,7 @@ compile_error!("monster-jump regression cannot be combined with another regressi
         feature = "hardware-regression"
     ),
     all(feature = "survival-regression", feature = "combat-regression"),
-    all(feature = "survival-regression", feature = "episode1-regression"),
+    all(feature = "survival-regression", feature = "map-regression"),
     all(feature = "survival-regression", feature = "arsenal-regression"),
     all(feature = "survival-regression", feature = "monster-regression"),
     all(feature = "survival-regression", feature = "start-route-regression"),
@@ -165,7 +165,7 @@ compile_error!("monster-jump regression cannot be combined with another regressi
     all(feature = "survival-regression", feature = "ambient-regression"),
     all(feature = "survival-regression", feature = "hardware-regression"),
     all(feature = "episode1-route-regression", feature = "combat-regression"),
-    all(feature = "episode1-route-regression", feature = "episode1-regression"),
+    all(feature = "episode1-route-regression", feature = "map-regression"),
     all(feature = "episode1-route-regression", feature = "arsenal-regression"),
     all(feature = "episode1-route-regression", feature = "monster-regression"),
     all(

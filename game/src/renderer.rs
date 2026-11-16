@@ -707,7 +707,7 @@ pub struct RenderStats {
 
     /// Exact high-water of this frame's double-buffered world/entity packet
     /// arena. The map-route probe retains the maximum across Episode 1.
-    #[cfg(feature = "episode1-regression")]
+    #[cfg(feature = "map-regression")]
     pub packet_arena_words: u32,
     #[cfg(feature = "visual-parity-regression")]
     pub scoped_window_packets: u32,
@@ -2465,7 +2465,7 @@ impl Renderer {
             stats.scoped_window_reset_failures = audit.failures;
         }
 
-        #[cfg(feature = "episode1-regression")]
+        #[cfg(feature = "map-regression")]
         {
             // `start` and `next` are members of the same 132 KiB arena.
             stats.packet_arena_words = unsafe { next.offset_from(start) as u32 };
@@ -3532,11 +3532,11 @@ impl Renderer {
                 // The all-map route regression validates map data and real
                 // transition volumes under a fixed cycle budget. Shipping
                 // and dedicated visual captures still render every submodel.
-                #[cfg(feature = "episode1-regression")]
+                #[cfg(feature = "map-regression")]
                 {
                     continue;
                 }
-                #[cfg(not(feature = "episode1-regression"))]
+                #[cfg(not(feature = "map-regression"))]
                 {
                     psx_telemetry::emit::sort_class(crate::platform::sort_class::WORLD);
                     let first_packet = next;

@@ -3758,7 +3758,10 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "classic-affine-lattice")]
+    #[cfg(all(
+        feature = "classic-affine-lattice",
+        feature = "classic-affine-quake-specialized-kernel"
+    ))]
     mod lattice_tests {
         use super::*;
 

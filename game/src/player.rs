@@ -261,7 +261,7 @@ impl Player {
     }
 
     #[cfg(any(
-        feature = "episode1-regression",
+        feature = "map-regression",
         feature = "episode1-route-regression",
         feature = "arsenal-regression",
         feature = "e1m1-save-regression"
