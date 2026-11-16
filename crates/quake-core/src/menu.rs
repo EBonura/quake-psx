@@ -3,6 +3,8 @@
 //! The game adapter translates pad edges into [`MenuInput`]. Rendering owns
 //! GPU packets; this module exposes only stable labels, values, and state.
 
+use psx_display::{Brightness, Label};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MenuPage {
     Main,
@@ -242,21 +244,18 @@ pub struct MenuView {
 pub const BRIGHTNESS_STEPS: u8 = 8;
 /// Default to displayed level 2; palette rows are indexed from zero.
 pub const DEFAULT_BRIGHTNESS: u8 = 1;
-/// Row text for each palette row, in the words psx-display uses for its
-/// BRIGHTNESS stepper: `DEFAULT` is the shipped row, the others count away
-/// from it. Quake's pinned engine predates psx-display (the SDK that carries
-/// it no longer builds that engine), so the text is spelt out here; take it
-/// from `Brightness::label_for_level(row - DEFAULT_BRIGHTNESS)` when the pin
-/// next moves.
-const BRIGHTNESS_LABELS: [&str; BRIGHTNESS_STEPS as usize] = [
-    "DARKER 1",
-    "DEFAULT",
-    "BRIGHTER 1",
-    "BRIGHTER 2",
-    "BRIGHTER 3",
-    "BRIGHTER 4",
-    "BRIGHTER 5",
-    "BRIGHTER 6",
+/// Row text for each palette row, from the SDK's brightness wording: `DEFAULT` is the shipped
+/// row, the others count away from it (one darker, six brighter). The words are
+/// `Brightness::label_for_level(row - DEFAULT_BRIGHTNESS)`, built at compile time.
+static BRIGHTNESS_LABELS: [Label; BRIGHTNESS_STEPS as usize] = [
+    Brightness::label_for_level(-(DEFAULT_BRIGHTNESS as i8)),
+    Brightness::label_for_level(0),
+    Brightness::label_for_level(1),
+    Brightness::label_for_level(2),
+    Brightness::label_for_level(3),
+    Brightness::label_for_level(4),
+    Brightness::label_for_level(5),
+    Brightness::label_for_level(6),
 ];
 /// Scaled-radial inner radii offered for both DualShock sticks.
 pub const DEADZONE_RADII: [i16; 5] = [12, 20, 28, 36, 44];
@@ -318,7 +317,7 @@ impl MenuView {
     }
 
     #[optimize(size)]
-    pub const fn row(self, index: u8) -> Option<MenuRow> {
+    pub fn row(self, index: u8) -> Option<MenuRow> {
         match self.page {
             MenuPage::Main if self.can_resume => match index {
                 0 => Some(MenuRow::plain("RESUME")),
@@ -375,7 +374,8 @@ impl MenuView {
                         self.brightness as usize
                     } else {
                         BRIGHTNESS_STEPS as usize - 1
-                    }],
+                    }]
+                    .as_str(),
                 )),
                 4 => Some(MenuRow::valued(
                     "CROSS",
@@ -924,7 +924,11 @@ mod tests {
     fn brightness_steps_through_the_palette_rows() {
         let mut menu = Menu::new();
         assert_eq!(menu.view().brightness, DEFAULT_BRIGHTNESS);
-        assert_eq!(BRIGHTNESS_LABELS[DEFAULT_BRIGHTNESS as usize], "DEFAULT");
+        assert_eq!(BRIGHTNESS_LABELS[DEFAULT_BRIGHTNESS as usize].as_str(), "DEFAULT");
+        let words = ["DARKER 1", "DEFAULT", "BRIGHTER 1", "BRIGHTER 2", "BRIGHTER 3", "BRIGHTER 4", "BRIGHTER 5", "BRIGHTER 6"];
+        for (label, word) in BRIGHTNESS_LABELS.iter().zip(words) {
+            assert_eq!(label.as_str(), word);
+        }
         menu.update(down());
         menu.update(down());
         menu.update(down());
