@@ -22,7 +22,7 @@
 //! restarts the schedule from the top afterwards: nothing resumes in the
 //! middle of a song, so no state has to survive a read.
 
-use psx_io::iso::{as_bytes, find_in_directory, root_directory, sectors, PVD_LBA};
+use psx_io::iso::{find_in_root, PVD_LBA};
 use psx_io::cd::xa::{DriveSpeed, File, Player};
 use psx_io::periph::Cd;
 use psx_pack::cd::{SectorReader, SECTOR_WORDS};
@@ -312,10 +312,13 @@ impl Music {
         let mut sector = [0u32; SECTOR_WORDS];
         // SAFETY: a token is a logic guard (`psx_io::periph`); nothing else reads the disc while the files are located.
         let mut reader = SectorReader::with_cd(unsafe { Cd::steal() });
-        let mut found = [false; XA_FILE_COUNT];
+        let mut extents = [None; XA_FILE_COUNT];
         // One read session from the volume descriptor forward: the root
         // directory sits a few sectors after it, and passing over those
-        // costs less than a second session (a command pair and a seek).
+        // costs less than a second session (a command pair and a seek). The
+        // SDK's one-pass lookup asks for the descriptor and then for the root
+        // sectors; this read answers each from the open session, reading and
+        // dropping what lies between.
         // SAFETY: the loader's own reader is idle here (this runs at a level
         // boundary) and nothing else holds the controller.
         unsafe {
@@ -323,33 +326,30 @@ impl Music {
                 reader.stop();
                 return false;
             }
-            let mut lba = PVD_LBA;
-            let mut root = (0, 0);
-            while reader.read_sector(&mut sector) {
-                let bytes = as_bytes(&sector);
-                if lba == PVD_LBA {
-                    match root_directory(bytes) {
-                        Some(at) if at.0 > PVD_LBA && at.0 - PVD_LBA <= MAX_ROOT_SKIP => root = at,
-                        _ => break,
+            let mut next = PVD_LBA;
+            find_in_root(
+                &mut sector,
+                |lba, into| {
+                    if lba < next || (lba > next && lba - PVD_LBA > MAX_ROOT_SKIP) {
+                        return false;
                     }
-                } else if lba >= root.0 {
-                    for (file, name) in XA_FILE_NAMES.iter().enumerate() {
-                        if let Some((lba, bytes)) = find_in_directory(bytes, name) {
-                            self.files[file] = (lba, bytes / 2048);
-                            found[file] = true;
+                    while next <= lba {
+                        if !reader.read_sector(into) {
+                            return false;
                         }
+                        next += 1;
                     }
-                    // A root directory this small is one sector; scan a few in
-                    // case not.
-                    if lba + 1 >= root.0 + sectors(root.1).min(4) {
-                        break;
-                    }
-                }
-                lba += 1;
-            }
+                    true
+                },
+                &XA_FILE_NAMES,
+                &mut extents,
+            );
             reader.stop();
-            if !found.iter().all(|f| *f) {
-                return false;
+            for (file, extent) in extents.iter().enumerate() {
+                let Some((lba, bytes)) = *extent else {
+                    return false;
+                };
+                self.files[file] = (lba, bytes / 2048);
             }
             self.player = Some(Player::new(Cd::steal()));
         }
