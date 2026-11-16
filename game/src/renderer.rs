@@ -5891,19 +5891,14 @@ static mut SKY_SAMPLE_CACHE: ([[i16; 3]; 3], u8, bool, SkySamples) = (
 unsafe fn cached_sky_samples(rotation: [[i16; 3]; 3], width: u8) -> &'static SkySamples {
     let cache = unsafe { &mut *core::ptr::addr_of_mut!(SKY_SAMPLE_CACHE) };
     if !(cache.2 && cache.0 == rotation && cache.1 == width) {
-        for (row, sample_row) in cache.3.iter_mut().enumerate() {
-            let y = (row * SCREEN_HEIGHT as usize / SKY_FOREGROUND_ROWS) as i16;
-            for (column, sample) in sample_row.iter_mut().enumerate() {
-                let x = (column * SCREEN_WIDTH as usize / SKY_FOREGROUND_COLUMNS) as i16;
-                let ray = quake_core::sky::screen_view_ray(
-                    [x, y],
-                    [SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2],
-                    160,
-                    rotation,
-                );
-                *sample = quake_core::sky::directional_texel(ray, width);
-            }
-        }
+        psx_engine::sky::fill_layered_sky_samples::<{ SCREEN_WIDTH as usize }, { SCREEN_HEIGHT as usize }>(
+            &mut cache.3,
+            rotation,
+            [SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2],
+            160,
+            width,
+            |ray| ray,
+        );
         cache.0 = rotation;
         cache.1 = width;
         cache.2 = true;
