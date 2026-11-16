@@ -1714,7 +1714,6 @@ impl EntityScene {
     #[optimize(size)]
     #[cfg_attr(all(feature = "monster-code-overlay", target_arch = "mips"),
         link_section = ".overlay.quake_doors.text")]
-    #[cfg_attr(feature = "monster-code-overlay", inline(never))]
     fn link_doors(&mut self, map: &ResidentMap) -> Result<(), EntityLoadError> {
         self.link_door_chains(map);
         for index in 0..self.movers.len() {

@@ -10,10 +10,10 @@ use psx_bsp::CompactPlane;
 use psx_math::int32::mul_q12_i32_wide;
 use psx_vram::VramRect;
 use quake_formats::{
-    episode_directory_index, episode_directory_index_or_try, leaf_bounds_at, AliasModelTable,
+    episode_directory_index, leaf_bounds_at, AliasModelTable,
     BrushModel, CachedIndexReader, ClipNode, CompactNode, Face, GraphicsPicture, GraphicsPictureId,
-    Leaf, LeafBounds, LumpKind, LumpRange, MapEntity, Node, Plane, PsbError, PsbIndex, PsbVersion,
-    ReadAt, RecordSlice, TextureInfo, Vec3I32, Vertex, EPISODE_DIRECTORY_BYTES,
+    Leaf, LeafBounds, LumpKind, LumpRange, MapEntity, Plane, PsbError, PsbIndex, PsbVersion,
+    ReadAt, RecordSlice, TextureInfo, Vec3I32, EPISODE_DIRECTORY_BYTES,
     GRAPHICS_PICTURE_RECORD_BYTES, GRAPHICS_WEAPON_ICON_BYTES, RESIDENT_MAP_ARENA_BYTES,
     TEXTURE_LIQUID,
 };
