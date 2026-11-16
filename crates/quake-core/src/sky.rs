@@ -6,74 +6,9 @@
 //! the camera to each polygon vertex, with a three-times-flattened vertical
 //! component.
 
-/// Return signed material-relative texel coordinates for a Quake sky ray.
-///
-/// Keeping this signed until a small raster cell is emitted is important.
-/// Casting the full dome to `u8` at a brush corner can cross the byte seam and
-/// makes the PS1 interpolate through most of the texture between adjacent
-/// vertices.
-pub fn directional_texel(mut direction: [i32; 3], layer_width: u8) -> [i32; 2] {
-    direction[2] = direction[2].saturating_mul(3);
-
-    // Keep the squared length inside i32 without changing the direction.
-    while direction[0]
-        .unsigned_abs()
-        .max(direction[1].unsigned_abs())
-        .max(direction[2].unsigned_abs())
-        > 16_000
-    {
-        direction[0] >>= 1;
-        direction[1] >>= 1;
-        direction[2] >>= 1;
-    }
-
-    let length_squared = direction[0]
-        .saturating_mul(direction[0])
-        .saturating_add(direction[1].saturating_mul(direction[1]))
-        .saturating_add(direction[2].saturating_mul(direction[2]));
-    let length = psx_math::int32::isqrt_i32(length_squared).max(1);
-    let denominator = length * 128;
-    let project = |component: i32| {
-        // Original Quake uses `6 * 63 / length` against a 128-texel layer.
-        // Preserve that projection while scaling it to the selected sky mip.
-        let numerator = component * 378 * i32::from(layer_width);
-        numerator / denominator
-    };
-
-    [project(direction[0]), project(direction[1])]
-}
-
-/// Recover a world-space viewing ray from one screen coordinate.
-///
-/// `world_to_view_q12` is the rotation already loaded for the frame. Its
-/// transpose is sufficient here because Quake's coordinate conversion has a
-/// uniform scale, which disappears during sky normalisation.
-pub fn screen_view_ray(
-    screen: [i16; 2],
-    center: [i16; 2],
-    projection: i16,
-    world_to_view_q12: [[i16; 3]; 3],
-) -> [i32; 3] {
-    // Every term is an i16 screen offset against a Q12 rotation entry, at
-    // most 2^15 * 2^12 = 2^27 in magnitude, so the three-term sum stays
-    // under 2^29 and the whole ray fits `i32`: three hardware multiplies per
-    // axis instead of the 64-bit software products this used to take
-    // (`i32_view_ray_matches_i64` pins the equivalence).
-    // Preserve the release-mode signed-16 offset contract at extreme inputs.
-    let camera = [
-        i32::from(screen[0].wrapping_sub(center[0])),
-        i32::from(screen[1].wrapping_sub(center[1])),
-        i32::from(projection),
-    ];
-    let mut world = [0i32; 3];
-    for axis in 0..3 {
-        let value = camera[0] * i32::from(world_to_view_q12[0][axis])
-            + camera[1] * i32::from(world_to_view_q12[1][axis])
-            + camera[2] * i32::from(world_to_view_q12[2][axis]);
-        world[axis] = value >> 12;
-    }
-    world
-}
+// `directional_texel` and `screen_view_ray` are the SDK's (`psx_engine::sky`): the renderer calls
+// them there, and `directional_uv` below uses the first.
+use psx_engine::sky::directional_texel;
 
 /// Rebase four signed sky samples into packet UV bytes without changing the
 /// local projection gradient.
@@ -110,133 +45,58 @@ pub fn directional_uv(
 
 #[cfg(test)]
 mod tests {
-    use super::{directional_texel, directional_uv, packet_quad_uv, screen_view_ray};
+    use super::{directional_texel, directional_uv, packet_quad_uv};
+    use psx_engine::sky::screen_view_ray;
+
+    /// The renderer's whole lattice: every screen position of the 320x240 frame about its centre,
+    /// projection 160, over rotations at the Q12 extremes and two general ones.
+    fn lattice_rays() -> impl Iterator<Item = [i32; 3]> {
+        let rotations = [
+            [[4096i16, 0, 0], [0, 4096, 0], [0, 0, 4096]],
+            [[-4096, 0, 0], [0, -4096, 0], [0, 0, -4096]],
+            [[2896, -2896, 0], [1448, 1448, -3547], [2048, 2048, 2896]],
+            [[-1234, 3999, -707], [3000, 1000, 2500], [-2000, -1500, 3200]],
+        ];
+        rotations.into_iter().flat_map(|rotation| {
+            (0i16..240).flat_map(move |y| {
+                (0i16..320).map(move |x| screen_view_ray([x, y], [160, 120], 160, rotation))
+            })
+        })
+    }
 
     #[test]
-    fn i32_view_ray_matches_i64() {
-        fn reference(
-            screen: [i16; 2],
-            center: [i16; 2],
-            projection: i16,
-            rotation: [[i16; 3]; 3],
-        ) -> [i32; 3] {
-            let camera = [
-                i64::from(screen[0].wrapping_sub(center[0])),
-                i64::from(screen[1].wrapping_sub(center[1])),
-                i64::from(projection),
-            ];
-            let mut world = [0i32; 3];
+    fn sdk_view_ray_matches_i64_on_the_renderers_lattice() {
+        // The SDK clamps the screen offsets to +-2048 and the projection to 1..=2048; the
+        // renderer's offsets are within +-160, so the clamp never acts.
+        for ((y, x), rotation_index) in (0..4).flat_map(|r| {
+            (0i16..240).flat_map(move |y| (0i16..320).map(move |x| ((y, x), r)))
+        }) {
+            let rotation = [
+                [[4096i16, 0, 0], [0, 4096, 0], [0, 0, 4096]],
+                [[-4096, 0, 0], [0, -4096, 0], [0, 0, -4096]],
+                [[2896, -2896, 0], [1448, 1448, -3547], [2048, 2048, 2896]],
+                [[-1234, 3999, -707], [3000, 1000, 2500], [-2000, -1500, 3200]],
+            ][rotation_index];
+            let camera = [i64::from(x) - 160, i64::from(y) - 120, 160];
+            let mut expected = [0i32; 3];
             for axis in 0..3 {
                 let value = camera[0] * i64::from(rotation[0][axis])
                     + camera[1] * i64::from(rotation[1][axis])
                     + camera[2] * i64::from(rotation[2][axis]);
-                world[axis] = (value >> 12) as i32;
+                expected[axis] = (value >> 12) as i32;
             }
-            world
-        }
-        // Rotation rows at the Q12 unit extremes and a mixed general rotation,
-        // over every screen position of the 320x240 lattice plus the i16
-        // extremes the signature admits.
-        let rotations = [
-            [[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]],
-            [[-4096, 0, 0], [0, -4096, 0], [0, 0, -4096]],
-            [[2896, -2896, 0], [1448, 1448, -3547], [2048, 2048, 2896]],
-            [
-                [-1234, 3999, -707],
-                [3000, 1000, 2500],
-                [-2000, -1500, 3200],
-            ],
-        ];
-        let screens = [
-            [0i16, 0i16],
-            [319, 239],
-            [160, 120],
-            [32, 200],
-            [-32768, -32768],
-            [32767, 32767],
-            [32767, -32768],
-        ];
-        for rotation in rotations {
-            for screen in screens {
-                for projection in [160i16, 128, 320, -160, 32767] {
-                    for center in [[160i16, 120i16], [0, 0], [-32768, 32767]] {
-                        assert_eq!(
-                            screen_view_ray(screen, center, projection, rotation),
-                            reference(screen, center, projection, rotation),
-                            "screen {screen:?} center {center:?} projection {projection} rotation {rotation:?}"
-                        );
-                    }
-                }
-            }
+            assert_eq!(screen_view_ray([x, y], [160, 120], 160, rotation), expected);
         }
     }
 
     #[test]
-    fn i32_projection_matches_i64() {
-        // The pre-halving reference form, over the full input domain: any i32
-        // direction (the halving loop and saturating multiply run first in
-        // both), every layer width the cooker can produce.
-        fn reference(mut direction: [i32; 3], layer_width: u8) -> [i32; 2] {
-            direction[2] = direction[2].saturating_mul(3);
-            while direction[0]
-                .unsigned_abs()
-                .max(direction[1].unsigned_abs())
-                .max(direction[2].unsigned_abs())
-                > 16_000
-            {
-                direction[0] >>= 1;
-                direction[1] >>= 1;
-                direction[2] >>= 1;
-            }
-            let length_squared = direction[0]
-                .saturating_mul(direction[0])
-                .saturating_add(direction[1].saturating_mul(direction[1]))
-                .saturating_add(direction[2].saturating_mul(direction[2]));
-            let length = psx_math::int32::isqrt_i32(length_squared).max(1);
-            let denominator = i64::from(length) * 128;
-            let project = |component: i32| {
-                let numerator = i64::from(component) * 378 * i64::from(layer_width);
-                (numerator / denominator) as i32
-            };
-            [project(direction[0]), project(direction[1])]
-        }
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let mut next = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        for _ in 0..200_000 {
-            let r = next();
-            let shift = (r >> 58) as u32 % 32;
-            let direction = [
-                (r as i32) >> shift,
-                ((r >> 20) as i32) >> shift,
-                ((r >> 40) as i32) >> shift,
-            ];
-            for layer_width in [8u8, 16, 32, 64, 128, 255] {
-                assert_eq!(
-                    directional_texel(direction, layer_width),
-                    reference(direction, layer_width),
-                    "{direction:?} {layer_width}"
-                );
-            }
-        }
-        for direction in [
-            [i32::MAX, i32::MAX, i32::MAX],
-            [i32::MIN, i32::MIN, i32::MIN],
-            [0, 0, 0],
-            [16_000, -16_000, 5_333],
-            [16_001, 0, 0],
-            [-1, 1, -1],
-        ] {
-            for layer_width in [1u8, 128, 255] {
-                assert_eq!(
-                    directional_texel(direction, layer_width),
-                    reference(direction, layer_width)
-                );
-            }
+    fn the_renderers_rays_stay_under_the_halving_threshold() {
+        // Quake's own copy halved a ray above 16,000 and the SDK's halves from 16,384, so the two
+        // differ only for a ray whose largest component (vertical one tripled) lies between them.
+        // The lattice stays far below both.
+        for ray in lattice_rays() {
+            let largest = ray[0].abs().max(ray[1].abs()).max(ray[2].abs() * 3);
+            assert!(largest < 2_000, "{ray:?}");
         }
     }
 

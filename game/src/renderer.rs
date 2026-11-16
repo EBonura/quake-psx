@@ -5896,13 +5896,13 @@ unsafe fn cached_sky_samples(rotation: [[i16; 3]; 3], width: u8) -> &'static Sky
             let y = (row * SCREEN_HEIGHT as usize / SKY_FOREGROUND_ROWS) as i16;
             for (column, sample) in sample_row.iter_mut().enumerate() {
                 let x = (column * SCREEN_WIDTH as usize / SKY_FOREGROUND_COLUMNS) as i16;
-                let ray = quake_core::sky::screen_view_ray(
+                let ray = psx_engine::sky::screen_view_ray(
                     [x, y],
                     [SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2],
                     160,
                     rotation,
                 );
-                *sample = quake_core::sky::directional_texel(ray, width);
+                *sample = psx_engine::sky::directional_texel(ray, width);
             }
         }
         cache.0 = rotation;
