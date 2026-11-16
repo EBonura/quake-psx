@@ -11,7 +11,6 @@
 extern crate std;
 
 mod sound;
-pub mod quake_pxbsp;
 
 pub use psx_bsp::*;
 pub use psx_math::WideU;
