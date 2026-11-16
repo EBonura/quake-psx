@@ -193,7 +193,7 @@ quake-formats = { path = "../crates/quake-formats" }
 quake-core = { path = "../crates/quake-core" }
 quake-affine = { path = "../crates/quake-affine" }
 psx-bsp = { path = "../.psoxide/engine/crates/psx-bsp" }
-psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc", "hazard-trampolines-192"] }
+psx-rt = { path = "../.psoxide/sdk/crates/psx-rt", features = ["alloc"] }
 psx-residency = { path = "../.psoxide/sdk/crates/psx-residency", optional = true }
 psx-io = { path = "../.psoxide/sdk/crates/psx-io" }
 psx-mc = { path = "../.psoxide/sdk/crates/psx-mc" }
