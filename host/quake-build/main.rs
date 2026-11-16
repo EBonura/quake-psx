@@ -6844,7 +6844,14 @@ fn run_combat_regression(root: &Path, frontend: &Path, regression: &Path) -> Res
     // shells 23, and the probe checks above all pass; every build since August
     // moved the absolute frame timing, which moves the second buffer in VRAM.
     // The display hash is the same on main before the SDK pin wave).
-    const EXPECTED_VRAM_FNV1A64: u64 = 0xd8e6_1592_6b58_ffd0;
+    //
+    // 2026-11-16: the VRAM pin hashed the framebuffer that is not on display, which holds
+    // the previous frame at the build's timing phase, so every change of code placement
+    // moved it (main 0xd8e6..., the SDK pin 0x0695...: 6,287 pixels, all inside the
+    // non-displayed buffer, 0..319 x 0..239 with the display at 0,256; textures, CLUTs and the
+    // displayed buffer equal). It now hashes the displayed buffer and everything outside both
+    // framebuffers (`stable_vram_hash`); main and the SDK-pin build both give this value.
+    const EXPECTED_VRAM_FNV1A64: u64 = 0x0a30_59e0_1e0c_929d;
     const EXPECTED_DISPLAY_FNV1A64: u64 = 0xf28f_014d_a1bd_688f;
     let capture = root.join("captures/combat-regression");
     let steps = env::var("QUAKE_PSX_COMBAT_REGRESSION_STEPS")
@@ -6888,7 +6895,7 @@ fn run_combat_regression(root: &Path, frontend: &Path, regression: &Path) -> Res
          final_health={}\n\
          port1_polls={}\n\
          display={}x{}\n\
-         vram_fnv1a_64=0x{:016x}\n\
+         stable_vram_fnv1a_64=0x{:016x}\n\
          display_fnv1a_64=0x{:016x}\n",
         first.probe.total_frames,
         first.probe.map_loads,
@@ -8047,6 +8054,58 @@ struct CombatRun {
     display_height: u32,
 }
 
+/// The two 320x240 framebuffers the shipping renderer flips between, at the top of VRAM.
+const FRAMEBUFFERS: [(usize, usize); 2] = [(0, 0), (0, 256)];
+const FRAMEBUFFER_WIDTH: usize = 320;
+const FRAMEBUFFER_HEIGHT: usize = 240;
+
+/// FNV-1a-64 of the VRAM a gate may pin: the framebuffer on display when the run stopped, then
+/// everything outside both framebuffers (textures, CLUTs, the font), row by row.
+///
+/// The framebuffer that is not on display holds the previous frame, drawn at whatever phase
+/// this build's timing gave it, so a whole-VRAM hash moves with code placement while the
+/// picture does not. The pixels are the dump's 8-bit RGB (the mask bit is not part of it).
+fn stable_vram_hash(vram: &Path, route: &Path) -> Result<u64> {
+    let image = read_ppm(vram)?;
+    if image.width != 1024 || image.height != 512 {
+        return Err(format!("VRAM dump is {}x{}, not 1024x512", image.width, image.height).into());
+    }
+    let csv = fs::read_to_string(route)?;
+    let mut lines = csv.lines();
+    let header: Vec<&str> = lines.next().ok_or("route log has no header")?.split(',').collect();
+    let column = |name: &str| {
+        header
+            .iter()
+            .position(|candidate| *candidate == name)
+            .ok_or_else(|| format!("route log lacks {name}"))
+    };
+    let (x_column, y_column) = (column("display_x")?, column("display_y")?);
+    let last: Vec<&str> = lines.last().ok_or("route log has no samples")?.split(',').collect();
+    let field = |index: usize| -> Result<usize> {
+        Ok(last.get(index).ok_or("last route row is short")?.parse()?)
+    };
+    let displayed = (field(x_column)?, field(y_column)?);
+    if !FRAMEBUFFERS.contains(&displayed) {
+        return Err(format!("display origin {displayed:?} is not a framebuffer").into());
+    }
+    let inside = |x: usize, y: usize, origin: (usize, usize)| {
+        x >= origin.0
+            && x < origin.0 + FRAMEBUFFER_WIDTH
+            && y >= origin.1
+            && y < origin.1 + FRAMEBUFFER_HEIGHT
+    };
+    let mut kept = Vec::with_capacity(image.rgb.len());
+    for y in 0..image.height {
+        for x in 0..image.width {
+            if inside(x, y, displayed) || !FRAMEBUFFERS.iter().any(|origin| inside(x, y, *origin)) {
+                let at = (y * image.width + x) * 3;
+                kept.extend_from_slice(&image.rgb[at..at + 3]);
+            }
+        }
+    }
+    Ok(fnv1a64(&kept))
+}
+
 fn run_combat_once(
     frontend: &Path,
     cue: &Path,
@@ -8055,7 +8114,16 @@ fn run_combat_once(
     guest_frames: u64,
 ) -> Result<CombatRun> {
     fs::create_dir_all(capture)?;
-    let output = run_frontend(frontend, cue, capture, steps, true, Some(guest_frames))?;
+    let vram_path = capture.join("vram.ppm");
+    let output = run_frontend_with_vram(
+        frontend,
+        cue,
+        capture,
+        steps,
+        true,
+        Some(guest_frames),
+        Some(&vram_path),
+    )?;
     let log = combined_output(&output);
     fs::write(capture.join("console.log"), &log)?;
     const MISSING_SOUND: &[u8] = b"Snd_FindSound: sound";
@@ -8075,7 +8143,7 @@ fn run_combat_once(
     Ok(CombatRun {
         probe,
         polls,
-        vram_hash: parse_frontend_hash(&log, "vram_fnv1a_64=")?,
+        vram_hash: stable_vram_hash(&vram_path, &capture.join("route.csv"))?,
         display_hash: display.hash,
         display_width: display.width,
         display_height: display.height,
@@ -8767,6 +8835,19 @@ fn run_frontend(
     dump_ram: bool,
     guest_frames: Option<u64>,
 ) -> Result<Output> {
+    run_frontend_with_vram(frontend, cue, capture, steps, dump_ram, guest_frames, None)
+}
+
+/// [`run_frontend`], and the final VRAM as a PPM at `vram` when given.
+fn run_frontend_with_vram(
+    frontend: &Path,
+    cue: &Path,
+    capture: &Path,
+    steps: u64,
+    dump_ram: bool,
+    guest_frames: Option<u64>,
+    vram: Option<&Path>,
+) -> Result<Output> {
     let mut command = Command::new(frontend);
     command
         .arg("launch")
@@ -8788,6 +8869,9 @@ fn run_frontend(
     }
     if let Some(frames) = guest_frames {
         command.arg("--guest-frames").arg(frames.to_string());
+    }
+    if let Some(path) = vram {
+        command.arg("--dump-vram").arg(path);
     }
     // Opt-in exact instruction histogram, the basis of the chain bench's
     // work-instruction line (it roughly doubles the emulation time).
