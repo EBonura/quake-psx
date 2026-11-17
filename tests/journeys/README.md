@@ -26,7 +26,7 @@ cargo build --release --manifest-path tools/journey-bot/Cargo.toml
    --maps id1psx/maps --routesim <quake-routesim binary>)
 ```
 
-The bot writes `<dir>/chain.toml` and `<dir>/tapes/seg-NN-to-<map>.pxtape`: one tape per
+The bot writes `<dir>/chain.toml` (kept as tests/journeys/e1-chain.toml, tapes under tests/journeys/e1-chain/tapes, disc and map read from build/journey) and `<dir>/tapes/seg-NN-to-<map>.pxtape`: one tape per
 map segment, cut at the frame that first shows the next map, and an exact checkpoint after
 each (map, skill, position, health, armour, ammunition, weapons, keys, kills and secrets).
 The chain file finds the state block by name in that build's link map (`symbols`), waits for the
@@ -35,7 +35,7 @@ change in boot, splash or load time moves nothing; regenerate the chain when the
 changes (a tape is the pad, not the state).
 
 ```sh
-psoxide-gate run tests/journeys/e1-chain/chain.toml --disc $PWD/build-psoxide-journey/quake-psx.cue
+psoxide-gate run tests/journeys/e1-chain.toml
 ```
 
 The bot's route files are `tools/journey-bot/routes/*.txt` (waypoints in cooked units,

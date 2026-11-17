@@ -1,0 +1,199 @@
+# Quake's test description for psoxide-test (the SDK's harness, tools/psoxide-test).
+# It declares what to build and check; the harness decides how. Baseline: psoxide-test.baseline.toml.
+#
+# Quake build driver (host/quake-build) refuses a shipping build that sees CARGO_BUILD_* and other
+# output-affecting variables (only the sccache RUSTC_WRAPPER is allowed), and the harness always sets CARGO_BUILD_JOBS, so every driver command is run
+# through `env -u CARGO_BUILD_JOBS` (harness-core/REQUESTS.md: "a build declares the environment it must not see").
+# The older regression commands need QUAKE_PSX_FRONTEND (the PSoXide frontend) in the environment
+# the harness is started from (REQUESTS.md: a `{tool:frontend}` placeholder in env).
+schema = 1
+name = "Quake"
+repository = "EBonura/quake-psx"
+
+# The shipping disc (dist/) and its link map. `ship-boot` rebuilds the release configuration with
+# a link map and boots it on the frontend: it is the old `ram` check (heap cursor inside the
+# linked heap after a headless boot), and it is where size and free RAM are read.
+[[build]]
+name = "ship"
+out = "build/ship"
+commands = [
+  ["cargo", "run", "--locked", "--manifest-path", "psoxide-pin/Cargo.toml"],
+  ["env", "-u", "CARGO_BUILD_JOBS", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "build"],
+  ["env", "-u", "CARGO_BUILD_JOBS", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ship-boot"],
+]
+collect = { "quake-psx.bin" = "dist/quake-psx.bin", "quake-psx.cue" = "dist/quake-psx.cue", "quake-psx.exe" = "dist/quake-psx.exe", "link.map" = "build-psoxide-ship-boot/quake-psx.map" }
+disc = "quake-psx.cue"
+map = "link.map"
+
+# The journey disc: the game at the fixed 30 Hz step plus the read-only state block
+# (JOURNEY_STATE). The chain journey and the cross-emulator smoke play it.
+[[build]]
+name = "journey"
+out = "build/journey"
+commands = [
+  ["env", "-u", "CARGO_BUILD_JOBS", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "journey-build"],
+]
+collect = { "quake-psx.bin" = "build-psoxide-journey/quake-psx.bin", "quake-psx.cue" = "build-psoxide-journey/quake-psx.cue", "quake-psx.exe" = "build-psoxide-journey/quake-psx.exe", "quake-psx.map" = "build-psoxide-journey/quake-psx.map" }
+disc = "quake-psx.cue"
+map = "quake-psx.map"
+
+[size]
+build = "ship"
+
+[journeys]
+files = "tests/journeys/*.toml"
+precheck = ["smoke-boot-play"]
+
+[cross]
+smoke = ["tests/journeys/smoke-boot-play.toml"]
+
+[[host]]
+name = "map-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "map-regress"]
+
+[[host]]
+name = "start-route-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "start-route-regress"]
+
+[[host]]
+name = "e1m1-chain-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-chain-regress"]
+
+[[host]]
+name = "e1m1-spawn-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-spawn-regress"]
+
+[[host]]
+name = "e1m1-save-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-save-regress"]
+
+[[host]]
+name = "visual-parity-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "visual-parity-regress"]
+
+[[host]]
+name = "e1m1-chain-bench@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-chain-bench"]
+
+[[host]]
+name = "survival-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "survival-regress"]
+
+[[host]]
+name = "combat-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "combat-regress"]
+
+[[host]]
+name = "episode1-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "episode1-regress"]
+
+[[host]]
+name = "audio-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "audio-regress"]
+
+[[host]]
+name = "ambient-regress@real"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=real", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ambient-regress"]
+
+[[host]]
+name = "map-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "map-regress"]
+
+[[host]]
+name = "start-route-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "start-route-regress"]
+
+[[host]]
+name = "e1m1-chain-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-chain-regress"]
+
+[[host]]
+name = "e1m1-spawn-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-spawn-regress"]
+
+[[host]]
+name = "e1m1-save-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-save-regress"]
+
+[[host]]
+name = "visual-parity-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "visual-parity-regress"]
+
+[[host]]
+name = "e1m1-chain-bench@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-chain-bench"]
+
+[[host]]
+name = "survival-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "survival-regress"]
+
+[[host]]
+name = "combat-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "combat-regress"]
+
+[[host]]
+name = "episode1-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "episode1-regress"]
+
+[[host]]
+name = "audio-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "audio-regress"]
+
+[[host]]
+name = "ambient-regress@mister"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ambient-regress"]
+
+[[host]]
+name = "map-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "map-regress"]
+
+[[host]]
+name = "start-route-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "start-route-regress"]
+
+[[host]]
+name = "e1m1-chain-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-chain-regress"]
+
+[[host]]
+name = "e1m1-spawn-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-spawn-regress"]
+
+[[host]]
+name = "e1m1-save-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-save-regress"]
+
+[[host]]
+name = "visual-parity-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "visual-parity-regress"]
+
+[[host]]
+name = "e1m1-chain-bench@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "e1m1-chain-bench"]
+
+[[host]]
+name = "survival-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "survival-regress"]
+
+[[host]]
+name = "combat-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "combat-regress"]
+
+[[host]]
+name = "episode1-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "episode1-regress"]
+
+[[host]]
+name = "audio-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "audio-regress"]
+
+[[host]]
+name = "ambient-regress@mister,gpu-irq=never"
+command = ["env", "-u", "CARGO_BUILD_JOBS", "PSOXIDE_HARDWARE=mister,gpu-irq=never", "cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ambient-regress"]
+
+[clean]
+build = "ship"
+compare = ["quake-psx.bin", "quake-psx.cue", "quake-psx.exe"]
+
+[install]
+build = "ship"
