@@ -49,13 +49,13 @@ path = "../../tests/pusher_atomicity.rs"
 # The hydration helper and the guest SDK resolve from the same published
 # revision. The build verifies this lockfile source before copying any SDK
 # inputs into the content-addressed guest stage.
-psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "f2a78b4d413fa6c49193226c7433b9fe328c6349" }
+psoxide-link = { git = "https://github.com/EBonura/PSoXide.git", rev = "3779d464513f2342d86bb7343e7891d389cb958b" }
 quake-cook = { path = "../../crates/quake-cook" }
 quake-core = { path = "../../crates/quake-core" }
 quake-formats = { path = "../../crates/quake-formats" }
 # The games-library install, shared by every game. A host-only crate, so it is pinned
 # on its own revision and does not move the guest SDK (psoxide-link above).
-psx-library = { git = "https://github.com/EBonura/PSoXide.git", rev = "f2a78b4d413fa6c49193226c7433b9fe328c6349" }
+psx-library = { git = "https://github.com/EBonura/PSoXide.git", rev = "3779d464513f2342d86bb7343e7891d389cb958b" }
 sha2 = "0.10"
 # The controller policy tests (tests/input_policy.rs) compile the guest's input_policy.rs,
 # which folds the stick and tracks edges with the SDK's psx-pad.
