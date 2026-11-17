@@ -213,6 +213,10 @@ impl Music {
             u32::from(self.fade),
         );
         self.silence();
+        // The level load drives the CD controller next: wait for the Pause.
+        if let Some(player) = self.player.as_mut() {
+            player.stop_and_wait();
+        }
     }
 
     /// Start the schedule over after a level load. A new map is where the
@@ -232,6 +236,10 @@ impl Music {
     #[optimize(size)]
     #[inline(never)]
     pub fn update(&mut self, tick: u32) {
+        // A stop sends its Pause and returns; one look a tick completes it.
+        if let Some(player) = self.player.as_mut() {
+            player.poll_stop();
+        }
         if !self.available || !self.enabled {
             return;
         }
