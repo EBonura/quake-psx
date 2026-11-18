@@ -20,7 +20,7 @@ op = "nonzero"
 [[step]]
 label = "pad tape to e1m1"
 sync = "poll"
-tape = "e1-chain/tapes/seg-00-to-e1m1.pxtape"
+tape = "journeys/e1-chain/tapes/seg-00-to-e1m1.pxtape"
 tape_rebase = true
 timeout = 4728
 
@@ -170,7 +170,7 @@ note = "secrets total"
 [[step]]
 label = "pad tape to e1m2"
 sync = "poll"
-tape = "e1-chain/tapes/seg-01-to-e1m2.pxtape"
+tape = "journeys/e1-chain/tapes/seg-01-to-e1m2.pxtape"
 tape_rebase = true
 timeout = 12136
 
@@ -320,7 +320,7 @@ note = "secrets total"
 [[step]]
 label = "pad tape to e1m3"
 sync = "poll"
-tape = "e1-chain/tapes/seg-02-to-e1m3.pxtape"
+tape = "journeys/e1-chain/tapes/seg-02-to-e1m3.pxtape"
 tape_rebase = true
 timeout = 22908
 

@@ -41,11 +41,11 @@ map = "quake-psx.map"
 build = "ship"
 
 [journeys]
-files = "tests/journeys/*.toml"
+files = "tests/*.toml"
 precheck = ["smoke-boot-play"]
 
 [cross]
-smoke = ["tests/journeys/smoke-boot-play.toml"]
+smoke = ["tests/smoke-boot-play.toml"]
 
 [[host]]
 name = "map-regress@real"
