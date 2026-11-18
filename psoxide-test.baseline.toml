@@ -1,0 +1,21 @@
+# Written by `psoxide-test bless`; edit only by blessing again (decision 4: a bar changes by editing
+# psoxide-test.toml with a reason, never by hand-editing these numbers).
+schema = 1
+blessed_commit = "b87b9e99b91dc138d67c91ccb4c31b78eb92819e"
+sdk_pin = "aaf06b0ffa5d3fbf0868e7e6c40f4f3999d695f6"
+
+[size]
+text = 497260
+data = 35320
+bss = 299596
+free = 1145924
+
+[speed]
+
+[journeys.e1-chain]
+ticks = 17938
+open_loop = 0
+
+[journeys.smoke-boot-play]
+ticks = 1505
+open_loop = 0
