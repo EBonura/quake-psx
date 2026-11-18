@@ -42,6 +42,18 @@ map = "quake-psx.map"
 [[size]]
 build = "ship"
 
+# The Start hall walk of the recorded chain: from the first frames of play (the game's published frame
+# counter passes 100, after the menu) to the E1M1 load (map 1). Plays the journey disc (fixed 30 Hz step)
+# with the chain's first tape.
+[[speed]]
+name = "start-hall-walk"
+build = "journey"
+tape = "tests/journeys/e1-chain/tapes/seg-00-to-e1m1.pxtape"
+from = { kind = "ram", sym = "JOURNEY_STATE", offset = 12, size = 4, op = "ge", value = 100 }
+until = { kind = "ram", sym = "JOURNEY_STATE", offset = 16, size = 4, op = "eq", value = 1 }
+max_polls = 4800
+offsets = [-48, -36, -24, -12, 0, 12, 24, 36]
+
 [journeys]
 files = "tests/*.toml"
 precheck = ["smoke-boot-play"]
