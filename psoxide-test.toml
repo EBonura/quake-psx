@@ -66,6 +66,7 @@ smoke = ["tests/smoke-boot-play.toml"]
 # is 8192).
 [[host]]
 name = "heap-free"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ship-boot"]
@@ -73,6 +74,7 @@ metric = { key = "heap_free", better = "higher", min = 8192 }
 
 [[host]]
 name = "map-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -80,6 +82,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "start-route-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -87,6 +90,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "e1m1-chain-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -94,6 +98,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "e1m1-spawn-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -101,6 +106,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "e1m1-save-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -108,6 +114,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "visual-parity-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -115,6 +122,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "e1m1-chain-bench"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -125,6 +133,7 @@ metric = { key = "full_level_elapsed_bus_cycles", better = "lower", tolerance = 
 
 [[host]]
 name = "survival-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -132,6 +141,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "combat-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -139,6 +149,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "episode1-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -146,6 +157,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "audio-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -153,6 +165,7 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 
 [[host]]
 name = "ambient-regress"
+exclusive = "quake-target"
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
