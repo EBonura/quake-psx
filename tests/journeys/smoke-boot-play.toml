@@ -1,0 +1,83 @@
+# Cross-emulator smoke (psoxide-test [cross]): the journey disc (the shipping game at the fixed
+# 30 Hz step plus the read-only state block JOURNEY_STATE, game/src/journey.rs) boots to the
+# menu, a press starts the game (the Start hall loads and the menu closes), the d-pad moves the
+# player, and the published frame counter keeps counting (a stall would stop it). Closed loop:
+# every press is held until the game's own state says it took. Buttons only, so the same file
+# runs on PSoXide (the gate), PCSX-ReARMed and PCSX-Redux.
+# JOURNEY_STATE words: +8 publish sequence, +12 frame, +16 map (0 = Start), +20 mode (1 = menu
+# open), +36 origin y (the Start hall spawn is 1179648), +76 health.
+name = "quake-smoke"
+title = "Quake smoke: menu, new game loads the Start hall, input moves the player, frames count"
+disc = ["build/journey/quake-psx.cue"]
+symbols = ["build/journey/quake-psx.map"]
+pad = "dualshock"
+max_ticks = 60000
+
+[[step]]
+label = "the game published its first frame"
+wait_until = { kind = "ram", sym = "JOURNEY_STATE", offset = 8, size = 4, op = "nonzero" }
+timeout = 4000
+
+[[step]]
+checkpoint = "menu"
+golden = false
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 20
+size = 4
+op = "eq"
+value = 1
+
+[[step]]
+label = "new game"
+press = ["cross"]
+hold_until = { kind = "ram", sym = "JOURNEY_STATE", offset = 20, size = 4, op = "eq", value = 0 }
+timeout = 600
+
+[[step]]
+checkpoint = "loaded"
+golden = false
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 16
+size = 4
+op = "eq"
+value = 0
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 76
+size = 4
+op = "eq"
+value = 100
+
+[[step]]
+label = "walk forward until the player has left the spawn"
+press = ["up"]
+hold_until = { kind = "ram", sym = "JOURNEY_STATE", offset = 36, size = 4, op = "ne", value = 1179648 }
+timeout = 600
+
+[[step]]
+label = "the frame counter keeps counting"
+wait_until = { kind = "ram", sym = "JOURNEY_STATE", offset = 12, size = 4, op = "ge", value = 300 }
+timeout = 1200
+
+[[step]]
+checkpoint = "in-play"
+golden = false
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 12
+size = 4
+op = "ge"
+value = 300
+[[step.assert]]
+kind = "ram"
+sym = "JOURNEY_STATE"
+offset = 20
+size = 4
+op = "eq"
+value = 0
