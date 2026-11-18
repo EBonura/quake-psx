@@ -62,11 +62,17 @@ precheck = ["smoke-boot-play"]
 [cross]
 smoke = ["tests/smoke-boot-play.toml"]
 
+# Every host check is keyed on what quake-build reads (`inputs`, `uses`): the game, its crates
+# and data, the driver itself (which names the SDK revision, so a pin move runs them again), the
+# hydrated SDK's guest sources and the frontend. A journey, test or doc edit does not run them.
+
 # The old `ram` check, kept as a number: free heap after the shipping boot (the driver's own floor
 # is 8192).
 [[host]]
 name = "heap-free"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ship-boot"]
@@ -75,6 +81,8 @@ metric = { key = "heap_free", better = "higher", min = 8192 }
 [[host]]
 name = "map-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -83,6 +91,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "start-route-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -91,6 +101,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "e1m1-chain-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -99,6 +111,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "e1m1-spawn-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -107,6 +121,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "e1m1-save-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -115,6 +131,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "visual-parity-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -123,6 +141,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "e1m1-chain-bench"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -134,6 +154,8 @@ metric = { key = "full_level_elapsed_bus_cycles", better = "lower", tolerance = 
 [[host]]
 name = "survival-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -142,6 +164,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "combat-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -150,6 +174,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "episode1-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -158,6 +184,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "audio-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
@@ -166,6 +194,8 @@ command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/qua
 [[host]]
 name = "ambient-regress"
 exclusive = "quake-target"
+inputs = ["game/", "crates/", "host/", "id1psx/", "assets/", "tools/", "release/", "psoxide-pin/", ".cargo/", "Cargo.toml", "Cargo.lock", "components.lock.json", "rust-toolchain.toml", "psx-gate.toml"]
+uses = ["sdk", "frontend"]
 env_remove = ["CARGO_BUILD_JOBS"]
 env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
