@@ -177,3 +177,4 @@ compare = ["quake-psx.bin", "quake-psx.cue", "quake-psx.exe"]
 
 [[install]]
 build = "ship"
+name = "Quake (quake-psx)"
