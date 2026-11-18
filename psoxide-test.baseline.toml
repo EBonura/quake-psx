@@ -1,7 +1,7 @@
 # Written by `psoxide-test bless`; edit only by blessing again (decision 4: a bar changes by editing
 # psoxide-test.toml with a reason, never by hand-editing these numbers).
 schema = 1
-blessed_commit = "6568e941b58b0fcf992a7fc3a4cfece5b8c6be61"
+blessed_commit = "83113e86aa0963b79b1152d008c57ba6be400a6f"
 sdk_pin = "aaf06b0ffa5d3fbf0868e7e6c40f4f3999d695f6"
 
 [size.ship]
@@ -10,7 +10,12 @@ data = 35320
 bss = 299596
 free = 1145924
 
-[speed]
+[speed.start-hall-walk]
+offsets = [-48, -36, -24, -12, 0, 12, 24, 36]
+flips = [114, 114, 114, 115, 114, 108, 95, 84]
+work_per_frame = [1248926, 1166205, 1108645, 1080068, 1067522, 1065347, 1067924, 1064372]
+frame_work_p99 = [2812800, 2812061, 2241384, 1142483, 1142483, 1142483, 2812799, 2812800]
+vblanks = ["2:94,3:13,4:2,5:3,6:1", "2:105,3:5,4:1,5:2", "2:110,3:1,4:1,5:1", "2:113,5:1", "2:112,5:1", "2:106,5:1", "2:93,5:1", "2:82,5:1"]
 
 [journeys.e1-chain]
 ticks = 17938
@@ -25,3 +30,6 @@ open_loop = 0
 "e1m1-chain-bench@mister,gpu-irq=never" = 1936497727
 "e1m1-chain-bench@real" = 1934212533
 heap-free = 43540
+
+[maps]
+ship = "d8f6a19f59ed83a90d628fef7e98667644dd055052c5105a7b7a2ad445c24e0e"
