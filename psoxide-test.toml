@@ -39,26 +39,12 @@ collect = { "quake-psx.bin" = "build-psoxide-journey/quake-psx.bin", "quake-psx.
 disc = "quake-psx.cue"
 map = "quake-psx.map"
 
-# The journey disc with the shipping game's own variable step: its tape replays exactly only on
-# the real model.
-[[build]]
-name = "journey-shipping"
-out = "build/journey-shipping"
-env_remove = ["CARGO_BUILD_JOBS"]
-commands = [
-  ["cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "journey-build-shipping"],
-]
-collect = { "quake-psx.bin" = "build-psoxide-journey-shipping/quake-psx.bin", "quake-psx.cue" = "build-psoxide-journey-shipping/quake-psx.cue", "quake-psx.exe" = "build-psoxide-journey-shipping/quake-psx.exe", "quake-psx.map" = "build-psoxide-journey-shipping/quake-psx.map" }
-disc = "quake-psx.cue"
-map = "quake-psx.map"
-
 [[size]]
 build = "ship"
 
 [journeys]
 files = "tests/*.toml"
 precheck = ["smoke-boot-play"]
-only_on = { e1-shipping = { models = ["real"], reason = "the shipping game's variable step: the recorded tape replays exactly only on the hardware model it was recorded on" } }
 
 [cross]
 smoke = ["tests/smoke-boot-play.toml"]
