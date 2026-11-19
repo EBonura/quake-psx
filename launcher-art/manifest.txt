@@ -3,3 +3,4 @@
 id quake
 front quake-gameplay.png
 back quake-gameplay.png quake-menu.png
+shots quake-menu.png quake-gameplay.png
