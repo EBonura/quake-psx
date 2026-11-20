@@ -577,6 +577,9 @@ fn main() {
         "brushes" => dump_brushes(&scene),
         "probe" => probe_slice(&scene, &args),
         "contents" => contents_slice(&scene, &args),
+        "vslice" => vertical_slice(&scene, &args),
+        "swim" => swim_path(&scene, &args),
+        "swimreach" => swim_reach(&scene, &args),
         "floors" => floor_slice(&scene, &args),
         "trace" => trace_segment(&scene, &args),
         "path" => find_path(&scene, &args),
@@ -723,6 +726,251 @@ fn dump_solids(scene: &Scene) {
 /// `probe x0 x1 y0 y1 z [step]`: `#` world solid, `L`/`S`/`~` lava, slime and
 /// water, a letter for a brush entity, `.` free, all in hull 1 at the given
 /// height.
+/// `vslice <axis> <fixed> <a0> <a1> <z0> <z1> [step]`: a vertical slice of what stands at a point
+/// (`#` world solid, `~` water, `D`/`W`/`X` a brush model, `.` empty), top row first. `axis` is `x`
+/// (the plane `x = fixed`, columns run along y) or `y` (the plane `y = fixed`, columns run along x).
+fn vertical_slice(scene: &Scene, args: &[String]) {
+    let value = |index: usize, default: i32| -> i32 {
+        args.get(index)
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(default)
+    };
+    let along_y = args.get(3).map(String::as_str) == Some("x");
+    let fixed = value(4, 0);
+    let (a0, a1) = (value(5, 0), value(6, 0));
+    let (z0, z1) = (value(7, 0), value(8, 0));
+    let step = value(9, 16).max(1);
+    let mut scratch = TraceScratch::default();
+    let mut z = z1;
+    while z >= z0 {
+        let mut line = String::new();
+        let mut a = a0;
+        while a <= a1 {
+            let (x, y) = if along_y { (fixed, a) } else { (a, fixed) };
+            let point = Vec3I32 {
+                x: x << 12,
+                y: y << 12,
+                z: z << 12,
+            };
+            line.push(point_glyph(scene, &point, &mut scratch));
+            a += step;
+        }
+        println!("z={z:6} {line}");
+        z -= step;
+    }
+}
+
+
+/// Whether a swimming player standing at `(x, y, z)` (feet) is in water at the feet: the
+/// condition the swim searches keep every node on.
+fn swim_node_ok(scene: &Scene, p: [i32; 3], scratch: &mut TraceScratch) -> bool {
+    let point = Vec3I32 {
+        x: p[0] << 12,
+        y: p[1] << 12,
+        z: p[2] << 12,
+    };
+    let trace = scene_trace(scene, point, point, scratch);
+    if trace.start_solid || trace.all_solid {
+        return false;
+    }
+    let feet = Vec3I32 {
+        x: p[0] << 12,
+        y: p[1] << 12,
+        z: (p[2] + 4) << 12,
+    };
+    point_contents(scene, feet) == quake_core::collision::CONTENTS_WATER
+}
+
+fn swim_edge_free(scene: &Scene, a: [i32; 3], b: [i32; 3], scratch: &mut TraceScratch) -> bool {
+    let from = Vec3I32 {
+        x: a[0] << 12,
+        y: a[1] << 12,
+        z: a[2] << 12,
+    };
+    let to = Vec3I32 {
+        x: b[0] << 12,
+        y: b[1] << 12,
+        z: b[2] << 12,
+    };
+    let trace = scene_trace(scene, from, to, scratch);
+    if std::env::var("ROUTESIM_VERBOSE").is_ok() {
+        eprintln!(
+            "edge {a:?}->{b:?} start_solid {} all_solid {} fraction {}",
+            trace.start_solid, trace.all_solid, trace.fraction
+        );
+    }
+    !(trace.start_solid || trace.all_solid) && trace.fraction >= quake_core::collision::Q12_ONE
+}
+
+/// Flood the water a swimmer can reach from `from` on a grid of `step` units, 26 neighbours,
+/// every node and edge checked against the player hull. Returns the parents map.
+fn swim_flood(
+    scene: &Scene,
+    from: [i32; 3],
+    goal: Option<[i32; 3]>,
+    step: i32,
+    scratch: &mut TraceScratch,
+) -> (
+    std::collections::HashMap<[i32; 3], Option<[i32; 3]>>,
+    Option<[i32; 3]>,
+) {
+    use std::collections::{HashMap, VecDeque};
+    let mut parents: HashMap<[i32; 3], Option<[i32; 3]>> = HashMap::new();
+    let mut queue = VecDeque::new();
+    parents.insert(from, None);
+    queue.push_back(from);
+    let mut hit = None;
+    while let Some(cur) = queue.pop_front() {
+        if let Some(g) = goal {
+            if (cur[0] - g[0]).abs() <= step
+                && (cur[1] - g[1]).abs() <= step
+                && (cur[2] - g[2]).abs() <= step
+            {
+                hit = Some(cur);
+                break;
+            }
+        }
+        if parents.len() > 600_000 {
+            break;
+        }
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if dx == 0 && dy == 0 && dz == 0 {
+                        continue;
+                    }
+                    let next = [cur[0] + dx * step, cur[1] + dy * step, cur[2] + dz * step];
+                    if parents.contains_key(&next) {
+                        continue;
+                    }
+                    let node_ok = swim_node_ok(scene, next, scratch);
+                    let edge_ok = node_ok && swim_edge_free(scene, cur, next, scratch);
+                    if std::env::var("ROUTESIM_VERBOSE").is_ok() && parents.len() < 3 {
+                        eprintln!("swim {cur:?} -> {next:?} node {node_ok} edge {edge_ok}");
+                    }
+                    if !node_ok || !edge_ok {
+                        continue;
+                    }
+                    parents.insert(next, Some(cur));
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    (parents, hit)
+}
+
+fn parse_triple(args: &[String], flag: &str) -> Option<[i32; 3]> {
+    let at = args.iter().position(|a| a == flag)?;
+    let n = |k: usize| args.get(at + k).and_then(|v| v.parse().ok());
+    Some([n(1)?, n(2)?, n(3)?])
+}
+
+/// `swim --from x y z --to x y z [--step n]`: a three dimensional swim route through water,
+/// as route lines (`x y z=Z swim`), shortened by line of sight.
+fn swim_path(scene: &Scene, args: &[String]) {
+    let from = parse_triple(args, "--from").expect("--from x y z");
+    let to = parse_triple(args, "--to").expect("--to x y z");
+    let step = args
+        .iter()
+        .position(|a| a == "--step")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+    let mut scratch = TraceScratch::default();
+    let (parents, hit) = swim_flood(scene, from, Some(to), step, &mut scratch);
+    let Some(end) = hit else {
+        println!("SWIM STUCK from {from:?} to {to:?} ({} nodes)", parents.len());
+        std::process::exit(1);
+    };
+    let mut nodes = vec![to];
+    let mut cur = Some(end);
+    while let Some(n) = cur {
+        nodes.push(n);
+        cur = parents[&n];
+    }
+    nodes.reverse();
+    // Shorten by line of sight (the swimmer holds a straight line between two free points).
+    let mut out = vec![nodes[0]];
+    let mut anchor = 0usize;
+    let mut i = 1usize;
+    while i < nodes.len() {
+        let mut far = i;
+        let mut j = i;
+        while j < nodes.len() && j <= anchor + 12 {
+            if swim_edge_free(scene, nodes[anchor], nodes[j], &mut scratch) {
+                far = j;
+            }
+            j += 1;
+        }
+        out.push(nodes[far]);
+        anchor = far;
+        i = far + 1;
+    }
+    println!("# swim path {from:?} -> {to:?}, {} grid nodes", nodes.len());
+    for n in out {
+        println!("{} {} z={} r=24 swim", n[0], n[1], n[2]);
+    }
+}
+
+/// `swimreach --from x y z [--step n]`: the water a swimmer reaches (bounding box and an
+/// ASCII top view of the highest reachable level per cell) and every dry standing place
+/// next to it that a swimmer can climb out onto (within a water jump of the water).
+fn swim_reach(scene: &Scene, args: &[String]) {
+    let from = parse_triple(args, "--from").expect("--from x y z");
+    let step = args
+        .iter()
+        .position(|a| a == "--step")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24);
+    let mut scratch = TraceScratch::default();
+    let (parents, _) = swim_flood(scene, from, None, step, &mut scratch);
+    println!("reachable water nodes: {}", parents.len());
+    let (mut lo, mut hi) = ([i32::MAX; 3], [i32::MIN; 3]);
+    for n in parents.keys() {
+        for k in 0..3 {
+            lo[k] = lo[k].min(n[k]);
+            hi[k] = hi[k].max(n[k]);
+        }
+    }
+    println!("bounds {lo:?} .. {hi:?}");
+    // Exits: a dry floor next to a water node, between the node and a water jump above it.
+    let mut exits: std::collections::BTreeMap<(i32, i32, i32), [i32; 3]> = Default::default();
+    for n in parents.keys() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (x, y) = (n[0] + dx * step, n[1] + dy * step);
+            let waist = Vec3I32 {
+                x: x << 12,
+                y: y << 12,
+                z: (n[2] + 4) << 12,
+            };
+            if point_contents(scene, waist) == quake_core::collision::CONTENTS_WATER {
+                continue;
+            }
+            if let Some(f) = floor_below(scene, x, y, n[2] + 70, 100, &mut scratch) {
+                let head = Vec3I32 {
+                    x: x << 12,
+                    y: y << 12,
+                    z: (f + 24) << 12,
+                };
+                if point_contents(scene, head) != quake_core::collision::CONTENTS_WATER
+                    && f >= n[2] - 8
+                    && f <= n[2] + 64
+                {
+                    exits
+                        .entry((x.div_euclid(48), y.div_euclid(48), f.div_euclid(32)))
+                        .or_insert([x, y, f]);
+                }
+            }
+        }
+    }
+    println!("exits ({}):", exits.len());
+    for e in exits.values() {
+        println!("  exit {} {} floor {}", e[0], e[1], e[2]);
+    }
+}
+
 fn probe_slice(scene: &Scene, args: &[String]) {
     let value = |index: usize, default: i32| -> i32 {
         args.get(index)

@@ -14,6 +14,8 @@ pub struct Wp {
     pub z: Option<i32>,
     pub radius: i32,
     pub jump: bool,
+    /// Swim to the point in three dimensions: look at it and hold jump only while it is higher.
+    pub swim: bool,
     /// Tap the use button while waiting here.
     pub use_btn: bool,
     /// A button reached by walking into it: skipped when its mover has already moved.
@@ -96,6 +98,8 @@ pub enum Item {
     /// Walk to the nearest health or armour pickup (dry path, no climb or drop) until health
     /// is at least `min`; carries on when there is none left to reach.
     Restock { min: i32 },
+    /// No automatic restock from here to the end of the phase (the next thing is worth more).
+    NoRestock,
     Go { x: i32, y: i32, z: Option<i32>, radius: i32, skip: Option<Cond>, plat: Option<u16> },
 }
 
@@ -124,6 +128,7 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                     until: until(&f),
                 }),
                 "use" => out.push(Item::UseAt { target: [num(1), num(2), num(3)], until: until(&f) }),
+                "norestock" => out.push(Item::NoRestock),
                 "restock" => out.push(Item::Restock {
                     min: f.iter().find_map(|t| t.strip_prefix("hp=")).map_or(90, |v| v.parse().unwrap()),
                 }),
@@ -146,6 +151,7 @@ pub fn parse_route(text: &str) -> Vec<Item> {
             z: None,
             radius: 20,
             jump: false,
+            swim: false,
             use_btn: false,
             touch: false,
             req: Vec::new(),
@@ -160,6 +166,8 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 w.radius = v.parse().unwrap();
             } else if *t == "jump" {
                 w.jump = true;
+            } else if *t == "swim" {
+                w.swim = true;
             } else if *t == "use" {
                 w.use_btn = true;
                 w.touch = true;
@@ -278,6 +286,7 @@ impl Planner {
                 z: None,
                 radius: if i == last { radius } else { 16 },
                 jump: false,
+                swim: false,
                 use_btn: false,
                 touch: false,
                 req: Vec::new(),
@@ -314,6 +323,7 @@ impl Planner {
                 z: None,
                 radius: 24,
                 jump: false,
+                swim: false,
                 use_btn: false,
                 touch: false,
                 req: Vec::new(),
@@ -359,6 +369,7 @@ pub struct Walker {
     since_best: u32,
     pub plan_note: Option<String>,
     last_cycle: u32,
+    pub no_restock: bool,
 }
 
 impl Walker {
@@ -380,6 +391,7 @@ impl Walker {
             since_best: 0,
             plan_note: None,
             last_cycle: 0,
+            no_restock: false,
         }
     }
 
@@ -427,6 +439,11 @@ impl Walker {
                         self.advance();
                         continue;
                     }
+                }
+                Item::NoRestock => {
+                    self.no_restock = true;
+                    self.advance();
+                    continue;
                 }
                 Item::Restock { min } => {
                     let min = *min;
@@ -497,7 +514,7 @@ impl Walker {
                         self.plan_note = Some(format!("go FAILED at {:?} -> ({},{})", p, x, y));
                     }
                     let mut fallback = path.take().unwrap_or_else(|| {
-                        vec![Wp { x, y, z: None, radius, jump: false, use_btn: false, touch: false, req: Vec::new(), slow: false, skip: None, group: None }]
+                        vec![Wp { x, y, z: None, radius, jump: false, swim: false, use_btn: false, touch: false, req: Vec::new(), slow: false, skip: None, group: None }]
                     });
                     if let Some(last) = fallback.last_mut() {
                         last.z = z;
@@ -536,7 +553,7 @@ impl Walker {
         }
         let w = match item {
             Item::Wp(w) => w,
-            Item::Go { .. } | Item::Restock { .. } => unreachable!("expanded above"),
+            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock => unreachable!("expanded above"),
             Item::Wait(_) => {
                 self.waiting = true;
                 return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });
@@ -582,7 +599,7 @@ impl Walker {
                 }
             }
         }
-        let z_ok = w.z.map_or(true, |z| (p[2] - z).abs() <= if o.water != 0 { 8 } else { 4 });
+        let z_ok = w.z.map_or(true, |z| (p[2] - z).abs() <= if w.swim { 20 } else if o.water != 0 { 8 } else { 4 });
         let satisfied = w.req.iter().all(|r| ctx.latched.contains(r));
         if d <= w.radius && z_ok {
             if satisfied {
@@ -599,7 +616,7 @@ impl Walker {
             });
         }
         self.waiting = false;
-        if d <= w.radius && !z_ok && w.z.is_some() {
+        if d <= w.radius && !z_ok && w.z.is_some() && !(w.swim && o.water != 0) {
             // Standing on the mark but at the wrong height (lift still moving): wait.
             return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });
         }
@@ -655,6 +672,19 @@ impl Walker {
         // Dunked: face the point, swim toward it holding jump to rise, and let the water
         // jump hop the ledge, as a person does.
         let in_liquid = o.water != 0;
+        if w.swim && in_liquid {
+            // A dive: aim straight at the point (x, y, z) and swim along the look direction.
+            let ez = w.z.unwrap_or(p[2]) - p[2];
+            let horiz = (d as f64).max(8.0);
+            let want = -((ez as f64).atan2(horiz) / std::f64::consts::TAU * 4096.0).round() as i32;
+            return Some(Command {
+                forward: if aligned < 300 { 127 } else { 0 },
+                strafe: 0,
+                yaw,
+                pitch: pitch_to(o, want),
+                buttons: 0,
+            });
+        }
         let pitch_want = if in_liquid {
             let up = w.z.map_or(false, |z| z > p[2] + 4);
             if up {

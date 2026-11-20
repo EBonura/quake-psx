@@ -27,6 +27,7 @@ const SEGMENTS: &[Segment] = &[
     Segment { map: 1, route: include_str!("../routes/e1m1.txt"), next_map: 2 },
     Segment { map: 2, route: include_str!("../routes/e1m2.txt"), next_map: 3 },
     Segment { map: 3, route: include_str!("../routes/e1m3.txt"), next_map: 4 },
+    Segment { map: 4, route: include_str!("../routes/e1m4.txt"), next_map: 5 },
 ];
 
 enum Phase {
@@ -438,6 +439,7 @@ impl Script for Journey {
                                 && o.grounded
                                 && o.water == 0
                                 && self.frame >= self.restock_after
+                                && !walker.no_restock
                                 && walker.at_plain_waypoint()
                             {
                                 self.restock_after = self.frame + 240;

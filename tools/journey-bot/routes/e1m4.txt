@@ -1,0 +1,25 @@
+# E1M4 (the Grisly Grotto) spawn to the E1M5 load.
+-256 2200 r=20                  # through the trigger plane of the first doors
+@wait until=latched:16          # the doors of the start hall open
+@go 250 1330 z=849 r=16         # the round pit, then the ramp down to the lake shore
+# The lake: dive under the stone building and come up inside it (planned by routesim swim).
+300 1300 z=830 r=24 swim
+396 1132 z=542 r=24 swim
+588 1036 z=350 r=24 swim
+700 1100 z=470 r=24 swim
+700 1130 z=500 r=16 swim
+700 1236 z=537 r=12             # out of the pit onto the ring floor
+700 1440 r=16                   # the tunnel with the Super Nailgun
+700 1500 r=16                   # the water gap in the tunnel: swim across at the surface
+700 1700 r=16
+700 1748 r=12                   # out on the ramp at the far side
+@go 716 2816 r=12               # the dry cave north to the foot of the lift
+700 2840 r=10                   # onto the lift deck at the bottom
+@wait until=zge:930             # it carries the player up to the high cave
+@go 1112 2500 r=16 plat=39      # across the high hall to the wall button
+@push 1112 2580 until=latched:72  # the button opens the west door of the hall
+@wait until=latched:35
+@norestock
+@go 704 1360 z=936 r=12 plat=39 # south along the straight path through the pentagram doors to the key
+704 1346 r=8                    # the silver key on its plinth
+@wait until=key:1
