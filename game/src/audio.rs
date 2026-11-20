@@ -119,6 +119,8 @@ pub enum AudioLoadError {
     DuplicateSound(i16),
     BadAddress,
     BankTooLarge,
+    /// The SPU upload failed; nothing from this sound bank is played.
+    Upload,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -860,7 +862,8 @@ fn load_versioned_bank(
         spu.upload_adpcm(
             SpuAddr::new(header.payload_base),
             &first_payload[..first_upload_bytes],
-        );
+        )
+        .map_err(|_| AudioLoadError::Upload)?;
     }
     let payload_source = offset
         .checked_add(payload_offset as u32)
@@ -877,7 +880,8 @@ fn load_versioned_bank(
         let already_hashed = hashed.saturating_sub(uploaded).min(byte_count);
         hash = sound_hash_extend(hash, &scratch[already_hashed..]);
         hashed = hashed.max(uploaded + byte_count);
-        spu.upload_adpcm(SpuAddr::new(header.payload_base + uploaded as u32), scratch);
+        spu.upload_adpcm(SpuAddr::new(header.payload_base + uploaded as u32), scratch)
+            .map_err(|_| AudioLoadError::Upload)?;
         uploaded += byte_count;
     }
     if uploaded != payload_len || hashed != payload_len || hash != header.content_hash {
