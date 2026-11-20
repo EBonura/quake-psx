@@ -1,37 +1,52 @@
 # Written by `psoxide-test bless`; edit only by blessing again (decision 4: a bar changes by editing
 # psoxide-test.toml with a reason, never by hand-editing these numbers).
 schema = 1
-blessed_commit = "6c587c6cebd00d19ffc4b4b28110f8466b9d98cd"
-sdk_pin = "0187c5f4fab876cbeaa9a99a37df305ccae1e4a3"
+blessed_commit = "a70b96e066b7fac225cc07852768760c06d74373"
+sdk_pin = "fce1f6855bc1c3e8336cc68be98a3df06ef9a967"
 
 [size.ship]
-text = 497260
+text = 498640
 data = 35320
-bss = 299596
-free = 1145924
+bss = 299604
+free = 1144540
 
 [speed.start-hall-walk]
 offsets = [-48, -36, -24, -12, 0, 12, 24, 36]
 flips = [44, 45, 45, 45, 45, 45, 45, 44]
-work_per_frame = [1093648, 1082138, 1076915, 1114395, 1133777, 1112848, 1089934, 1009085]
-frame_work_p99 = [1142474, 1142474, 1134047, 2812800, 2812801, 2812801, 2812800, 1142483]
+work_per_frame = [1083640, 1072598, 1067375, 1115104, 1133778, 1112985, 1090544, 1009611]
+frame_work_p99 = [1142475, 1142475, 1134409, 2811557, 2811559, 2811559, 2811559, 1142485]
 vblanks = ["2:43", "2:44", "2:44", "2:43,5:1", "2:43,5:1", "2:43,5:1", "2:43,5:1", "2:43"]
 
 [journeys.e1-chain]
-ticks = 17938
+ticks = 17929
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m1]
+ticks = 7230
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m2]
+ticks = 10915
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m3]
+ticks = 17432
 open_loop = 0
 clock_waits = 0
 
 [journeys.smoke-boot-play]
-ticks = 1505
+ticks = 1507
 open_loop = 0
 clock_waits = 0
 
 [host]
-"e1m1-chain-bench@mister" = 1934212533
-"e1m1-chain-bench@mister,gpu-irq=never" = 1936497727
-"e1m1-chain-bench@real" = 1934212533
-heap-free = 43540
+"e1m1-chain-bench@mister" = 1938211982
+"e1m1-chain-bench@mister,gpu-irq=never" = 1941068337
+"e1m1-chain-bench@real" = 1938211982
+heap-free = 42156
 
 [maps]
-ship = "d8f6a19f59ed83a90d628fef7e98667644dd055052c5105a7b7a2ad445c24e0e"
+ship = "c2c1e198ccbd3d22d32cf7e670c3d1a0fa79a6f85a447e1f1c84b879bfd85132"
