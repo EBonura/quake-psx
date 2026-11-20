@@ -135,6 +135,16 @@ impl Session {
         Ok(())
     }
 
+    /// Put a raw 128 KiB card image in slot 1, as the gate's `card_fixture` does at boot.
+    pub fn attach_card(&mut self, bytes: Vec<u8>) {
+        self.bus.attach_memcard_port1(bytes);
+    }
+
+    /// The card's bytes when the guest wrote to it.
+    pub fn card_snapshot(&mut self) -> Option<Vec<u8>> {
+        self.bus.memcard_port1_snapshot()
+    }
+
     pub fn polls(&self) -> u64 {
         self.bus.port1_completed_polls()
     }

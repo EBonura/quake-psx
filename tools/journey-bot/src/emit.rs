@@ -17,6 +17,8 @@ pub fn write_chain(
     samples: &[PadSample],
     boundaries: &[(String, usize, Obs)],
     finished: bool,
+    repo_name: Option<&str>,
+    card: Option<&(String, String)>,
 ) {
     let dir = out.join("tapes");
     std::fs::create_dir_all(&dir).unwrap();
@@ -27,9 +29,29 @@ pub fn write_chain(
     // Paths are relative to this file, which lives in tests/journeys/e1-chain: the state block is
     // found by name in the build's link map, so a guest change cannot move it out from under the
     // checks.
-    writeln!(toml, "disc = [\"../../../{build_dir}/quake-psx.cue\"]").unwrap();
-    writeln!(toml, "symbols = [\"../../../{build_dir}/quake-psx.map\"]").unwrap();
-    writeln!(toml, "pad = \"analog\"").unwrap();
+    // A repo-relative journey (`--repo-journey NAME`) is written to be copied to tests/NAME.toml:
+    // the gate takes repo-relative paths only from a journey directly under tests/.
+    let tape_prefix = match repo_name {
+        Some(n) => format!("tests/journeys/{n}/tapes"),
+        None => "tapes".to_string(),
+    };
+    if repo_name.is_some() {
+        writeln!(toml, "disc = [\"build/journey/quake-psx.cue\"]").unwrap();
+        writeln!(toml, "symbols = [\"build/journey/quake-psx.map\"]").unwrap();
+        writeln!(toml, "pad = \"dualshock\"").unwrap();
+    } else {
+        writeln!(toml, "disc = [\"../../../{build_dir}/quake-psx.cue\"]").unwrap();
+        writeln!(toml, "symbols = [\"../../../{build_dir}/quake-psx.map\"]").unwrap();
+        writeln!(toml, "pad = \"analog\"").unwrap();
+    }
+    if let Some((path, sha)) = card {
+        // The fixture is copied next to the tapes (`start.mcd`) by the install step.
+        let path = match repo_name {
+            Some(n) => format!("tests/journeys/{n}/start.mcd"),
+            None => path.clone(),
+        };
+        writeln!(toml, "card_fixture = {{ path = \"{path}\", sha256 = \"{sha}\" }}").unwrap();
+    }
     writeln!(toml, "max_ticks = 400000\n").unwrap();
     // The first tape starts where the recording did: on the poll before the game's first
     // published frame, not on a poll number that the boot, the splash and the loads before it move.
@@ -52,7 +74,7 @@ pub fn write_chain(
         }
         let name = format!("seg-{k:02}-to-{label}.pxtape");
         write_tape_poll_bound(&dir.join(&name), &samples[from..end], if k == 0 { start_poll } else { 0 }).unwrap();
-        writeln!(toml, "[[step]]\nlabel = \"pad tape to {label}\"\nsync = \"poll\"\ntape = \"tapes/{name}\"\ntape_rebase = true").unwrap();
+        writeln!(toml, "[[step]]\nlabel = \"pad tape to {label}\"\nsync = \"poll\"\ntape = \"{tape_prefix}/{name}\"\ntape_rebase = true").unwrap();
         writeln!(toml, "timeout = {}\n", (end - from) * 4 + 4000).unwrap();
         if let Some(o) = obs {
             writeln!(toml, "[[step]]\ncheckpoint = \"{label}-loaded\"\nsync = \"poll\"\ngolden = false").unwrap();

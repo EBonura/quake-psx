@@ -34,6 +34,10 @@ enum Phase {
     ToSkill(Walker),
     ToPortal(Walker),
     Map { seg: usize, walker: Walker },
+    /// Title menu: LOAD GAME, slot 1, from the memory card the run was started with.
+    LoadMenu { frames: u32, opened: u32, map: u32 },
+    /// Pause menu: SAVE GAME, slot 1, the first moments of the map the run saves at.
+    SaveSeq { frames: u32 },
     Done,
 }
 
@@ -47,6 +51,8 @@ pub struct Journey {
     world: Option<(u32, World)>,
     pub fighter: Fighter,
     latched: HashSet<u16>,
+    start_open: HashSet<u16>,
+    restock_after: u32,
     last_map: u32,
     skip_tick: u32,
     foraged: HashSet<(u32, u16)>,
@@ -54,6 +60,11 @@ pub struct Journey {
     pub last: String,
     pub failure: Option<String>,
     pub segment_ends: Vec<(u32, u32)>,
+    /// Save slot 1 through the pause menu when this map starts, then stop (`card_saved`).
+    pub save_at: Option<u32>,
+    pub card_saved: bool,
+    /// Stop when the first map's exit leads to the next (a per-map journey).
+    pub single: bool,
 }
 
 const TO_EASY: &str = "544 544\n336 768\n272 1200\n256 1328\n232 1352 r=28\n";
@@ -66,6 +77,32 @@ fn planner_for(routesim: &str, maps_dir: &str, map: u32) -> Option<Planner> {
         return None;
     }
     Some(Planner { last_dz: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
+}
+
+/// Cooked indices of the doors authored with spawnflag 1 (start open), read from the cooked map by
+/// the route simulator's `brushes` listing.
+fn start_open_doors(routesim: &str, maps_dir: &str, map: u32) -> HashSet<u16> {
+    let mut set = HashSet::new();
+    if routesim.is_empty() || map as usize >= MAP_NAMES.len() {
+        return set;
+    }
+    let psb = format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]);
+    let Ok(out) = std::process::Command::new(routesim).args([&psb, "brushes"]).output() else {
+        return set;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some(rest) = line.strip_prefix('#') else { continue };
+        let mut fields = rest.split_whitespace();
+        let index = fields.next().and_then(|v| v.parse::<u16>().ok());
+        let class = fields.next().and_then(|f| f.strip_prefix("class=0x"));
+        let flags = fields.next().and_then(|f| f.strip_prefix("flags=")).and_then(|v| v.parse::<u32>().ok());
+        if let (Some(index), Some("0c"), Some(flags)) = (index, class, flags) {
+            if flags & 1 != 0 {
+                set.insert(index);
+            }
+        }
+    }
+    set
 }
 
 impl Journey {
@@ -88,6 +125,8 @@ impl Journey {
             world: None,
             fighter: Fighter::new(),
             latched: HashSet::new(),
+            start_open: HashSet::new(),
+            restock_after: 0,
             last_map: 0,
             skip_tick: 0,
             foraged: HashSet::new(),
@@ -95,7 +134,25 @@ impl Journey {
             last: String::new(),
             failure: None,
             segment_ends: Vec::new(),
+            save_at: None,
+            card_saved: false,
+            single: false,
         }
+    }
+
+    /// Replace the route of the map being played (a resumed run that continues from the middle).
+    pub fn set_route(&mut self, text: &str) {
+        if let Phase::Map { walker, .. } = &mut self.phase {
+            *walker = Walker::new(parse_route(text));
+        }
+    }
+
+    /// Start from a memory card: load slot 1 from the title menu, then play map `map`.
+    pub fn loading(maps_dir: &str, map: u32) -> Self {
+        let mut j = Self::new(maps_dir);
+        assert!(SEGMENTS.iter().any(|s| s.map == map), "no route for map {map}");
+        j.phase = Phase::LoadMenu { frames: 0, opened: 0, map };
+        j
     }
 
     fn ensure_world(&mut self, map: u32) {
@@ -119,22 +176,27 @@ impl Script for Journey {
                 walker.route.len(),
                 if walker.waiting { " waiting" } else { "" },
                 self.fighter.target,
-                self.latched.len(),
+                { let mut v: Vec<_> = self.latched.iter().copied().collect(); v.sort(); format!("{v:?}") },
                 walker.replans,
                 walker.plan_note.clone().unwrap_or_default()
             ),
+            Phase::LoadMenu { frames, .. } => format!("load-menu {frames}"),
+            Phase::SaveSeq { frames } => format!("save-seq {frames}"),
             Phase::Done => "done".into(),
         }
     }
 
     fn step(&mut self, o: &Obs) -> Option<PadSample> {
         self.frame += 1;
-        if o.map != self.last_map {
+        if o.map != self.last_map || self.frame == 1 {
             self.latched.clear();
             self.last_map = o.map;
+            // A door authored with the start-open flag rests open and closes when triggered, so
+            // it is never "opened" by anyone (the planner would close it).
+            self.start_open = start_open_doors(&self.routesim, &self.maps_dir, o.map);
         }
         for m in &o.movers {
-            if m.state != 0 {
+            if m.state != 0 && !self.start_open.contains(&m.index) {
                 self.latched.insert(m.index);
             }
         }
@@ -153,7 +215,27 @@ impl Script for Journey {
             return None;
         }
         if o.mode & 4 != 0 && o.map != 0 {
-            self.failure = Some(format!("player died on map {} at {:?} frame {}", o.map, o.pos(), self.frame));
+            self.failure = Some(format!(
+                "player died on map {} at {:?} frame {} (health {} velocity {:?} mode {} water {})",
+                o.map,
+                o.pos(),
+                self.frame,
+                o.health,
+                o.velocity,
+                o.mode,
+                o.water
+            ));
+            for m in &o.movers {
+                eprintln!("  mover {} class {:#x} state {} disp {:?}", m.index, m.class, m.state, [m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12]);
+            }
+            let p = o.pos();
+            for m in o.monsters.iter().filter(|m| m.alive()) {
+                let (dx, dy) = ((m.origin[0] >> 12) - p[0], (m.origin[1] >> 12) - p[1]);
+                let d = ((dx * dx + dy * dy) as f64).sqrt() as i32;
+                if d < 1200 {
+                    eprintln!("  near: m{} kind{} state{} hp{} dist{} z{}", m.index, m.kind, m.state, m.health, d, m.origin[2] >> 12);
+                }
+            }
             return None;
         }
         // The end-of-level panel waits for a button after two seconds.
@@ -164,6 +246,11 @@ impl Script for Journey {
                 buttons: if press { button::CROSS } else { 0 },
                 ..Command::default()
             }));
+        }
+        if let Some(m) = self.save_at {
+            if o.map == m && o.mode & 1 == 0 && !self.card_saved && !matches!(self.phase, Phase::SaveSeq { .. }) {
+                self.phase = Phase::SaveSeq { frames: 0 };
+            }
         }
         if (1..=8).contains(&o.map) {
             self.ensure_world(o.map);
@@ -210,7 +297,7 @@ impl Script for Journey {
                 let s = &SEGMENTS[*seg];
                 if o.map == s.next_map {
                     self.segment_ends.push((s.map, self.frame));
-                    if *seg + 1 < SEGMENTS.len() {
+                    if !self.single && *seg + 1 < SEGMENTS.len() {
                         let mut walker = Walker::new(parse_route(SEGMENTS[*seg + 1].route));
                         walker.planner = planner_for(&self.routesim, &self.maps_dir, SEGMENTS[*seg + 1].map);
                         next_phase = Some(Phase::Map { seg: *seg + 1, walker });
@@ -258,12 +345,60 @@ impl Script for Journey {
                                     walker.detour(p, [q[0], q[1]], &opened);
                                 }
                             }
+                            // Hurt and not fighting: a player walks to the nearest health box.
+                            if o.health < 50
+                                && o.grounded
+                                && o.water == 0
+                                && self.frame >= self.restock_after
+                                && walker.at_plain_waypoint()
+                            {
+                                self.restock_after = self.frame + 240;
+                                walker.route.insert(walker.next, Item::Restock { min: 80 });
+                            }
                             let c = walker.step(o, &ctx).unwrap_or_default();
                             self.last = format!("WALK wp{} {} f{} s{} y{} b{:x}", walker.next, walker.cur(), c.forward, c.strafe, c.yaw, c.buttons);
                             c
                         }
                     }
                 }
+            }
+            Phase::LoadMenu { frames, opened, map } => {
+                *frames += 1;
+                if o.map == *map && o.mode & 1 == 0 {
+                    let seg = SEGMENTS.iter().position(|s| s.map == *map).expect("route");
+                    let mut walker = Walker::new(parse_route(SEGMENTS[seg].route));
+                    walker.planner = planner_for(&self.routesim, &self.maps_dir, *map);
+                    next_phase = Some(Phase::Map { seg, walker });
+                    Command::default()
+                } else if *frames > 900 {
+                    self.failure = Some(format!("the card did not load map {map} (map {} mode {})", o.map, o.mode));
+                    return None;
+                } else {
+                    let mut buttons = 0;
+                    if o.mode & 1 != 0 {
+                        *opened += 1;
+                        buttons = match *opened {
+                            10..=12 | 22..=24 => button::DOWN,
+                            34..=36 | 50..=52 => button::CROSS,
+                            _ => 0,
+                        };
+                    }
+                    Command { buttons, ..Command::default() }
+                }
+            }
+            Phase::SaveSeq { frames } => {
+                *frames += 1;
+                if *frames >= 300 {
+                    self.card_saved = true;
+                    return None;
+                }
+                let buttons = match *frames {
+                    15..=17 => button::START,
+                    30..=32 | 42..=44 | 54..=56 => button::DOWN,
+                    66..=68 | 80..=82 => button::CROSS,
+                    _ => 0,
+                };
+                Command { buttons, ..Command::default() }
             }
             Phase::Done => return None,
         };

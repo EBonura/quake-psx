@@ -201,7 +201,21 @@ impl Fighter {
             (0, 127 * self.strafe_sign)
         };
         let _ = wrap_q12(0);
-        let (forward, strafe) = Self::keep_footing(o, world, forward, strafe);
+        let (forward, strafe) = {
+            let wanted = (forward, strafe);
+            let kept = Self::keep_footing(o, world, forward, strafe);
+            if kept == (0, 0) && wanted != (0, 0) {
+                // A ledge on the intended side: a player keeps moving the other way rather
+                // than standing still where grenades land.
+                [(forward, -strafe), (-forward, strafe), (0, -127), (0, 127), (-127, 0)]
+                    .into_iter()
+                    .map(|(f, s)| Self::keep_footing(o, world, f, s))
+                    .find(|&c| c != (0, 0))
+                    .unwrap_or(kept)
+            } else {
+                kept
+            }
+        };
         Some(Command {
             forward,
             strafe,

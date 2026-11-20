@@ -158,6 +158,14 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut cut_every = 0u32;
     let mut journey_name = String::from("quake-e1-chain");
     let mut build_dir = String::from("build-psoxide-journey");
+    let mut card_in: Option<PathBuf> = None;
+    let mut card_out: Option<PathBuf> = None;
+    let mut card_at: Option<u32> = None;
+    let mut load_map: Option<u32> = None;
+    let mut single = false;
+    let mut route_file: Option<String> = None;
+    let mut save_frames: Vec<u32> = Vec::new();
+    let mut repo_name: Option<String> = None;
     let mut i = 0;
     while i < args.rest.len() {
         match args.rest[i].as_str() {
@@ -173,14 +181,36 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--cut-every" => { cut_every = args.rest[i + 1].parse().unwrap(); i += 2; }
             "--journey-name" => { journey_name = args.rest[i + 1].clone(); i += 2; }
             "--build-dir" => { build_dir = args.rest[i + 1].clone(); i += 2; }
+            "--card-in" => { card_in = Some(PathBuf::from(&args.rest[i + 1])); i += 2; }
+            "--card-out" => { card_out = Some(PathBuf::from(&args.rest[i + 1])); i += 2; }
+            "--card-at" => { card_at = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
+            "--load-map" => { load_map = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
+            "--single" => { single = true; i += 1; }
+            "--route-file" => { route_file = Some(args.rest[i + 1].clone()); i += 2; }
+            "--save-frame" => { save_frames.push(args.rest[i + 1].parse().unwrap()); i += 2; }
+            "--repo-journey" => { repo_name = Some(args.rest[i + 1].clone()); i += 2; }
             other => panic!("play arg {other}"),
         }
     }
-    let mut journey = match &resume {
-        Some((_, map)) => script::Journey::resumed(&maps, *map),
-        None => script::Journey::new(&maps),
+    let mut journey = match (&resume, load_map) {
+        (Some((_, map)), _) => script::Journey::resumed(&maps, *map),
+        (None, Some(map)) => script::Journey::loading(&maps, map),
+        (None, None) => script::Journey::new(&maps),
     };
     journey.routesim = routesim;
+    if let Some(f) = &route_file {
+        journey.set_route(&std::fs::read_to_string(f).expect("--route-file"));
+    }
+    journey.save_at = card_at;
+    journey.single = single;
+    let mut card_sha: Option<(String, String)> = None;
+    if let Some(path) = &card_in {
+        let bytes = std::fs::read(path).expect("--card-in");
+        let sha = std::process::Command::new("shasum").args(["-a", "256"]).arg(path).output().expect("shasum");
+        let sha = String::from_utf8_lossy(&sha.stdout).split_whitespace().next().unwrap_or("").to_string();
+        card_sha = Some((path.to_string_lossy().into_owned(), sha));
+        session.attach_card(bytes);
+    }
     journey.seed = seed;
     journey.fighter.seed = seed;
     let mut pending = false;
@@ -203,6 +233,11 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         }
         let o = read(session, addr);
         n += 1;
+        if save_frames.contains(&n) {
+            let path = args.out.join(format!("state-f{n}.psx"));
+            session.save(&path).expect("save state");
+            eprintln!("saved state {}", path.display());
+        }
         if save_at.contains(&o.map) && o.map != last_map && o.mode & 3 == 0 {
             let path = args.out.join(format!("state-map{}.psx", o.map));
             session.save(&path).expect("save state");
@@ -230,7 +265,12 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         }
         let step = journey.step(&o);
         let Some(sample) = step else {
-            if let Some(f) = &journey.failure { eprintln!("FAILED: {f}"); } else { finished = true; }
+            if let Some(f) = &journey.failure { eprintln!("FAILED: {f}"); for k in 0..6 {
+                let _ = session.screenshot(&args.out.join(format!("fail-{k}.png")));
+                if !session.run_to_publish(4000).unwrap_or(false) { break; }
+                let o = read(session, addr);
+                eprintln!("  after f{k}: hp {} pos {:?} vel {:?} mode {}", o.health, o.pos(), o.velocity, o.mode);
+            } } else { finished = true; }
             break;
         };
         session.set_pad(sample);
@@ -249,9 +289,12 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             let near: Vec<String> = o.monsters.iter().filter(|m| m.alive()).filter_map(|m| {
                 let (dx, dy) = ((m.origin[0] >> 12) - p[0], (m.origin[1] >> 12) - p[1]);
                 let d = ((dx * dx + dy * dy) as f64).sqrt() as i32;
-                (d < 500).then(|| format!("m{}k{}s{}hp{}@{}", m.index, m.kind, m.state, m.health, d))
+                (d < 1500).then(|| format!("m{}k{}s{}hp{}@{}", m.index, m.kind, m.state, m.health, d))
             }).collect();
             let mv: Vec<String> = o.movers.iter().filter(|m| m.state != 0 || m.class == 0x10).map(|m| format!("{}:{}@{},{},{}", m.index, m.state, m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12)).collect();
+            let pp = o.pos();
+            let nm: Vec<String> = o.movers.iter().filter(|m| { let (a, b) = ((m.origin[0] >> 12) - pp[0], (m.origin[1] >> 12) - pp[1]); a.abs() < 400 && b.abs() < 400 }).map(|m| format!("{}:c{}s{}@{},{},{}", m.index, m.class, m.state, m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12)).collect();
+            eprintln!("  NEARMOV {}", nm.join(" "));
             eprintln!("T f{n} [{}] pos{:?} vel{:?} g{} w{} hp{} wpn{} ammo{:?} own{:x} mon[{}] movers[{}]", journey.last, p, [o.velocity[0] >> 12, o.velocity[1] >> 12, o.velocity[2] >> 12], o.grounded as u8, o.water, o.health, o.weapon, o.ammo, o.weapons, near.join(" "), mv.join(" "));
         }
         if n % 30 == 0 {
@@ -268,7 +311,30 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     if let Some(start) = session.start_poll {
         write_tape_poll_bound(&args.out.join("play.pxtape"), &samples, start).unwrap();
         eprintln!("tape: {} samples from poll {start}; finished={finished}", samples.len());
-        emit::write_chain(&args.out, &journey_name, &build_dir, start, &samples, &boundaries, finished);
+        emit::write_chain(
+            &args.out,
+            &journey_name,
+            &build_dir,
+            start,
+            &samples,
+            &boundaries,
+            finished,
+            repo_name.as_deref(),
+            card_sha.as_ref(),
+        );
+    }
+    if let Some(path) = &card_out {
+        if journey.card_saved {
+            match session.card_snapshot() {
+                Some(bytes) => {
+                    std::fs::write(path, &bytes).expect("--card-out");
+                    eprintln!("card written: {} ({} bytes)", path.display(), bytes.len());
+                }
+                None => eprintln!("FAILED: the guest did not write the card"),
+            }
+        } else {
+            eprintln!("FAILED: the save sequence never ran (map {:?})", card_at);
+        }
     }
 }
 

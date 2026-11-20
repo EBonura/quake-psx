@@ -73,8 +73,9 @@
 1315 212 r=24
 1314 310 r=24
 1303 400 r=24
-1364 548 r=12
-@push 1360 432 until=zge:500        # the end lift
+1364 520 r=12
+@push 1360 600 until=latched:14      # touch the end button (a wall button on the y 565 face)
+@wait until=zge:500                  # the lift cage rises with the player standing in it
 1360 760
 1360 880
 1400 960
