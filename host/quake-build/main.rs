@@ -28,9 +28,9 @@ const SHAREWARE_URL: &str = "https://www.gamers.org/pub/idgames2/idstuff/quake/q
 const SHAREWARE_SHA256: &str = "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239";
 const PAK0_SHA256: &str = "35a9c55e5e5a284a159ad2a62e0e8def23d829561fe2f54eb402dbc0a9a946af";
 // PSoXide (SDK repository: sdk/, crates/ and engine/) revision required by the shipping provenance and remote-main guard.
-const PSOXIDE_REV: &str = "0187c5f4fab876cbeaa9a99a37df305ccae1e4a3";
+const PSOXIDE_REV: &str = "fce1f6855bc1c3e8336cc68be98a3df06ef9a967";
 // Keep this SDK revision in sync with psoxide-link in host/quake-build/Cargo.lock.
-const PSOXIDE_SDK_REV: &str = "0187c5f4fab876cbeaa9a99a37df305ccae1e4a3";
+const PSOXIDE_SDK_REV: &str = "fce1f6855bc1c3e8336cc68be98a3df06ef9a967";
 const PROVENANCE_FILE: &str = "quake-psx.provenance.json";
 /// The program's exceptions to the SDK's architecture gate.
 const GATE_FILE: &str = "psx-gate.toml";
