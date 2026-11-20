@@ -163,6 +163,8 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut card_at: Option<u32> = None;
     let mut load_map: Option<u32> = None;
     let mut single = false;
+    let mut cp_base: Option<(PathBuf, u32)> = None;
+    let mut cp_dir: Option<PathBuf> = None;
     let mut route_file: Option<String> = None;
     let mut save_frames: Vec<u32> = Vec::new();
     let mut repo_name: Option<String> = None;
@@ -186,6 +188,8 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--card-at" => { card_at = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--load-map" => { load_map = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--single" => { single = true; i += 1; }
+            "--cp" => { cp_base = Some((PathBuf::from(&args.rest[i + 1]), args.rest[i + 2].parse().unwrap())); i += 3; }
+            "--cp-dir" => { cp_dir = Some(PathBuf::from(&args.rest[i + 1])); i += 2; }
             "--route-file" => { route_file = Some(args.rest[i + 1].clone()); i += 2; }
             "--save-frame" => { save_frames.push(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--repo-journey" => { repo_name = Some(args.rest[i + 1].clone()); i += 2; }
@@ -209,20 +213,80 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         let sha = std::process::Command::new("shasum").args(["-a", "256"]).arg(path).output().expect("shasum");
         let sha = String::from_utf8_lossy(&sha.stdout).split_whitespace().next().unwrap_or("").to_string();
         card_sha = Some((path.to_string_lossy().into_owned(), sha));
-        session.attach_card(bytes);
+        if resume.is_none() {
+            session.attach_card(bytes);
+        }
     }
     journey.seed = seed;
     journey.fighter.seed = seed;
     let mut pending = false;
     let mut n = 0u32;
     let mut last_map = resume.as_ref().map_or(0, |(_, m)| *m);
-    if let Some((path, _)) = &resume {
+    // (label, exclusive end index in the tape, state seen at the frame that ended it)
+    let mut boundaries: Vec<(String, usize, Vec<(usize, u32, String)>)> = Vec::new();
+    if let Some((path, map)) = &cp_base {
+        // Continue from a checkpoint by replaying its tape from the card (see replay_prefix).
+        let bytes = std::fs::read(path.with_extension("tape")).expect("checkpoint tape");
+        let mut prefix = Vec::new();
+        for c in bytes[8..].chunks_exact(6) {
+            prefix.push(PadSample {
+                buttons: u16::from_le_bytes([c[0], c[1]]),
+                right_x: c[2],
+                right_y: c[3],
+                left_x: c[4],
+                left_y: c[5],
+            });
+        }
+        session.replay_prefix(&prefix).expect("replay the checkpoint tape");
+        pending = true;
+        eprintln!("replayed {} samples of {}", prefix.len(), path.display());
+        let text = std::fs::read_to_string(path.with_extension("jstate")).expect("checkpoint journey state");
+        journey.restore_state(&text, *map);
+        last_map = *map;
+        if let Ok(b) = std::fs::read_to_string(path.with_extension("bounds")) {
+            for line in b.lines() {
+                let mut f = line.splitn(3, '|');
+                let (Some(label), Some(index), Some(words)) = (f.next(), f.next(), f.next()) else { continue };
+                let words = words
+                    .split(';')
+                    .filter(|w| !w.is_empty())
+                    .map(|w| {
+                        let p: Vec<&str> = w.splitn(3, ':').collect();
+                        (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].to_string())
+                    })
+                    .collect();
+                boundaries.push((label.to_string(), index.parse().unwrap(), words));
+            }
+        }
+        journey.seed = seed;
+        journey.fighter.seed = seed;
+    }
+    if let Some((path, map)) = &resume {
         session.resume(path).expect("resume");
         pending = true;
         eprintln!("resumed from {}", path.display());
+        if let Ok(text) = std::fs::read_to_string(path.with_extension("jstate")) {
+            journey.restore_state(&text, *map);
+            // A checkpoint continues the recording: the segment cuts so far come with it.
+            if let Ok(b) = std::fs::read_to_string(path.with_extension("bounds")) {
+                for line in b.lines() {
+                    let mut f = line.splitn(3, '|');
+                    let (Some(label), Some(index), Some(words)) = (f.next(), f.next(), f.next()) else { continue };
+                    let words = words
+                        .split(';')
+                        .filter(|w| !w.is_empty())
+                        .map(|w| {
+                            let p: Vec<&str> = w.splitn(3, ':').collect();
+                            (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].to_string())
+                        })
+                        .collect();
+                    boundaries.push((label.to_string(), index.parse().unwrap(), words));
+                }
+            }
+            journey.seed = seed;
+            journey.fighter.seed = seed;
+        }
     }
-    // (label, exclusive end index in the tape, state seen at the frame that ended it)
-    let mut boundaries: Vec<(String, usize, Obs)> = Vec::new();
     let mut finished = false;
     while n < max_frames {
         if pending {
@@ -263,6 +327,18 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
                 .collect();
             eprintln!("PICKUPS map{} [{}]", o.map, list.join(" "));
         }
+        if let (Some(k), Some(dir)) = (journey.pending_checkpoint.take(), &cp_dir) {
+            let path = dir.join(format!("cp{k}.psx"));
+            session.save(&path).expect("checkpoint");
+            std::fs::write(path.with_extension("jstate"), journey.state_text()).unwrap();
+            let mut b = String::new();
+            for (label, index, words) in &boundaries {
+                let w: Vec<String> = words.iter().map(|(a, v, n)| format!("{a}:{v}:{n}")).collect();
+                b.push_str(&format!("{label}|{index}|{}\n", w.join(";")));
+            }
+            std::fs::write(path.with_extension("bounds"), b).unwrap();
+            eprintln!("CHECKPOINT {k} at frame {n} saved {}", path.display());
+        }
         let step = journey.step(&o);
         let Some(sample) = step else {
             if let Some(f) = &journey.failure { eprintln!("FAILED: {f}"); for k in 0..6 {
@@ -276,13 +352,13 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         session.set_pad(sample);
         if o.map != last_map {
             let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
-            boundaries.push((MAP_LABELS[o.map as usize].to_string(), index, o.clone()));
+            boundaries.push((MAP_LABELS[o.map as usize].to_string(), index, emit::words(&o)));
             last_map = o.map;
         } else if cut_every > 0 && n % cut_every == 0 {
             // A diagnostic cut: a checkpoint of the exact state every `cut_every` frames, to find the
             // first frame at which a replay leaves the recording.
             let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
-            boundaries.push((format!("f{n:05}"), index, o.clone()));
+            boundaries.push((format!("f{n:05}"), index, emit::words(&o)));
         }
         if n >= trace.0 && n <= trace.1 && n % trace_every == 0 {
             let p = o.pos();

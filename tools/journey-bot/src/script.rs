@@ -53,6 +53,11 @@ pub struct Journey {
     latched: HashSet<u16>,
     start_open: HashSet<u16>,
     restock_after: u32,
+    /// Route text of the phases still to come on this map (the route file is cut at `@checkpoint`
+    /// lines), the number of checkpoints passed, and a checkpoint reached this frame.
+    cp_phases: std::collections::VecDeque<String>,
+    pub cp_index: u32,
+    pub pending_checkpoint: Option<u32>,
     last_map: u32,
     skip_tick: u32,
     foraged: HashSet<(u32, u16)>,
@@ -77,6 +82,38 @@ fn planner_for(routesim: &str, maps_dir: &str, map: u32) -> Option<Planner> {
         return None;
     }
     Some(Planner { last_dz: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
+}
+
+/// The walker for the first phase of segment `seg`; the later phases wait in `cp_phases`.
+fn segment_walker(
+    routesim: &str,
+    maps_dir: &str,
+    seg: usize,
+    cp_phases: &mut std::collections::VecDeque<String>,
+    cp_index: &mut u32,
+) -> Walker {
+    let mut phases: std::collections::VecDeque<String> = route_phases(SEGMENTS[seg].route).into();
+    let first = phases.pop_front().unwrap_or_default();
+    *cp_phases = phases;
+    *cp_index = 0;
+    let mut walker = Walker::new(parse_route(&first));
+    walker.planner = planner_for(routesim, maps_dir, SEGMENTS[seg].map);
+    walker
+}
+
+/// The route text cut at `@checkpoint` lines.
+fn route_phases(text: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    for line in text.lines() {
+        if line.trim() == "@checkpoint" {
+            out.push(String::new());
+        } else {
+            let last = out.last_mut().unwrap();
+            last.push_str(line);
+            last.push('\n');
+        }
+    }
+    out
 }
 
 /// Cooked indices of the doors authored with spawnflag 1 (start open), read from the cooked map by
@@ -106,12 +143,52 @@ fn start_open_doors(routesim: &str, maps_dir: &str, map: u32) -> HashSet<u16> {
 }
 
 impl Journey {
+    /// Text of what a checkpoint file must carry besides the machine: the phase, the movers seen
+    /// open, the frame counter.
+    pub fn state_text(&self) -> String {
+        let mut latched: Vec<_> = self.latched.iter().copied().collect();
+        latched.sort_unstable();
+        format!(
+            "cp={}\nframe={}\nrestock_after={}\nlatched={}\n",
+            self.cp_index,
+            self.frame,
+            self.restock_after,
+            latched.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+        )
+    }
+
+    /// Continue the map `map` at the checkpoint a `state_text` describes.
+    pub fn restore_state(&mut self, text: &str, map: u32) {
+        let get = |k: &str| -> String {
+            text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").to_string()
+        };
+        let seg = SEGMENTS.iter().position(|s| s.map == map).expect("route");
+        let cp: usize = get("cp").parse().unwrap_or(0);
+        let mut phases: std::collections::VecDeque<String> = route_phases(SEGMENTS[seg].route).into();
+        for _ in 0..cp {
+            phases.pop_front();
+        }
+        let first = phases.pop_front().unwrap_or_default();
+        self.cp_phases = phases;
+        self.cp_index = cp as u32;
+        let mut walker = Walker::new(parse_route(&first));
+        walker.planner = planner_for(&self.routesim, &self.maps_dir, map);
+        self.phase = Phase::Map { seg, walker };
+        self.frame = get("frame").parse().unwrap_or(0);
+        self.restock_after = get("restock_after").parse().unwrap_or(0);
+        self.latched = get("latched").split(',').filter_map(|v| v.parse().ok()).collect();
+        self.last_map = map;
+        self.start_open = start_open_doors(&self.routesim, &self.maps_dir, map);
+        self.progress = (self.frame, 0, map);
+    }
+
     /// Continue on map `map` as if the journey had just arrived there.
     pub fn resumed(maps_dir: &str, map: u32) -> Self {
         let mut j = Self::new(maps_dir);
         let seg = SEGMENTS.iter().position(|s| s.map == map).expect("no route for that map");
         j.last_map = map;
-        j.phase = Phase::Map { seg, walker: Walker::new(parse_route(SEGMENTS[seg].route)) };
+        let walker = segment_walker("", maps_dir, seg, &mut j.cp_phases, &mut j.cp_index);
+        j.phase = Phase::Map { seg, walker };
         j
     }
 
@@ -127,6 +204,9 @@ impl Journey {
             latched: HashSet::new(),
             start_open: HashSet::new(),
             restock_after: 0,
+            cp_phases: Default::default(),
+            cp_index: 0,
+            pending_checkpoint: None,
             last_map: 0,
             skip_tick: 0,
             foraged: HashSet::new(),
@@ -285,8 +365,7 @@ impl Script for Journey {
             },
             Phase::ToPortal(w) => {
                 if o.map == 1 {
-                    let mut walker = Walker::new(parse_route(SEGMENTS[0].route));
-                    walker.planner = planner_for(&self.routesim, &self.maps_dir, 1);
+                    let walker = segment_walker(&self.routesim, &self.maps_dir, 0, &mut self.cp_phases, &mut self.cp_index);
                     next_phase = Some(Phase::Map { seg: 0, walker });
                     Command::default()
                 } else {
@@ -295,11 +374,20 @@ impl Script for Journey {
             }
             Phase::Map { seg, walker } => {
                 let s = &SEGMENTS[*seg];
+                if o.map == s.map && walker.done() && !self.cp_phases.is_empty() {
+                    // The phase's route is walked: the next phase starts here, and the driver
+                    // saves a checkpoint to retry the following phase from.
+                    let text = self.cp_phases.pop_front().unwrap_or_default();
+                    let planner = walker.planner.clone();
+                    *walker = Walker::new(parse_route(&text));
+                    walker.planner = planner;
+                    self.cp_index += 1;
+                    self.pending_checkpoint = Some(self.cp_index);
+                }
                 if o.map == s.next_map {
                     self.segment_ends.push((s.map, self.frame));
                     if !self.single && *seg + 1 < SEGMENTS.len() {
-                        let mut walker = Walker::new(parse_route(SEGMENTS[*seg + 1].route));
-                        walker.planner = planner_for(&self.routesim, &self.maps_dir, SEGMENTS[*seg + 1].map);
+                        let walker = segment_walker(&self.routesim, &self.maps_dir, *seg + 1, &mut self.cp_phases, &mut self.cp_index);
                         next_phase = Some(Phase::Map { seg: *seg + 1, walker });
                     } else {
                         next_phase = Some(Phase::Done);
@@ -366,8 +454,7 @@ impl Script for Journey {
                 *frames += 1;
                 if o.map == *map && o.mode & 1 == 0 {
                     let seg = SEGMENTS.iter().position(|s| s.map == *map).expect("route");
-                    let mut walker = Walker::new(parse_route(SEGMENTS[seg].route));
-                    walker.planner = planner_for(&self.routesim, &self.maps_dir, *map);
+                    let walker = segment_walker(&self.routesim, &self.maps_dir, seg, &mut self.cp_phases, &mut self.cp_index);
                     next_phase = Some(Phase::Map { seg, walker });
                     Command::default()
                 } else if *frames > 900 {

@@ -90,7 +90,14 @@ impl Session {
             self.ticks, self.steps, self.deadline, self.last_seq, self.current.buttons,
             self.current.right_x, self.current.right_y, self.current.left_x, self.current.left_y
         );
-        std::fs::write(path.with_extension("side"), side).map_err(|e| e.to_string())
+        std::fs::write(path.with_extension("side"), side).map_err(|e| e.to_string())?;
+        // The recording so far, so a resumed run continues the same tape.
+        let mut bytes = self.start_poll.unwrap_or(u64::MAX).to_le_bytes().to_vec();
+        for s in &self.tape {
+            bytes.extend_from_slice(&s.buttons.to_le_bytes());
+            bytes.extend_from_slice(&[s.right_x, s.right_y, s.left_x, s.left_y]);
+        }
+        std::fs::write(path.with_extension("tape"), bytes).map_err(|e| e.to_string())
     }
 
     /// Replace this freshly booted session's machine with a saved one.
@@ -132,6 +139,19 @@ impl Session {
         };
         self.tape.clear();
         self.start_poll = None;
+        if let Ok(bytes) = std::fs::read(path.with_extension("tape")) {
+            let start = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            self.start_poll = (start != u64::MAX).then_some(start);
+            for c in bytes[8..].chunks_exact(6) {
+                self.tape.push(PadSample {
+                    buttons: u16::from_le_bytes([c[0], c[1]]),
+                    right_x: c[2],
+                    right_y: c[3],
+                    left_x: c[4],
+                    left_y: c[5],
+                });
+            }
+        }
         Ok(())
     }
 
@@ -143,6 +163,27 @@ impl Session {
     /// The card's bytes when the guest wrote to it.
     pub fn card_snapshot(&mut self) -> Option<Vec<u8>> {
         self.bus.memcard_port1_snapshot()
+    }
+
+    /// Drive the freshly booted machine with a recorded tape, one sample per poll, stopping at the
+    /// publish where the tape is used up: the machine is then where the recording was when it was
+    /// cut, reached by the same inputs the gate will replay (a saved machine state is not used,
+    /// because a restored one has been seen to leave the recording).
+    pub fn replay_prefix(&mut self, prefix: &[PadSample]) -> Result<(), String> {
+        loop {
+            if !self.run_to_publish(4000)? {
+                return Err("no publish while replaying the recorded tape".into());
+            }
+            let done = self.start_poll.map_or(0, |s| (self.polls() - s) as usize);
+            if done >= prefix.len() {
+                break;
+            }
+            self.set_pad(prefix[done]);
+        }
+        if self.tape.len() != prefix.len() || self.tape.iter().zip(prefix).any(|(a, b)| a.buttons != b.buttons) {
+            return Err(format!("the replay recorded {} samples, the tape has {}", self.tape.len(), prefix.len()));
+        }
+        Ok(())
     }
 
     pub fn polls(&self) -> u64 {

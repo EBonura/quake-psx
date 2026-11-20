@@ -50,3 +50,33 @@ the E1M3 load, replayed on the real and mister hardware targets; `e1-shipping` (
 `@go x y` (a dry path planned by `tools/routesim` from wherever the player stands, every
 grid node kept); the bot also detours a few steps for health, ammunition and weapons it
 needs, as a player does.
+
+## Per-map journeys (each map from its own save)
+
+`e1m1`, `e1m2` and `e1m3` (`tests/e1mN.toml`) start at the title menu with a memory card the gate boots
+from (`card_fixture`, read only, bound to its sha256), press LOAD GAME and slot 1 with the pad, and play the
+one map to the next map's load. The card is a save the game wrote itself: the bot plays the chain to the
+map's first moments, opens the pause menu, presses SAVE GAME and slot 1 through the real menu code, and
+dumps the card. No state is written, no map is forced. A change to the route or the bot for one map cannot
+move another map's recording.
+
+```sh
+# 1. the card (runs the route to map N; N = 1, 2, 3)
+cargo build --release --manifest-path tools/journey-bot/Cargo.toml
+quake-journey-bot --disc build-psoxide-journey/quake-psx.cue --map build-psoxide-journey/quake-psx.map \
+  --out <dir> --mode play --frames 9000 --maps id1psx/maps --routesim <quake-routesim> \
+  --card-at N --card-out <dir>/eNm?-start.mcd
+# 2. the journey from the card (seed picks the dodge rhythm; a seed that fails is simply another attempt)
+quake-journey-bot ... --card-in <card> --load-map N --single --repo-journey e1mN \
+  --journey-name quake-e1mN --seed S
+# 3. copy <dir>/chain.toml to tests/e1mN.toml, <dir>/tapes/* to tests/journeys/e1mN/tapes/ and the card to
+#    tests/journeys/e1mN/start.mcd, then: psoxide-gate run tests/e1mN.toml
+```
+
+A route file may be cut into phases with `@checkpoint` lines (E1M3 has seven). `--cp-dir <dir>` writes a
+checkpoint at each one and `--cp <checkpoint.psx> <map>` continues from it by replaying the checkpoint's own
+tape from the card to the same publish (not by loading the saved machine state: a machine restored from a
+checkpoint was seen to leave the recording by the time the replay reached the next map, see
+quake-e1/NOTES.md), then plays on with a new `--seed`. Every checkpoint carries the whole tape, so the
+finished recording is one pad tape from the card. A phase that fails is retried from its checkpoint;
+only the pad the bot held is recorded.

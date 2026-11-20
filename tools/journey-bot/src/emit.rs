@@ -15,7 +15,7 @@ pub fn write_chain(
     build_dir: &str,
     start_poll: u64,
     samples: &[PadSample],
-    boundaries: &[(String, usize, Obs)],
+    boundaries: &[(String, usize, Vec<(usize, u32, String)>)],
     finished: bool,
     repo_name: Option<&str>,
     card: Option<&(String, String)>,
@@ -58,7 +58,7 @@ pub fn write_chain(
     writeln!(toml, "[[step]]\nlabel = \"the game published its first frame\"\nsync = \"poll\"\ntimeout = 4000\n[step.wait_until]\nkind = \"ram\"\nsym = \"JOURNEY_STATE\"\noffset = 8\nsize = 4\nop = \"nonzero\"\n").unwrap();
     let mut from = 0usize;
     // The last segment ends where the recording does.
-    let mut cuts: Vec<(String, usize, Option<&Obs>)> = boundaries
+    let mut cuts: Vec<(String, usize, Option<&Vec<(usize, u32, String)>>)> = boundaries
         .iter()
         .map(|(l, i, o)| (l.clone(), *i, Some(o)))
         .collect();
@@ -79,14 +79,19 @@ pub fn write_chain(
         if let Some(o) = obs {
             writeln!(toml, "[[step]]\ncheckpoint = \"{label}-loaded\"\nsync = \"poll\"\ngolden = false").unwrap();
             writeln!(toml, "[[step.assert]]\nkind = \"not_flat\"").unwrap();
-            for (word, value, what) in state_words(o) {
-                writeln!(toml, "[[step.assert]]\nkind = \"ram\"\nsym = \"JOURNEY_STATE\"\noffset = {}\nsize = 4\nop = \"eq\"\nvalue = {}\nnote = \"{what}\"", word * 4, value as i64).unwrap();
+            for (word, value, what) in o.iter() {
+                writeln!(toml, "[[step.assert]]\nkind = \"ram\"\nsym = \"JOURNEY_STATE\"\noffset = {}\nsize = 4\nop = \"eq\"\nvalue = {}\nnote = \"{what}\"", *word * 4, *value as i64).unwrap();
             }
             writeln!(toml).unwrap();
         }
         from = end;
     }
     std::fs::write(out.join("chain.toml"), toml).unwrap();
+}
+
+/// The words a checkpoint pins, with their names, as owned values a checkpoint file can hold.
+pub fn words(o: &Obs) -> Vec<(usize, u32, String)> {
+    state_words(o).into_iter().map(|(w, v, n)| (w, v, n.to_string())).collect()
 }
 
 /// The words a checkpoint pins: map, skill, player, inventory, counters.
