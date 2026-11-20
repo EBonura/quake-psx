@@ -163,6 +163,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut card_at: Option<u32> = None;
     let mut load_map: Option<u32> = None;
     let mut single = false;
+    let mut settle = 0u32;
     let mut cp_base: Option<(PathBuf, u32)> = None;
     let mut cp_dir: Option<PathBuf> = None;
     let mut route_file: Option<String> = None;
@@ -188,6 +189,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--card-at" => { card_at = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--load-map" => { load_map = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--single" => { single = true; i += 1; }
+            "--settle" => { settle = args.rest[i + 1].parse().unwrap(); i += 2; }
             "--cp" => { cp_base = Some((PathBuf::from(&args.rest[i + 1]), args.rest[i + 2].parse().unwrap())); i += 3; }
             "--cp-dir" => { cp_dir = Some(PathBuf::from(&args.rest[i + 1])); i += 2; }
             "--route-file" => { route_file = Some(args.rest[i + 1].clone()); i += 2; }
@@ -207,6 +209,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     }
     journey.save_at = card_at;
     journey.single = single;
+    journey.settle = settle;
     let mut card_sha: Option<(String, String)> = None;
     if let Some(path) = &card_in {
         let bytes = std::fs::read(path).expect("--card-in");
@@ -288,6 +291,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
         }
     }
     let mut finished = false;
+    let mut arrival: Option<usize> = None;
     while n < max_frames {
         if pending {
             pending = false;
@@ -354,6 +358,13 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
             boundaries.push((MAP_LABELS[o.map as usize].to_string(), index, emit::words(&o)));
             last_map = o.map;
+            arrival = Some(boundaries.len() - 1);
+        } else if let (Some(k), true) = (arrival, journey.settle_done()) {
+            // The settle frames are over: the closing checkpoint moves to this drawn frame.
+            let index = (session.polls() - session.start_poll.unwrap_or(0)) as usize;
+            boundaries[k].1 = index;
+            boundaries[k].2 = emit::words(&o);
+            arrival = None;
         } else if cut_every > 0 && n % cut_every == 0 {
             // A diagnostic cut: a checkpoint of the exact state every `cut_every` frames, to find the
             // first frame at which a replay leaves the recording.

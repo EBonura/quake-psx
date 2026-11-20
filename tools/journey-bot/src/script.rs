@@ -39,6 +39,9 @@ enum Phase {
     LoadMenu { frames: u32, opened: u32, map: u32 },
     /// Pause menu: SAVE GAME, slot 1, the first moments of the map the run saves at.
     SaveSeq { frames: u32 },
+    /// Idle for a while on the next map before the run ends (`--settle`), so the closing
+    /// checkpoint of a per-map journey is taken on a drawn frame, not the first frame of a load.
+    Settle { left: u32 },
     Done,
 }
 
@@ -71,6 +74,7 @@ pub struct Journey {
     pub card_saved: bool,
     /// Stop when the first map's exit leads to the next (a per-map journey).
     pub single: bool,
+    pub settle: u32,
 }
 
 const TO_EASY: &str = "544 544\n336 768\n272 1200\n256 1328\n232 1352 r=28\n";
@@ -144,6 +148,11 @@ fn start_open_doors(routesim: &str, maps_dir: &str, map: u32) -> HashSet<u16> {
 }
 
 impl Journey {
+    /// The settle phase is on its last idle frame.
+    pub fn settle_done(&self) -> bool {
+        matches!(self.phase, Phase::Settle { left: 1 })
+    }
+
     /// Text of what a checkpoint file must carry besides the machine: the phase, the movers seen
     /// open, the frame counter.
     pub fn state_text(&self) -> String {
@@ -218,6 +227,7 @@ impl Journey {
             save_at: None,
             card_saved: false,
             single: false,
+            settle: 0,
         }
     }
 
@@ -263,6 +273,7 @@ impl Script for Journey {
             ),
             Phase::LoadMenu { frames, .. } => format!("load-menu {frames}"),
             Phase::SaveSeq { frames } => format!("save-seq {frames}"),
+            Phase::Settle { left } => format!("settle {left}"),
             Phase::Done => "done".into(),
         }
     }
@@ -390,6 +401,8 @@ impl Script for Journey {
                     if !self.single && *seg + 1 < SEGMENTS.len() {
                         let walker = segment_walker(&self.routesim, &self.maps_dir, *seg + 1, &mut self.cp_phases, &mut self.cp_index);
                         next_phase = Some(Phase::Map { seg: *seg + 1, walker });
+                    } else if self.single && self.settle > 0 {
+                        next_phase = Some(Phase::Settle { left: self.settle });
                     } else {
                         next_phase = Some(Phase::Done);
                     }
@@ -488,6 +501,13 @@ impl Script for Journey {
                     _ => 0,
                 };
                 Command { buttons, ..Command::default() }
+            }
+            Phase::Settle { left } => {
+                *left -= 1;
+                if *left == 0 {
+                    return None;
+                }
+                Command::default()
             }
             Phase::Done => return None,
         };
