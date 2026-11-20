@@ -7700,6 +7700,25 @@ impl EntityScene {
             ];
             vc += 1;
         }
+        // Trains ride along as class 0x11 rows (state 0), so a host route can wait for one to
+        // come alongside.
+        for train in &self.trains {
+            if vc >= movers.len() {
+                break;
+            }
+            let Some(entity) = self.entities.get(train.render_index as usize) else {
+                continue;
+            };
+            movers[vc] = [
+                i32::from(entity.source_index),
+                0,
+                0x11,
+                entity.origin.x,
+                entity.origin.y,
+                entity.origin.z,
+            ];
+            vc += 1;
+        }
         (mc as u32, pc as u32, vc as u32, rc as u32)
     }
 

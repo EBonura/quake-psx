@@ -53,7 +53,7 @@ needs, as a player does.
 
 ## Per-map journeys (each map from its own save)
 
-`e1m1`, `e1m2` and `e1m3` (`tests/e1mN.toml`) start at the title menu with a memory card the gate boots
+`e1m1` to `e1m5` (`tests/e1mN.toml`) start at the title menu with a memory card the gate boots
 from (`card_fixture`, read only, bound to its sha256), press LOAD GAME and slot 1 with the pad, and play the
 one map to the next map's load. The card is a save the game wrote itself: the bot plays the chain to the
 map's first moments, opens the pause menu, presses SAVE GAME and slot 1 through the real menu code, and
@@ -80,3 +80,12 @@ checkpoint was seen to leave the recording by the time the replay reached the ne
 quake-e1/NOTES.md), then plays on with a new `--seed`. Every checkpoint carries the whole tape, so the
 finished recording is one pad tape from the card. A phase that fails is retried from its checkpoint;
 only the pad the bot held is recorded.
+
+Route tokens added with E1M5: `@wait until=` and `@push ... until=` take `moverin:IDX:x|y|z:LO:HI` (a mover's
+translation), `onmover:IDX[:margin]` (the player stands on a train or lift), `inrange:IDX:x|y:margin` (a mover has
+come alongside), `posin:x|y|z:LO:HI`, `dead:IDX`, and `&` joins several; `@push ... jump` holds jump while
+grounded; `@kill IDX weapon=W [min=D]` aims at a live monster and fires; `@drop N` lets planned dry paths drop N
+units. `--load-settle N` idles N frames after a card load so the opening checkpoint is a drawn frame (a journey
+that opens by loading a card pins its opening checkpoint by state only, because the first frame of a load is
+nearly black). `QUAKE_BOT_ROUTE=<file>` replaces the built-in route text for authoring. The journey state block
+now carries the trains as class 0x11 mover rows (journey-telemetry only).

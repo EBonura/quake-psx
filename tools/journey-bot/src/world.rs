@@ -33,6 +33,25 @@ impl World {
         World { map, planes }
     }
 
+    /// The authored bounds (whole units) of every brush entity, keyed by cooked source index.
+    pub fn mover_bounds(&self) -> std::collections::HashMap<u16, ([i32; 3], [i32; 3])> {
+        let mut out = std::collections::HashMap::new();
+        for (index, entity) in self.map.entities().iter().enumerate() {
+            if entity.model < 0 {
+                if let Some(m) = self.map.brush_models().get((-entity.model) as usize) {
+                    out.insert(
+                        index as u16,
+                        (
+                            [i32::from(m.mins.x), i32::from(m.mins.y), i32::from(m.mins.z)],
+                            [i32::from(m.maxs.x), i32::from(m.maxs.y), i32::from(m.maxs.z)],
+                        ),
+                    );
+                }
+            }
+        }
+        out
+    }
+
     /// True when the static world does not block the segment (Q12 points).
     pub fn los(&self, from: [i32; 3], to: [i32; 3]) -> bool {
         let world = self.map.brush_models().get(0).expect("world model");

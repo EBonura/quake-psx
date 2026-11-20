@@ -28,6 +28,7 @@ const SEGMENTS: &[Segment] = &[
     Segment { map: 2, route: include_str!("../routes/e1m2.txt"), next_map: 3 },
     Segment { map: 3, route: include_str!("../routes/e1m3.txt"), next_map: 4 },
     Segment { map: 4, route: include_str!("../routes/e1m4.txt"), next_map: 5 },
+    Segment { map: 5, route: include_str!("../routes/e1m5.txt"), next_map: 6 },
 ];
 
 enum Phase {
@@ -42,6 +43,9 @@ enum Phase {
     /// Idle for a while on the next map before the run ends (`--settle`), so the closing
     /// checkpoint of a per-map journey is taken on a drawn frame, not the first frame of a load.
     Settle { left: u32 },
+    /// The map the card loaded has just appeared: idle a few frames (`--load-settle`) so the
+    /// opening checkpoint is a drawn frame, then start the route.
+    LoadSettle { left: u32, seg: usize },
     Done,
 }
 
@@ -75,6 +79,7 @@ pub struct Journey {
     /// Stop when the first map's exit leads to the next (a per-map journey).
     pub single: bool,
     pub settle: u32,
+    pub load_settle: u32,
 }
 
 const TO_EASY: &str = "544 544\n336 768\n272 1200\n256 1328\n232 1352 r=28\n";
@@ -86,7 +91,15 @@ fn planner_for(routesim: &str, maps_dir: &str, map: u32) -> Option<Planner> {
     if routesim.is_empty() {
         return None;
     }
-    Some(Planner { last_dz: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
+    Some(Planner { last_dz: Default::default(), drop: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
+}
+
+/// The route text of segment `seg`: the file named by `QUAKE_BOT_ROUTE` when set (route authoring), else the built-in one.
+fn route_text(seg: usize) -> String {
+    match std::env::var("QUAKE_BOT_ROUTE") {
+        Ok(p) if !p.is_empty() => std::fs::read_to_string(&p).expect("QUAKE_BOT_ROUTE"),
+        _ => SEGMENTS[seg].route.to_string(),
+    }
 }
 
 /// The walker for the first phase of segment `seg`; the later phases wait in `cp_phases`.
@@ -97,7 +110,7 @@ fn segment_walker(
     cp_phases: &mut std::collections::VecDeque<String>,
     cp_index: &mut u32,
 ) -> Walker {
-    let mut phases: std::collections::VecDeque<String> = route_phases(SEGMENTS[seg].route).into();
+    let mut phases: std::collections::VecDeque<String> = route_phases(&route_text(seg)).into();
     let first = phases.pop_front().unwrap_or_default();
     *cp_phases = phases;
     *cp_index = 0;
@@ -150,7 +163,7 @@ fn start_open_doors(routesim: &str, maps_dir: &str, map: u32) -> HashSet<u16> {
 impl Journey {
     /// The settle phase is on its last idle frame.
     pub fn settle_done(&self) -> bool {
-        matches!(self.phase, Phase::Settle { left: 1 })
+        matches!(self.phase, Phase::Settle { left: 1 } | Phase::LoadSettle { left: 1, .. })
     }
 
     /// Text of what a checkpoint file must carry besides the machine: the phase, the movers seen
@@ -174,7 +187,7 @@ impl Journey {
         };
         let seg = SEGMENTS.iter().position(|s| s.map == map).expect("route");
         let cp: usize = get("cp").parse().unwrap_or(0);
-        let mut phases: std::collections::VecDeque<String> = route_phases(SEGMENTS[seg].route).into();
+        let mut phases: std::collections::VecDeque<String> = route_phases(&route_text(seg)).into();
         for _ in 0..cp {
             phases.pop_front();
         }
@@ -228,6 +241,7 @@ impl Journey {
             card_saved: false,
             single: false,
             settle: 0,
+            load_settle: 0,
         }
     }
 
@@ -274,6 +288,7 @@ impl Script for Journey {
             Phase::LoadMenu { frames, .. } => format!("load-menu {frames}"),
             Phase::SaveSeq { frames } => format!("save-seq {frames}"),
             Phase::Settle { left } => format!("settle {left}"),
+            Phase::LoadSettle { left, .. } => format!("load-settle {left}"),
             Phase::Done => "done".into(),
         }
     }
@@ -353,7 +368,9 @@ impl Script for Journey {
             }
         }
         let ctx_latched = self.latched.clone();
-        let ctx = Ctx { latched: &ctx_latched };
+        let no_bounds = std::collections::HashMap::new();
+        let bounds = self.world.as_ref().map_or_else(|| no_bounds, |(_, w)| w.mover_bounds());
+        let ctx = Ctx { latched: &ctx_latched, bounds: &bounds };
         let mut next_phase: Option<Phase> = None;
         let cmd = match &mut self.phase {
             Phase::Menu { pressed } => {
@@ -469,8 +486,12 @@ impl Script for Journey {
                 *frames += 1;
                 if o.map == *map && o.mode & 1 == 0 {
                     let seg = SEGMENTS.iter().position(|s| s.map == *map).expect("route");
-                    let walker = segment_walker(&self.routesim, &self.maps_dir, seg, &mut self.cp_phases, &mut self.cp_index);
-                    next_phase = Some(Phase::Map { seg, walker });
+                    if self.load_settle > 0 {
+                        next_phase = Some(Phase::LoadSettle { left: self.load_settle, seg });
+                    } else {
+                        let walker = segment_walker(&self.routesim, &self.maps_dir, seg, &mut self.cp_phases, &mut self.cp_index);
+                        next_phase = Some(Phase::Map { seg, walker });
+                    }
                     Command::default()
                 } else if *frames > 900 {
                     self.failure = Some(format!("the card did not load map {map} (map {} mode {})", o.map, o.mode));
@@ -506,6 +527,15 @@ impl Script for Journey {
                 *left -= 1;
                 if *left == 0 {
                     return None;
+                }
+                Command::default()
+            }
+            Phase::LoadSettle { left, seg } => {
+                *left -= 1;
+                if *left == 0 {
+                    let seg = *seg;
+                    let walker = segment_walker(&self.routesim, &self.maps_dir, seg, &mut self.cp_phases, &mut self.cp_index);
+                    next_phase = Some(Phase::Map { seg, walker });
                 }
                 Command::default()
             }

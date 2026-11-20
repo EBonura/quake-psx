@@ -117,6 +117,15 @@ fn brush_model_is_solid(class_name: u8) -> bool {
     )
 }
 
+/// A `func_door` with `DOOR_GOLD_KEY` (8) or `DOOR_SILVER_KEY` (16) opens only for a player
+/// holding that key, so a blunt "every mover open" flood must not walk through it.
+fn door_stays_locked(class_name: u8, spawn_flags: u16, keys: u8) -> bool {
+    const GOLD: u16 = 8;
+    const SILVER: u16 = 16;
+    class_name == CLASS_FUNC_DOOR
+        && ((spawn_flags & SILVER != 0 && keys & 1 == 0) || (spawn_flags & GOLD != 0 && keys & 2 == 0))
+}
+
 /// `func_plat`'s Q20.12 travel: the authored `height`, or the deck's own
 /// thickness less eight units when the map authors none.
 fn plat_travel(height: i16, maxs_z: i16, mins_z: i16) -> i32 {
@@ -231,6 +240,12 @@ impl Scene {
             .collect();
         // The blunt version of the same thing, for a first look at a map.
         let open = std::env::var("ROUTESIM_OPEN_MOVERS").is_ok();
+        // The keys the player holds (`ROUTESIM_KEYS`, bit 1 silver, bit 2 gold, as the guest's
+        // inventory): a key door stays shut against `ROUTESIM_OPEN_MOVERS` until its key is held.
+        let keys: u8 = std::env::var("ROUTESIM_KEYS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
         // `ROUTESIM_PLAT_TOP` keeps every lift at the position it was authored
         // in, which is where it stands once a rider has ridden it up. Authoring
         // the leg that starts on a raised lift needs that geometry.
@@ -275,6 +290,7 @@ impl Scene {
                     entity.class_name,
                     CLASS_FUNC_DOOR | CLASS_FUNC_DOOR_SECRET | CLASS_FUNC_PLAT
                 )
+                && !door_stays_locked(entity.class_name, entity.spawn_flags, keys)
             {
                 continue;
             }

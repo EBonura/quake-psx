@@ -78,7 +78,12 @@ pub fn write_chain(
         writeln!(toml, "timeout = {}\n", (end - from) * 4 + 4000).unwrap();
         if let Some(o) = obs {
             writeln!(toml, "[[step]]\ncheckpoint = \"{label}-loaded\"\nsync = \"poll\"\ngolden = false").unwrap();
-            writeln!(toml, "[[step.assert]]\nkind = \"not_flat\"").unwrap();
+            // The first frame of a load is almost black (98% one colour), so a journey that opens by
+            // loading a card pins the opening checkpoint by state only; the closing checkpoint, taken
+            // after `--settle`, carries the drawn-frame check.
+            if !(k == 0 && card.is_some()) {
+                writeln!(toml, "[[step.assert]]\nkind = \"not_flat\"").unwrap();
+            }
             for (word, value, what) in o.iter() {
                 writeln!(toml, "[[step.assert]]\nkind = \"ram\"\nsym = \"JOURNEY_STATE\"\noffset = {}\nsize = 4\nop = \"eq\"\nvalue = {}\nnote = \"{what}\"", *word * 4, *value as i64).unwrap();
             }

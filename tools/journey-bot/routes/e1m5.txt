@@ -1,0 +1,47 @@
+# E1M5 (Gloom Keep) from its own save to the E1M6 load, Easy. Left route to the silver key: the hall, the pillar floor
+# button (opens the pit door), the pit, the pit lift, the vault. Then the hole down, the top-floor slipgate to the gold
+# key, the silver doors, the elevator, the gold doors and the exit pit. The recorded tape is the proof; this text plus
+# checkpoint replay (retry5.sh in the lane) regenerates it.
+
+@go -736 800 z=153 r=20
+@go -592 1168 z=153 r=20
+@go -816 1744 z=153 r=20
+@go -1136 1744 z=153 r=20
+@go -1440 1536 z=153 r=20
+@go -1536 1700 z=153 r=14
+@go -1536 2140 z=153 r=14
+@push -1536 2190 until=latched:37                 # the floor button at the north end of the hall opens the pit door
+@wait until=mover:37:top
+@push -1440 1950 until=zle:60                 # off the east side of the pillar, down into the pit
+@go -1128 1990 z=32 r=14
+-1120 2028 r=8                            # onto the middle of the lift deck
+@wait until=zge:140                            # the lift carries the player up to the vault
+@open 207,208
+@go -776 1912 r=16 plat=193
+-776 1912 r=6
+@wait until=key:1
+@checkpoint
+@drop 220
+@go -776 1720 z=153 r=16        # south along the key corridor and down the hole
+@open 37,38,193,207,208,209
+@go 378 2525 z=425 r=14           # up through the castle to the teleporters on the top floor
+@push 440 2560 until=posin:x:600:800   # through the west slipgate: it leads to the gold key room
+@go 704 1688 r=10                 # the gold key (its cage opens as the floor button is pressed)
+@wait until=key:2
+@checkpoint
+@open 37,38,39,40,41,42,43,44,45,46,47,52,74,193,207,208,209
+@go -544 1262 z=-24 r=14          # out of the gold key cage and west to the foot of the silver doors
+@push -544 1190 until=latched:235 # the silver key opens the doors
+@wait until=mover:235:top
+@push -544 1085 until=latched:6   # the wall button beyond them calls the elevator down
+@wait until=mover:5:bottom
+@go -544 1560 z=-24 r=14
+-544 1642 r=5                     # onto the middle of the elevator deck (the shaft is open only on its north half)
+@wait until=zge:330               # up to the third floor
+@go -544 1700 r=12 plat=5
+@push -544 1840 until=latched:69  # the gold key opens the gold doors
+@wait until=mover:69:top
+@drop 700
+@go -544 1858 z=-239 r=14         # off the ledge, down the pit
+@go -544 1986 r=12
+@push -544 2070 until=frames:600  # into the exit trigger

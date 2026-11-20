@@ -43,12 +43,30 @@ pub enum Cond {
     NoKeys(u32),
     ZAtLeast(i32),
     ZAtMost(i32),
+    /// The mover's origin (world units) on axis 0, 1 or 2 lies in `lo..=hi`: waiting for a
+    /// train to come alongside.
+    MoverIn(u16, usize, i32, i32),
+    /// The player stands on the mover: inside its current plan rectangle (shrunk by the margin)
+    /// and no lower than its top.
+    OnMover(u16, i32),
+    /// The player's coordinate on the axis lies inside the mover's current extent on that axis,
+    /// shrunk by the margin: a train that has come alongside.
+    InRange(u16, usize, i32),
+    /// The player's coordinate on axis 0, 1 or 2 lies in `lo..=hi` (whole units).
+    PosIn(usize, i32, i32),
+    /// The monster with this cooked source index is dead (or gone).
+    Dead(u16),
+    /// Every condition holds.
+    All(Vec<Cond>),
     /// The step has run this many frames.
     Frames(u32),
 }
 
 impl Cond {
     pub fn parse(t: &str) -> Cond {
+        if t.contains('&') {
+            return Cond::All(t.split('&').map(Cond::parse).collect());
+        }
         let f: Vec<&str> = t.split(':').collect();
         match f[0] {
             "mover" => Cond::Mover(f[1].parse().unwrap(), match f[2] {
@@ -64,6 +82,38 @@ impl Cond {
             "zge" => Cond::ZAtLeast(f[1].parse().unwrap()),
             "zle" => Cond::ZAtMost(f[1].parse().unwrap()),
             "frames" => Cond::Frames(f[1].parse().unwrap()),
+            "moverin" => Cond::MoverIn(
+                f[1].parse().unwrap(),
+                match f[2] {
+                    "x" => 0,
+                    "y" => 1,
+                    "z" => 2,
+                    other => panic!("axis {other}"),
+                },
+                f[3].parse().unwrap(),
+                f[4].parse().unwrap(),
+            ),
+            "posin" => Cond::PosIn(
+                match f[1] {
+                    "x" => 0,
+                    "y" => 1,
+                    "z" => 2,
+                    other => panic!("axis {other}"),
+                },
+                f[2].parse().unwrap(),
+                f[3].parse().unwrap(),
+            ),
+            "dead" => Cond::Dead(f[1].parse().unwrap()),
+            "onmover" => Cond::OnMover(f[1].parse().unwrap(), f.get(2).map_or(4, |v| v.parse().unwrap())),
+            "inrange" => Cond::InRange(
+                f[1].parse().unwrap(),
+                match f[2] {
+                    "x" => 0,
+                    "y" => 1,
+                    other => panic!("axis {other}"),
+                },
+                f.get(3).map_or(0, |v| v.parse().unwrap()),
+            ),
             other => panic!("condition {other}"),
         }
     }
@@ -77,6 +127,31 @@ impl Cond {
             Cond::ZAtLeast(z) => o.pos()[2] >= *z,
             Cond::ZAtMost(z) => o.pos()[2] <= *z,
             Cond::Frames(n) => frames >= *n,
+            Cond::PosIn(axis, lo, hi) => (*lo..=*hi).contains(&o.pos()[*axis]),
+            Cond::Dead(i) => o.monsters.iter().find(|m| m.index == *i).map_or(true, |m| !m.alive()),
+            Cond::All(list) => list.iter().all(|c| c.holds(o, ctx, frames)),
+            Cond::OnMover(i, margin) => {
+                let Some((mins, maxs)) = ctx.bounds.get(i) else { return false };
+                let Some(m) = o.movers.iter().find(|m| m.index == *i) else { return false };
+                let t = [m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12];
+                let p = o.pos();
+                p[0] >= mins[0] + t[0] + margin
+                    && p[0] <= maxs[0] + t[0] - margin
+                    && p[1] >= mins[1] + t[1] + margin
+                    && p[1] <= maxs[1] + t[1] - margin
+                    && p[2] >= maxs[2] + t[2] - 6
+            }
+            Cond::InRange(i, axis, margin) => {
+                let Some((mins, maxs)) = ctx.bounds.get(i) else { return false };
+                let Some(m) = o.movers.iter().find(|m| m.index == *i) else { return false };
+                let t = m.origin[*axis] >> 12;
+                let v = o.pos()[*axis];
+                v >= mins[*axis] + t + margin && v <= maxs[*axis] + t - margin
+            }
+            Cond::MoverIn(i, axis, lo, hi) => o.movers.iter().any(|m| {
+                let v = m.origin[*axis] >> 12;
+                m.index == *i && v >= *lo && v <= *hi
+            }),
         }
     }
 }
@@ -89,10 +164,12 @@ pub enum Item {
     Wait(Cond),
     /// Hold weapon `weapon`, look at `target` (world units) and fire until the condition.
     Shoot { target: [i32; 3], weapon: u32, until: Cond },
+    /// Hold weapon `weapon`, aim at the live monster `index` and fire until it is dead.
+    Kill { index: u16, weapon: u32, min: i32 },
     /// Tap use while facing `target` until the condition.
     UseAt { target: [i32; 3], until: Cond },
     /// Walk straight at `target` (no pathing, no stopping) until the condition.
-    Push { target: [i32; 2], until: Cond },
+    Push { target: [i32; 2], until: Cond, jump: bool },
     /// Walk to `(x, y)` along a planned dry path (every node kept), planned from wherever the
     /// player stands when the item is reached.
     /// Walk to the nearest health or armour pickup (dry path, no climb or drop) until health
@@ -103,6 +180,8 @@ pub enum Item {
     /// Movers (cooked index) the planner may treat as open from here on: doors that open on
     /// their own as the player walks up to them.
     Assume(Vec<u16>),
+    /// Planned dry paths may drop this far (`@drop N`, 0 for routesim's default).
+    Drop(i32),
     Go { x: i32, y: i32, z: Option<i32>, radius: i32, skip: Option<Cond>, plat: Option<u16> },
 }
 
@@ -125,6 +204,11 @@ pub fn parse_route(text: &str) -> Vec<Item> {
             let num = |i: usize| -> i32 { f[i].parse().unwrap_or_else(|_| panic!("bad number in {line}")) };
             match d {
                 "wait" => out.push(Item::Wait(until(&f))),
+                "kill" => out.push(Item::Kill {
+                    index: num(1) as u16,
+                    weapon: f.iter().find_map(|t| t.strip_prefix("weapon=")).map_or(1, |v| v.parse().unwrap()),
+                    min: f.iter().find_map(|t| t.strip_prefix("min=")).map_or(0, |v| v.parse().unwrap()),
+                }),
                 "shoot" => out.push(Item::Shoot {
                     target: [num(1), num(2), num(3)],
                     weapon: f.iter().find_map(|t| t.strip_prefix("weapon=")).map_or(1, |v| v.parse().unwrap()),
@@ -132,11 +216,12 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 }),
                 "use" => out.push(Item::UseAt { target: [num(1), num(2), num(3)], until: until(&f) }),
                 "norestock" => out.push(Item::NoRestock),
+                "drop" => out.push(Item::Drop(num(1))),
                 "open" => out.push(Item::Assume(f[1].split(',').map(|n| n.parse().unwrap()).collect())),
                 "restock" => out.push(Item::Restock {
                     min: f.iter().find_map(|t| t.strip_prefix("hp=")).map_or(90, |v| v.parse().unwrap()),
                 }),
-                "push" => out.push(Item::Push { target: [num(1), num(2)], until: until(&f) }),
+                "push" => out.push(Item::Push { target: [num(1), num(2)], until: until(&f), jump: f.contains(&"jump") }),
                 "go" => out.push(Item::Go {
                     x: num(1),
                     y: num(2),
@@ -230,6 +315,8 @@ pub fn pitch_to(o: &Obs, want: i32) -> i32 {
 /// What a walker needs from the run besides the frame: movers that have moved.
 pub struct Ctx<'a> {
     pub latched: &'a HashSet<u16>,
+    /// Authored bounds of the brush entities (whole units), by cooked source index.
+    pub bounds: &'a std::collections::HashMap<u16, ([i32; 3], [i32; 3])>,
 }
 
 /// Planning request: where the routesim binary and the cooked map are.
@@ -239,6 +326,8 @@ pub struct Planner {
     pub psb: String,
     /// Largest height change from the start along the last dry path.
     pub last_dz: std::cell::Cell<i32>,
+    /// Largest drop (units) a planned dry path may take (`@drop N`); 0 keeps routesim's default.
+    pub drop: std::cell::Cell<i32>,
 }
 
 impl Planner {
@@ -252,8 +341,10 @@ impl Planner {
             if plat_top {
                 cmd.env("ROUTESIM_PLAT_TOP", "1");
             }
+            let drop_args: Vec<String> = if self.drop.get() > 0 { vec!["--drop".to_string(), self.drop.get().to_string()] } else { Vec::new() };
             let out = cmd
                 .args([&self.psb, "path", "--from", &from[0].to_string(), &from[1].to_string(), &from[2].to_string(), "--to", &to[0].to_string(), &to[1].to_string(), &z])
+                .args(&drop_args)
                 .env("ROUTESIM_OPEN", open.join(","))
                 .env("ROUTESIM_NO_SIMPLIFY", "1")
                 .env("ROUTESIM_PATH_Z", "1")
@@ -452,6 +543,13 @@ impl Walker {
                     self.advance();
                     continue;
                 }
+                Item::Drop(n) => {
+                    if let Some(pl) = &self.planner {
+                        pl.drop.set(*n);
+                    }
+                    self.advance();
+                    continue;
+                }
                 Item::NoRestock => {
                     self.no_restock = true;
                     self.advance();
@@ -544,6 +642,12 @@ impl Walker {
                     self.best = i32::MAX;
                     continue;
                 }
+                Item::Kill { index, .. } => {
+                    if o.monsters.iter().find(|m| m.index == *index).map_or(true, |m| !m.alive()) {
+                        self.advance();
+                        continue;
+                    }
+                }
                 Item::Wait(c) | Item::Shoot { until: c, .. } | Item::UseAt { until: c, .. } | Item::Push { until: c, .. } => {
                     if c.holds(o, ctx, self.item_frames) {
                         self.advance();
@@ -565,7 +669,7 @@ impl Walker {
         }
         let w = match item {
             Item::Wp(w) => w,
-            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Assume(_) => unreachable!("expanded above"),
+            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Assume(_) | Item::Drop(_) => unreachable!("expanded above"),
             Item::Wait(_) => {
                 self.waiting = true;
                 return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });
@@ -583,6 +687,24 @@ impl Walker {
                 }
                 return Some(cmd);
             }
+            Item::Kill { index, weapon, min } => {
+                self.waiting = true;
+                let target = o
+                    .monsters
+                    .iter()
+                    .find(|m| m.index == index)
+                    .map_or([p[0], p[1], p[2]], |m| [m.origin[0] >> 12, m.origin[1] >> 12, (m.origin[2] >> 12) + 8]);
+                let (mut cmd, aligned) = Self::aim_at(o, target);
+                if o.weapon != weapon {
+                    if self.frames >= self.last_cycle + 8 {
+                        self.last_cycle = self.frames;
+                        cmd.buttons |= button::R1;
+                    }
+                } else if aligned && dist3(p, target) >= min {
+                    cmd.buttons |= button::R2;
+                }
+                return Some(cmd);
+            }
             Item::UseAt { target, .. } => {
                 self.waiting = true;
                 let (mut cmd, _) = Self::aim_at(o, target);
@@ -592,10 +714,11 @@ impl Walker {
                 }
                 return Some(cmd);
             }
-            Item::Push { target, .. } => {
+            Item::Push { target, jump, .. } => {
                 let (yaw, _) = turn_to(o, heading(target[0] - p[0], target[1] - p[1]));
                 let (forward, strafe) = move_toward(o, target[0] - p[0], target[1] - p[1], 4);
-                return Some(Command { forward, strafe, yaw, pitch: pitch_to(o, 0), ..Command::default() });
+                let buttons = if jump && o.grounded { button::CROSS } else { 0 };
+                return Some(Command { forward, strafe, yaw, pitch: pitch_to(o, 0), buttons });
             }
         };
         let d = dist2(o, w.x, w.y);
@@ -771,4 +894,10 @@ impl Walker {
             None => "end".into(),
         }
     }
+}
+
+/// Straight-line distance between two whole-unit points.
+fn dist3(a: [i32; 3], b: [i32; 3]) -> i32 {
+    let d = |i: usize| ((a[i] - b[i]) as f64).powi(2);
+    (d(0) + d(1) + d(2)).sqrt() as i32
 }
