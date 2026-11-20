@@ -565,6 +565,7 @@ version = "0.1.0"
 dependencies = [
  "psx-hw 0.1.0",
  "psx-io",
+ "psx-rt",
 ]
 
 [[package]]

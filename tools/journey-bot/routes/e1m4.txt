@@ -23,3 +23,20 @@
 @go 704 1360 z=936 r=12 plat=39 # south along the straight path through the pentagram doors to the key
 704 1346 r=8                    # the silver key on its plinth
 @wait until=key:1
+# Back off the plinth into the lake, across it to the south shore.
+704 1220 r=20
+704 1150 r=24
+704 900 z=830 r=30 swim
+704 600 z=830 r=30 swim
+704 510 z=825 r=20 swim
+704 430 r=16                    # the ramp out of the water on the south shore
+@go 704 100 r=16                # the straight hall to the silver doors
+@norestock
+704 20 r=12
+@push 704 -30 until=latched:57  # the silver key opens the doors
+@wait until=mover:57:top
+@go 528 -560 r=14               # east round the hall to the foot of the elevator
+@wait until=zge:1100            # the deck carries the player up to the symbols room
+@open 2,3,12,13                 # the hall doors that open as the player walks up
+@go 1224 970 r=16 plat=52  # south through the upper halls to the exit stair
+@push 1224 1040 until=frames:900   # into the exit trigger

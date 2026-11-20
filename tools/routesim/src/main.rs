@@ -253,7 +253,8 @@ impl Scene {
             // "drop it" there: triggering it puts the brush back where it was
             // authored. Every other mover keeps the existing approximation of
             // a fully travelled mover, which is that it is out of the way.
-            let start_open = matches!(entity.class_name, CLASS_FUNC_DOOR | CLASS_FUNC_DOOR_SECRET)
+            // (`func_door_secret` spawnflag 1 is OPEN_ONCE, not start open.)
+            let start_open = entity.class_name == CLASS_FUNC_DOOR
                 && entity.spawn_flags & DOOR_START_OPEN != 0;
             let triggered = opened.contains(&source_index) || moved_to_top.contains(&source_index);
             if triggered && !start_open {

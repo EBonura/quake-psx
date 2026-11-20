@@ -100,6 +100,9 @@ pub enum Item {
     Restock { min: i32 },
     /// No automatic restock from here to the end of the phase (the next thing is worth more).
     NoRestock,
+    /// Movers (cooked index) the planner may treat as open from here on: doors that open on
+    /// their own as the player walks up to them.
+    Assume(Vec<u16>),
     Go { x: i32, y: i32, z: Option<i32>, radius: i32, skip: Option<Cond>, plat: Option<u16> },
 }
 
@@ -129,6 +132,7 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 }),
                 "use" => out.push(Item::UseAt { target: [num(1), num(2), num(3)], until: until(&f) }),
                 "norestock" => out.push(Item::NoRestock),
+                "open" => out.push(Item::Assume(f[1].split(',').map(|n| n.parse().unwrap()).collect())),
                 "restock" => out.push(Item::Restock {
                     min: f.iter().find_map(|t| t.strip_prefix("hp=")).map_or(90, |v| v.parse().unwrap()),
                 }),
@@ -370,6 +374,7 @@ pub struct Walker {
     pub plan_note: Option<String>,
     last_cycle: u32,
     pub no_restock: bool,
+    assumed: Vec<u16>,
 }
 
 impl Walker {
@@ -392,6 +397,7 @@ impl Walker {
             plan_note: None,
             last_cycle: 0,
             no_restock: false,
+            assumed: Vec::new(),
         }
     }
 
@@ -440,6 +446,12 @@ impl Walker {
                         continue;
                     }
                 }
+                Item::Assume(list) => {
+                    let list = list.clone();
+                    self.assumed.extend(list);
+                    self.advance();
+                    continue;
+                }
                 Item::NoRestock => {
                     self.no_restock = true;
                     self.advance();
@@ -468,7 +480,7 @@ impl Walker {
                         }
                         if let (Some((_, index, q)), Some(pl)) = (best, self.planner.clone()) {
                             self.foraged.insert(index);
-                            let opened: Vec<u16> = ctx.latched.iter().copied().collect();
+                            let opened: Vec<u16> = ctx.latched.iter().copied().chain(self.assumed.iter().copied()).collect();
                             if let Some(path) = pl.plan_dry(p, [q[0], q[1]], None, &opened, 10, false) {
                                 if pl.last_dz.get() <= 40 {
                                     eprintln!("RESTOCK from {:?} to {:?}: {} nodes", p, q, path.len());
@@ -504,7 +516,7 @@ impl Walker {
                     let mut path = match &self.planner {
                         Some(pl) => {
                             // A lift the player rides stays in the world where it stands (raised).
-                            let opened: Vec<u16> = ctx.latched.iter().copied().filter(|i| Some(*i) != plat).collect();
+                            let opened: Vec<u16> = ctx.latched.iter().copied().chain(self.assumed.iter().copied()).filter(|i| Some(*i) != plat).collect();
                             pl.plan_dry(p, [x, y], z, &opened, radius, plat.is_some())
                         }
                         None => None,
@@ -553,7 +565,7 @@ impl Walker {
         }
         let w = match item {
             Item::Wp(w) => w,
-            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock => unreachable!("expanded above"),
+            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Assume(_) => unreachable!("expanded above"),
             Item::Wait(_) => {
                 self.waiting = true;
                 return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });
@@ -629,7 +641,7 @@ impl Walker {
             self.since_best += 1;
             if self.since_best == 150 || self.since_best == 600 {
                 if let Some(pl) = self.planner.clone() {
-                    let opened: Vec<u16> = ctx.latched.iter().copied().collect();
+                    let opened: Vec<u16> = ctx.latched.iter().copied().chain(self.assumed.iter().copied()).collect();
                     match pl.plan(p, [w.x, w.y], w.z, &opened) {
                         Some(path) => {
                             self.replans += 1;
