@@ -30,6 +30,9 @@ fn zombie_weapon(o: &Obs) -> Option<u32> {
     // them, and only when plenty are left for the rest of the map.
     if owns(GRENADE) && o.ammo[2] >= 4 {
         Some(GRENADE)
+    } else if owns(SUPER_SHOTGUN) && o.ammo[0] >= 8 {
+        // Point blank, both barrels: two blasts gib one.
+        Some(SUPER_SHOTGUN)
     } else {
         None
     }
@@ -175,7 +178,8 @@ impl Fighter {
             let (dx, dy) = ((bp[0] - p[0]) as f64, (bp[1] - p[1]) as f64);
             (dx * dx + dy * dy).sqrt() < 140.0 && ((b.origin[2] >> 12) - p[2]).abs() < 120
         });
-        if o.weapon == want_weapon && aligned && dist <= Self::max_range(want_weapon) && !near_barrel {
+        let range = if m.kind == ZOMBIE && want_weapon == SUPER_SHOTGUN { 150 } else { Self::max_range(want_weapon) };
+        if o.weapon == want_weapon && aligned && dist <= range && !near_barrel {
             buttons |= button::R2;
         }
         if self.frame >= self.flip_at {
