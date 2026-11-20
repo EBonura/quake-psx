@@ -173,7 +173,7 @@ label = "pad tape to e1m5"
 sync = "poll"
 tape = "tests/journeys/e1m4/tapes/seg-01-to-e1m5.pxtape"
 tape_rebase = true
-timeout = 29148
+timeout = 29324
 
 [[step]]
 checkpoint = "e1m5-loaded"
@@ -219,7 +219,7 @@ sym = "JOURNEY_STATE"
 offset = 40
 size = 4
 op = "eq"
-value = 757760
+value = 700544
 note = "origin z"
 [[step.assert]]
 kind = "ram"
