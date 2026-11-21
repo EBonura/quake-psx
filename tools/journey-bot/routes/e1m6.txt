@@ -1,3 +1,7 @@
+# E1M6 (The Door To Chthon) from its own save to the E1M7 load, Easy. Floor button, room 2 wall button, room 3
+# button (trapdoor), the sinking stairs, the crushing-wall passage, the elevator, silver key, slipgate back;
+# the walkway over the stairwell, the west button (the floor rises), silver doors, bridge button, gold key, gold
+# doors, corridor button, floor button (exit doors, Shambler), exit pit.
 @drop 400
 @go 192 864 r=12
 @wait until=mover:31:top
