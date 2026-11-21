@@ -95,3 +95,13 @@ rises (E1M6 #110), a bridge that slides out (#10), stairs that sink (#16..#24). 
 level move before the step-up, as the player's movement does, so a cell under a low ceiling is reachable.
 `tests/e1m6.toml` plays E1M6 from `journeys/e1m6/start.mcd` (saved by the game at the E1M6 spawn while replaying the
 E1M5 journey) to the E1M7 load.
+
+The journeys are one chain (2026-11-21). Each start card is saved on the exact timeline of the previous journey:
+`mkcard.sh` in the lane replays that journey's tapes from its own card through the bot's checkpoint replay and saves
+slot 1 from the pause menu at the next map's spawn. `crates/quake-core/tests/journey_chain.rs` (the `journey-chain`
+host check) reads every start card with the game's save layout and asserts the map, skill, health, armour, ammo,
+weapons and keys equal the previous journey's closing checkpoint. E1M3's old card came from another timeline
+(25 shells and no rockets against E1M2's 46 and 8); E1M3 to E1M6 were recorded again from chained cards.
+Bot items added with the chain: `@nofight`/`@fight`, `rise` (a vertical swim leg), `--exit-to N` (a first map
+whose exit is not its usual one), `@kill` fires only with line of sight and aims at the body, the fighter never
+fires a grenade or rocket under 160 units and never targets Chthon, and a waiting player treads water.

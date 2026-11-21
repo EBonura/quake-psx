@@ -16,6 +16,8 @@ pub struct Wp {
     pub jump: bool,
     /// Swim to the point in three dimensions: look at it and hold jump only while it is higher.
     pub swim: bool,
+    /// A vertical swim leg (`rise`): straight up or down once under or over the point.
+    pub rise: bool,
     /// Tap the use button while waiting here.
     pub use_btn: bool,
     /// A button reached by walking into it: skipped when its mover has already moved.
@@ -177,6 +179,8 @@ pub enum Item {
     Restock { min: i32 },
     /// No automatic restock from here to the end of the phase (the next thing is worth more).
     NoRestock,
+    /// `@nofight` / `@fight`: hold the fighter off (a dash past a monster to a lift) or let it back.
+    Fight(bool),
     /// Movers (cooked index) the planner may treat as open from here on: doors that open on
     /// their own as the player walks up to them.
     Assume(Vec<u16>),
@@ -219,6 +223,8 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 }),
                 "use" => out.push(Item::UseAt { target: [num(1), num(2), num(3)], until: until(&f) }),
                 "norestock" => out.push(Item::NoRestock),
+                "nofight" => out.push(Item::Fight(false)),
+                "fight" => out.push(Item::Fight(true)),
                 "drop" => out.push(Item::Drop(num(1))),
                 "open" => out.push(Item::Assume(f[1].split(',').map(|n| n.parse().unwrap()).collect())),
                 "top" => out.push(Item::Top(f[1].split(',').map(|n| n.parse().unwrap()).collect())),
@@ -245,6 +251,7 @@ pub fn parse_route(text: &str) -> Vec<Item> {
             radius: 20,
             jump: false,
             swim: false,
+            rise: false,
             use_btn: false,
             touch: false,
             req: Vec::new(),
@@ -261,6 +268,9 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 w.jump = true;
             } else if *t == "swim" {
                 w.swim = true;
+            } else if *t == "rise" {
+                w.swim = true;
+                w.rise = true;
             } else if *t == "use" {
                 w.use_btn = true;
                 w.touch = true;
@@ -321,6 +331,8 @@ pub struct Ctx<'a> {
     pub latched: &'a HashSet<u16>,
     /// Authored bounds of the brush entities (whole units), by cooked source index.
     pub bounds: &'a std::collections::HashMap<u16, ([i32; 3], [i32; 3])>,
+    /// The map, for line-of-sight checks before a shot (`@kill`).
+    pub world: Option<&'a crate::world::World>,
 }
 
 /// Planning request: where the routesim binary and the cooked map are.
@@ -389,6 +401,7 @@ impl Planner {
                 radius: if i == last { radius } else { 16 },
                 jump: false,
                 swim: false,
+                rise: false,
                 use_btn: false,
                 touch: false,
                 req: Vec::new(),
@@ -427,6 +440,7 @@ impl Planner {
                 radius: 24,
                 jump: false,
                 swim: false,
+                rise: false,
                 use_btn: false,
                 touch: false,
                 req: Vec::new(),
@@ -473,6 +487,8 @@ pub struct Walker {
     pub plan_note: Option<String>,
     last_cycle: u32,
     pub no_restock: bool,
+    /// The fighter is held off (`@nofight`).
+    pub no_fight: bool,
     assumed: Vec<u16>,
 }
 
@@ -496,6 +512,7 @@ impl Walker {
             plan_note: None,
             last_cycle: 0,
             no_restock: false,
+            no_fight: false,
             assumed: Vec::new(),
         }
     }
@@ -562,6 +579,11 @@ impl Walker {
                     if let Some(pl) = &self.planner {
                         pl.drop.set(*n);
                     }
+                    self.advance();
+                    continue;
+                }
+                Item::Fight(on) => {
+                    self.no_fight = !*on;
                     self.advance();
                     continue;
                 }
@@ -639,7 +661,7 @@ impl Walker {
                         self.plan_note = Some(format!("go FAILED at {:?} -> ({},{})", p, x, y));
                     }
                     let mut fallback = path.take().unwrap_or_else(|| {
-                        vec![Wp { x, y, z: None, radius, jump: false, swim: false, use_btn: false, touch: false, req: Vec::new(), slow: false, skip: None, group: None }]
+                        vec![Wp { x, y, z: None, radius, jump: false, swim: false, rise: false, use_btn: false, touch: false, req: Vec::new(), slow: false, skip: None, group: None }]
                     });
                     if let Some(last) = fallback.last_mut() {
                         last.z = z;
@@ -684,10 +706,12 @@ impl Walker {
         }
         let w = match item {
             Item::Wp(w) => w,
-            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Assume(_) | Item::Drop(_) | Item::Top(_) => unreachable!("expanded above"),
+            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Fight(_) | Item::Assume(_) | Item::Drop(_) | Item::Top(_) => unreachable!("expanded above"),
             Item::Wait(_) => {
                 self.waiting = true;
-                return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });
+                // Treading water: holding jump keeps the head up, idle sinks.
+                let buttons = if o.water >= 2 { button::CROSS } else { 0 };
+                return Some(Command { pitch: pitch_to(o, 0), buttons, ..Command::default() });
             }
             Item::Shoot { target, weapon, .. } => {
                 self.waiting = true;
@@ -709,13 +733,21 @@ impl Walker {
                     .iter()
                     .find(|m| m.index == index)
                     .map_or([p[0], p[1], p[2]], |m| [m.origin[0] >> 12, m.origin[1] >> 12, (m.origin[2] >> 12) + 8]);
-                let (mut cmd, aligned) = Self::aim_at(o, target);
+                let (mut cmd, _) = Self::aim_at(o, target);
+                // A monster is a target about 48 units across, not a point: aligned when the view is
+                // within that body, so a close one moving across the view is still hit.
+                let body = {
+                    let d = f64::from(dist3(p, target).max(1));
+                    ((24.0f64).atan2(d) / std::f64::consts::TAU * 4096.0) as i32
+                };
+                let (_, yaw_err) = turn_to(o, heading(target[0] - p[0], target[1] - p[1]));
+                let aligned = yaw_err.abs() <= body.clamp(40, 220);
                 if o.weapon != weapon {
                     if self.frames >= self.last_cycle + 8 {
                         self.last_cycle = self.frames;
                         cmd.buttons |= button::R1;
                     }
-                } else if aligned && dist3(p, target) >= min {
+                } else if aligned && dist3(p, target) >= min && ctx.world.map_or(true, |w| w.los([o.origin[0], o.origin[1], o.origin[2] + (22 << 12)], [target[0] << 12, target[1] << 12, target[2] << 12])) {
                     cmd.buttons |= button::R2;
                 }
                 return Some(cmd);
@@ -825,6 +857,18 @@ impl Walker {
         if w.swim && in_liquid {
             // A dive: aim straight at the point (x, y, z) and swim along the look direction.
             let ez = w.z.unwrap_or(p[2]) - p[2];
+            // Straight above or below: the view yaw is meaningless there, so rise with jump (or sink)
+            // without steering instead of turning on the spot.
+            if w.rise && d < 48 && ez.abs() > 16 {
+                let (forward, strafe) = move_toward(o, w.x - p[0], w.y - p[1], 2);
+                return Some(Command {
+                    forward,
+                    strafe,
+                    yaw: 0,
+                    pitch: pitch_to(o, if ez > 0 { -900 } else { 900 }),
+                    buttons: if ez > 0 { button::CROSS } else { 0 },
+                });
+            }
             let horiz = (d as f64).max(8.0);
             let want = -((ez as f64).atan2(horiz) / std::f64::consts::TAU * 4096.0).round() as i32;
             return Some(Command {

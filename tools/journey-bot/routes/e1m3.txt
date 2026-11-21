@@ -14,6 +14,7 @@
 @wait until=zge:-130              # it carries the player up
 @wait until=mover:87:bottom
 @checkpoint
+@open 20,21                       # the landing doors open on approach
 @go -760 -1240 z=73 r=24 plat=87   # the stair button landing
 @shoot -828 -1240 104 weapon=1 until=mover:28:top
 @wait until=mover:24:top

@@ -215,6 +215,15 @@ env = { QUAKE_PSX_FRONTEND = "{tool:frontend}" }
 models = ["real", "mister", "mister,gpu-irq=never"]
 command = ["cargo", "run", "--locked", "--release", "--manifest-path", "host/quake-build/Cargo.toml", "--", "ambient-regress"]
 
+# The per-map journeys form one chain: every start card carries what the previous journey closed with
+# (crates/quake-core/tests/journey_chain.rs reads each card with the game's save layout).
+[[host]]
+name = "journey-chain"
+inputs = ["crates/", "tests/", "psoxide-pin/", "components.lock.json", "rust-toolchain.toml"]
+uses = ["sdk"]
+env_remove = ["CARGO_BUILD_JOBS"]
+command = ["cargo", "test", "--locked", "--release", "--manifest-path", "crates/quake-core/Cargo.toml", "--test", "journey_chain"]
+
 [clean]
 build = "ship"
 compare = ["quake-psx.bin", "quake-psx.cue", "quake-psx.exe"]

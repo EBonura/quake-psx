@@ -4,7 +4,7 @@ title = "Quake Episode 1: title to the last recorded map, one pad tape per map (
 disc = ["build/journey/quake-psx.cue"]
 symbols = ["build/journey/quake-psx.map"]
 pad = "dualshock"
-card_fixture = { path = "tests/journeys/e1m5/start.mcd", sha256 = "3c1d829497adae7b457d983c4319fef34b0e72e8ae64c524bbf73a7794564dec" }
+card_fixture = { path = "tests/journeys/e1m5/start.mcd", sha256 = "3d86a76628e123c1e376ab6dfec17181578fd06114ca0ce57564d9e33eb21b19" }
 max_ticks = 400000
 
 [[step]]
@@ -23,7 +23,7 @@ label = "pad tape to e1m5"
 sync = "poll"
 tape = "tests/journeys/e1m5/tapes/seg-00-to-e1m5.pxtape"
 tape_rebase = true
-timeout = 4204
+timeout = 4380
 
 [[step]]
 checkpoint = "e1m5-loaded"
@@ -67,7 +67,7 @@ sym = "JOURNEY_STATE"
 offset = 40
 size = 4
 op = "eq"
-value = 734543
+value = 700544
 note = "origin z"
 [[step.assert]]
 kind = "ram"
@@ -75,7 +75,7 @@ sym = "JOURNEY_STATE"
 offset = 76
 size = 4
 op = "eq"
-value = 91
+value = 55
 note = "health"
 [[step.assert]]
 kind = "ram"
@@ -91,7 +91,7 @@ sym = "JOURNEY_STATE"
 offset = 88
 size = 4
 op = "eq"
-value = 84
+value = 54
 note = "shells"
 [[step.assert]]
 kind = "ram"
@@ -107,7 +107,7 @@ sym = "JOURNEY_STATE"
 offset = 96
 size = 4
 op = "eq"
-value = 17
+value = 30
 note = "rockets"
 [[step.assert]]
 kind = "ram"
@@ -171,7 +171,7 @@ label = "pad tape to e1m6"
 sync = "poll"
 tape = "tests/journeys/e1m5/tapes/seg-01-to-e1m6.pxtape"
 tape_rebase = true
-timeout = 25728
+timeout = 30484
 
 [[step]]
 checkpoint = "e1m6-loaded"
@@ -225,7 +225,7 @@ sym = "JOURNEY_STATE"
 offset = 76
 size = 4
 op = "eq"
-value = 95
+value = 78
 note = "health"
 [[step.assert]]
 kind = "ram"
@@ -241,7 +241,7 @@ sym = "JOURNEY_STATE"
 offset = 88
 size = 4
 op = "eq"
-value = 100
+value = 86
 note = "shells"
 [[step.assert]]
 kind = "ram"
@@ -249,7 +249,7 @@ sym = "JOURNEY_STATE"
 offset = 92
 size = 4
 op = "eq"
-value = 149
+value = 116
 note = "nails"
 [[step.assert]]
 kind = "ram"
@@ -257,7 +257,7 @@ sym = "JOURNEY_STATE"
 offset = 96
 size = 4
 op = "eq"
-value = 16
+value = 29
 note = "rockets"
 [[step.assert]]
 kind = "ram"

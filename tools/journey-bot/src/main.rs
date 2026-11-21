@@ -165,6 +165,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     let mut single = false;
     let mut settle = 0u32;
     let mut load_settle = 0u32;
+    let mut exit_to: Option<u32> = None;
     let mut cp_base: Option<(PathBuf, u32)> = None;
     let mut cp_dir: Option<PathBuf> = None;
     let mut route_file: Option<String> = None;
@@ -192,6 +193,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             "--single" => { single = true; i += 1; }
             "--settle" => { settle = args.rest[i + 1].parse().unwrap(); i += 2; }
             "--load-settle" => { load_settle = args.rest[i + 1].parse().unwrap(); i += 2; }
+            "--exit-to" => { exit_to = Some(args.rest[i + 1].parse().unwrap()); i += 2; }
             "--cp" => { cp_base = Some((PathBuf::from(&args.rest[i + 1]), args.rest[i + 2].parse().unwrap())); i += 3; }
             "--cp-dir" => { cp_dir = Some(PathBuf::from(&args.rest[i + 1])); i += 2; }
             "--route-file" => { route_file = Some(args.rest[i + 1].clone()); i += 2; }
@@ -213,6 +215,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
     journey.single = single;
     journey.settle = settle;
     journey.load_settle = load_settle;
+    journey.exit_to = exit_to;
     let mut card_sha: Option<(String, String)> = None;
     if let Some(path) = &card_in {
         let bytes = std::fs::read(path).expect("--card-in");
@@ -379,7 +382,7 @@ fn play(session: &mut Session, addr: u32, args: &Args) {
             let near: Vec<String> = o.monsters.iter().filter(|m| m.alive()).filter_map(|m| {
                 let (dx, dy) = ((m.origin[0] >> 12) - p[0], (m.origin[1] >> 12) - p[1]);
                 let d = ((dx * dx + dy * dy) as f64).sqrt() as i32;
-                (d < 1500).then(|| format!("m{}k{}s{}hp{}@{}", m.index, m.kind, m.state, m.health, d))
+                (d < 1500).then(|| format!("m{}k{}s{}hp{}@{}({},{},{})", m.index, m.kind, m.state, m.health, d, m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12))
             }).collect();
             let mv: Vec<String> = o.movers.iter().filter(|m| m.state != 0 || m.class == 0x10 || m.class == 0x11).map(|m| format!("{}:{}@{},{},{}", m.index, m.state, m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12)).collect();
             let pp = o.pos();

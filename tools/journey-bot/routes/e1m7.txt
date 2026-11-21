@@ -1,0 +1,37 @@
+# E1M7 (The House of Chthon) from its own save to the end of the episode, Easy. The rune wakes Chthon; the lift to
+# the upper floor; the two floor buttons lower the electrodes and the button by the lift fires the lightning (one
+# shock on Easy, the loop repeats on harder skills); the lava bridge and the tunnel door open; down the shaft to the
+# exit, which plays the episode's end text and loads start.
+@drop 200
+@go 8 64 r=10
+@wait until=frames:20
+@go 1216 64 r=12
+@wait until=zge:160
+@checkpoint
+@go 352 -248 z=219 r=10 plat=7 skipif=dead:2
+@go 352 376 z=219 r=10 plat=7 skipif=dead:2
+@go 824 64 z=172 r=10 plat=7 skipif=dead:2
+@wait until=frames:45
+@go 352 -248 z=219 r=10 plat=7 skipif=dead:2
+@go 352 376 z=219 r=10 plat=7 skipif=dead:2
+@go 824 64 z=172 r=10 plat=7 skipif=dead:2
+@wait until=frames:45
+@go 352 -248 z=219 r=10 plat=7 skipif=dead:2
+@go 352 376 z=219 r=10 plat=7 skipif=dead:2
+@go 824 64 z=172 r=10 plat=7 skipif=dead:2
+@wait until=frames:45
+@go 352 -248 z=219 r=10 plat=7 skipif=dead:2
+@go 352 376 z=219 r=10 plat=7 skipif=dead:2
+@go 824 64 z=172 r=10 plat=7 skipif=dead:2
+@wait until=frames:45
+@go 352 -248 z=219 r=10 plat=7 skipif=dead:2
+@go 352 376 z=219 r=10 plat=7 skipif=dead:2
+@go 824 64 z=172 r=10 plat=7 skipif=dead:2
+@wait until=frames:45
+@wait until=dead:2
+@checkpoint
+@drop 1200
+@open 37,38,107
+@go 700 50 r=12 plat=7
+@go 800 60 z=34 r=10 plat=7
+@push 1016 52 until=frames:900

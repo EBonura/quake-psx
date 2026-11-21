@@ -4,7 +4,7 @@ title = "Quake Episode 1: title to the last recorded map, one pad tape per map (
 disc = ["build/journey/quake-psx.cue"]
 symbols = ["build/journey/quake-psx.map"]
 pad = "dualshock"
-card_fixture = { path = "tests/journeys/e1m6/start.mcd", sha256 = "bfee19e9c479a134efc778c5a6613e63b664f6d2fe44364b08ac2036e154edfe" }
+card_fixture = { path = "tests/journeys/e1m6/start.mcd", sha256 = "0b6d5327885474f2685a333bbb7e1be32d992715430f57adf4c27249c9c099ef" }
 max_ticks = 400000
 
 [[step]]
@@ -75,7 +75,7 @@ sym = "JOURNEY_STATE"
 offset = 76
 size = 4
 op = "eq"
-value = 95
+value = 78
 note = "health"
 [[step.assert]]
 kind = "ram"
@@ -91,7 +91,7 @@ sym = "JOURNEY_STATE"
 offset = 88
 size = 4
 op = "eq"
-value = 100
+value = 86
 note = "shells"
 [[step.assert]]
 kind = "ram"
@@ -99,7 +99,7 @@ sym = "JOURNEY_STATE"
 offset = 92
 size = 4
 op = "eq"
-value = 149
+value = 116
 note = "nails"
 [[step.assert]]
 kind = "ram"
@@ -107,7 +107,7 @@ sym = "JOURNEY_STATE"
 offset = 96
 size = 4
 op = "eq"
-value = 16
+value = 29
 note = "rockets"
 [[step.assert]]
 kind = "ram"
@@ -171,7 +171,7 @@ label = "pad tape to e1m7"
 sync = "poll"
 tape = "tests/journeys/e1m6/tapes/seg-01-to-e1m7.pxtape"
 tape_rebase = true
-timeout = 18804
+timeout = 19212
 
 [[step]]
 checkpoint = "e1m7-loaded"
@@ -225,7 +225,7 @@ sym = "JOURNEY_STATE"
 offset = 76
 size = 4
 op = "eq"
-value = 88
+value = 100
 note = "health"
 [[step.assert]]
 kind = "ram"
@@ -233,7 +233,7 @@ sym = "JOURNEY_STATE"
 offset = 80
 size = 4
 op = "eq"
-value = 75
+value = 96
 note = "armor"
 [[step.assert]]
 kind = "ram"
@@ -241,7 +241,7 @@ sym = "JOURNEY_STATE"
 offset = 88
 size = 4
 op = "eq"
-value = 80
+value = 76
 note = "shells"
 [[step.assert]]
 kind = "ram"
@@ -257,7 +257,7 @@ sym = "JOURNEY_STATE"
 offset = 96
 size = 4
 op = "eq"
-value = 24
+value = 36
 note = "rockets"
 [[step.assert]]
 kind = "ram"

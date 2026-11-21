@@ -1,6 +1,5 @@
 # E1M4 (the Grisly Grotto) spawn to the E1M5 load.
--256 2200 r=20                  # through the trigger plane of the first doors
-@wait until=latched:16          # the doors of the start hall open
+@push -256 2150 until=latched:16 # walk into the trigger plane until the start hall doors open
 @go 250 1330 z=849 r=16         # the round pit, then the ramp down to the lake shore
 # The lake: dive under the stone building and come up inside it (planned by routesim swim).
 300 1300 z=830 r=24 swim
@@ -23,6 +22,7 @@
 @go 704 1360 z=936 r=12 plat=39 # south along the straight path through the pentagram doors to the key
 704 1346 r=8                    # the silver key on its plinth
 @wait until=key:1
+@checkpoint
 # Back off the plinth into the lake, across it to the south shore.
 704 1220 r=20
 704 1150 r=24
@@ -35,6 +35,7 @@
 704 20 r=12
 @push 704 -30 until=latched:57  # the silver key opens the doors
 @wait until=mover:57:top
+@checkpoint
 @go 528 -560 r=14               # east round the hall to the foot of the elevator
 @wait until=zge:1100            # the deck carries the player up to the symbols room
 @open 2,3,12,13                 # the hall doors that open as the player walks up

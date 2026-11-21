@@ -143,6 +143,13 @@ name = "psx-math"
 version = "0.1.0"
 
 [[package]]
+name = "psx-mc"
+version = "0.1.0"
+dependencies = [
+ "psx-math",
+]
+
+[[package]]
 name = "psx-pack"
 version = "0.1.0"
 dependencies = [
@@ -206,6 +213,7 @@ version = "0.1.0"
 dependencies = [
  "psx-hw",
  "psx-io",
+ "psx-rt",
 ]
 
 [[package]]
@@ -243,6 +251,7 @@ dependencies = [
  "psx-gpu",
  "psx-gte",
  "psx-math",
+ "psx-mc",
  "psx-pack",
  "quake-formats",
 ]

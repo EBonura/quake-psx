@@ -30,6 +30,10 @@ const SEGMENTS: &[Segment] = &[
     Segment { map: 4, route: include_str!("../routes/e1m4.txt"), next_map: 5 },
     Segment { map: 5, route: include_str!("../routes/e1m5.txt"), next_map: 6 },
     Segment { map: 6, route: include_str!("../routes/e1m6.txt"), next_map: 7 },
+    // The end of the episode: the exit slipgate loads `start` after the finale text.
+    Segment { map: 7, route: include_str!("../routes/e1m7.txt"), next_map: 0 },
+    // The secret level (reached from E1M4's secret exit) leads back to E1M5, as in the original.
+    Segment { map: 8, route: include_str!("../routes/e1m8.txt"), next_map: 5 },
 ];
 
 enum Phase {
@@ -81,6 +85,8 @@ pub struct Journey {
     pub single: bool,
     pub settle: u32,
     pub load_settle: u32,
+    /// The map the first segment's exit leads to, when not its usual one (`--exit-to`, E1M4's secret exit to E1M8).
+    pub exit_to: Option<u32>,
 }
 
 const TO_EASY: &str = "544 544\n336 768\n272 1200\n256 1328\n232 1352 r=28\n";
@@ -243,6 +249,7 @@ impl Journey {
             single: false,
             settle: 0,
             load_settle: 0,
+            exit_to: None,
         }
     }
 
@@ -371,7 +378,7 @@ impl Script for Journey {
         let ctx_latched = self.latched.clone();
         let no_bounds = std::collections::HashMap::new();
         let bounds = self.world.as_ref().map_or_else(|| no_bounds, |(_, w)| w.mover_bounds());
-        let ctx = Ctx { latched: &ctx_latched, bounds: &bounds };
+        let ctx = Ctx { latched: &ctx_latched, bounds: &bounds, world: self.world.as_ref().map(|(_, w)| w) };
         let mut next_phase: Option<Phase> = None;
         let cmd = match &mut self.phase {
             Phase::Menu { pressed } => {
@@ -414,7 +421,8 @@ impl Script for Journey {
                     self.cp_index += 1;
                     self.pending_checkpoint = Some(self.cp_index);
                 }
-                if o.map == s.next_map {
+                let next_map = self.exit_to.unwrap_or(s.next_map);
+                if o.map == next_map {
                     self.segment_ends.push((s.map, self.frame));
                     if !self.single && *seg + 1 < SEGMENTS.len() {
                         let walker = segment_walker(&self.routesim, &self.maps_dir, *seg + 1, &mut self.cp_phases, &mut self.cp_index);
@@ -426,12 +434,12 @@ impl Script for Journey {
                     }
                     Command::default()
                 } else if o.map != s.map {
-                    self.failure = Some(format!("unexpected map {} (wanted {})", o.map, s.map));
+                    self.failure = Some(format!("unexpected map {} (wanted {} or {next_map})", o.map, s.map));
                     return None;
                 } else {
                     let world = &self.world.as_ref().expect("world loaded").1;
                     // Swimming: no fight, the air is short (the route is a long dive).
-                    let engaged = if o.water >= 2 { None } else { self.fighter.step(o, world) };
+                    let engaged = if o.water >= 2 || walker.no_fight { None } else { self.fighter.step(o, world) };
                     match engaged {
                         Some(c) => {
                             self.last = format!("FIGHT f{} s{} y{} b{:x}", c.forward, c.strafe, c.yaw, c.buttons);

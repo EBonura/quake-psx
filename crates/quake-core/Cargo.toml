@@ -33,3 +33,5 @@ psx-gte = { path = "../../.psoxide/sdk/crates/psx-gte" }
 
 [dev-dependencies]
 psx-gpu = { path = "../../.psoxide/sdk/crates/psx-gpu" }
+# The journey chain test reads the start cards with the SDK card filesystem (host build, no SIO0).
+psx-mc = { path = "../../.psoxide/sdk/crates/psx-mc", default-features = false }

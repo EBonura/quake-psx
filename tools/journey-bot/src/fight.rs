@@ -18,6 +18,10 @@ pub const ROCKET: u32 = 6;
 /// Zombies get up again until one hit takes more than their 60 health, so they are only
 /// fought with a weapon that does that at close range (see `zombie_weapon`).
 const ZOMBIE: u8 = 3;
+/// Chthon only dies to the lightning trap (boss.qc ignores every other damage): never a target.
+const BOSS: u8 = 8;
+/// Closest a grenade or rocket is fired at (whole units): the 120-unit blast plus a margin.
+const SPLASH_SAFE: i32 = 160;
 
 fn threat(m: &Monster) -> bool {
     m.alive() && !matches!(m.state, 13 | 14 | 15 | 17)
@@ -93,7 +97,7 @@ impl Fighter {
         let eye = [o.origin[0], o.origin[1], o.origin[2] + (22 << 12)];
         let mut best: Option<(&Monster, i32)> = None;
         for m in &o.monsters {
-            if !threat(m) || (m.kind == ZOMBIE && zombie_weapon(o).is_none()) {
+            if !threat(m) || m.kind == BOSS || (m.kind == ZOMBIE && zombie_weapon(o).is_none()) {
                 continue;
             }
             let mp = [m.origin[0] >> 12, m.origin[1] >> 12, m.origin[2] >> 12];
@@ -179,7 +183,10 @@ impl Fighter {
             (dx * dx + dy * dy).sqrt() < 140.0 && ((b.origin[2] >> 12) - p[2]).abs() < 120
         });
         let range = if m.kind == ZOMBIE && want_weapon == SUPER_SHOTGUN { 150 } else { Self::max_range(want_weapon) };
-        if o.weapon == want_weapon && aligned && dist <= range && !near_barrel {
+        // An explosive at point blank takes the player too (a grenade into a zombie at 60 units cost 28
+        // health in E1M3): back off first.
+        let splash_safe = !matches!(want_weapon, GRENADE | ROCKET) || dist >= SPLASH_SAFE;
+        if o.weapon == want_weapon && aligned && dist <= range && !near_barrel && splash_safe {
             buttons |= button::R2;
         }
         if self.frame >= self.flip_at {
@@ -189,6 +196,8 @@ impl Fighter {
         let weapon = o.weapon;
         let (forward, strafe) = if err.abs() > 700 {
             (0, 0)
+        } else if matches!(weapon, GRENADE | ROCKET) && dist < SPLASH_SAFE {
+            (-127, 60 * self.strafe_sign)
         } else if weapon == AXE {
             (if dist > 56 { 127 } else { 0 }, 0)
         } else if matches!(weapon, SHOTGUN | SUPER_SHOTGUN) {
