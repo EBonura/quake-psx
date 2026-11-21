@@ -105,3 +105,11 @@ weapons and keys equal the previous journey's closing checkpoint. E1M3's old car
 Bot items added with the chain: `@nofight`/`@fight`, `rise` (a vertical swim leg), `--exit-to N` (a first map
 whose exit is not its usual one), `@kill` fires only with line of sight and aims at the body, the fighter never
 fires a grenade or rocket under 160 units and never targets Chthon, and a waiting player treads water.
+
+E1M7 to the end of the episode (`tests/e1m7.toml`), the secret branch (`tests/e1m4-secret.toml`: E1M4 by its secret
+exit, `--exit-to 8`; `tests/e1m8.toml`: Ziggurat Vertigo to its exit, which loads E1M5 as in the original). Bot items
+added with them: `@leap X Y SPEED until=` (stand still, jump, then drift at a set speed; E1M8's gravity is 100),
+`far:IDX:D` (a monster at least D away), grenades thrown low on E1M8, and on E1M8 or with no hitscan ammo left the
+fighter takes grenades at middle range and the Super Nailgun close in. The E1M8 tape was assembled by checkpoint
+replay over intermediate route texts (kept in the lane, quake-e1/out/m8/lineage-*.txt); the committed text plays the
+same legs but does not regenerate that exact tape.

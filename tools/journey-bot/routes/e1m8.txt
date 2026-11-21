@@ -1,1 +1,72 @@
-# E1M8 (Ziggurat Vertigo) from its own save to the E1M5 load. Not routed yet.
+# E1M8 (Ziggurat Vertigo) from its own save to the E1M5 load (its exit leads back to E1M5, as in the original), Easy,
+# gravity 100. Out of the spawn notch, the Pentagram, lift #2, the jump onto the north terrace and the first top
+# button (#46); down the shaft into the ziggurat, the jump onto the inner ledge, button #64 (unbars the south lifts);
+# lift #4, a measured leap onto the south terrace, button #67 (opens #79/#80/#81); the drop to door #80, the silver
+# key in the middle room; the moat, the jump onto the bridge, the silver doors, the exit.
+@drop 800
+@push 1024 640 jump until=posin:y:560:660
+@go 672 536 r=10
+@go 1216 704 r=10
+@wait until=zge:0
+@wait until=dead:44&dead:45
+@checkpoint
+@drop 800
+@go 700 690 r=16
+700 590 r=24 jump
+@go 592 440 r=16
+592 400 r=12 jump
+592 340 r=12 jump
+@go 672 160 r=16
+@push 672 20 until=latched:46
+@checkpoint
+@open 40,41,43,46
+@drop 1200
+@go 669 224 r=12
+@go 540 300 r=8
+@nofight
+@push 515 380 until=zle:0
+@wait until=zle:-690
+@fight
+344 352 r=12                      # the ledge west of the shaft foot
+@go 637 300 r=16
+@go 650 -200 r=16
+@nofight
+690 -240 r=6                      # on the floor of the gap, clear of the slab
+@leap 560 -230 25 until=posin:x:500:615&zle:-540&zge:-560
+@drop 40
+@go 544 -300 z=-552 r=10
+@push 544 -360 until=latched:64
+@fight
+@checkpoint
+@open 40,41,43,46,62,63,64
+@drop 300
+@nofight
+@go 1248 -704 r=10
+@wait until=zge:0
+@go 1165 -560 r=8 plat=4
+@leap 700 -450 95 until=zge:270&posin:x:300:820&posin:y:-590:-150
+@fight
+@go 592 -240 z=280 r=10
+@push 592 -130 until=latched:67
+@checkpoint
+@open 40,41,43,46,62,63,64,67,79,80,81
+@drop 300
+@go 720 -580 z=280 r=10
+@nofight
+@push 720 -690 until=zle:110
+640 -735 r=12                      # the west end of the platform before door 80
+@fight
+@wait until=dead:69&dead:74        # the two ogres come out of the door corridor
+@go 720 -520 r=10
+@go 672 100 r=12
+@push 672 152 until=key:1
+@checkpoint
+@open 40,41,43,46,62,63,64,67,79,80,81,107,108
+@drop 200
+@go 1110 -483 r=8
+@push 1110 -483 jump until=zge:60
+@push 1250 -490 until=posin:x:1200:1300&zle:30&zge:20
+@go 1248 -480 r=10
+@push 1248 -380 until=latched:107
+@go 1500 -240 r=16
+@push 1540 -240 until=frames:600

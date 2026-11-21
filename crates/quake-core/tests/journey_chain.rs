@@ -37,6 +37,9 @@ const LINKS: &[Link] = &[
     Link { journey: "e1m5", previous: "e1m4", checkpoint: "e1m5-loaded" },
     Link { journey: "e1m6", previous: "e1m5", checkpoint: "e1m6-loaded" },
     Link { journey: "e1m7", previous: "e1m6", checkpoint: "e1m7-loaded" },
+    // The secret branch: E1M4 by its secret exit, then E1M8 (whose exit leads back to E1M5).
+    Link { journey: "e1m4-secret", previous: "e1m3", checkpoint: "e1m4-loaded" },
+    Link { journey: "e1m8", previous: "e1m4-secret", checkpoint: "e1m8-loaded" },
 ];
 
 /// What a save says the player carries, decoded the way `savegame::restore` reads it.

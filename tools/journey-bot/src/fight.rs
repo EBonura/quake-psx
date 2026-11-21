@@ -64,6 +64,18 @@ impl Fighter {
         if owns(ROCKET) && rockets > 0 && dist > 220 && o.health > 40 && dist < 700 {
             return ROCKET;
         }
+        // Grenades at middle range: 120 a hit, and none of the splash reaches the player there. On E1M8
+        // (an eighth of the gravity) the throw is aimed low, see `step`.
+        // Used on E1M8 (every ogre, little hitscan ammo) and wherever the hitscan ammo is gone; the
+        // recorded E1M1..E1M7 journeys fought with the order below.
+        let lobber = o.map == 8 || (shells < 2 && nails < 2);
+        if lobber && owns(GRENADE) && rockets >= 2 && (SPLASH_SAFE..=450).contains(&dist) {
+            return GRENADE;
+        }
+        // Close in, the Super Nailgun out-damages the double barrel while nails last.
+        if lobber && dist < SPLASH_SAFE && owns(SUPER_NAILGUN) && nails >= 20 {
+            return SUPER_NAILGUN;
+        }
         // The double barrel spreads: close work only. Nails hold their line at range.
         if dist <= 300 && owns(SUPER_SHOTGUN) && shells >= 2 {
             return SUPER_SHOTGUN;
@@ -171,7 +183,10 @@ impl Fighter {
             let dy = (mp[1] - p[1]) as f64;
             (dx * dx + dy * dy).sqrt()
         };
-        let dz = (mp[2] + 8 - (p[2] + 22)) as f64;
+        // Under E1M8's gravity (100, not 800) a grenade barely drops: aim below the target by the
+        // climb its 200 upward launch speed gives it over the flight.
+        let lob = if o.map == 8 && want_weapon == GRENADE { horiz / 3.0 } else { 0.0 };
+        let dz = (mp[2] + 8 - (p[2] + 22)) as f64 - lob;
         let pitch_want = -((dz.atan2(horiz.max(1.0)) / (2.0 * std::f64::consts::PI) * 4096.0).round() as i32);
         let tolerance = (40 * 650 / dist.max(1)).clamp(30, 260);
         let aligned = err.abs() <= tolerance;

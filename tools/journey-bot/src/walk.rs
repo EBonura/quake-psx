@@ -58,6 +58,8 @@ pub enum Cond {
     PosIn(usize, i32, i32),
     /// The monster with this cooked source index is dead (or gone).
     Dead(u16),
+    /// The monster is at least this far from the player across the floor (or dead): `far:IDX:D`.
+    Far(u16, i32),
     /// Every condition holds.
     All(Vec<Cond>),
     /// The step has run this many frames.
@@ -106,6 +108,7 @@ impl Cond {
                 f[3].parse().unwrap(),
             ),
             "dead" => Cond::Dead(f[1].parse().unwrap()),
+            "far" => Cond::Far(f[1].parse().unwrap(), f[2].parse().unwrap()),
             "onmover" => Cond::OnMover(f[1].parse().unwrap(), f.get(2).map_or(4, |v| v.parse().unwrap())),
             "inrange" => Cond::InRange(
                 f[1].parse().unwrap(),
@@ -131,6 +134,11 @@ impl Cond {
             Cond::Frames(n) => frames >= *n,
             Cond::PosIn(axis, lo, hi) => (*lo..=*hi).contains(&o.pos()[*axis]),
             Cond::Dead(i) => o.monsters.iter().find(|m| m.index == *i).map_or(true, |m| !m.alive()),
+            Cond::Far(i, d) => o.monsters.iter().find(|m| m.index == *i).map_or(true, |m| {
+                let p = o.pos();
+                let (dx, dy) = (((m.origin[0] >> 12) - p[0]) as i64, ((m.origin[1] >> 12) - p[1]) as i64);
+                !m.alive() || dx * dx + dy * dy >= i64::from(*d) * i64::from(*d)
+            }),
             Cond::All(list) => list.iter().all(|c| c.holds(o, ctx, frames)),
             Cond::OnMover(i, margin) => {
                 let Some((mins, maxs)) = ctx.bounds.get(i) else { return false };
@@ -172,6 +180,9 @@ pub enum Item {
     UseAt { target: [i32; 3], until: Cond },
     /// Walk straight at `target` (no pathing, no stopping) until the condition.
     Push { target: [i32; 2], until: Cond, jump: bool },
+    /// Jump toward `target` at a set ground speed (whole units per second) until the condition: a
+    /// measured leap onto a ledge where a full-speed jump would sail over (E1M8's low gravity).
+    Leap { target: [i32; 2], speed: i32, until: Cond },
     /// Walk to `(x, y)` along a planned dry path (every node kept), planned from wherever the
     /// player stands when the item is reached.
     /// Walk to the nearest health or armour pickup (dry path, no climb or drop) until health
@@ -232,6 +243,7 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                     min: f.iter().find_map(|t| t.strip_prefix("hp=")).map_or(90, |v| v.parse().unwrap()),
                 }),
                 "push" => out.push(Item::Push { target: [num(1), num(2)], until: until(&f), jump: f.contains(&"jump") }),
+                "leap" => out.push(Item::Leap { target: [num(1), num(2)], speed: num(3), until: until(&f) }),
                 "go" => out.push(Item::Go {
                     x: num(1),
                     y: num(2),
@@ -685,7 +697,7 @@ impl Walker {
                         continue;
                     }
                 }
-                Item::Wait(c) | Item::Shoot { until: c, .. } | Item::UseAt { until: c, .. } | Item::Push { until: c, .. } => {
+                Item::Wait(c) | Item::Shoot { until: c, .. } | Item::UseAt { until: c, .. } | Item::Push { until: c, .. } | Item::Leap { until: c, .. } => {
                     if c.holds(o, ctx, self.item_frames) {
                         self.advance();
                         continue;
@@ -697,7 +709,7 @@ impl Walker {
         let item = self.route[self.next].clone();
         // Standing items start from rest: kill any slide first, with the body, so a ledge
         // stop does not become a fall.
-        if !matches!(item, Item::Wp(_) | Item::Push { .. }) {
+        if !matches!(item, Item::Wp(_) | Item::Push { .. } | Item::Leap { .. }) {
             let (vx, vy) = (o.velocity[0] >> 12, o.velocity[1] >> 12);
             if vx * vx + vy * vy > 80 * 80 && o.grounded {
                 let (forward, strafe) = move_toward(o, -vx, -vy, 8);
@@ -733,7 +745,13 @@ impl Walker {
                     .iter()
                     .find(|m| m.index == index)
                     .map_or([p[0], p[1], p[2]], |m| [m.origin[0] >> 12, m.origin[1] >> 12, (m.origin[2] >> 12) + 8]);
-                let (mut cmd, _) = Self::aim_at(o, target);
+                // E1M8's gravity is an eighth of the others': a grenade barely drops, so it is thrown low.
+                let mut aim = target;
+                if o.map == 8 && weapon == 5 {
+                    let h = (((target[0] - p[0]) as f64).powi(2) + ((target[1] - p[1]) as f64).powi(2)).sqrt();
+                    aim[2] -= (h / 3.0) as i32;
+                }
+                let (mut cmd, _) = Self::aim_at(o, aim);
                 // A monster is a target about 48 units across, not a point: aligned when the view is
                 // within that body, so a close one moving across the view is still hit.
                 let body = {
@@ -760,6 +778,23 @@ impl Walker {
                     cmd.buttons |= button::SQUARE;
                 }
                 return Some(cmd);
+            }
+            Item::Leap { target, speed, .. } => {
+                let (yaw, _) = turn_to(o, heading(target[0] - p[0], target[1] - p[1]));
+                let (forward, strafe) = move_toward(o, target[0] - p[0], target[1] - p[1], 4);
+                // Full stick is 320 units a second on the ground.
+                let cap = (speed * 127 / 320).clamp(1, 127);
+                let len = ((forward * forward + strafe * strafe) as f64).sqrt().max(1.0);
+                let scale = (cap as f64 / len).min(1.0);
+                let (forward, strafe) = ((forward as f64 * scale) as i32, (strafe as f64 * scale) as i32);
+                let (vx, vy) = (o.velocity[0] >> 12, o.velocity[1] >> 12);
+                let settled = vx * vx + vy * vy <= (speed + 20) * (speed + 20);
+                // On the ground: stand still until settled, then jump; the measured speed is only
+                // given from the jump on.
+                let jump_now = o.grounded && settled && self.item_frames > 15;
+                let buttons = if jump_now { button::CROSS } else { 0 };
+                let (forward, strafe) = if o.grounded && !jump_now { (0, 0) } else { (forward, strafe) };
+                return Some(Command { forward, strafe, yaw, pitch: pitch_to(o, 0), buttons });
             }
             Item::Push { target, jump, .. } => {
                 let (yaw, _) = turn_to(o, heading(target[0] - p[0], target[1] - p[1]));
