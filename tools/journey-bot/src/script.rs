@@ -29,6 +29,7 @@ const SEGMENTS: &[Segment] = &[
     Segment { map: 3, route: include_str!("../routes/e1m3.txt"), next_map: 4 },
     Segment { map: 4, route: include_str!("../routes/e1m4.txt"), next_map: 5 },
     Segment { map: 5, route: include_str!("../routes/e1m5.txt"), next_map: 6 },
+    Segment { map: 6, route: include_str!("../routes/e1m6.txt"), next_map: 7 },
 ];
 
 enum Phase {
@@ -91,7 +92,7 @@ fn planner_for(routesim: &str, maps_dir: &str, map: u32) -> Option<Planner> {
     if routesim.is_empty() {
         return None;
     }
-    Some(Planner { last_dz: Default::default(), drop: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
+    Some(Planner { last_dz: Default::default(), drop: Default::default(), top: Default::default(), routesim: routesim.to_string(), psb: format!("{maps_dir}/{}.psb", MAP_NAMES[map as usize]) })
 }
 
 /// The route text of segment `seg`: the file named by `QUAKE_BOT_ROUTE` when set (route authoring), else the built-in one.

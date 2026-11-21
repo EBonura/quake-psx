@@ -89,3 +89,9 @@ units. `--load-settle N` idles N frames after a card load so the opening checkpo
 that opens by loading a card pins its opening checkpoint by state only, because the first frame of a load is
 nearly black). `QUAKE_BOT_ROUTE=<file>` replaces the built-in route text for authoring. The journey state block
 now carries the trains as class 0x11 mover rows (journey-telemetry only).
+
+Added with E1M6: `@top a,b` tells the planner a mover now stands where it travelled to (`ROUTESIM_TOP`): a floor that
+rises (E1M6 #110), a bridge that slides out (#10), stairs that sink (#16..#24). routesim's path search now tries the
+level move before the step-up, as the player's movement does, so a cell under a low ceiling is reachable.
+`tests/e1m6.toml` plays E1M6 from `journeys/e1m6/start.mcd` (saved by the game at the E1M6 spawn while replaying the
+E1M5 journey) to the E1M7 load.

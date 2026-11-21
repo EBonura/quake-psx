@@ -1801,14 +1801,32 @@ fn walk_to(
                 queue.push_back(next);
                 continue;
             }
-            if across.fraction < quake_core::collision::Q12_ONE || across.start_solid {
-                continue;
-            }
+            // The step-up is only tried when the level move is blocked, as in the player's own
+            // movement. Lifting first made a cell under a low ceiling unreachable (E1M6's
+            // trapdoor stairs end under an overhang 24 units above the last step).
+            let across = if across.fraction < quake_core::collision::Q12_ONE || across.start_solid {
+                let level = scene_trace(
+                    scene,
+                    stand,
+                    Vec3I32 {
+                        x: next_x << 12,
+                        y: next_y << 12,
+                        z: stand.z,
+                    },
+                    scratch,
+                );
+                if level.fraction < quake_core::collision::Q12_ONE || level.start_solid {
+                    continue;
+                }
+                level
+            } else {
+                across
+            };
             let Some(floor) = floor_below(
                 scene,
                 next_x,
                 next_y,
-                head.z >> 12,
+                across.end.z >> 12,
                 STEP_HEIGHT + drop,
                 scratch,
             ) else {

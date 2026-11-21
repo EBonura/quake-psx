@@ -182,6 +182,9 @@ pub enum Item {
     Assume(Vec<u16>),
     /// Planned dry paths may drop this far (`@drop N`, 0 for routesim's default).
     Drop(i32),
+    /// Movers (cooked index) the planner places where they have travelled to (`@top a,b`): a
+    /// floor that rises, a bridge that slides out, stairs that sink. Passed as `ROUTESIM_TOP`.
+    Top(Vec<u16>),
     Go { x: i32, y: i32, z: Option<i32>, radius: i32, skip: Option<Cond>, plat: Option<u16> },
 }
 
@@ -218,6 +221,7 @@ pub fn parse_route(text: &str) -> Vec<Item> {
                 "norestock" => out.push(Item::NoRestock),
                 "drop" => out.push(Item::Drop(num(1))),
                 "open" => out.push(Item::Assume(f[1].split(',').map(|n| n.parse().unwrap()).collect())),
+                "top" => out.push(Item::Top(f[1].split(',').map(|n| n.parse().unwrap()).collect())),
                 "restock" => out.push(Item::Restock {
                     min: f.iter().find_map(|t| t.strip_prefix("hp=")).map_or(90, |v| v.parse().unwrap()),
                 }),
@@ -328,6 +332,8 @@ pub struct Planner {
     pub last_dz: std::cell::Cell<i32>,
     /// Largest drop (units) a planned dry path may take (`@drop N`); 0 keeps routesim's default.
     pub drop: std::cell::Cell<i32>,
+    /// Movers placed at their travelled position (`@top`), as `ROUTESIM_TOP`.
+    pub top: std::cell::RefCell<Vec<u16>>,
 }
 
 impl Planner {
@@ -346,6 +352,7 @@ impl Planner {
                 .args([&self.psb, "path", "--from", &from[0].to_string(), &from[1].to_string(), &from[2].to_string(), "--to", &to[0].to_string(), &to[1].to_string(), &z])
                 .args(&drop_args)
                 .env("ROUTESIM_OPEN", open.join(","))
+                .env("ROUTESIM_TOP", self.top.borrow().iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
                 .env("ROUTESIM_NO_SIMPLIFY", "1")
                 .env("ROUTESIM_PATH_Z", "1")
                 .env("ROUTESIM_MARGIN", margin)
@@ -400,6 +407,7 @@ impl Planner {
         let out = std::process::Command::new(&self.routesim)
             .args([&self.psb, "path", "--from", &from[0].to_string(), &from[1].to_string(), &from[2].to_string(), "--to", &to[0].to_string(), &to[1].to_string(), &z, "--liquid"])
             .env("ROUTESIM_OPEN", open.join(","))
+            .env("ROUTESIM_TOP", self.top.borrow().iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
             .output()
             .ok()?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -543,6 +551,13 @@ impl Walker {
                     self.advance();
                     continue;
                 }
+                Item::Top(list) => {
+                    if let Some(pl) = &self.planner {
+                        pl.top.borrow_mut().extend(list.iter().copied());
+                    }
+                    self.advance();
+                    continue;
+                }
                 Item::Drop(n) => {
                     if let Some(pl) = &self.planner {
                         pl.drop.set(*n);
@@ -669,7 +684,7 @@ impl Walker {
         }
         let w = match item {
             Item::Wp(w) => w,
-            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Assume(_) | Item::Drop(_) => unreachable!("expanded above"),
+            Item::Go { .. } | Item::Restock { .. } | Item::NoRestock | Item::Assume(_) | Item::Drop(_) | Item::Top(_) => unreachable!("expanded above"),
             Item::Wait(_) => {
                 self.waiting = true;
                 return Some(Command { pitch: pitch_to(o, 0), ..Command::default() });

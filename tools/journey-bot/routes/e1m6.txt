@@ -1,0 +1,58 @@
+@drop 400
+@go 192 864 r=12
+@wait until=mover:31:top
+@open 31
+@go 192 1430 r=14
+@checkpoint
+@go 448 1270 r=12
+@push 448 1220 until=latched:176
+@checkpoint
+@drop 64
+@open 13,31,15,39,32,176
+@go -560 1280 r=12
+@push -600 1280 until=latched:74
+@checkpoint
+@open 13,31,15,39,32,176,74,65,66,62,63,64
+@wait until=frames:20
+@push -256 1280 until=zle:-200
+@wait until=mover:24:top
+@top 16,17,19,20,21,22,23,24
+@go -700 1290 r=14
+@checkpoint
+@top 16,17,19,20,21,22,23,24
+@go -704 1600 r=16
+@wait until=latched:87
+@go -512 1792 r=12
+@wait until=mover:29:top
+@go -696 1280 z=-232 r=12 plat=29
+@open 238
+@go -500 1030 z=-232 r=16
+@go -320 800 z=-232 r=12
+@push -320 760 until=posin:x:250:450
+@wait until=frames:30
+@checkpoint
+@drop 64
+@open 13,31,15,39,32,176,74,65,66,62,63,64,87,238,55,178,88,44,45,47,48,91,92,103,104,181,182
+@go -170 780 r=12
+@go -232 780 r=10
+@go -232 868 r=10
+@go -330 868 r=12
+@go -1030 416 r=12
+@push -1070 416 until=latched:100
+@wait until=mover:110:top
+@top 110
+@open 51,52
+@go 30 320 r=14
+@push 64 320 until=latched:11
+@checkpoint
+@top 110,10
+@open 13,31,15,39,32,176,74,65,66,62,63,64,87,238,55,178,88,44,45,47,48,91,92,103,104,181,182,51,52,11,198,199
+@go 224 150 z=56 r=14
+@push 224 110 until=key:2
+@open 7,8
+@go 480 900 r=12
+@push 480 960 until=latched:257
+@checkpoint
+@go 672 288 r=14
+@go 1100 288 r=20
+@push 1220 288 until=frames:400
