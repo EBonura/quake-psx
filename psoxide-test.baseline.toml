@@ -1,14 +1,14 @@
 # Written by `psoxide-test bless`; edit only by blessing again (decision 4: a bar changes by editing
 # psoxide-test.toml with a reason, never by hand-editing these numbers).
 schema = 1
-blessed_commit = "a70b96e066b7fac225cc07852768760c06d74373"
-sdk_pin = "fce1f6855bc1c3e8336cc68be98a3df06ef9a967"
+blessed_commit = "b33125d3dc4a54eaa5831ed5260e37cda784da69"
+sdk_pin = "74e139d537035761d2b8844ebf34945a3aab4f0b"
 
 [size.ship]
-text = 498640
+text = 498896
 data = 35320
 bss = 299604
-free = 1144540
+free = 1144284
 
 [speed.start-hall-walk]
 offsets = [-48, -36, -24, -12, 0, 12, 24, 36]
@@ -16,24 +16,63 @@ flips = [44, 45, 45, 45, 45, 45, 45, 44]
 work_per_frame = [1083640, 1072598, 1067375, 1115104, 1133778, 1112985, 1090544, 1009611]
 frame_work_p99 = [1142475, 1142475, 1134409, 2811557, 2811559, 2811559, 2811559, 1142485]
 vblanks = ["2:43", "2:44", "2:44", "2:43,5:1", "2:43,5:1", "2:43,5:1", "2:43,5:1", "2:43"]
+legacy_trusted = "a70b96e066b7fac225cc07852768760c06d74373"
+
+[speed.start-hall-walk.identity]
+tape = "tests/journeys/e1-chain/tapes/seg-00-to-e1m1.pxtape"
+tape_sha256 = "2a0cc75050c7475450ceab4063139bf1fdadb8fafe8c8185adb07d76c66343b3"
+window = 'located from {"kind":"ram","offset":12,"op":"ge","size":4,"sym":"JOURNEY_STATE","value":90} until {"kind":"ram","offset":12,"op":"ge","size":4,"sym":"JOURNEY_STATE","value":135} max_polls 200'
+offsets = [-48, -36, -24, -12, 0, 12, 24, 36]
+launch_args = []
+gate_revision = "97cd078f9d2a33eb6aff274541bccc118f5b12e8"
 
 [journeys.e1-chain]
-ticks = 17929
+ticks = 17943
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m1]
-ticks = 7230
+ticks = 7231
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m2]
-ticks = 10915
+ticks = 10922
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m3]
-ticks = 17432
+ticks = 16693
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m4]
+ticks = 15731
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m4-secret]
+ticks = 16196
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m5]
+ticks = 17349
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m6]
+ticks = 11256
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m7]
+ticks = 5531
+open_loop = 0
+clock_waits = 0
+
+[journeys.e1m8]
+ticks = 12950
 open_loop = 0
 clock_waits = 0
 
@@ -43,10 +82,10 @@ open_loop = 0
 clock_waits = 0
 
 [host]
-"e1m1-chain-bench@mister" = 1938211982
-"e1m1-chain-bench@mister,gpu-irq=never" = 1941068337
-"e1m1-chain-bench@real" = 1938211982
-heap-free = 42156
+"e1m1-chain-bench@mister" = 1939925180
+"e1m1-chain-bench@mister,gpu-irq=never" = 1942210177
+"e1m1-chain-bench@real" = 1939925180
+heap-free = 41900
 
 [maps]
-ship = "c2c1e198ccbd3d22d32cf7e670c3d1a0fa79a6f85a447e1f1c84b879bfd85132"
+ship = "637cfad006748ffac98681c9c9c83e4ad08e4bb62f0a840babe8a7591995e989"
