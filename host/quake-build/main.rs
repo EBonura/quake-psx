@@ -242,8 +242,13 @@ const VISUAL_MAX_HARDWARE_TRIANGLES: u32 = 560_000;
 // counter for that assignment rather than its value, so it is spelled out
 // here. Every reading of the allocator cursor is range-checked against it and
 // against the map's `__heap_start`, so a linker-script move fails loudly
-// instead of quietly reporting a nonsense headroom.
-const SHIP_BOOT_HEAP_END: u32 = 0x801f_2f00;
+// instead of quietly reporting a nonsense headroom. The value comes from the
+// same constants game/build.rs links with (game/ram-layout.rs).
+#[allow(dead_code)]
+mod ram_layout {
+    include!("../../game/ram-layout.rs");
+}
+const SHIP_BOOT_HEAP_END: u32 = ram_layout::HEAP_END;
 // Shipping builds have no guest telemetry, so this run uses an instruction
 // budget long enough to cover boot and at least a thousand gameplay frames.
 const SHIP_BOOT_STEPS: u64 = 2_500_000_000;

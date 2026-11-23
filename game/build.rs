@@ -2,6 +2,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
+mod ram_layout {
+    include!("ram-layout.rs");
+}
+
 fn json_integer_array<const N: usize>(text: &str, key: &str) -> [i32; N] {
     let marker = format!("\"{key}\"");
     let value = text
@@ -138,7 +143,8 @@ fn main() {
     // Quake's shipping frame nests the orchestration and renderer paths. The
     // full shipping route reached SP=0x801f5f88: 40,824 bytes below the
     // linker's STACK_INIT=0x801fff00 (the profiler reports a 41,024-byte root
-    // depth from its entry SP=0x801fffc8). Reserve 52 KiB through the SDK's
+    // depth from its entry SP=0x801fffc8; STACK_INIT is 0x801fdf00 now, under
+    // the scene core window, and the reserve moves down with it). Reserve 52 KiB through the SDK's
     // STACK_RESERVE_OVERRIDE hook, leaving 12,424 bytes above the heap
     // boundary, without changing every PSoXide program. The script defining it
     // must come before the SDK script on the link line.
@@ -146,9 +152,32 @@ fn main() {
         .unwrap_or_else(|error| panic!("read {}: {error}", linker.display()));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let stack_reserve = out_dir.join("quake-stack-reserve.ld");
-    fs::write(&stack_reserve, "STACK_RESERVE_OVERRIDE = 0xD000;\n")
-        .unwrap_or_else(|error| panic!("write {}: {error}", stack_reserve.display()));
+    fs::write(
+        &stack_reserve,
+        format!(
+            "STACK_RESERVE_OVERRIDE = {:#X};\n",
+            ram_layout::STACK_RESERVE_OVERRIDE
+        ),
+    )
+    .unwrap_or_else(|error| panic!("write {}: {error}", stack_reserve.display()));
     println!("cargo:rustc-link-arg=-T{}", stack_reserve.display());
+    // The RAM the program links for, as a `-T` file ahead of psoxide.ld (psoxide.ld:16-21, so the
+    // map records it): STACK_INIT moves down to 0x801FDF00 under the scene core window. The value
+    // is game/ram-layout.rs's provisional RAM_SIZE_OVERRIDE.
+    let ram_size = out_dir.join("quake-ram-size.ld");
+    fs::write(
+        &ram_size,
+        format!(
+            "RAM_SIZE_OVERRIDE = {:#X};\n",
+            ram_layout::RAM_SIZE_OVERRIDE
+        ),
+    )
+    .unwrap_or_else(|error| panic!("write {}: {error}", ram_size.display()));
+    println!("cargo:rustc-link-arg=-T{}", ram_size.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("ram-layout.rs").display()
+    );
     let quake_linker = out_dir.join("quake-psoxide.ld");
     // The world pass alternates, batch after batch, between the ordinary
     // face loop and the SDK's world batch kernel with its two packet leaves:
