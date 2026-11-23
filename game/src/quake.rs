@@ -214,14 +214,14 @@ pub fn run() -> ! {
     psx_spu::set_cd_volume(psx_spu::CdVolume::SILENCE, psx_spu::CdVolume::SILENCE);
     psx_spu::enable_cd_audio(true);
     // The shared PSoXide boot splash. Route regressions and the fixed-step
-    // bench drive the pad from boot on a tick schedule, so they skip it. On
-    // the scene core the core's boot scene shows it instead.
+    // bench drive the pad from boot on a tick schedule, so they skip it. With
+    // `scene-core` it runs from boot-only memory (.boot, game/build.rs).
     #[cfg(not(any(
         feature = "emulator-telemetry",
         feature = "ambient-regression",
         feature = "hardware-regression",
         feature = "perf-fixed-ticks",
-        feature = "scene-core"
+        // scene-core keeps it: psx_splash links into .boot, see game/build.rs
     )))]
     crate::platform::show_boot_splash(|| pads.poll(&mut port, psx_pad::Port::One).buttons);
 

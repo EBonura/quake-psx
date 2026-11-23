@@ -83,9 +83,9 @@ perf-fixed-ticks = []
 # that actually held 30 fps would carry. Diagnostic cadence control, not a
 # renderer change; the route still steps deterministically.
 perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
-# Scene core (campaign scene-system-1123, SCENES.md): the core's boot scene shows the
-# "Built with PSoXide" splash, so the game's own copy is compiled out. Off by default and
-# not yet usable on a disc: no core exists to show the splash instead (SCENES.md step 3).
+# Scene core (campaign scene-system-1123, SCENES.md): the boot splash links into the SDK's
+# boot-only memory (sdk/psoxide-boot.ld, game/build.rs): stored after .data, run from the start
+# of the heap before the first allocation, never resident. Off by default.
 scene-core = []
 # Start the options menu's LIGHTS / POSES rows on CLASSIC (id's stepped
 # behaviour) instead of SMOOTH. Measurement and regression knob.

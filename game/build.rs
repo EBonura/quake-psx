@@ -208,6 +208,20 @@ fn main() {
         println!("cargo:rustc-link-arg=-T{}", overlay_linker.display());
         println!("cargo:rustc-link-arg=--emit-relocs");
     }
+    // `scene-core`: the boot splash runs from the SDK's boot-only memory (sdk/psoxide-boot.ld):
+    // psx_splash's text and rodata are stored after .data and run from the start of the heap,
+    // which `run` first allocates from after the splash. The script goes ahead of psoxide.ld.
+    // The link is the monster overlay's ELF, and overlay-compose stores `.boot` at its load
+    // address (host/quake-build/monster_code.rs).
+    if env::var_os("CARGO_FEATURE_SCENE_CORE").is_some() {
+        assert!(
+            monster_overlay,
+            "scene-core links .boot through overlay-compose: keep monster-code-overlay on"
+        );
+        let boot = psoxide.join("sdk/psoxide-boot.ld");
+        println!("cargo:rerun-if-changed={}", boot.display());
+        println!("cargo:rustc-link-arg=-T{}", boot.display());
+    }
     println!("cargo:rustc-link-arg=-T{}", quake_linker.display());
     if !monster_overlay && env::var_os("QUAKE_PSX_RUST_DEBUG").is_none() {
         println!("cargo:rustc-link-arg=--oformat=binary");
