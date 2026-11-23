@@ -46,6 +46,22 @@ music lookup stays as it is.
 On the demo disc Quake would be one Program row in the host's table with its own `lba_offset`; it already
 chain-loads there through `disc_base` today.
 
+## Scene table v2 (v2, row layout pending)
+
+The table moves to version 2 with two row kinds: IMAGE rows are load units (LBA and flags, sectors, load address, size, FNV, residency class BOOT_RESIDENT, RESIDENT_SET n or SWAP) and SCENE rows are entry points (scene id, image index, entry, name). Several scenes can share an image, several images can be in RAM at once, and switching to a scene whose image is loaded reads nothing. The byte layout is not fixed yet; the v1 rows above stay as the record of what was measured.
+
+In v2 terms the program is one base image, `PSX.EXE` (image 0, BOOT_RESIDENT) and one scene, 0 `QUAKE`, enters it at the boot entry. Everything reachable in play (main menu over the live Start map, every level, pause, options, save and load, intermission, death and respawn) is in image 0. Map lumps, textures, sound banks and the five overlay packages are data the program loads into its own heap and transfer window from `WORLD.PAK`, exactly as today; they are data, not IMAGE rows, and no screen needs a scene switch. `WORLD.PAK` and the two XA files stay data the program reads itself (v1 rows 1 to 3); whether v2 lists them is part of the pending layout.
+
+## Boot splash: via .boot, one per disc (pending the SDK change)
+
+Decision (scene-system plan, "Splash: one mechanism, no extra load"): the splash is not dropped and is not a separate scene. psx-splash links into the boot-only `.boot` section of the boot image (sdk/psoxide-boot.ld): stored after `.data`, run from the start of the heap, moved there by `__boot_entry` before `_start`, played once. Only a disc's first program plays it.
+
+Quake plays the splash today and keeps it. Its 8,258 B (psx_splash text and data plus the font upload it pulls, measured on the a7a1db4 map) move out of resident memory into the boot image's `.boot` section. The bytes are already in the exe today, so the load does not grow by the splash; only `__boot_entry` (about 100 B) is added. The first heap use is the pools `run` allocates after the splash (`quake.rs:195-226` allocates nothing before it; inferred from the code, not measured), so the heap takes the memory back.
+
+Blocked on more than psoxide-boot.ld: the ship build composes its exe with the SDK's `overlay-compose`, which places every resident section at its run address (`overlay_pack.rs` `resident_image`, 6bfe) and refuses an allocated section it is not given. It needs to place `.boot` at its load address (the ELF program header's paddr) and size the image to the end of the stored bytes; quake-build then passes `--resident .boot`. The existing `scene-core` feature (commit 0173d78) compiles the splash out and is superseded: under the SDK change it keeps the splash call and links `.boot` instead.
+
+Why this is not built here yet: ld.lld's `--oformat=binary` places sections by run address and ignores `AT()`, so a psoxide-boot.ld link through the flat output these builds use writes `.boot` past `.bss` instead of after `.data` (checked on a small link at the 6bfe scripts: the ELF has the right load address, the flat file does not). It waits for the one SDK-side change (lane/disc-scenes-1123): `.boot` with its run address in the reclaimed region and its load address after `.data`, the exe writer and overlay-compose working from the ELF program headers. Opting in then takes: a repin to that SDK, the `scene-core` feature linking `-T psoxide-boot.ld` ahead of psoxide.ld with `__boot_entry` kept, and the splash call at boot.
+
 ## Shared code versus per scene
 
 One Program row, so everything is shared: renderer, entities, collision, menus, audio, music, the save
