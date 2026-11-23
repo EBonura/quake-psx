@@ -52,15 +52,29 @@ The table moves to version 2 with two row kinds: IMAGE rows are load units (LBA 
 
 In v2 terms the program is one base image, `PSX.EXE` (image 0, BOOT_RESIDENT) and one scene, 0 `QUAKE`, enters it at the boot entry. Everything reachable in play (main menu over the live Start map, every level, pause, options, save and load, intermission, death and respawn) is in image 0. Map lumps, textures, sound banks and the five overlay packages are data the program loads into its own heap and transfer window from `WORLD.PAK`, exactly as today; they are data, not IMAGE rows, and no screen needs a scene switch. `WORLD.PAK` and the two XA files stay data the program reads itself (v1 rows 1 to 3); whether v2 lists them is part of the pending layout.
 
-## Boot splash: via .boot, one per disc (pending the SDK change)
+## Boot splash: via .boot, one per disc (built)
 
-Decision (scene-system plan, "Splash: one mechanism, no extra load"): the splash is not dropped and is not a separate scene. psx-splash links into the boot-only `.boot` section of the boot image (sdk/psoxide-boot.ld): stored after `.data`, run from the start of the heap, moved there by `__boot_entry` before `_start`, played once. Only a disc's first program plays it.
+Decision (scene-system plan, "Splash: one mechanism, no extra load"): the splash is not dropped and is not a separate scene. psx-splash links into the boot-only `.boot` section of the boot image (sdk/psoxide-boot.ld): stored after `.data`, run from the start of the heap, moved there by psx-rt's `__boot_entry` before `_start`, played once. Only a disc's first program plays it.
 
-Quake plays the splash today and keeps it. Its 8,258 B (psx_splash text and data plus the font upload it pulls, measured on the a7a1db4 map) move out of resident memory into the boot image's `.boot` section. The bytes are already in the exe today, so the load does not grow by the splash; only `__boot_entry` (about 100 B) is added. The first heap use is the pools `run` allocates after the splash (`quake.rs:195-226` allocates nothing before it; inferred from the code, not measured), so the heap takes the memory back.
+Built on SDK lane/disc-scenes-1123 610b97fb661c (pin commit 975b984), behind the off-by-default `scene-core` feature (commit 6168bc3). The feature keeps the splash call (`quake.rs:218-226`, no line moved) and `game/build.rs` links `-T psoxide-boot.ld` ahead of the Quake copy of psoxide.ld. The ship link is already the monster overlay's ELF; `quake-build` passes `--resident .boot` (and `.boot_bss` when the map has one) to overlay-compose, which stores `.boot` at its load address. Built as `quake-build probe-disc` with `QUAKE_PSX_PROBE_FEATURES=scene-core` (the default features plus scene-core; the ship command builds no features).
 
-Blocked on more than psoxide-boot.ld: the ship build composes its exe with the SDK's `overlay-compose`, which places every resident section at its run address (`overlay_pack.rs` `resident_image`, 6bfe) and refuses an allocated section it is not given. It needs to place `.boot` at its load address (the ELF program header's paddr) and size the image to the end of the stored bytes; quake-build then passes `--resident .boot`. The existing `scene-core` feature (commit 0173d78) compiles the splash out and is superseded: under the SDK change it keeps the splash call and links `.boot` instead.
+Measured (maps kept in the campaign's `itch-1123/core-window-keep/quake-psx-610b/`: `repin-ship-boot.map` for the default build at 975b984, `scene-core.map`):
 
-Why this is not built here yet: ld.lld's `--oformat=binary` places sections by run address and ignores `AT()`, so a psoxide-boot.ld link through the flat output these builds use writes `.boot` past `.bss` instead of after `.data` (checked on a small link at the 6bfe scripts: the ELF has the right load address, the flat file does not). It waits for the one SDK-side change (lane/disc-scenes-1123): `.boot` with its run address in the reclaimed region and its load address after `.data`, the exe writer and overlay-compose working from the ELF program headers. Opting in then takes: a repin to that SDK, the `scene-core` feature linking `-T psoxide-boot.ld` ahead of psoxide.ld with `__boot_entry` kept, and the splash call at boot.
+| | default (975b984) | scene-core (6168bc3) |
+|---|---|---|
+| exe header PC | `_start` 0x80010000 | `__boot_entry` 0x8001200C |
+| .text / .data / .bss | 500,032 / 35,320 / 299,616 | 494,588 / 31,496 / 299,616 |
+| `.boot` | none | 9,812 B, runs at 0x800D9970..0x800DBFC4 (`ALIGN(__bss_end, 16)`), stored at 0x80090708 (`__data_end`); `.boot_bss` empty |
+| in `.boot` | | `psx_splash::play` 5,140, `logo::expand` 540, `draw_line` closure 260, `show::<run::{closure}>` 40 (text); `logo::CODED` 2,746, `FONT_BITMAP` 1,024, `FONT` 28, `logo::PALETTE` 32 (rodata) |
+| `__heap_start` (= `__bss_end`) | 0x800DBD98 | 0x800D9968 |
+| resident free RAM (heap region to 0x801F0F00) | 1,134,952 | **1,144,216 (+9,264)** |
+| exe file | 538,624 B (263 sectors) | 538,624 B (263 sectors): no growth, the stored `.boot` fills the space text and data gave up |
+
+The first allocation is `ResidentMap::new()` right after the splash (`quake.rs:231`), so the heap takes the `.boot` range back. `psoxide-size ram` (tools-hc-894d16439831) reports 1,134,396 for the scene-core map: it takes `__heap_start` from the map row's address column, which for an assignment after the INSERTed `.boot_bss` is the location counter (0x800DBFC4), not the symbol's value (0x800D9968, `llvm-nm` on the kept ELF). The +9,264 above is from the symbol.
+
+Default build: the ship exe built after the feature commit is byte-identical to the ship exe of the repin commit 975b984 (sha256 cd1de892...).
+
+Run (frontend 31982f1e5c8d, headless, no input, 1.5 G instructions, 4,782 route ticks, 1,499 pad polls): the splash plays (tick 100, mark and "Built with PSoXide"), the loading picture follows, and the main menu over the Start map is up by tick 1,000. Frames kept as `core-window-keep/quake-psx-boot-splash.png` and `quake-psx-boot-first-screen.png`.
 
 ## Shared code versus per scene
 
@@ -170,10 +184,8 @@ cache (`STORAGE_CACHE` 4,096), the bounce sector `SECTOR` 2,048, and the music l
 lookup reader), `music.rs:361` (`Player::new`, which keeps a `Cd` token but drives it through
 `psx_core_cd`).
 
-**Done now, behind the off-by-default `scene-core` feature (commit 0173d78):** the splash call is
-compiled out (`quake.rs:218-226`). A plain-cargo `--features scene-core` link has no `psx_splash` or
-`FontAtlas::upload` symbol. The default ship exe from 0173d78 is byte-identical to a7a1db4's (`cmp`).
-The feature is not usable on a disc yet: nothing else shows the splash.
+**Superseded:** commit 0173d78 compiled the splash out under `scene-core`; since 6168bc3 the feature
+keeps it and runs it from `.boot` (see "Boot splash" above), so step 4 below is done that way.
 
 **TODO when `psx-core` exists** (the reader cannot go behind a feature before then: removing it means
 calling the core, and there is no crate, `psx-core-abi.ld` or image to link):
