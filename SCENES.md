@@ -70,7 +70,7 @@ Measured (maps kept in the campaign's `itch-1123/core-window-keep/quake-psx-610b
 | resident free RAM (heap region to 0x801F0F00) | 1,134,952 | **1,144,216 (+9,264)** |
 | exe file | 538,624 B (263 sectors) | 538,624 B (263 sectors): no growth, the stored `.boot` fills the space text and data gave up |
 
-The first allocation is `ResidentMap::new()` right after the splash (`quake.rs:231`), so the heap takes the `.boot` range back. `psoxide-size ram` (tools-hc-894d16439831) reports 1,134,396 for the scene-core map: it takes `__heap_start` from the map row's address column, which for an assignment after the INSERTed `.boot_bss` is the location counter (0x800DBFC4), not the symbol's value (0x800D9968, `llvm-nm` on the kept ELF). The +9,264 above is from the symbol.
+The first allocation is `ResidentMap::new()` right after the splash (`quake.rs:231`), so the heap takes the `.boot` range back. `psoxide-size ram` (tools-hc-894d16439831) reports 1,134,396 for the scene-core map: it takes `__heap_start` from the map row's address column, which for an assignment after the INSERTed `.boot_bss` is the location counter (0x800DBFC4), not the symbol's value (0x800D9968: `__bss_end`'s row inside `.bss` in the same map, and `llvm-nm` on the ELF). The +9,264 above is from the symbol.
 
 Default build: the ship exe built after the feature commit is byte-identical to the ship exe of the repin commit 975b984 (sha256 cd1de892...).
 
