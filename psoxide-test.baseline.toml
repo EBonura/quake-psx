@@ -1,22 +1,22 @@
 # Written by `psoxide-test bless`; edit only by blessing again (decision 4: a bar changes by editing
 # psoxide-test.toml with a reason, never by hand-editing these numbers).
 schema = 1
-blessed_commit = "b33125d3dc4a54eaa5831ed5260e37cda784da69"
-sdk_pin = "74e139d537035761d2b8844ebf34945a3aab4f0b"
+blessed_commit = "5b6cb252c9f70e152fcd6dd324ab46a2b26a8efc"
+sdk_pin = "80d432926e69dc0bc6ac328c3c9b143a8d875754"
 
 [size.ship]
-text = 498896
-data = 35320
-bss = 299604
-free = 1144284
+text = 496052
+data = 31496
+bss = 299616
+free = 1142744
 
 [speed.start-hall-walk]
 offsets = [-48, -36, -24, -12, 0, 12, 24, 36]
 flips = [44, 45, 45, 45, 45, 45, 45, 44]
-work_per_frame = [1083640, 1072598, 1067375, 1115104, 1133778, 1112985, 1090544, 1009611]
-frame_work_p99 = [1142475, 1142475, 1134409, 2811557, 2811559, 2811559, 2811559, 1142485]
+work_per_frame = [1093186, 1076972, 1071674, 1109176, 1130911, 1112595, 1089219, 1008082]
+frame_work_p99 = [1142473, 1142473, 1134473, 2811267, 2811265, 2811259, 2811259, 1142473]
 vblanks = ["2:43", "2:44", "2:44", "2:43,5:1", "2:43,5:1", "2:43,5:1", "2:43,5:1", "2:43"]
-legacy_trusted = "a70b96e066b7fac225cc07852768760c06d74373"
+layouts = []
 
 [speed.start-hall-walk.identity]
 tape = "tests/journeys/e1-chain/tapes/seg-00-to-e1m1.pxtape"
@@ -27,65 +27,65 @@ launch_args = []
 gate_revision = "97cd078f9d2a33eb6aff274541bccc118f5b12e8"
 
 [journeys.e1-chain]
-ticks = 17943
+ticks = 17956
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m1]
-ticks = 7231
+ticks = 7237
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m2]
-ticks = 10922
+ticks = 10938
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m3]
-ticks = 16693
+ticks = 16723
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m4]
-ticks = 15731
+ticks = 15755
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m4-secret]
-ticks = 16196
+ticks = 16227
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m5]
-ticks = 17349
+ticks = 17373
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m6]
-ticks = 11256
+ticks = 11275
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m7]
-ticks = 5531
+ticks = 5542
 open_loop = 0
 clock_waits = 0
 
 [journeys.e1m8]
-ticks = 12950
+ticks = 12968
 open_loop = 0
 clock_waits = 0
 
 [journeys.smoke-boot-play]
-ticks = 1507
+ticks = 1506
 open_loop = 0
 clock_waits = 0
 
 [host]
-"e1m1-chain-bench@mister" = 1939925180
-"e1m1-chain-bench@mister,gpu-irq=never" = 1942210177
-"e1m1-chain-bench@real" = 1939925180
-heap-free = 41900
+"e1m1-chain-bench@mister" = 1937640331
+"e1m1-chain-bench@mister,gpu-irq=never" = 1939924964
+"e1m1-chain-bench@real" = 1937640331
+heap-free = 40360
 
 [maps]
-ship = "637cfad006748ffac98681c9c9c83e4ad08e4bb62f0a840babe8a7591995e989"
+ship = "23f7330d9054fde369a1774a3ec317698248004df8b90a1c98b35cfe76f88eec"
