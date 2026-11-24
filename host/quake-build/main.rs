@@ -4840,7 +4840,13 @@ fn build_disc(
         .arg("--out")
         .arg(&image)
         .args(["--volume", "QUAKE_PSX", "--world-pack-extra-dir"])
-        .arg(&chunks);
+        .arg(&chunks)
+        // A scene disc (SCENES.md): SCENES.TBL at LBA 22 from scenes.manifest (Quake is its one
+        // Program), the exe at LBA 23, its row checked against the pin's prebuilt core image.
+        .arg("--scenes")
+        .arg(root.join("scenes.manifest"))
+        .arg("--core-image")
+        .arg(root.join(".psoxide/sdk/crates/psx-core/prebuilt/psx-core.bin"));
     if feature.is_some() {
         // A regression or bench image carries diagnostic features and a diagnostic receipt.
         command.arg("--diag");

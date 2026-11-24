@@ -83,10 +83,6 @@ perf-fixed-ticks = []
 # that actually held 30 fps would carry. Diagnostic cadence control, not a
 # renderer change; the route still steps deterministically.
 perf-fixed-ticks-30hz = ["perf-fixed-ticks"]
-# Scene core (campaign scene-system-1123, SCENES.md): the boot splash links into the SDK's
-# boot-only memory (sdk/psoxide-boot.ld, game/build.rs): stored after .data, run from the start
-# of the heap before the first allocation, never resident. Off by default.
-scene-core = []
 # Start the options menu's LIGHTS / POSES rows on CLASSIC (id's stepped
 # behaviour) instead of SMOOTH. Measurement and regression knob.
 classic-lights = ["quake-core/classic-lights"]
@@ -189,6 +185,8 @@ psx-hw = { path = "../.psoxide/crates/psx-hw" }
 psx-vram = { path = "../.psoxide/sdk/crates/psx-vram" }
 psx-display = { path = "../.psoxide/sdk/crates/psx-display" }
 psx-splash = { path = "../.psoxide/sdk/crates/psx-splash" }
+# The scene core (SCENES.md): `__core_boot` places the shared core in its window at boot.
+psx-core = { path = "../.psoxide/sdk/crates/psx-core", features = ["link"] }
 psx-gte = { path = "../.psoxide/sdk/crates/psx-gte" }
 psx-math = { path = "../.psoxide/sdk/crates/psx-math" }
 psx-pad = { path = "../.psoxide/sdk/crates/psx-pad" }

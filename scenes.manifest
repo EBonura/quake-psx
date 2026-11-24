@@ -1,0 +1,5 @@
+# Quake's scene disc (mkisopsx --scenes, SCENES.md): one Program on the scene core, every screen
+# resident in it; WORLD.PAK and the XA music are read by the program itself. Image 0 is the boot exe
+# (`-`: the --exe).
+program PSX.EXE   -
+scene   QUAKE     PSX.EXE    start
