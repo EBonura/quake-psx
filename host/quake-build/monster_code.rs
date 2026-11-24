@@ -30,7 +30,8 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
     for boot in [".psx_core_store", ".boot", ".boot_inner", ".boot_bss"] {
         if map_text.lines().any(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
-            fields.len() == 5 && fields[4] == boot
+            // An empty one (no splash in the regression builds) has nothing to store.
+            fields.len() == 5 && fields[4] == boot && fields[2] != "0"
         }) {
             args.extend(["--resident".into(), boot.into()]);
         }
