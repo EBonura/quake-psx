@@ -10,6 +10,8 @@
 
 extern crate alloc;
 extern crate psx_rt;
+// Nothing names psx_core: without this rustc drops the crate and `__core_boot` is missing at link.
+extern crate psx_core;
 
 #[cfg(feature = "arsenal-regression")]
 mod arsenal_regression;
