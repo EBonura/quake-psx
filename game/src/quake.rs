@@ -191,6 +191,11 @@ fn load_game(
 #[no_mangle]
 pub static mut QUAKE_POSE: [i32; 8] = [0; 8];
 
+/// 1 once the boot map is loaded and the game loop starts: the next frame is the main menu over
+/// the Start map, the first playable screen. Read from RAM by the demo disc's launch gate.
+#[no_mangle]
+pub static mut QUAKE_READY: u32 = 0;
+
 #[optimize(size)]
 pub fn run() -> ! {
     crate::platform::gpu_init_before_interrupts();
@@ -373,6 +378,9 @@ fn play(
     #[cfg(feature = "journey-telemetry")]
     let mut journey_frame = 0u32;
 
+    // The first playable screen (the main menu over the live Start map) is the next frame.
+    // SAFETY: single-threaded; written once here, read only from outside (a disc's launch gate).
+    unsafe { core::ptr::addr_of_mut!(QUAKE_READY).write_volatile(1) };
     loop {
         #[cfg(feature = "journey-telemetry")]
         {
