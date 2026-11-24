@@ -223,7 +223,19 @@ pub fn run() -> ! {
         feature = "perf-fixed-ticks"
     )))]
     crate::platform::show_boot_splash(|| pads.poll(&mut port, psx_pad::Port::One).buttons);
+    play(pads, port, spu)
+}
 
+/// The game itself, after the boot splash. Its own frame holds the game's locals (about 24 KB),
+/// so the splash, called from `run` before it, runs near the top of the stack instead of below
+/// them: the splash is the boot's deepest call.
+#[inline(never)]
+#[optimize(size)]
+fn play(
+    mut pads: psx_pad::Controllers,
+    mut port: psx_io::periph::ControllerPort,
+    spu: psx_spu::Spu,
+) -> ! {
     // One fixed-capacity allocation is reused across every Episode 1 map. The
     // PSoXide target allocator is intentionally monotonic, so allowing each
     // transition to grow a fresh collection would eventually exhaust PS1 RAM.
