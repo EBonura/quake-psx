@@ -6751,8 +6751,14 @@ fn run_combat_regression(root: &Path, frontend: &Path, regression: &Path) -> Res
     // moved it (main 0xd8e6..., the SDK pin 0x0695...: 6,287 pixels, all inside the
     // non-displayed buffer, 0..319 x 0..239 with the display at 0,256; textures, CLUTs and the
     // displayed buffer equal). It now hashes the displayed buffer and everything outside both
-    // framebuffers (`stable_vram_hash`); main and the SDK-pin build both give this value.
-    const EXPECTED_VRAM_FNV1A64: u64 = 0x0a30_59e0_1e0c_929d;
+    // framebuffers (`stable_vram_hash`); main and the SDK-pin build both give 0x0a3059e01e0c929d.
+    //
+    // 2026-11-24: GPU init draws the first frame into the second buffer (the launcher's cover
+    // stays on screen through the boot loads), so at guest frame 120 the display is at 0,0
+    // where it was at 0,256. The display hash is unchanged; exchanging the two 320x240 buffers
+    // in the new dump and hashing it displayed at 0,256 gives exactly the old 0x0a3059e01e0c929d.
+    // Same pixels, other buffer shown.
+    const EXPECTED_VRAM_FNV1A64: u64 = 0x7a67_11d7_484d_8be9;
     const EXPECTED_DISPLAY_FNV1A64: u64 = 0xf28f_014d_a1bd_688f;
     let capture = root.join("captures/combat-regression");
     let steps = env::var("QUAKE_PSX_COMBAT_REGRESSION_STEPS")
