@@ -40,6 +40,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-core"
+version = "0.1.0"
+dependencies = [
+ "psx-hw",
+ "psx-scene-abi",
+]
+
+[[package]]
 name = "psx-display"
 version = "0.1.0"
 dependencies = [
@@ -206,6 +214,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "psx-scene-abi"
+version = "0.1.0"
+
+[[package]]
 name = "psx-settings"
 version = "0.1.0"
 dependencies = [
@@ -232,6 +244,7 @@ dependencies = [
  "psx-gpu",
  "psx-pad",
  "psx-rt",
+ "psx-scene-abi",
  "psx-vram",
 ]
 
@@ -307,6 +320,7 @@ name = "quake-psx"
 version = "0.1.0"
 dependencies = [
  "psx-bsp",
+ "psx-core",
  "psx-display",
  "psx-engine",
  "psx-fmv",
