@@ -27,7 +27,7 @@ fn recipe(elf: &Path, destination: &Path, map_text: &str) -> Vec<OsString> {
     // The scene core's link (game/build.rs) carries the core's stored copy (sdk/psoxide-core.ld) and
     // the boot-only sections of sdk/psoxide-boot.ld; overlay-compose stores each at its load
     // address, after .data.
-    for boot in [".psx_core_store", ".boot", ".boot_bss"] {
+    for boot in [".psx_core_store", ".boot", ".boot_inner", ".boot_bss"] {
         if map_text.lines().any(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
             fields.len() == 5 && fields[4] == boot
