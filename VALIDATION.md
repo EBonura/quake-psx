@@ -7,7 +7,7 @@ contains the exact Quake and PSoXide revisions and artifact hashes.
 The current release candidate uses PSoXide revision:
 
 ```text
-f590e3619afe38477125b93fd14a563d1606e1ef
+e5dd3a250c2ca72e520138242d961b789b8ddf36
 ```
 
 ## Host tests
