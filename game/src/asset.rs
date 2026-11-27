@@ -448,6 +448,17 @@ impl ResidentMap {
         platform::upload_vram(VramRect::new(0, 240, 256, 8), &self.stream_scratch)
             .map_err(|_| MapLoadError::VramUpload)?;
 
+        // STUDY (RANKED C1): keep the selected gamma row for the light ladder.
+        #[cfg(feature = "renderer-flat-light-ladder")]
+        let ladder_source = {
+            let mut row = [0u16; 256];
+            let base = crate::renderer::brightness_level() * 512;
+            for (index, color) in row.iter_mut().enumerate() {
+                *color = psx_math::le::read_u16(&self.stream_scratch, base + index * 2);
+            }
+            row
+        };
+
         // Textured PS1 semitransparency is selected per palette entry. Mirror
         // the six gamma rows into the unused framebuffer gap with STP set on
         // every visible colour; index 255 remains the ordinary transparent
@@ -461,6 +472,15 @@ impl ResidentMap {
         }
         platform::upload_vram(VramRect::new(0, 248, 256, 8), &self.stream_scratch)
             .map_err(|_| MapLoadError::VramUpload)?;
+        #[cfg(feature = "renderer-flat-light-ladder")]
+        {
+            crate::renderer::build_light_ladder(&ladder_source, &mut self.stream_scratch);
+            platform::upload_vram(
+                VramRect::new(0, crate::renderer::LIGHT_LADDER_ROW, 256, 8),
+                &self.stream_scratch,
+            )
+            .map_err(|_| MapLoadError::VramUpload)?;
+        }
 
         let mut count_bytes = [0u8; 2];
         stream

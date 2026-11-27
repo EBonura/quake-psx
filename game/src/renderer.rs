@@ -199,6 +199,71 @@ fn clut_liquid() -> u16 {
     (LIQUID_CLUT_BASE_ROW + unsafe { TEXTURE_GAMMA }) << 6
 }
 
+/// STUDY (RANKED C1): first VRAM row of the eight light-ladder palettes.
+#[cfg(feature = "renderer-flat-light-ladder")]
+pub const LIGHT_LADDER_ROW: u16 = 496;
+/// Ladder light factors in 128ths (128 is the neutral GT colour): a ratio of
+/// about 1.4 between neighbours, with 128 itself exact so unlit faces match.
+#[cfg(feature = "renderer-flat-light-ladder")]
+const LIGHT_LADDER_FACTORS: [u16; 8] = [24, 33, 47, 65, 91, 128, 179, 251];
+
+/// The current gamma row index (0..7), for the ladder builder.
+#[cfg(feature = "renderer-flat-light-ladder")]
+pub fn brightness_level() -> usize {
+    unsafe { TEXTURE_GAMMA as usize }
+}
+
+/// Build the ladder from one gamma row (256 little-endian 15-bit colours)
+/// into `out` (8 rows, 4,096 bytes) and fill the engine's intensity table.
+/// Each copy scales a colour as the GPU's texture modulation would at that
+/// vertex colour; transparent index 255 stays 0 and a visible colour that
+/// scales to black becomes opaque black (0x8000).
+#[cfg(feature = "renderer-flat-light-ladder")]
+#[optimize(size)]
+pub fn build_light_ladder(row: &[u16; 256], out: &mut [u8]) {
+    let mut level = 0;
+    while level < 8 {
+        let factor = u32::from(LIGHT_LADDER_FACTORS[level]);
+        let mut index = 0;
+        while index < 256 {
+            let source = row[index];
+            let scaled = if source == 0 {
+                0
+            } else {
+                let channel = |shift: u32| {
+                    let value = (u32::from(source >> shift) & 31) * factor >> 7;
+                    value.min(31) << shift
+                };
+                let rgb = (channel(0) | channel(5) | channel(10)) as u16;
+                if rgb == 0 { 0x8000 } else { rgb | (source & 0x8000) }
+            };
+            let at = (level * 256 + index) * 2;
+            out[at..at + 2].copy_from_slice(&scaled.to_le_bytes());
+            index += 1;
+        }
+        level += 1;
+    }
+    // Intensity -> nearest factor in log space: thresholds at the geometric
+    // midpoints, compared squared to stay in integers.
+    let mut intensity = 0u32;
+    while intensity < 256 {
+        let mut pick = 0;
+        while pick < 7 {
+            let a = u32::from(LIGHT_LADDER_FACTORS[pick]);
+            let b = u32::from(LIGHT_LADDER_FACTORS[pick + 1]);
+            if intensity * intensity < a * b {
+                break;
+            }
+            pick += 1;
+        }
+        unsafe {
+            (*core::ptr::addr_of_mut!(psx_engine::affine_surface::WORLD_LIGHT_LADDER))
+                [intensity as usize] = (LIGHT_LADDER_ROW + pick as u16) << 6;
+        }
+        intensity += 1;
+    }
+}
+
 /// Select the palette gamma row: 0 is the untouched Quake palette, each step
 /// lifts the mid-tones further (the original's brightness slider).
 #[optimize(size)]
@@ -850,7 +915,14 @@ struct ProjectionCensus {
     resident_template_faces: u32,
     resident_template_packet_bytes: u32,
     dynamic_light_template_reject_bytes: u32,
+    /// STUDY (RANKED C2): distinct map positions over the whole frame's
+    /// ordinary corners, the projections a per-frame stamp cache would do.
+    frame_unique_positions: u32,
 }
+
+/// STUDY (RANKED C2): one bit per map position seen this frame.
+#[cfg(feature = "renderer-census")]
+static mut FRAME_POSITION_BITS: [u32; 1024] = [0; 1024];
 
 #[cfg(feature = "renderer-census")]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -6631,6 +6703,8 @@ fn census_projection_batches(
     let mut previous_count = 0usize;
     let mut second_previous_positions = [0u16; BATCH_MAX_VERTICES];
     let mut second_previous_count = 0usize;
+    let bits = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_POSITION_BITS) };
+    bits.fill(0);
 
     for &entry in selected {
         let visible =
@@ -6703,6 +6777,13 @@ fn census_projection_batches(
         let corners = &indexed.corners[first..first + corner_count];
         for corner in corners {
             let position_index = corner.position_index;
+            let bit = position_index as usize;
+            if bit >= 32 * 1024 {
+                census.frame_unique_positions = census.frame_unique_positions.wrapping_add(1);
+            } else if bits[bit >> 5] & (1 << (bit & 31)) == 0 {
+                bits[bit >> 5] |= 1 << (bit & 31);
+                census.frame_unique_positions = census.frame_unique_positions.wrapping_add(1);
+            }
             let reused_previous = previous_positions[..previous_count]
                 .iter()
                 .any(|&cached| cached == position_index);
@@ -6901,6 +6982,7 @@ fn emit_renderer_census(frame: u32, census: &RendererCensus) {
     line.push_field(census.packet_overflow_avoided);
     line.push_field(census.selected_hash_a);
     line.push_field(census.selected_hash_b);
+    line.push_field(census.projection.frame_unique_positions);
     psx_telemetry::emit::debug_log(line.as_str());
 }
 

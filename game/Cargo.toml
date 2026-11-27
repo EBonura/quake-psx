@@ -153,6 +153,11 @@ renderer-liquid-half-rate = []
 # Nothing else is live in the scratchpad then; the SDK's stack-guard proves
 # the call trees fit after every link.
 renderer-scratchpad-stack = []
+# STUDY (lane quake-render 2026-11-27, never merged): RANKED C1 palette light
+# ladder. World packets flat-textured, CLUT per packet from 8 pre-darkened
+# palette copies at VRAM rows 496..503. Needs the engine study branch
+# (PSoXide study/quake-flat-ladder-1127) through --psoxide.
+renderer-flat-light-ladder = ["psx-engine/world-flat-light-ladder"]
 # Run every scene collision trace (world and brush-model hull walks) with its
 # frames on the CPU scratchpad (psx-rt ScratchpadStack). The simulation owns
 # the scratchpad while it runs; the SDK's stack-guard proves the tree fits.

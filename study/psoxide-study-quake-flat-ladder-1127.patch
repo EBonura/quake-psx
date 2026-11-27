@@ -1,0 +1,293 @@
+From d7a460c275016b9e7f434f4e7100a722fd3075b6 Mon Sep 17 00:00:00 2001
+From: Emanuele Bonura <33398153+EBonura@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 17:36:44 +0000
+Subject: [PATCH 1/2] Study (never merged): world-flat-light-ladder, world
+ packets flat-textured with a per-packet CLUT from a palette light ladder
+
+RANKED C1 prototype for the Quake lane. Off by default; with the feature the world
+writer emits FT3/FT4 raw-texture packets and picks the CLUT word from
+WORLD_LIGHT_LADDER by the packet's mean corner green, and the oversize repair
+reads the flat layout.
+---
+ engine/crates/psx-engine/Cargo.toml           |   3 +
+ .../crates/psx-engine/src/affine_surface.rs   |   2 +
+ .../psx-engine/src/affine_surface/world.rs    | 134 +++++++++++++++++-
+ 3 files changed, 133 insertions(+), 6 deletions(-)
+
+diff --git a/engine/crates/psx-engine/Cargo.toml b/engine/crates/psx-engine/Cargo.toml
+index af8e9ab55..c3322fb0f 100644
+--- a/engine/crates/psx-engine/Cargo.toml
++++ b/engine/crates/psx-engine/Cargo.toml
+@@ -50,6 +50,9 @@ room-surface-profile = []
+ # per-joint compose recording cost real cycles and must not ride along
+ # in shipping or performance-measurement builds.
+ vert-debug = []
++# STUDY (quake-render lane 2026-11-27, never merged): world packets flat-textured
++# with a per-packet CLUT picked from a palette light ladder (RANKED C1).
++world-flat-light-ladder = []
+ 
+ [lints]
+ workspace = true
+diff --git a/engine/crates/psx-engine/src/affine_surface.rs b/engine/crates/psx-engine/src/affine_surface.rs
+index 65b8771bd..db76e5f1e 100644
+--- a/engine/crates/psx-engine/src/affine_surface.rs
++++ b/engine/crates/psx-engine/src/affine_surface.rs
+@@ -58,6 +58,8 @@ pub use world::{
+     submit_world_batch, FirstPerson, WorldLattice, WorldProfile, WorldSurface,
+     WORLD_COARSE_ERROR_BUDGET_Q3, WORLD_PACKET_WORDS_PER_TRIANGLE, WORLD_SCRATCH_VERTICES,
+ };
++#[cfg(feature = "world-flat-light-ladder")]
++pub use world::WORLD_LIGHT_LADDER;
+ 
+ use psx_gpu::material::TextureWindow;
+ use psx_gte::math::{Mat3I16, Vec3I16, Vec3I32};
+diff --git a/engine/crates/psx-engine/src/affine_surface/world.rs b/engine/crates/psx-engine/src/affine_surface/world.rs
+index 4c853e0f9..be7ffaf89 100644
+--- a/engine/crates/psx-engine/src/affine_surface/world.rs
++++ b/engine/crates/psx-engine/src/affine_surface/world.rs
+@@ -39,6 +39,7 @@
+ use core::mem::size_of;
+ use core::ptr;
+ 
++#[allow(unused_imports)]
+ use psx_gpu::prim::{ClassicQuadTexturedGouraud, ClassicTriTexturedGouraud};
+ use psx_gte::math::Vec3I16;
+ use psx_gte::scene::{self, project_triangle_scheduled, project_vertex_scheduled, Projected};
+@@ -49,6 +50,39 @@ use crate::tess;
+ 
+ type V = AffineVertex;
+ 
++/// STUDY (quake-render lane, 2026-11-27, never merged): palette light ladder.
++/// With `world-flat-light-ladder` every world packet is written flat-textured
++/// (raw texture, GP0 25h/2Dh) and its CLUT word is picked from this table by
++/// the packet's mean corner intensity (green channel, 0..255). The game fills
++/// it with the CLUT words of pre-darkened copies of its palette.
++#[cfg(feature = "world-flat-light-ladder")]
++pub static mut WORLD_LIGHT_LADDER: [u16; 256] = [0; 256];
++
++#[cfg(feature = "world-flat-light-ladder")]
++#[inline(always)]
++fn ladder_clut_high(intensity: u32) -> u32 {
++    // SAFETY: a plain table read; the game writes it only at load.
++    (unsafe { *core::ptr::addr_of!(WORLD_LIGHT_LADDER).cast::<u16>().add(intensity as usize & 0xff) }
++        as u32)
++        << 16
++}
++
++/// Packet words (tag included) of the world path's triangle and quad.
++#[cfg(not(feature = "world-flat-light-ladder"))]
++const TRI_PACKET_WORDS: usize = size_of::<ClassicTriTexturedGouraud>() / size_of::<u32>();
++#[cfg(not(feature = "world-flat-light-ladder"))]
++const QUAD_PACKET_WORDS: usize = size_of::<ClassicQuadTexturedGouraud>() / size_of::<u32>();
++#[cfg(feature = "world-flat-light-ladder")]
++const TRI_PACKET_WORDS: usize = 8;
++#[cfg(feature = "world-flat-light-ladder")]
++const QUAD_PACKET_WORDS: usize = 10;
++
++/// Words per vertex in a world packet body.
++#[cfg(feature = "world-flat-light-ladder")]
++const VERTEX_STRIDE: usize = 2;
++#[cfg(not(feature = "world-flat-light-ladder"))]
++const VERTEX_STRIDE: usize = 3;
++
+ /// Extra vertex slots the caller reserves after a world batch for the
+ /// points a split face generates.
+ pub const WORLD_SCRATCH_VERTICES: usize = 12;
+@@ -168,6 +202,34 @@ impl PacketWriter {
+         unsafe { self.emit_tri_with(corners, corners, otz) };
+     }
+ 
++    #[cfg(feature = "world-flat-light-ladder")]
++    #[inline(always)]
++    unsafe fn emit_quad(&mut self, corners: [&V; 4], otz: u16) {
++        let g = ((corners[0].color >> 8) & 0xff)
++            + ((corners[1].color >> 8) & 0xff)
++            + ((corners[2].color >> 8) & 0xff)
++            + ((corners[3].color >> 8) & 0xff);
++        let clut = ladder_clut_high(g >> 2);
++        let xy = |v: &V| (v.screen[0] as u16 as u32) | ((v.screen[1] as u16 as u32) << 16);
++        // SAFETY: the caller reserved room for the face's packets.
++        unsafe {
++            let p = self.next;
++            ptr::write(p, (9u32 << 24) | u32::from(otz));
++            ptr::write(p.add(1), 0x2d80_8080);
++            ptr::write(p.add(2), xy(corners[0]));
++            ptr::write(p.add(3), u32::from(uv_word(corners[0])) | clut);
++            ptr::write(p.add(4), xy(corners[1]));
++            ptr::write(p.add(5), u32::from(uv_word(corners[1])) | self.tpage_high_word);
++            ptr::write(p.add(6), xy(corners[2]));
++            ptr::write(p.add(7), u32::from(uv_word(corners[2])));
++            ptr::write(p.add(8), xy(corners[3]));
++            ptr::write(p.add(9), u32::from(uv_word(corners[3])));
++            self.next = p.add(QUAD_PACKET_WORDS);
++        }
++        self.packets = self.packets.wrapping_add(1);
++    }
++
++    #[cfg(not(feature = "world-flat-light-ladder"))]
+     #[inline(always)]
+     unsafe fn emit_quad(&mut self, corners: [&V; 4], otz: u16) {
+         let packet = ClassicQuadTexturedGouraud::with_staged_slot_prepacked_colors(
+@@ -210,8 +272,8 @@ impl PacketWriter {
+     fn finish(self, output: *mut u32) -> SurfaceSubmit {
+         // SAFETY: `next` advanced from `output` within one allocation.
+         let words = unsafe { self.next.offset_from(output) as u32 };
+-        let tri_words = (size_of::<ClassicTriTexturedGouraud>() / size_of::<u32>()) as u32;
+-        let quad_words = (size_of::<ClassicQuadTexturedGouraud>() / size_of::<u32>()) as u32;
++        let tri_words = TRI_PACKET_WORDS as u32;
++        let quad_words = QUAD_PACKET_WORDS as u32;
+         let quads =
+             words.wrapping_sub(self.packets.wrapping_mul(tri_words)) / (quad_words - tri_words);
+         SurfaceSubmit {
+@@ -419,6 +481,32 @@ unsafe fn subdivide_once<L: WorldLattice>(
+ impl PacketWriter {
+     /// A triangle at `projected`'s screen positions with `attributes`' UVs
+     /// and colours.
++    #[cfg(feature = "world-flat-light-ladder")]
++    #[inline(always)]
++    unsafe fn emit_tri_with(&mut self, projected: [&V; 3], attributes: [&V; 3], otz: u16) {
++        let g = ((attributes[0].color >> 8) & 0xff)
++            + ((attributes[1].color >> 8) & 0xff)
++            + ((attributes[2].color >> 8) & 0xff);
++        // g / 3 as (g * 85) >> 8, within one step.
++        let clut = ladder_clut_high((g * 85) >> 8);
++        let xy = |v: &V| (v.screen[0] as u16 as u32) | ((v.screen[1] as u16 as u32) << 16);
++        // SAFETY: the caller reserved room for the face's packets.
++        unsafe {
++            let p = self.next;
++            ptr::write(p, (7u32 << 24) | u32::from(otz));
++            ptr::write(p.add(1), 0x2580_8080);
++            ptr::write(p.add(2), xy(projected[0]));
++            ptr::write(p.add(3), u32::from(uv_word(attributes[0])) | clut);
++            ptr::write(p.add(4), xy(projected[1]));
++            ptr::write(p.add(5), u32::from(uv_word(attributes[1])) | self.tpage_high_word);
++            ptr::write(p.add(6), xy(projected[2]));
++            ptr::write(p.add(7), u32::from(uv_word(attributes[2])));
++            self.next = p.add(TRI_PACKET_WORDS);
++        }
++        self.packets = self.packets.wrapping_add(1);
++    }
++
++    #[cfg(not(feature = "world-flat-light-ladder"))]
+     #[inline(always)]
+     unsafe fn emit_tri_with(&mut self, projected: [&V; 3], attributes: [&V; 3], otz: u16) {
+         let packet = ClassicTriTexturedGouraud::with_staged_slot_prepacked_colors(
+@@ -877,6 +965,7 @@ impl CutVertex {
+     #[inline(always)]
+     unsafe fn read(at: *const u32, index: usize) -> Self {
+         // SAFETY: per the contract.
++        #[cfg(not(feature = "world-flat-light-ladder"))]
+         let [color, xy, uv] = unsafe {
+             [
+                 ptr::read(at.add(1 + 3 * index)),
+@@ -884,6 +973,16 @@ impl CutVertex {
+                 ptr::read(at.add(3 + 3 * index)),
+             ]
+         };
++        // Flat packets: [cmd, xy0, uv0, xy1, uv1, ...]; the colour is not
++        // per vertex.
++        #[cfg(feature = "world-flat-light-ladder")]
++        let [color, xy, uv] = unsafe {
++            [
++                0u32,
++                ptr::read(at.add(2 + 2 * index)),
++                ptr::read(at.add(3 + 2 * index)),
++            ]
++        };
+         Self {
+             xy: [i32::from(xy as i16), i32::from((xy >> 16) as i16)],
+             uv: [(uv & 0xff) as i32, ((uv >> 8) & 0xff) as i32],
+@@ -956,12 +1055,35 @@ unsafe fn cut_triangle(out: &mut CutOutput, t: [CutVertex; 3], levels: u8) {
+         }
+         return;
+     }
+-    let words = 1 + ClassicTriTexturedGouraud::WORDS as usize;
++    let words = TRI_PACKET_WORDS;
+     // SAFETY: both pointers lie in the reserved room.
+     if unsafe { out.limit.offset_from(out.next) } < words as isize {
+         return;
+     }
+     let pack = |v: &CutVertex| (v.xy[0] as u16 as u32) | ((v.xy[1] as u16 as u32) << 16);
++    #[cfg(feature = "world-flat-light-ladder")]
++    {
++        let uv = |v: &CutVertex| (v.uv[0] as u32) | ((v.uv[1] as u32) << 8);
++        let packet = [
++            (7u32 << 24) | out.otz,
++            0x2580_8080,
++            pack(&t[0]),
++            uv(&t[0]) | out.clut_word,
++            pack(&t[1]),
++            uv(&t[1]) | out.tpage_word,
++            pack(&t[2]),
++            uv(&t[2]),
++        ];
++        for (index, word) in packet.into_iter().enumerate() {
++            // SAFETY: room checked above.
++            unsafe { ptr::write(out.next.add(index), word) };
++        }
++        // SAFETY: as above.
++        out.next = unsafe { out.next.add(words) };
++        out.packets += 1;
++        return;
++    }
++    #[allow(unreachable_code)]
+     let rgb =
+         |v: &CutVertex| (v.rgb[0] as u32) | ((v.rgb[1] as u32) << 8) | ((v.rgb[2] as u32) << 16);
+     let uv = |v: &CutVertex| (v.uv[0] as u32) | ((v.uv[1] as u32) << 8);
+@@ -1017,7 +1139,7 @@ unsafe fn split_oversize_packets(writer: &mut PacketWriter, start: *mut u32, bud
+         let body = (tag >> 24) as usize;
+         // The box of the packet's vertices: if it fits, every triangle in it
+         // does, so only a packet over the limit goes to `cut_packet`.
+-        let corners = if body == ClassicQuadTexturedGouraud::WORDS as usize {
++        let corners = if body == QUAD_PACKET_WORDS - 1 {
+             4
+         } else {
+             3
+@@ -1026,7 +1148,7 @@ unsafe fn split_oversize_packets(writer: &mut PacketWriter, start: *mut u32, bud
+         let mut corner = 0;
+         while corner < corners {
+             // SAFETY: inside the packet.
+-            let xy = unsafe { ptr::read(at.add(2 + 3 * corner)) };
++            let xy = unsafe { ptr::read(at.add(2 + VERTEX_STRIDE * corner)) };
+             let (x, y) = (i32::from(xy as i16), i32::from((xy >> 16) as i16));
+             x0 = x0.min(x);
+             x1 = x1.max(x);
+@@ -1070,7 +1192,7 @@ unsafe fn cut_packet(out: &mut CutOutput, at: *mut u32, tag: u32, quad: bool) {
+         // SAFETY: per the contract.
+         unsafe {
+             out.clut_word = ptr::read(at.add(3)) & 0xffff_0000;
+-            out.tpage_word = ptr::read(at.add(6)) & 0xffff_0000;
++            out.tpage_word = ptr::read(at.add(3 + VERTEX_STRIDE)) & 0xffff_0000;
+             ptr::write(at, (tag & 0xffff_0000) | 0xffff);
+             cut_triangle(out, halves[0], 3);
+             if quad {
+-- 
+2.47.1
+
+
+From 5ff829f397e4505e40ca8d12638b77d223a44b2b Mon Sep 17 00:00:00 2001
+From: Emanuele Bonura <33398153+EBonura@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 18:00:34 +0000
+Subject: [PATCH 2/2] Study (never merged): list world-flat-light-ladder as a
+ diag tap so the gate builds the lane's A/B
+
+---
+ sdk/profile.toml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sdk/profile.toml b/sdk/profile.toml
+index 50ba28383..fd24d28f4 100644
+--- a/sdk/profile.toml
++++ b/sdk/profile.toml
+@@ -25,7 +25,7 @@ psx-rt   = ["host-tty", "boot-trace", "entry-census", "scratchpad-stack-check",
+ psx-io   = ["console-diag"]
+ psx-telemetry = ["emit", "debug-log", "receipts"]
+ psx-cdstream  = ["trace"]
+-psx-engine    = ["boot-trace", "emulator-telemetry", "debug-log", "hardware-boot-visual", "room-surface-profile", "vert-debug"]
++psx-engine    = ["boot-trace", "emulator-telemetry", "debug-log", "hardware-boot-visual", "room-surface-profile", "vert-debug", "world-flat-light-ladder"]
+ psx-game-runtime = ["cd-stream-benchmark", "collision-debug-overlay", "panel-meter"]
+ psx-goldsrc   = ["emulator-telemetry", "performance-telemetry", "warp-probe"]
+ 
+-- 
+2.47.1
+
